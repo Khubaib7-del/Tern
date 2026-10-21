@@ -49,6 +49,7 @@ pub fn run(rt: &tokio::runtime::Runtime, opts: ChatOptions) -> Result<(), String
     eprintln!("Connecting…");
     let session = rt.block_on(ChatSession::open(opts))?;
     let mut app = App::new(session.provider_name(), session.model());
+    app.search = session.search_name();
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableBracketedPaste);
     let result = event_loop(rt, &mut terminal, &mut app, session);

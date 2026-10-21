@@ -18,6 +18,10 @@ Architecture decision records live in [decisions/](decisions/). Each has a statu
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0001](decisions/0001-rust-gpui-windows-first.md) | Rust core, GPUI desktop, ratatui TUI, Windows first | Accepted |
+| 0002 | Palette and type | Open |
+| [0003](decisions/0003-own-provider-adapters.md) | Own provider adapters | Accepted |
+| [0004](decisions/0004-turn-loop-and-policy-gate.md) | Bounded turn loop, policy gate, text tool protocol | Accepted |
+| [0005](decisions/0005-quick-ask-search-reader-source-icons.md) | Quick ask: BYOK search, guarded reader, checked citations, source icons | Accepted |
 
 ## Conventions
 

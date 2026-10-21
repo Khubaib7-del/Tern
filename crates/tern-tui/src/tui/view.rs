@@ -83,8 +83,12 @@ pub fn transcript_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Span::styled("Research", Style::new().add_modifier(Modifier::ITALIC)),
             Span::styled(format!("  v{}", env!("CARGO_PKG_VERSION")), dim()),
         ]));
+        let web = match app.search {
+            Some(s) => format!("web search: {s}"),
+            None => "no web search (tern search add tavily)".to_owned(),
+        };
         lines.extend(indented(
-            &format!("{} · {}", app.provider, app.model),
+            &format!("{} · {} · {web}", app.provider, app.model),
             "",
             "",
             width,

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use tern_core::{Measure, UsageDelta};
 
 /// Tokens for one call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,

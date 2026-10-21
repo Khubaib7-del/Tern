@@ -51,6 +51,8 @@ pub struct App {
     pub provider: String,
     pub model: String,
     pub harness: &'static str,
+    /// The web search service the chat can use, if one is set up.
+    pub search: Option<&'static str>,
     pub usage: Usage,
     /// Lines scrolled up from the bottom of the transcript. 0 follows new output.
     pub scroll: u16,
@@ -70,6 +72,7 @@ impl App {
             provider: provider.into(),
             model: model.into(),
             harness: "Research",
+            search: None,
             usage: Usage {
                 input_tokens: 0,
                 output_tokens: 0,
