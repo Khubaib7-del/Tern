@@ -1,0 +1,17 @@
+[package]
+name = "tern-providers"
+description = "BYOK provider layer for remote and local models (planned)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tern-core.workspace = true
+
+[dev-dependencies]

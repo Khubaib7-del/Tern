@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. **Nothing described below is shipped.** This repository currently holds the plan: docs, design rules, and brand assets. Code starts in roadmap phase 2.
+It is being built as the research tool for its author's final-year project. **Nothing described below is shipped.** This repository holds the plan (docs, design rules, brand assets) and the phase 2 core skeleton, which is in progress.
 
 ## Two harnesses, one core
 
@@ -135,7 +135,7 @@ Not yet released. There are no builds, installers, or packages.
 └── SECURITY.md
 ```
 
-The Cargo workspace (`crates/`) arrives in phase 2.
+The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, and `cargo run -p tern-tui -- doctor`. Nothing is released yet.
 
 ## Documentation
 

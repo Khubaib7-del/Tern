@@ -4,6 +4,15 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (phase 2, in progress)
+
+- Cargo workspace with all eleven crates; dependency rules from `docs/03-architecture.md` enforced by a test that reads every manifest.
+- `tern-core`: prefixed ULID IDs, `Q12` / `Q12.3` message references, effect classes, the versioned event envelope, the turn state machine with safe pause and resume, and the secret redactor.
+- `tern-platform`: app data paths (`TERN_HOME` override), disk space, and the `SecretStore` trait with Windows Credential Manager. Other OS keychains report as unsupported until phase 12.
+- `tern-store`: SQLite schema v1 for projects, sessions, and the append-only event log (redacted on append, update and delete blocked by triggers, replay from any sequence number).
+- `tern doctor` (`--json` too): keychain round trip, data directory, disk space, database integrity, in plain language.
+- Windows CI: fmt, clippy with warnings denied, tests, and `tern doctor`.
+
 ### Changed
 
 - README header is now an animated dither scene (dark and light, 16 s loop): a procedural 3D tern with jointed wings flies around the wordmark, in front of the text and behind it, then lands in the logo position and becomes the original mark, which shimmers while the sky stays live. Replaces the static lockup and the text-art banner; generator script in `assets/brand/src/`.
