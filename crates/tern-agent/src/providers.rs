@@ -106,6 +106,15 @@ fn connect(
     Ok(Provider::new(spec, key, base_url)?)
 }
 
+/// A ready provider by id, with its saved key when it needs one.
+pub fn connect_by_id(
+    id: &str,
+    secrets: Option<&dyn SecretStore>,
+    base_url: Option<&str>,
+) -> SetupResult<Provider> {
+    connect(spec(id)?, secrets, base_url)
+}
+
 /// Tests `key` against the provider and saves it only if it is accepted.
 pub async fn add(
     id: &str,

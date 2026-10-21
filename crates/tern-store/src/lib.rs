@@ -103,6 +103,27 @@ impl Store {
         Ok(id)
     }
 
+    /// The oldest project with this name, if any.
+    pub fn project_by_name(&self, name: &str) -> StoreResult<Option<ProjectId>> {
+        let id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM projects WHERE name = ?1 ORDER BY created_at, id LIMIT 1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(id.and_then(|s| s.parse().ok()))
+    }
+
+    /// The named project, created if it does not exist yet.
+    pub fn ensure_project(&self, name: &str) -> StoreResult<ProjectId> {
+        match self.project_by_name(name)? {
+            Some(id) => Ok(id),
+            None => self.create_project(name, None),
+        }
+    }
+
     pub fn create_session(
         &self,
         project: ProjectId,
@@ -215,6 +236,15 @@ mod tests {
 
     fn ev(ses: SessionId, kind: &str) -> EventEnvelope {
         EventEnvelope::new(ses, kind, EffectClass::Analysis, kind, json!({"k": kind}))
+    }
+
+    #[test]
+    fn ensure_project_reuses_by_name() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.project_by_name("Inbox").unwrap(), None);
+        let a = s.ensure_project("Inbox").unwrap();
+        assert_eq!(s.ensure_project("Inbox").unwrap(), a);
+        assert_ne!(s.ensure_project("FYP").unwrap(), a);
     }
 
     #[test]

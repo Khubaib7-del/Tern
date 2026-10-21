@@ -1,6 +1,6 @@
 [package]
 name = "tern-tui"
-description = "The `tern` command: CLI commands now, the ratatui TUI later."
+description = "The `tern` command: CLI commands and the ratatui TUI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,7 +20,9 @@ tern-core.workspace = true
 tern-agent.workspace = true
 clap.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+ratatui.workspace = true
+unicode-width.workspace = true
 rpassword.workspace = true
 
 [dev-dependencies]

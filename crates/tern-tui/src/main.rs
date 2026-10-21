@@ -1,9 +1,11 @@
 //! The `tern` command.
 //!
-//! `tern doctor` and `tern provider` work now. `tern ask`, `tern run --json`,
-//! and the TUI are the next phase 3 slices.
+//! `tern` (or `tern chat`) opens the TUI. `tern doctor` and `tern provider`
+//! are plain commands. `tern ask` and `tern run --json` are the next slices.
 
 #![forbid(unsafe_code)]
+
+mod tui;
 
 use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
@@ -20,12 +22,15 @@ use tern_core::SecretString;
     about = "Tern: research and study, with sources you can check."
 )]
 struct Cli {
+    /// With no command, Tern opens the chat TUI.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Open the chat TUI (the same as running `tern` alone).
+    Chat(ChatArgs),
     /// Check that this machine can run Tern: keychain, data directory, disk, database.
     Doctor {
         /// Print the report as JSON.
@@ -35,6 +40,19 @@ enum Command {
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
     Provider(ProviderCmd),
+}
+
+#[derive(Debug, Default, clap::Args)]
+struct ChatArgs {
+    /// Provider id. Defaults to the first provider with a saved key.
+    #[arg(long, short)]
+    provider: Option<String>,
+    /// Model id. Defaults to the provider's first chat model.
+    #[arg(long, short)]
+    model: Option<String>,
+    /// Use a different endpoint (a local server on another port, a proxy).
+    #[arg(long)]
+    base_url: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -78,8 +96,30 @@ enum ProviderCmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.command {
+    match cli.command.unwrap_or(Command::Chat(ChatArgs::default())) {
         Command::Doctor { json } => run_doctor(json),
+        Command::Chat(args) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            let opts = tern_agent::ChatOptions {
+                provider: args.provider,
+                model: args.model,
+                base_url: args.base_url,
+                ..Default::default()
+            };
+            let result = tui::run(&rt, opts);
+            rt.shutdown_background();
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Command::Provider(cmd) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
