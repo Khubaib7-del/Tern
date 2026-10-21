@@ -79,6 +79,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | --- | --- |
 | Clarify and plan with an editable plan and preflight cost range | No paid step runs before approval |
 | Workers per sub-question with their own budgets | Only final reports return to the parent |
+| File intake: any parseable file, images by model capability, archives unpacked and folders read recursively in order | A nested zip of mixed files is read completely and in a stable order |
 | Checkpoints, safe pause, resume | Resume after a forced quit without repeating paid work |
 | Live steering and the watcher | Steer lands at the next safe point |
 | Parallel sub-researchers with a Subagents tab | Two workers run at once without sharing budget or context |
@@ -93,6 +94,8 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | Responsive composer | Nothing overflows at 1280, 1440, and 1920px with both side panels open |
 | Motion and theme switch | Panel motion on one curve at 60 fps; the circular light/dark wipe matches the concept video |
 | Providers screen, model picker, context ring | Rows with logos, `Add` and toggles; context popover matches the sidebar view |
+| Working line and message actions | Mark animates per real event; swipe or button reply, copy, multi-branch |
+| Composer input | Attachments, long paste to `.txt`, `@` prompt or context roles, locked mic with tooltip |
 | Built-in browser tab | Page text is isolated from instructions; network guard applies |
 | Git and GitHub panel | Commit, branch, push, and open a PR from a project vault |
 | Summary, Detailed, and Raw views of the same run | Same event stream renders all three |
@@ -159,6 +162,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | Lecture video and slide intake | Later |
 | Interactive explainer export | Later |
 | Explain in 3D mode | Planned with the Study harness (phase 7) |
+| Voice input and a Tern transcription model | After v1; the mic ships locked until then |
 | Computer use, scoped to research chores | Later, off by default |
 | Shared study and research rooms | Parked |
 | Hardware research pack | Parked |

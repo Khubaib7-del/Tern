@@ -110,13 +110,21 @@ The Study harness looks different from Research by tone and shape, not by colour
 | Edit | Editing a message forks the thread; the original stays as a version |
 | Delete | Deleting a message also deletes its reply; a reply can be deleted alone |
 | Regenerate, versions, pin | Standard, with versions kept |
-| Reply to any message | Reply to an earlier message by its ID, with feedback on any message |
+| Reply to any message | Swipe a message (right or left, as in WhatsApp) or press Reply to quote it in the composer; replies carry the message ID. Feedback on any message |
+| Copy | Copy any message, any query block the user sent, and any code block, as raw Markdown |
+| Live working line | The tern mark animates by state (thinking, searching, reading, verifying, writing, needs you) beside a shimmering status phrase; it folds into a one-line rollup when the turn ends |
 | Highlight actions | Select text to edit, ask, explain, quote, or open a throwaway side chat that writes nothing back |
 | Clean a chat by range | Select from one query ID to another and remove it or move it into a new session that carries the context |
 | Branch in the background | Send part of the context to a new session for side research; it reports back when done |
+| Branch by topic, many at once | Split one main session into several sub-sessions in a single action: for example, messages about chunking go to one sub-session and messages about vector databases to another. Later messages in the main session can be moved into an existing sub-session. Each sub-session keeps a link back to the main one |
 | Handoff | Condense a long session into a handoff packet (goal, decisions, open threads, key IDs) while the full session is preserved |
 | Query rail | Tick marks along the transcript, one per user message and checkpoint; hover to preview, click to jump |
-| Attachments | Any file type; parsed into the library |
+| Attachments | Attach button, drag and drop, or paste; any file type, parsed into the library |
+| Long paste | Pasted or typed text over a set length (about 4,000 characters by default) becomes a `.txt` attachment rather than filling the composer |
+| Prompt or context | Every attachment is either context (material to read, the default) or a prompt (instructions); the user marks it with `@` or from the attachment menu |
+| File reading | The agent can read any file type Tern can parse: text, Markdown, PDF, Office documents, spreadsheets, code, HTML, images (when the chosen model supports images), and more |
+| Archives and folders | `.zip` and other archives are unpacked into a sandboxed folder; folders are walked recursively in a stable order (path order, README first) and each file is read in turn, with a manifest shown before a large read |
+| Voice input | The mic is visible but locked until a transcription model is configured (local model or API key in Settings › Voice). A Tern transcription model is planned after v1 |
 | Grounding prompt file | Mark a file as the project's grounding prompt so it is treated as context, not just an attachment |
 
 ## 6. Vault editor (desktop)
