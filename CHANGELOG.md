@@ -13,6 +13,8 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - Policy gate: Allow, Ask, or Deny per effect class; once and session grants scoped to tool and target, session grants expire; deny rules beat grants; approvals recorded as `approval.requested` and `approval.answered`.
 - Typed tool registry with JSON Schema input checks, timeouts, and a fenced `tool` block protocol that works on every provider (ADR 0004).
 - ADR 0004: turn loop and policy gate.
+- Chat TUI (`tern` or `tern chat [--provider] [--model] [--base-url]`): unboxed transcript, working line with spinner and timer, composer with Shift+Enter and bracketed paste, footer with harness, provider, model, and tokens (`~` when estimated), boxed approval dialog (`y` once, `s` session, `n` no), help on `?`, Esc to stop. Works at 80×24; no hue until the palette decision.
+- `tern-agent::ChatSession`: opens provider, model, and a stored session for front ends, so UIs never touch providers, the keychain, or the database.
 
 ### Changed
 

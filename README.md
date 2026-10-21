@@ -135,7 +135,7 @@ Not yet released. There are no builds, installers, or packages.
 └── SECURITY.md
 ```
 
-The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, `cargo run -p tern-tui -- doctor`, and `cargo run -p tern-tui -- provider add openai`. Nothing is released yet.
+The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, `cargo run -p tern-tui -- doctor`, `cargo run -p tern-tui -- provider add groq`, and `cargo run -p tern-tui` to open the chat TUI (`-- chat --provider ollama` for a local model). Nothing is released yet.
 
 ## Documentation
 
