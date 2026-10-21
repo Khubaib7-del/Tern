@@ -97,7 +97,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | 3 | Providers and the first cited answer in the TUI | In progress |
 | 4 | Crawler and claim verification | Planned |
 | 5 | Deep research: plans, workers, checkpoints, steering | Planned |
-| 6 | Desktop app | Planned |
+| 6 | Desktop app | In progress |
 | 7 | Study harness | Planned |
 | 8 | Decision model | Planned |
 | 9 | Continuity and library | Planned |

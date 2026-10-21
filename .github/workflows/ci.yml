@@ -37,3 +37,23 @@ jobs:
         run: |
           $env:TERN_HOME = "$env:RUNNER_TEMP\tern-home"
           cargo run --locked -p tern-tui -- doctor
+
+  desktop:
+    name: Windows desktop build (download to test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-release
+      - name: Build tern-desktop and tern (release)
+        run: cargo build --release --locked -p tern-desktop -p tern-tui
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: tern-windows-x64
+          path: |
+            target/release/tern-desktop.exe
+            target/release/tern.exe
+          retention-days: 14

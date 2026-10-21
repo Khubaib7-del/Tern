@@ -12,7 +12,7 @@
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | In progress |
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Planned |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Planned |
-| 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | Planned |
+| 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
 | 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Planned |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Planned |
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Planned |
@@ -87,6 +87,8 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | Goal and decision ledger with loss-aware compaction | An early constraint survives several compactions |
 
 ### Phase 6 · Desktop app
+
+Started early (ADR 0006): the first slice is the window shell on the phase 3 chat engine, built for Windows by CI on every PR.
 
 | Deliverable | Exit check |
 | --- | --- |
