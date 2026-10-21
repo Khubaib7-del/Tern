@@ -24,7 +24,35 @@ TH = np.tile(B8, (GH//8+1, GW//8+1))[:GH, :GW]
 mark = Image.open(BR+"tern-mark.png").convert("L")
 MH = 126
 MW = int(mark.width*MH/mark.height)
-mark_hi = mark.resize((MW*4, MH*4), Image.LANCZOS)
+PAD = 22                   # grid px of room around the bird for wing travel
+S2 = 3                     # supersample for the wing warp
+mk = np.array(mark.resize((MW*S2, MH*S2), Image.LANCZOS))/255.0
+mk = np.pad(mk, PAD*S2)
+HH, WW = mk.shape
+gy, gx = np.mgrid[0:HH, 0:WW].astype(float)
+# mark-space coords (0..1400, 0..1112) of each supersampled pixel
+sc = mark.width/(MW*S2)
+ux = (gx - PAD*S2)*sc; uy = (gy - PAD*S2)*sc
+PIV = np.array([985.0, 468.0])          # shoulder
+# wing weight: above the line (160,430)-(985,468), fading out toward the head
+lx0, ly0, lx1, ly1 = 160.0, 430.0, 985.0, 468.0
+nx, ny = (ly1-ly0), -(lx1-lx0); nn = np.hypot(nx, ny); nx/=nn; ny/=nn
+if ny > 0: nx, ny = -nx, -ny             # normal points up
+above = (ux-lx0)*nx + (uy-ly0)*ny
+W_WING = np.clip(above/70.0, 0, 1)**1.2 * np.clip((1010-ux)/120.0, 0, 1)
+
+def warped_mark(theta_deg, sy):
+    th = np.radians(theta_deg)*W_WING
+    s = 1 - (1-sy)*W_WING
+    dx, dy = ux-PIV[0], uy-PIV[1]
+    # inverse: rotate back, then un-squash along y
+    c, sn = np.cos(-th), np.sin(-th)
+    rx = c*dx - sn*dy; ry = sn*dx + c*dy
+    ry = ry/np.maximum(s, 1e-3)
+    srcx = (rx+PIV[0])/sc + PAD*S2; srcy = (ry+PIV[1])/sc + PAD*S2
+    out = ndimage.map_coordinates(mk, [srcy, srcx], order=1, mode='constant')
+    im = Image.fromarray((out*255).astype(np.uint8)).resize((MW+2*PAD, MH+2*PAD), Image.BOX)
+    return np.array(im)/255.0
 
 # ---- wordmark from lockup alpha (text part only)
 lk = Image.open(BR+"tern-lockup-on-dark.png")
@@ -52,9 +80,9 @@ def pnoise(x, y, t, seed):
 rng = np.random.default_rng(7)
 NP = 140
 p0x = rng.uniform(0, GW, NP); p0y = rng.uniform(0, GH, NP)
-pv = rng.integers(1, 4, NP)          # laps per loop -> seamless
+pv = rng.integers(2, 6, NP)          # laps per loop -> seamless
 pb = rng.uniform(0.35, 1.0, NP)
-pl = rng.integers(1, 7, NP)          # streak length
+pl = rng.integers(2, 10, NP)          # streak length
 
 def frame(t, invert=False):
     # fog
@@ -74,28 +102,31 @@ def frame(t, invert=False):
                 xk = (xi+k) % GW
                 img[yi, xk] = max(img[yi, xk], pb[i]*(1-k/pl[i])*0.85)
 
-    # bird: bob + tiny tilt, periodic
-    bob = 4.0*np.sin(TAU*t)
-    ang = 1.6*np.sin(TAU*t + 0.6)
-    m = mark_hi.rotate(ang, resample=Image.BICUBIC, expand=False)
-    m = np.array(m.resize((MW, MH), Image.LANCZOS))/255.0
+    # bird in flight: 3 wingbeats per loop, body lifts on each downstroke
+    ph = TAU*3*t
+    u = np.sin(ph)
+    theta = -10 + 21*u                    # wing angle at the shoulder, degrees
+    sy = 0.80 + 0.20*(u+1)/2              # foreshortening on the downstroke
+    bob = 2.6*np.cos(ph) + 3.0*np.sin(TAU*t)
+    drift = 3.0*np.sin(TAU*t + 1.1)
+    m = warped_mark(theta, sy)
     inside = m > 0.5
     dist = ndimage.distance_transform_edt(inside)
     dist = np.clip(dist/6.0, 0, 1)
-    my, mx = np.mgrid[0:MH, 0:MW]
+    my, mx = np.mgrid[0:MH+2*PAD, 0:MW+2*PAD]
     # light sweep across the body
     sweep = np.exp(-(((mx+my*0.6) - (MW+MH)*((t*1.0) % 1.0)*1.3 + 30)/18.0)**2)
     shade = 0.74 + 0.22*(1-dist) + 0.30*sweep
     shade = np.where(inside, np.clip(shade, 0, 1), 0)
-    ox, oy = 34, int(round((GH-MH)/2 + bob))
-    sub = img[max(oy,0):oy+MH, ox:ox+MW]
-    sh = shade[max(-oy,0):max(-oy,0)+sub.shape[0], :sub.shape[1]]
-    ins = inside[max(-oy,0):max(-oy,0)+sub.shape[0], :sub.shape[1]]
+    ox, oy = 34-PAD+int(round(drift)), int(round((GH-MH)/2 - PAD + bob))
+    sub = img[max(oy,0):oy+MH+2*PAD, max(ox,0):ox+MW+2*PAD]
+    sh = shade[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
+    ins = inside[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
     sub[ins] = sh[ins]
     # soft halo just outside the silhouette
     halo = ndimage.distance_transform_edt(~inside)
     halo = np.exp(-halo/5.0)*0.14*(0.8+0.2*np.sin(TAU*t))
-    hs = halo[max(-oy,0):max(-oy,0)+sub.shape[0], :sub.shape[1]]
+    hs = halo[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
     sub[:] = np.maximum(sub, hs)
 
     # wordmark, static with a slow shimmer
