@@ -13,6 +13,10 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - Policy gate: Allow, Ask, or Deny per effect class; once and session grants scoped to tool and target, session grants expire; deny rules beat grants; approvals recorded as `approval.requested` and `approval.answered`.
 - Typed tool registry with JSON Schema input checks, timeouts, and a fenced `tool` block protocol that works on every provider (ADR 0004).
 - ADR 0004: turn loop and policy gate.
+- `tern ask "question"`: one search, up to 4 pages read in parallel, one model call, then a citation check; prints the answer, numbered sources (clickable in terminals that support links), unreadable pages, and any citation that matches no source. `--json` for the full report. ADR 0005.
+- `tern search list/add/test/remove`: Tavily and Brave keys (tested before saving, kept in the keychain) and self-hosted SearXNG.
+- `tern-crawl`: network guard (no private, loopback, or link-local addresses; redirects re-checked; 2 MiB cap), HTML-to-text reader, and source icons (built-in glyph ids for known services, favicon otherwise).
+- Chat TUI gets `web_search` and `read_url` when a search service is set up; the launch card says which.
 - Chat TUI (`tern` or `tern chat [--provider] [--model] [--base-url]`): unboxed transcript, working line with spinner and timer, composer with Shift+Enter and bracketed paste, footer with harness, provider, model, and tokens (`~` when estimated), boxed approval dialog (`y` once, `s` session, `n` no), help on `?`, Esc to stop. Works at 80×24; no hue until the palette decision.
 - `tern-agent::ChatSession`: opens provider, model, and a stored session for front ends, so UIs never touch providers, the keychain, or the database.
 

@@ -1,0 +1,113 @@
+//! The web tools the turn loop can call: `web_search` and `read_url`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use tern_core::EffectClass;
+use tern_crawl::{Fetcher, SearchClient};
+
+use crate::tools::{BoxFuture, Tool, ToolError, ToolOutput};
+
+/// Characters of a page handed to the model per read.
+pub const READ_CHARS: usize = 8_000;
+
+#[derive(Debug, Clone)]
+pub struct WebSearchTool(pub Arc<SearchClient>);
+
+impl Tool for WebSearchTool {
+    fn name(&self) -> &'static str {
+        "web_search"
+    }
+    fn summary(&self) -> &'static str {
+        "Search the web. Returns titles, links, and snippets; read a link before citing it."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["query"], "additionalProperties": false,
+               "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}})
+    }
+    fn target(&self, _args: &Value) -> Option<String> {
+        Some(self.0.spec().id.to_owned())
+    }
+    fn idempotent(&self) -> bool {
+        true
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move {
+            let q = args["query"].as_str().unwrap_or_default();
+            let limit = args["limit"].as_u64().unwrap_or(6).clamp(1, 10) as usize;
+            let hits = self
+                .0
+                .search(q, limit)
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
+            if hits.is_empty() {
+                return Ok(ToolOutput::text(format!("No results for \"{q}\".")));
+            }
+            let mut out = String::new();
+            for (i, h) in hits.iter().enumerate() {
+                out.push_str(&format!(
+                    "{}. {} ({})\n   {}\n   {}\n",
+                    i + 1,
+                    h.title,
+                    h.site,
+                    h.url,
+                    h.snippet
+                ));
+            }
+            Ok(ToolOutput {
+                content: out,
+                evidence_refs: hits.iter().map(|h| h.url.clone()).collect(),
+            })
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReadUrlTool(pub Fetcher);
+
+impl Tool for ReadUrlTool {
+    fn name(&self) -> &'static str {
+        "read_url"
+    }
+    fn summary(&self) -> &'static str {
+        "Read one web page as text. Cite pages you have read, by their final URL."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["url"], "additionalProperties": false,
+               "properties": {"url": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        args["url"]
+            .as_str()
+            .and_then(|u| url::Url::parse(u).ok())
+            .map(|u| tern_crawl::site_of(&u))
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+    fn idempotent(&self) -> bool {
+        true
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move {
+            let u = args["url"].as_str().unwrap_or_default();
+            let p = self
+                .0
+                .fetch(u)
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let text: String = p.text.chars().take(READ_CHARS).collect();
+            Ok(ToolOutput {
+                content: format!("{}\n{}\n\n{}", p.title, p.final_url, text),
+                evidence_refs: vec![p.final_url],
+            })
+        })
+    }
+}

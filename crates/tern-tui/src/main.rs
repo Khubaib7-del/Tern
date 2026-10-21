@@ -37,9 +37,52 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Ask a question and get a short answer with numbered, checked citations.
+    Ask {
+        /// The question. Quote it, or pass several words.
+        #[arg(required = true, num_args = 1..)]
+        question: Vec<String>,
+        #[command(flatten)]
+        chat: ChatArgs,
+        /// Pages to read from the search results.
+        #[arg(long, default_value_t = 4)]
+        reads: usize,
+        /// Print the full report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
     Provider(ProviderCmd),
+    /// Add, test, and remove web search services (bring your own key).
+    #[command(subcommand)]
+    Search(SearchCmd),
+}
+
+#[derive(Debug, Subcommand)]
+enum SearchCmd {
+    /// Show every search service and whether a key is saved.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Paste a key. Tern runs one search with it and saves it only if it works.
+    Add {
+        /// Service id: `tavily` or `brave`.
+        id: String,
+        #[arg(long)]
+        stdin: bool,
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+    /// Run a test search with the saved key, or against your SearXNG.
+    Test {
+        id: String,
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+    /// Delete the saved key from the keychain.
+    Remove { id: String },
 }
 
 #[derive(Debug, Default, clap::Args)]
@@ -53,6 +96,12 @@ struct ChatArgs {
     /// Use a different endpoint (a local server on another port, a proxy).
     #[arg(long)]
     base_url: Option<String>,
+    /// Search service id. Defaults to the first with a saved key.
+    #[arg(long, short)]
+    search: Option<String>,
+    /// Your SearXNG address, or another search endpoint.
+    #[arg(long)]
+    search_url: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -108,6 +157,8 @@ fn main() -> ExitCode {
                 provider: args.provider,
                 model: args.model,
                 base_url: args.base_url,
+                search: args.search,
+                search_url: args.search_url,
                 ..Default::default()
             };
             let result = tui::run(&rt, opts);
@@ -120,6 +171,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Ask {
+            question,
+            chat,
+            reads,
+            json,
+        } => block_on(run_ask(question.join(" "), chat, reads, json)),
+        Command::Search(cmd) => block_on(run_search(cmd)),
         Command::Provider(cmd) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -134,6 +192,167 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+fn block_on(f: impl std::future::Future<Output = Result<(), String>>) -> ExitCode {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    match rt.block_on(f) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_ask(question: String, chat: ChatArgs, reads: usize, json: bool) -> Result<(), String> {
+    let opts = tern_agent::AskOptions {
+        provider: chat.provider,
+        model: chat.model,
+        base_url: chat.base_url,
+        search: chat.search,
+        search_url: chat.search_url,
+        reads: reads.clamp(1, 8),
+        ..Default::default()
+    };
+    let tty = std::io::stderr().is_terminal();
+    let progress = move |line: &str| {
+        if tty {
+            eprintln!("\x1b[2m• {line}\x1b[0m");
+        } else {
+            eprintln!("• {line}");
+        }
+    };
+    let r = tern_agent::ask::ask(&question, opts, &progress).await?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&r).expect("report serialises")
+        );
+        return Ok(());
+    }
+    let links = std::io::stdout().is_terminal();
+    println!();
+    println!("{}", r.answer);
+    println!();
+    println!("Sources");
+    for s in &r.sources {
+        let mark = if s.cited { " " } else { "·" };
+        let title = if links {
+            format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", s.url, s.title)
+        } else {
+            s.title.clone()
+        };
+        println!(" {mark}[{}] {title} · {}", s.n, s.site);
+        println!("      {}", s.url);
+    }
+    println!();
+    let mut tail = vec![format!(
+        "Read {} of {} pages via {}",
+        r.sources.len(),
+        r.sources.len() + r.unread.len(),
+        r.search_service
+    )];
+    let uncited = r.sources.iter().filter(|s| !s.cited).count();
+    if uncited > 0 {
+        tail.push(format!("{uncited} read but not cited (·)"));
+    }
+    if !r.invalid_citations.is_empty() {
+        let nums: Vec<String> = r
+            .invalid_citations
+            .iter()
+            .map(|n| format!("[{n}]"))
+            .collect();
+        tail.push(format!("{} match no source", nums.join(" ")));
+    }
+    let est = if r.usage.measure == tern_core::Measure::Estimated {
+        "~"
+    } else {
+        ""
+    };
+    tail.push(format!("{} · {est}{} tokens", r.model, r.usage.total()));
+    tail.push(format!("{:.1} s", r.elapsed_ms as f64 / 1000.0));
+    println!("{}", tail.join(" · "));
+    Ok(())
+}
+
+async fn run_search(cmd: SearchCmd) -> Result<(), String> {
+    use tern_agent::search;
+    let keychain = providers::keychain();
+    let store: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let need_store = || {
+        keychain
+            .as_ref()
+            .map(|b| b.as_ref())
+            .map_err(|e| format!("{e}. Keys cannot be saved here yet."))
+    };
+    match cmd {
+        SearchCmd::List { json } => {
+            let rows = search::list(store);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).expect("rows serialise")
+                );
+                return Ok(());
+            }
+            for r in rows {
+                let state = if r.self_hosted {
+                    "self-hosted, no key"
+                } else if r.key_saved {
+                    "key saved"
+                } else {
+                    "no key"
+                };
+                println!("  {:<8}  {:<12}  {state}", r.id, r.name);
+            }
+            Ok(())
+        }
+        SearchCmd::Add {
+            id,
+            stdin,
+            base_url,
+        } => {
+            let store = need_store()?;
+            if let Some(spec) = tern_crawl_spec(&id)
+                && !spec.is_empty()
+            {
+                eprintln!("Create a key at {spec}");
+            }
+            let key = read_key(&id, stdin)?;
+            let n = search::add(&id, key, store, base_url.as_deref()).await?;
+            println!("Saved. The test search returned {n} result(s).");
+            Ok(())
+        }
+        SearchCmd::Test { id, base_url } => {
+            let n = search::test(&id, store, base_url.as_deref()).await?;
+            println!("Search works: {n} result(s) for a test query.");
+            Ok(())
+        }
+        SearchCmd::Remove { id } => {
+            let existed = search::remove(&id, need_store()?)?;
+            println!(
+                "{}",
+                if existed {
+                    "Key deleted from the keychain."
+                } else {
+                    "No key was saved for that service."
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+fn tern_crawl_spec(id: &str) -> Option<&'static str> {
+    tern_agent::search::list(None)
+        .into_iter()
+        .find(|r| r.id == id)
+        .map(|r| r.key_url)
 }
 
 async fn run_provider(cmd: ProviderCmd) -> Result<(), String> {

@@ -8,14 +8,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ask;
 pub mod chat;
 pub mod doctor;
 pub mod engine;
 pub mod policy;
 pub mod protocol;
 pub mod providers;
+pub mod search;
 pub mod tools;
+pub mod web;
 
+pub use ask::{AskOptions, AskReport, Source};
 pub use chat::{ChatOptions, ChatSession, Usage};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model,

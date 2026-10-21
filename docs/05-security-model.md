@@ -43,7 +43,7 @@ Higher entries can never be overridden by lower ones.
 | --- | --- | --- |
 | Read | Read the vault, search the library | Allowed |
 | Analysis | Summarise, extract claims, score | Allowed |
-| Network | Fetch a URL, call a search API | Allowed within project scope; new domains can be set to ask |
+| Network | Fetch a URL, call a search API | Allowed within project scope; new domains can be set to ask. Every fetch passes the network guard (ADR 0005): http and https only, no private or local addresses, redirects re-checked, 2 MiB cap |
 | Write | Edit a vault note, save a report | Shown as a diff; accept or reject |
 | Credentials | Read a key from the keychain | Only `tern-providers` and `tern-decision`, never the model |
 | External side effect | Post, send, or submit anywhere | Ask every time |

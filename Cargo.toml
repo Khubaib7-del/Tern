@@ -42,6 +42,8 @@ rpassword = "7"
 url = "2"
 ratatui = "0.30"
 unicode-width = "0.2"
+scraper = "0.29"
+futures = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

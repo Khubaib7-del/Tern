@@ -4,6 +4,8 @@
 //! [`ChatSession::send`] per message. They never touch providers, the
 //! keychain, or the database themselves.
 
+use std::sync::Arc;
+
 use serde_json::json;
 use tern_core::{EffectClass, EventEnvelope, SessionId};
 use tern_platform::AppPaths;
@@ -15,7 +17,9 @@ pub use tern_providers::Usage;
 use crate::engine::{Approver, Budget, CancelFlag, EventSink, StoreSink, TurnLoop, TurnOutcome};
 use crate::policy::PolicyGate;
 use crate::providers::{self, SecretStore, SetupError};
+use crate::search;
 use crate::tools::ToolRegistry;
+use crate::web::{ReadUrlTool, WebSearchTool};
 
 /// The project quick chats are filed under until projects have a UI.
 pub const INBOX: &str = "Inbox";
@@ -30,7 +34,12 @@ pub struct ChatOptions {
     pub base_url: Option<String>,
     pub budget: Budget,
     pub max_output_tokens: u32,
+    /// Search service id. `None` uses the first with a saved key, or none.
+    pub search: Option<String>,
+    pub search_url: Option<String>,
 }
+
+const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
 
 /// One open chat.
 #[allow(missing_debug_implementations)]
@@ -44,6 +53,7 @@ pub struct ChatSession {
     ledger: UsageLedger,
     tools: ToolRegistry,
     history: Vec<ChatMessage>,
+    search_name: Option<&'static str>,
     budget: Budget,
     max_output_tokens: u32,
 }
@@ -107,6 +117,18 @@ impl ChatSession {
                 (m.id, m.context_window)
             }
         };
+        let mut tools = ToolRegistry::new();
+        let search =
+            match search::connect(opts.search.as_deref(), secrets, opts.search_url.as_deref()) {
+                Ok(c) => Some(c),
+                Err(e) if opts.search.is_some() => return Err(e),
+                Err(_) => None,
+            };
+        let search_name = search.as_ref().map(|c| c.spec().name);
+        if let Some(c) = search {
+            tools.register(WebSearchTool(Arc::new(c)));
+            tools.register(ReadUrlTool::default());
+        }
         let project = store.ensure_project(INBOX).map_err(|e| e.to_string())?;
         let session = store
             .create_session(project, Harness::Research, "Chat")
@@ -119,8 +141,9 @@ impl ChatSession {
             sink: StoreSink::new(store),
             gate: PolicyGate::default(),
             ledger: UsageLedger::default(),
-            tools: ToolRegistry::new(),
+            tools,
             history: Vec::new(),
+            search_name,
             budget: opts.budget,
             max_output_tokens: if opts.max_output_tokens == 0 {
                 2048
@@ -148,6 +171,11 @@ impl ChatSession {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// The search service the chat's web tools use, if any.
+    pub fn search_name(&self) -> Option<&'static str> {
+        self.search_name
     }
 
     pub fn context_window(&self) -> Option<u64> {
@@ -191,7 +219,7 @@ impl ChatSession {
             ledger: &self.ledger,
             budget: self.budget,
             cancel,
-            instructions: None,
+            instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
             max_output_tokens: self.max_output_tokens,
         }
         .run(self.history.clone(), text)

@@ -61,7 +61,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | `tern-providers`: a first set of remote providers plus Ollama and LM Studio; capability probing; usage ledger | Paste a key, test, list models (done: PR #5) |
 | Minimal `tern-agent` turn loop with the policy gate | Bounded loop; approvals recorded (done: ADR 0004) |
 | Minimal TUI: composer, transcript, footer | Works at 80×24 in Windows Terminal (built; Windows Terminal check by the owner) |
-| First slice: `tern ask` with web search and a cited answer | Every citation links to a fetched source |
+| First slice: `tern ask` with web search and a cited answer | Every citation links to a fetched source (built, ADR 0005; invalid citations are reported) |
 
 ### Phase 4 · Crawler and verification
 
