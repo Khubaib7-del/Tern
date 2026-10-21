@@ -1,6 +1,6 @@
 [package]
 name = "tern-agent"
-description = "The Tern engine: turn loop, policy gate, workers. Phase 2 ships only diagnostics."
+description = "The Tern engine: bounded turn loop, policy gate, tool registry, provider setup, diagnostics."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,9 +17,11 @@ tern-platform.workspace = true
 tern-store.workspace = true
 tern-providers.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock.workspace = true
 tempfile.workspace = true
-serde_json.workspace = true

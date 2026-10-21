@@ -1,0 +1,589 @@
+//! The bounded turn loop.
+//!
+//! One turn: the user's message, then model calls and tool calls until the
+//! model answers or a limit stops it. Every step moves the
+//! [`TurnStateMachine`], and every step is recorded as an event before the
+//! next one starts, so a UI can replay exactly what happened.
+//!
+//! | Stop | State |
+//! | --- | --- |
+//! | The model answers | `Completed` (or `CompletedWithGaps` when the answer is empty) |
+//! | Model-call, tool-call, or token limit | `BudgetExceeded` |
+//! | The policy gate or the user refuses a step | `Blocked` |
+//! | The same call three times | `Failed`, with a `loop.suspected` event |
+//! | Provider error or the event log cannot be written | `Failed` |
+//! | The user cancels | `Cancelled` |
+//!
+//! There is no silent retry and no fallback to another provider.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use serde::Serialize;
+use serde_json::{Value, json};
+use tern_core::{EffectClass, EventEnvelope, SessionId, TurnId, TurnState, TurnStateMachine};
+use tern_providers::{
+    ChatMessage, ChatRequest, ChatResponse, Provider, ProviderResult, Usage, UsageLedger,
+};
+use tern_store::Store;
+
+use crate::policy::{ApprovalAnswer, CallView, Decision, PolicyGate};
+use crate::protocol::{self, Reply};
+use crate::tools::{BoxFuture, ToolError, ToolOutput, ToolRegistry, validate};
+
+/// A chat model the loop can call. [`Provider`] is the real one; tests script one.
+pub trait Model: Send + Sync {
+    /// The catalog id, for the usage ledger (`openai`, `ollama`).
+    fn provider_id(&self) -> &str;
+    fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>>;
+}
+
+impl Model for Provider {
+    fn provider_id(&self) -> &str {
+        self.spec().id
+    }
+    fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(self.chat(req))
+    }
+}
+
+/// What the user sees when a step needs their go-ahead.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ApprovalRequest {
+    pub tool: String,
+    pub summary: String,
+    pub effect: EffectClass,
+    pub target: Option<String>,
+    pub args: Value,
+}
+
+/// Puts an approval in front of the user and waits for the answer.
+pub trait Approver: Send + Sync {
+    fn ask<'a>(&'a self, req: &'a ApprovalRequest) -> BoxFuture<'a, ApprovalAnswer>;
+}
+
+/// Refuses every approval. For runs with no one to ask.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DenyAll;
+
+impl Approver for DenyAll {
+    fn ask<'a>(&'a self, _req: &'a ApprovalRequest) -> BoxFuture<'a, ApprovalAnswer> {
+        Box::pin(async { ApprovalAnswer::Deny })
+    }
+}
+
+/// Where the loop writes events. A write failure stops the turn.
+pub trait EventSink: Send + Sync {
+    fn record(&self, event: EventEnvelope) -> Result<EventEnvelope, String>;
+}
+
+/// Keeps events in memory.
+#[derive(Debug, Default)]
+pub struct MemorySink(Mutex<Vec<EventEnvelope>>);
+
+impl MemorySink {
+    pub fn events(&self) -> Vec<EventEnvelope> {
+        self.0.lock().expect("sink lock").clone()
+    }
+}
+
+impl EventSink for MemorySink {
+    fn record(&self, mut event: EventEnvelope) -> Result<EventEnvelope, String> {
+        let mut v = self.0.lock().expect("sink lock");
+        event.seq = v.len() as u64 + 1;
+        v.push(event.clone());
+        Ok(event)
+    }
+}
+
+/// Writes events to the Tern database, redacted, in order.
+#[derive(Debug)]
+pub struct StoreSink(Mutex<Store>);
+
+impl StoreSink {
+    pub fn new(store: Store) -> Self {
+        Self(Mutex::new(store))
+    }
+
+    pub fn into_inner(self) -> Store {
+        self.0.into_inner().expect("store lock")
+    }
+}
+
+impl EventSink for StoreSink {
+    fn record(&self, event: EventEnvelope) -> Result<EventEnvelope, String> {
+        self.0
+            .lock()
+            .map_err(|_| "the store lock was poisoned".to_owned())?
+            .append(&event)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Limits for one turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Budget {
+    pub max_model_calls: u32,
+    pub max_tool_calls: u32,
+    /// Input plus output tokens across the turn.
+    pub max_tokens: u64,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            max_model_calls: 8,
+            max_tool_calls: 12,
+            max_tokens: 200_000,
+        }
+    }
+}
+
+/// Set from any thread to stop the turn at the next safe point.
+#[derive(Clone, Debug, Default)]
+pub struct CancelFlag(Arc<AtomicBool>);
+
+impl CancelFlag {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// How a turn ended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurnOutcome {
+    pub turn_id: TurnId,
+    pub state: TurnState,
+    pub answer: Option<String>,
+    /// Why the turn stopped, when it did not complete.
+    pub reason: Option<String>,
+    pub states: Vec<TurnState>,
+    pub usage: Usage,
+    pub model_calls: u32,
+    pub tool_calls: u32,
+}
+
+/// Longest tool result the model is shown. Errors are never cut.
+const RESULT_LIMIT: usize = 12_000;
+/// The same call this many times in one turn is treated as a loop.
+const REPEAT_LIMIT: u32 = 3;
+
+/// Everything one turn needs. Build it, then call [`TurnLoop::run`].
+#[allow(missing_debug_implementations)]
+pub struct TurnLoop<'a> {
+    pub session: SessionId,
+    pub model: &'a dyn Model,
+    pub model_name: &'a str,
+    pub tools: &'a ToolRegistry,
+    pub gate: &'a mut PolicyGate,
+    pub approver: &'a dyn Approver,
+    pub sink: &'a dyn EventSink,
+    pub ledger: &'a UsageLedger,
+    pub budget: Budget,
+    pub cancel: CancelFlag,
+    /// Extra system instructions for the harness (Research or Study).
+    pub instructions: Option<&'a str>,
+    pub max_output_tokens: u32,
+}
+
+struct Run<'r, 'a> {
+    cfg: &'r mut TurnLoop<'a>,
+    turn: TurnId,
+    fsm: TurnStateMachine,
+    usage: Usage,
+    model_calls: u32,
+    tool_calls: u32,
+}
+
+/// A step failed in a way that ends the turn.
+struct Stop {
+    state: TurnState,
+    reason: String,
+}
+
+impl<'a> TurnLoop<'a> {
+    /// Runs one turn on top of `history` (earlier messages in the session).
+    pub async fn run(&mut self, history: Vec<ChatMessage>, user_message: &str) -> TurnOutcome {
+        let mut run = Run {
+            turn: TurnId::new(),
+            fsm: TurnStateMachine::default(),
+            usage: Usage::measured(0, 0),
+            model_calls: 0,
+            tool_calls: 0,
+            cfg: self,
+        };
+        let result = run.drive(history, user_message).await;
+        run.finish(result)
+    }
+}
+
+impl Run<'_, '_> {
+    fn event(
+        &self,
+        kind: &str,
+        effect: EffectClass,
+        summary: impl Into<String>,
+        payload: Value,
+    ) -> EventEnvelope {
+        EventEnvelope::new(self.cfg.session, kind, effect, summary, payload).with_turn(self.turn)
+    }
+
+    fn record(&self, e: EventEnvelope) -> Result<(), Stop> {
+        self.cfg.sink.record(e).map(|_| ()).map_err(|e| Stop {
+            state: TurnState::Failed,
+            reason: format!("Tern could not write the run log, so it stopped: {e}"),
+        })
+    }
+
+    fn go(&mut self, to: TurnState) -> Result<(), Stop> {
+        self.fsm.move_to(to).map_err(|e| Stop {
+            state: TurnState::Failed,
+            reason: format!("internal error: {e}"),
+        })
+    }
+
+    fn check_cancel(&self) -> Result<(), Stop> {
+        if self.cfg.cancel.is_cancelled() {
+            return Err(Stop {
+                state: TurnState::Cancelled,
+                reason: "You stopped the run.".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn over_budget(reason: String) -> Stop {
+        Stop {
+            state: TurnState::BudgetExceeded,
+            reason,
+        }
+    }
+
+    async fn drive(
+        &mut self,
+        history: Vec<ChatMessage>,
+        user_message: &str,
+    ) -> Result<(TurnState, String), Stop> {
+        self.go(TurnState::Preparing)?;
+        self.record(self.event(
+            "turn.started",
+            EffectClass::Analysis,
+            "Started a turn",
+            json!({
+                "model": self.cfg.model_name,
+                "provider": self.cfg.model.provider_id(),
+                "tools": self.cfg.tools.names().collect::<Vec<_>>(),
+                "budget": self.cfg.budget,
+            }),
+        ))?;
+        let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        let mut messages = history;
+        messages.push(ChatMessage::user(user_message));
+        let mut seen: HashMap<String, u32> = HashMap::new();
+
+        loop {
+            self.check_cancel()?;
+            let b = self.cfg.budget;
+            if self.model_calls >= b.max_model_calls {
+                return Err(Self::over_budget(format!(
+                    "The turn reached its limit of {} model calls.",
+                    b.max_model_calls
+                )));
+            }
+            self.go(TurnState::ModelStreaming)?;
+            let req = ChatRequest::new(self.cfg.model_name, messages.clone())
+                .with_system(system.clone())
+                .with_max_tokens(self.cfg.max_output_tokens);
+            self.model_calls += 1;
+            let reply = self.cfg.model.complete(&req).await.map_err(|e| Stop {
+                state: TurnState::Failed,
+                reason: e.to_string(),
+            })?;
+            self.cfg.ledger.record(
+                self.cfg.model.provider_id(),
+                self.cfg.model_name,
+                reply.usage,
+            );
+            self.add_usage(reply.usage);
+            self.record(
+                self.event(
+                    "model.replied",
+                    EffectClass::Network,
+                    format!("{} replied", self.cfg.model_name),
+                    json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len()}),
+                )
+                .with_usage(reply.usage.to_delta()),
+            )?;
+            if self.usage.total() > b.max_tokens {
+                return Err(Self::over_budget(format!(
+                    "The turn used {} tokens, over its limit of {}.",
+                    self.usage.total(),
+                    b.max_tokens
+                )));
+            }
+
+            match protocol::parse(&reply.text) {
+                Reply::Answer(text) => {
+                    self.go(TurnState::Verifying)?;
+                    return Ok(if text.is_empty() {
+                        (TurnState::CompletedWithGaps, text)
+                    } else {
+                        (TurnState::Completed, text)
+                    });
+                }
+                Reply::Malformed(why) => {
+                    self.go(TurnState::ToolRequested)?;
+                    self.go(TurnState::RecordResult)?;
+                    self.record(self.event(
+                        "tool.rejected",
+                        EffectClass::Analysis,
+                        "The model asked for a tool in a form Tern could not read",
+                        json!({"reason": why}),
+                    ))?;
+                    messages.push(ChatMessage::assistant(reply.text));
+                    messages.push(ChatMessage::user(format!(
+                        "Tern could not read that tool request: {why}. Try again or answer directly."
+                    )));
+                }
+                Reply::Tool { name, args } => {
+                    self.go(TurnState::ToolRequested)?;
+                    let key = format!("{name}:{args}");
+                    let n = seen.entry(key).or_default();
+                    *n += 1;
+                    if *n >= REPEAT_LIMIT {
+                        self.record(self.event(
+                            "loop.suspected",
+                            EffectClass::Analysis,
+                            format!(
+                                "The model asked for the same `{name}` call {REPEAT_LIMIT} times"
+                            ),
+                            json!({"tool": name, "args": args}),
+                        ))?;
+                        return Err(Stop {
+                            state: TurnState::Failed,
+                            reason: format!(
+                                "The model kept repeating the same `{name}` call, so Tern stopped the turn."
+                            ),
+                        });
+                    }
+                    let result = self.tool_step(&name, &args).await?;
+                    messages.push(ChatMessage::assistant(reply.text));
+                    messages.push(ChatMessage::user(result));
+                }
+            }
+        }
+    }
+
+    fn add_usage(&mut self, u: Usage) {
+        self.usage.input_tokens += u.input_tokens;
+        self.usage.output_tokens += u.output_tokens;
+        if u.measure == tern_core::Measure::Estimated {
+            self.usage.measure = tern_core::Measure::Estimated;
+        }
+    }
+
+    /// Validates, gates, runs, and records one tool call. Returns the text
+    /// the model reads next.
+    async fn tool_step(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
+        let Some(tool) = self.cfg.tools.get(name) else {
+            self.go(TurnState::RecordResult)?;
+            self.record(self.event(
+                "tool.rejected",
+                EffectClass::Analysis,
+                format!("The model asked for `{name}`, which this turn does not have"),
+                json!({"tool": name}),
+            ))?;
+            let names = self.cfg.tools.names().collect::<Vec<_>>().join(", ");
+            return Ok(format!(
+                "There is no tool called `{name}`. Available: {}.",
+                if names.is_empty() { "none" } else { &names }
+            ));
+        };
+        if let Err(e) = validate(&tool.input_schema(), args) {
+            self.go(TurnState::RecordResult)?;
+            self.record(self.event(
+                "tool.rejected",
+                tool.effect(),
+                format!("`{name}` was asked for with bad arguments"),
+                json!({"tool": name, "error": e}),
+            ))?;
+            return Ok(format!("Tool `{name}` {e}. Check its input schema."));
+        }
+        if self.tool_calls >= self.cfg.budget.max_tool_calls {
+            return Err(Self::over_budget(format!(
+                "The turn reached its limit of {} tool calls.",
+                self.cfg.budget.max_tool_calls
+            )));
+        }
+
+        let target = tool.target(args);
+        let view = CallView {
+            tool: name,
+            effect: tool.effect(),
+            target: target.as_deref(),
+            args,
+        };
+        self.go(TurnState::PolicyCheck)?;
+        let decision = self.cfg.gate.check(&view);
+        self.record(self.event(
+            "policy.decided",
+            tool.effect(),
+            match &decision {
+                Decision::Allow { because } => format!("`{name}` allowed: {because}"),
+                Decision::Ask => format!("`{name}` needs your approval"),
+                Decision::Deny { reason } => reason.clone(),
+            },
+            json!({"tool": name, "target": target, "decision": decision}),
+        ))?;
+        match decision {
+            Decision::Allow { .. } => {}
+            Decision::Deny { reason } => {
+                self.go(TurnState::Blocked)?;
+                return Err(Stop {
+                    state: TurnState::Blocked,
+                    reason,
+                });
+            }
+            Decision::Ask => {
+                self.go(TurnState::ApprovalRequested)?;
+                let req = ApprovalRequest {
+                    tool: name.to_owned(),
+                    summary: tool.summary().to_owned(),
+                    effect: tool.effect(),
+                    target: target.clone(),
+                    args: args.clone(),
+                };
+                self.record(self.event(
+                    "approval.requested",
+                    tool.effect(),
+                    format!("Asked you to approve `{name}`"),
+                    serde_json::to_value(&req).unwrap_or_default(),
+                ))?;
+                let answer = self.cfg.approver.ask(&req).await;
+                let allowed = self.cfg.gate.answer(&view, answer);
+                self.record(self.event(
+                    "approval.answered",
+                    tool.effect(),
+                    if allowed {
+                        format!("You approved `{name}`")
+                    } else {
+                        format!("You declined `{name}`")
+                    },
+                    json!({"tool": name, "answer": answer}),
+                ))?;
+                if !allowed {
+                    self.go(TurnState::Blocked)?;
+                    return Err(Stop {
+                        state: TurnState::Blocked,
+                        reason: format!("You declined `{name}`, so the turn stopped there."),
+                    });
+                }
+                self.check_cancel()?;
+            }
+        }
+
+        self.go(TurnState::Executing)?;
+        self.tool_calls += 1;
+        let out: Result<ToolOutput, ToolError> =
+            match tokio::time::timeout(tool.timeout(), tool.call(args.clone())).await {
+                Ok(r) => r,
+                Err(_) => Err(ToolError::TimedOut),
+            };
+        self.cfg.gate.consume(&view);
+        self.go(TurnState::RecordResult)?;
+        Ok(match out {
+            Ok(o) => {
+                let shown = truncate(&o.content, RESULT_LIMIT);
+                self.record(
+                    self.event(
+                        "tool.executed",
+                        tool.effect(),
+                        format!("Ran `{name}`"),
+                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": shown.len() < o.content.len()}),
+                    )
+                    .with_evidence(o.evidence_refs.clone()),
+                )?;
+                if shown.len() < o.content.len() {
+                    format!(
+                        "Result of `{name}` (cut to {} of {} characters):\n{shown}",
+                        shown.len(),
+                        o.content.len()
+                    )
+                } else {
+                    format!("Result of `{name}`:\n{shown}")
+                }
+            }
+            Err(e) => {
+                self.record(self.event(
+                    "tool.failed",
+                    tool.effect(),
+                    format!("`{name}` {e}"),
+                    json!({"tool": name, "args": args, "error": e, "retry_safe": tool.idempotent()}),
+                ))?;
+                format!("Tool `{name}` {e}.")
+            }
+        })
+    }
+
+    fn finish(mut self, result: Result<(TurnState, String), Stop>) -> TurnOutcome {
+        let (state, answer, reason) = match result {
+            Ok((state, text)) => {
+                let gap = (state == TurnState::CompletedWithGaps)
+                    .then(|| "The model gave an empty answer.".to_owned());
+                (state, Some(text), gap)
+            }
+            Err(stop) => (stop.state, None, Some(stop.reason)),
+        };
+        if self.fsm.state() != state {
+            // A failure to move here only happens after an earlier failure,
+            // which already set a terminal state.
+            let _ = self.fsm.move_to(state);
+        }
+        let kind = match state {
+            TurnState::BudgetExceeded => "budget.exceeded",
+            TurnState::Cancelled => "run.cancelled",
+            _ => "turn.finished",
+        };
+        // The log may be what failed; the outcome still reports the stop.
+        let _ = self.record(
+            self.event(
+                kind,
+                EffectClass::Analysis,
+                reason.clone().unwrap_or_else(|| "Answered".into()),
+                json!({
+                    "state": state,
+                    "model_calls": self.model_calls,
+                    "tool_calls": self.tool_calls,
+                    "answer_chars": answer.as_ref().map(String::len),
+                }),
+            )
+            .with_usage(self.usage.to_delta()),
+        );
+        TurnOutcome {
+            turn_id: self.turn,
+            state: self.fsm.state(),
+            answer,
+            reason,
+            states: self.fsm.history().to_vec(),
+            usage: self.usage,
+            model_calls: self.model_calls,
+            tool_calls: self.tool_calls,
+        }
+    }
+}
+
+fn truncate(s: &str, limit: usize) -> &str {
+    if s.len() <= limit {
+        return s;
+    }
+    let mut end = limit;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}

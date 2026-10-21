@@ -76,6 +76,9 @@ impl TurnState {
                 | (ModelStreaming, ToolRequested)
                 | (ModelStreaming, Verifying)
                 | (ToolRequested, PolicyCheck)
+                // A request Tern rejects before the gate (unknown tool, bad
+                // input) is recorded and returned to the model.
+                | (ToolRequested, RecordResult)
                 | (PolicyCheck, Executing)
                 | (PolicyCheck, ApprovalRequested)
                 | (PolicyCheck, Blocked)
@@ -278,6 +281,21 @@ mod tests {
                 to: Paused
             }
         );
+    }
+
+    #[test]
+    fn rejected_requests_skip_execution_but_not_the_record() {
+        let m = run(&[
+            Preparing,
+            ModelStreaming,
+            ToolRequested,
+            RecordResult,
+            ModelStreaming,
+            Verifying,
+            Completed,
+        ])
+        .unwrap();
+        assert!(!m.history().contains(&Executing));
     }
 
     #[test]

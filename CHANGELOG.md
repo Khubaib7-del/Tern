@@ -9,11 +9,16 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - `tern-providers`: catalog of 13 providers (11 remote, Ollama and LM Studio local), own adapters for OpenAI-compatible, Anthropic, and Gemini APIs (ADR 0003), model listing with kinds and context windows, a no-token probe, non-streaming chat, and a usage ledger that marks estimates.
 - `tern provider list | add | test | models | remove`. `add` reads the key from a hidden prompt, tests it, and saves it to the keychain only if the provider accepts it.
 - ADR 0003: own provider adapters.
+- `tern-agent` turn loop: bounded by model calls, tool calls, and tokens; every step moves the turn state machine and is written to the event log (memory or SQLite) before the next; repeated identical calls stop as a suspected loop; cancel flag; no silent retry or fallback.
+- Policy gate: Allow, Ask, or Deny per effect class; once and session grants scoped to tool and target, session grants expire; deny rules beat grants; approvals recorded as `approval.requested` and `approval.answered`.
+- Typed tool registry with JSON Schema input checks, timeouts, and a fenced `tool` block protocol that works on every provider (ADR 0004).
+- ADR 0004: turn loop and policy gate.
 
 ### Changed
 
 - `SecretString` moved to `tern-core` so providers never depend on the platform crate.
 - `UsageDelta.cost_micros` is optional: no cost is shown until it is known.
+- Turn state machine: a tool request rejected before the gate (unknown tool, bad input) moves straight to `RecordResult`.
 
 ### Added (phase 2, done)
 
