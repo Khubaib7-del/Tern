@@ -35,6 +35,11 @@ keyring-core = "1"
 windows-native-keyring-store = "1"
 toml = "1"
 tempfile = "3"
+reqwest = { version = "0.13", features = ["json"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+wiremock = "0.6"
+rpassword = "7"
+url = "2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

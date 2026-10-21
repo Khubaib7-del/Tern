@@ -1,14 +1,17 @@
 //! The `tern` command.
 //!
-//! Phase 2 ships `tern doctor`. `tern ask`, `tern run --json`, and the TUI are
-//! planned for phase 3.
+//! `tern doctor` and `tern provider` work now. `tern ask`, `tern run --json`,
+//! and the TUI are the next phase 3 slices.
 
 #![forbid(unsafe_code)]
 
+use std::io::{BufRead, IsTerminal};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use tern_agent::doctor::Status;
+use tern_agent::providers::{self, ModelKind, SecretStore};
+use tern_core::SecretString;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,12 +32,206 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Add, test, and remove model providers (bring your own key).
+    #[command(subcommand)]
+    Provider(ProviderCmd),
+}
+
+#[derive(Debug, Subcommand)]
+enum ProviderCmd {
+    /// Show every provider Tern can use and whether a key is saved.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Paste a key. Tern tests it first and saves it to the OS keychain only if it works.
+    Add {
+        /// Provider id, for example `openai` or `anthropic`.
+        id: String,
+        /// Read the key from standard input instead of a hidden prompt.
+        #[arg(long)]
+        stdin: bool,
+        /// Use a different endpoint (a proxy or a compatible server).
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+    /// Check the saved key, or a local server, by listing its models.
+    Test {
+        id: String,
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+    /// List the models this key can use.
+    Models {
+        id: String,
+        /// Include embedding, audio, image, and moderation models.
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete the saved key from the keychain.
+    Remove { id: String },
 }
 
 fn main() -> ExitCode {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    match cli.command {
         Command::Doctor { json } => run_doctor(json),
+        Command::Provider(cmd) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            match rt.block_on(run_provider(cmd)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(msg) => {
+                    eprintln!("{msg}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
+}
+
+async fn run_provider(cmd: ProviderCmd) -> Result<(), String> {
+    let keychain = providers::keychain();
+    let store: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let need_store = || {
+        keychain
+            .as_ref()
+            .map(|b| b.as_ref())
+            .map_err(|e| format!("{e}. Keys cannot be saved here yet."))
+    };
+    match cmd {
+        ProviderCmd::List { json } => {
+            let rows = providers::list(store);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).expect("rows serialise")
+                );
+                return Ok(());
+            }
+            let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0);
+            for r in rows {
+                let state = if r.local {
+                    "local, no key"
+                } else if r.key_saved {
+                    "key saved"
+                } else {
+                    "no key"
+                };
+                println!("  {:<10}  {:<width$}  {state}", r.id, r.name);
+            }
+            if let Err(e) = &keychain {
+                println!();
+                println!("{}.", capitalise(e));
+            }
+            Ok(())
+        }
+        ProviderCmd::Add {
+            id,
+            stdin,
+            base_url,
+        } => {
+            let spec = providers::spec_for(&id).map_err(|e| e.to_string())?;
+            let store = need_store()?;
+            if !spec.key_url.is_empty() {
+                eprintln!("Create a key at {}", spec.key_url);
+            }
+            let key = read_key(spec.name, stdin)?;
+            let r = providers::add(&id, key, store, base_url.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            println!(
+                "Saved. {} accepted the key: {} models, {} for chat, {} ms.",
+                r.provider, r.models, r.chat_models, r.latency_ms
+            );
+            Ok(())
+        }
+        ProviderCmd::Test { id, base_url } => {
+            let r = providers::test(&id, store, base_url.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            println!(
+                "{} works at {}: {} models, {} for chat, {} ms.",
+                r.provider, r.base_url, r.models, r.chat_models, r.latency_ms
+            );
+            Ok(())
+        }
+        ProviderCmd::Models {
+            id,
+            all,
+            base_url,
+            json,
+        } => {
+            let mut models = providers::models(&id, store, base_url.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            if !all {
+                models.retain(|m| m.kind == ModelKind::Chat);
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&models).expect("models serialise")
+                );
+                return Ok(());
+            }
+            for m in &models {
+                let ctx = m
+                    .context_window
+                    .map(|c| format!("  {}k context", c / 1000))
+                    .unwrap_or_default();
+                let name = m
+                    .display_name
+                    .as_deref()
+                    .map(|n| format!("  ({n})"))
+                    .unwrap_or_default();
+                println!("  {}{name}{ctx}", m.id);
+            }
+            println!(
+                "{} models{}.",
+                models.len(),
+                if all {
+                    ""
+                } else {
+                    " for chat (use --all for every kind)"
+                }
+            );
+            Ok(())
+        }
+        ProviderCmd::Remove { id } => {
+            let store = need_store()?;
+            let existed = providers::remove(&id, store).map_err(|e| e.to_string())?;
+            println!(
+                "{}",
+                if existed {
+                    "Key deleted from the keychain."
+                } else {
+                    "No key was saved for that provider."
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+fn read_key(name: &str, from_stdin: bool) -> Result<SecretString, String> {
+    if from_stdin || !std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|e| format!("Could not read the key: {e}"))?;
+        return Ok(SecretString::new(line));
+    }
+    rpassword::prompt_password(format!("Paste your {name} API key (hidden): "))
+        .map(SecretString::new)
+        .map_err(|e| format!("Could not read the key: {e}"))
 }
 
 fn run_doctor(json: bool) -> ExitCode {
@@ -78,4 +275,11 @@ fn mark(s: Status) -> &'static str {
         Status::Warn => "warn",
         Status::Fail => "FAIL",
     }
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }

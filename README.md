@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. **Nothing described below is shipped.** This repository holds the plan (docs, design rules, brand assets) and the phase 2 core skeleton, which is in progress.
+It is being built as the research tool for its author's final-year project. **Nothing described below is shipped.** This repository holds the plan (docs, design rules, brand assets) the core skeleton, and provider setup. The first cited answer is next.
 
 ## Two harnesses, one core
 
@@ -93,8 +93,8 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | --- | --- | --- |
 | 0 | Repository baseline | Done |
 | 1 | Design lock: palette, fonts, concept screens, SVG mark | Planned |
-| 2 | Core skeleton, keychain, store, `tern doctor` | Planned |
-| 3 | Providers and the first cited answer in the TUI | Planned |
+| 2 | Core skeleton, keychain, store, `tern doctor` | Done |
+| 3 | Providers and the first cited answer in the TUI | In progress |
 | 4 | Crawler and claim verification | Planned |
 | 5 | Deep research: plans, workers, checkpoints, steering | Planned |
 | 6 | Desktop app | Planned |
@@ -135,7 +135,7 @@ Not yet released. There are no builds, installers, or packages.
 └── SECURITY.md
 ```
 
-The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, and `cargo run -p tern-tui -- doctor`. Nothing is released yet.
+The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, `cargo run -p tern-tui -- doctor`, and `cargo run -p tern-tui -- provider add openai`. Nothing is released yet.
 
 ## Documentation
 
