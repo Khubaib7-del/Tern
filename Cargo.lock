@@ -3036,6 +3036,7 @@ name = "tern-store"
 version = "0.0.0"
 dependencies = [
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "tern-core",
