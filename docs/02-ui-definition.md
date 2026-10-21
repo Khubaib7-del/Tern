@@ -105,6 +105,47 @@ Context shows in two places from the same data.
 
 Each project vault can be a git repository. Integrations › Git and GitHub sets the git name and email, the GitHub connection, and baseline templates (README, LICENSE, SECURITY, CONTRIBUTING). In a project: a branch chip in the title bar shows the branch and the count of changes; actions are commit (also a checkpoint), branch, push, and open a pull request.
 
+### 2.7 Working line
+
+While the agent works, the turn shows one live line: the tern mark on the left, then a status phrase whose text carries a soft shimmer (a light band sweeping left to right, about 1.6 s, text colour to muted and back), then elapsed time. It collapses into the rollup ("Worked for 4m 12s · 14 sources ›") when the turn ends.
+
+| State | Mark animation (16px, one colour) | Phrase |
+| --- | --- | --- |
+| Thinking | Slow glide, wings level, a 2px bob every 2 s | "Thinking" |
+| Planning | Wing lifts once per plan step written | "Planning 3 steps" |
+| Searching | Quick wingbeats while queries are in flight | "Searching · 6 queries" |
+| Reading | Gliding, head dips once per source fetched | "Reading 4 of 9 sources" |
+| Verifying | Holds still; one beat per verdict | "Checking claims · 7 of 12" |
+| Writing | Steady cruise, small beats in time with streamed tokens | "Writing the report" |
+| Needs you | Stops and turns to face the user; shimmer stops | "Needs your approval" |
+| Paused or blocked | Folds wings, mark dims to muted | "Paused at budget" |
+| Done | One dive and the line folds into the rollup | — |
+
+Animation is driven by real events, never by a timer alone. Under reduced motion the mark is static and the shimmer becomes a plain muted label.
+
+### 2.8 Message actions
+
+| Action | How |
+| --- | --- |
+| Reply to a message | Swipe a message right (as in WhatsApp) or use the hover Reply button; the composer shows a quoted strip with the message ID, removable with `×`. Swiping left works too. Works on streaming replies as well |
+| Copy | Hover Copy on every message, and on every query block and code block the user sent; copies the raw Markdown |
+| Branch | Hover `Branch ▾` → New sub-session from here, or Move to sub-session. Select several messages to branch them at once |
+| Edit, regenerate, versions, pin, delete | As in the product spec |
+
+Hover buttons are 16px Lucide icons in a 1px-bordered pill that appears at the message's top-right, muted until hovered.
+
+### 2.9 Composer input
+
+| Element | Behaviour |
+| --- | --- |
+| Attach (`+` or paperclip) | Pick files, images, folders, or `.zip` archives; drag and drop and paste work too. Attachments show as 1px-bordered chips above the input |
+| Long paste | Text above about 4,000 characters (setting) is turned into a `.txt` attachment chip ("Pasted text · 312 lines") instead of filling the box |
+| Role of an attachment | Each chip has a role: **Context** (read as material, the default) or **Prompt** (treated as instructions). Type `@` to reference an attachment, file, or source; mark one as a prompt with `@prompt:name` or from the chip menu |
+| Mic | Shown but locked until a speech-to-text model is configured. Hover: "Voice input needs a transcription model. Set one in Settings › Voice." |
+| Steering | While a run is going: Enter steers, Tab queues, Esc interrupts |
+
+Settings › Voice: choose a local transcription model or a transcription API key. A first-party Tern transcription model is planned for later.
+
 ## 3. How agent activity streams
 
 One run, three views: **Summary** (default), **Detailed**, **Raw**. All three render the same event stream; only presentation changes.

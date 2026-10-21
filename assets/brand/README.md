@@ -10,7 +10,7 @@ Reserved brand property. See the brand clause in [LICENSE](../../LICENSE). Do no
 | `tern-lockup-on-dark.png` | Dark lockup on a transparent background, trimmed | README header in dark mode |
 | `tern-lockup-on-light.png` | Light lockup on a transparent background, trimmed | README header in light mode |
 | `tern-app-icon.png` | App icon, 512 × 512 | Desktop app icon (planned) |
-| `tern-hero-dark.gif` | Animated dither hero: the tern flies (three wingbeats per loop, wing pivoting at the shoulder, body lifting on each downstroke), catches a light sweep, motes stream past, wordmark shimmers. 1200 × 360, 60 frames, 3 s seamless loop | README header in dark mode |
+| `tern-hero-dark.gif` | Animated dither scene, 1200 × 400, 200 frames, 8 s seamless loop: the tern flies a figure-eight around the wordmark with wingbeats, banking and turning edge-on, passing in front of the text (larger, brighter) and behind it (smaller, dimmer), with drifting motes and a wake | README header in dark mode |
 | `tern-hero-light.gif` | Same hero, ink on paper | README header in light mode |
 | `tern-hero-still-dark.png` / `-light.png` | One still frame of the hero | Social preview, reduced-motion fallback |
 | `src/dither_hero.py` | Generator for the hero files (8 × 8 Bayer ordered dither over a shaded scene; needs numpy, pillow, scipy) | Re-render after any mark or wordmark change |

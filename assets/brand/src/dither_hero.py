@@ -7,9 +7,9 @@ from scipy import ndimage
 import os
 BR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..") + "/"
 OUT = BR
-GW, GH = 600, 180          # dither grid
-PX = 2                     # output pixel size -> 960x340
-N = 60                     # frames, 3 s at 20 fps, seamless loop
+GW, GH = 600, 200          # dither grid
+PX = 2                     # output pixel size -> 1200x400
+N = 200                    # frames, 8 s at 25 fps, seamless loop
 TAU = 2*np.pi
 
 # ---- bayer 8x8
@@ -22,7 +22,7 @@ TH = np.tile(B8, (GH//8+1, GW//8+1))[:GH, :GW]
 
 # ---- tern mark mask (high res for rotation), grid height ~ 128
 mark = Image.open(BR+"tern-mark.png").convert("L")
-MH = 126
+MH = 110
 MW = int(mark.width*MH/mark.height)
 PAD = 22                   # grid px of room around the bird for wing travel
 S2 = 3                     # supersample for the wing warp
@@ -59,7 +59,7 @@ lk = Image.open(BR+"tern-lockup-on-dark.png")
 a = np.array(lk.split()[-1])
 txt = Image.fromarray(a[:, 180:])
 bbox = txt.getbbox(); txt = txt.crop(bbox)
-TH_txt = 36
+TH_txt = 42
 txt = txt.resize((int(txt.width*TH_txt/txt.height), TH_txt), Image.LANCZOS)
 T = np.array(txt)/255.0
 
@@ -84,15 +84,53 @@ pv = rng.integers(2, 6, NP)          # laps per loop -> seamless
 pb = rng.uniform(0.35, 1.0, NP)
 pl = rng.integers(2, 10, NP)          # streak length
 
+def place(img, layer, mask, ox, oy):
+    """Write layer into img where mask is set, clipped to the canvas."""
+    h, w = mask.shape
+    y0, x0 = max(oy, 0), max(ox, 0)
+    y1, x1 = min(oy+h, GH), min(ox+w, GW)
+    if y1 <= y0 or x1 <= x0: return
+    m = mask[y0-oy:y1-oy, x0-ox:x1-ox]; l = layer[y0-oy:y1-oy, x0-ox:x1-ox]
+    reg = img[y0:y1, x0:x1]; reg[m] = l[m]
+
+def bird_at(t):
+    """Position, depth, and a shaded bird sprite for loop time t."""
+    th = TAU*t
+    cx, cy, ax, ay = GW/2, GH/2, GW*0.40, GH*0.27
+    px = cx + ax*np.sin(th); py = cy + ay*np.sin(2*th) + 26*np.cos(th)
+    z = np.cos(th)                                   # +1 in front of the text, -1 behind
+    vx = ax*np.cos(th); vy = 2*ay*np.cos(2*th) - 26*np.sin(th)
+    heading = np.degrees(np.arctan2(vy, abs(vx)+1e-6))
+    rot = float(np.clip(28 - 0.55*heading, -10, 38))      # the mark dives at about 28 degrees
+    face = np.tanh(vx/(0.10*ax))                     # turns through edge-on at the ends
+    scale = 0.74 + 0.24*z
+    ph = TAU*16*t                                    # 16 wingbeats per loop
+    u = np.sin(ph)
+    m = warped_mark(-10 + 22*u, 0.80 + 0.20*(u+1)/2)
+    im = Image.fromarray((m*255).astype(np.uint8))
+    if face < 0: im = im.transpose(Image.FLIP_LEFT_RIGHT)
+    w = max(4, int(im.width*scale*max(abs(face), 0.30))); h = max(4, int(im.height*scale))
+    im = im.resize((w, h), Image.LANCZOS)
+    im = im.rotate(rot if face >= 0 else -rot, resample=Image.BICUBIC, expand=True)
+    m = np.array(im)/255.0
+    inside = m > 0.5
+    dist = np.clip(ndimage.distance_transform_edt(inside)/(5.0*scale+1e-3), 0, 1)
+    my, mx = np.mgrid[0:m.shape[0], 0:m.shape[1]]
+    sweep = np.exp(-(((mx+my*0.6) - (m.shape[0]+m.shape[1])*((t*3) % 1.0)*1.3 + 20)/14.0)**2)
+    depth = 0.70 + 0.30*(z+1)/2                     # farther = dimmer, sparser dither
+    shade = np.clip((0.74 + 0.22*(1-dist) + 0.28*sweep)*depth, 0, 1)
+    py += 2.0*np.cos(ph)*scale                      # lift on each downstroke
+    ox, oy = int(round(px - m.shape[1]/2)), int(round(py - m.shape[0]/2))
+    return ox, oy, z, inside, shade, (px, py)
+
 def frame(t, invert=False):
     # fog
     fog = pnoise(xx, yy, t, 3)*0.5 + pnoise(xx*1.7, yy*1.7, t, 11)*0.5
     fog = np.clip((fog-0.05)*0.42, 0, 0.22)
-    # vignette keeps edges calm
-    vig = np.clip(1.15 - (((xx-GW*0.3)/(GW*0.75))**2 + ((yy-GH/2)/(GH*0.9))**2), 0, 1)
+    vig = np.clip(1.15 - (((xx-GW/2)/(GW*0.62))**2 + ((yy-GH/2)/(GH*0.9))**2), 0, 1)
     img = fog*vig
 
-    # particles drifting left, behind the bird
+    # drifting motes, parallax by brightness
     for i in range(NP):
         x = (p0x[i] - pv[i]*GW*t) % GW
         y = p0y[i] + 2*np.sin(TAU*(t+i*0.13))
@@ -100,42 +138,36 @@ def frame(t, invert=False):
         if 0 <= yi < GH:
             for k in range(pl[i]):
                 xk = (xi+k) % GW
-                img[yi, xk] = max(img[yi, xk], pb[i]*(1-k/pl[i])*0.85)
+                img[yi, xk] = max(img[yi, xk], pb[i]*(1-k/pl[i])*0.8)
 
-    # bird in flight: 3 wingbeats per loop, body lifts on each downstroke
-    ph = TAU*3*t
-    u = np.sin(ph)
-    theta = -10 + 21*u                    # wing angle at the shoulder, degrees
-    sy = 0.80 + 0.20*(u+1)/2              # foreshortening on the downstroke
-    bob = 2.6*np.cos(ph) + 3.0*np.sin(TAU*t)
-    drift = 3.0*np.sin(TAU*t + 1.1)
-    m = warped_mark(theta, sy)
-    inside = m > 0.5
-    dist = ndimage.distance_transform_edt(inside)
-    dist = np.clip(dist/6.0, 0, 1)
-    my, mx = np.mgrid[0:MH+2*PAD, 0:MW+2*PAD]
-    # light sweep across the body
-    sweep = np.exp(-(((mx+my*0.6) - (MW+MH)*((t*1.0) % 1.0)*1.3 + 30)/18.0)**2)
-    shade = 0.74 + 0.22*(1-dist) + 0.30*sweep
-    shade = np.where(inside, np.clip(shade, 0, 1), 0)
-    ox, oy = 34-PAD+int(round(drift)), int(round((GH-MH)/2 - PAD + bob))
-    sub = img[max(oy,0):oy+MH+2*PAD, max(ox,0):ox+MW+2*PAD]
-    sh = shade[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
-    ins = inside[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
-    sub[ins] = sh[ins]
-    # soft halo just outside the silhouette
-    halo = ndimage.distance_transform_edt(~inside)
-    halo = np.exp(-halo/5.0)*0.14*(0.8+0.2*np.sin(TAU*t))
-    hs = halo[max(-oy,0):max(-oy,0)+sub.shape[0], max(-ox,0):max(-ox,0)+sub.shape[1]]
-    sub[:] = np.maximum(sub, hs)
+    # wake: faint dots along the last stretch of the flight path
+    for k in range(1, 26):
+        tk = t - k*0.004
+        wx = GW/2 + GW*0.40*np.sin(TAU*tk); wy = GH/2 + GH*0.27*np.sin(2*TAU*tk) + 26*np.cos(TAU*tk)
+        xi, yi = int(wx + 3*np.sin(k*1.7)), int(wy + 3*np.cos(k*2.3))
+        if 0 <= yi < GH and 0 <= xi < GW:
+            img[yi, xi] = max(img[yi, xi], 0.9*(1-k/26))
 
-    # wordmark, static with a slow shimmer
-    tx, ty = 34+MW+22, (GH-TH_txt)//2 + 6
-    tw = T.shape[1]; tw = min(tw, GW-tx-6)
-    shim = 0.86 + 0.12*np.sin(TAU*t + (np.arange(tw)/tw)*TAU)
-    region = img[ty:ty+TH_txt, tx:tx+tw]
-    tv = T[:, :tw]*shim[None, :]
-    img[ty:ty+TH_txt, tx:tx+tw] = np.maximum(region*(1-T[:, :tw]), tv)
+    # wordmark layer
+    tw = T.shape[1]; tx, ty = (GW-tw)//2, (GH-TH_txt)//2
+    shim = 0.86 + 0.12*np.sin(TAU*2*t + (np.arange(tw)/tw)*TAU)
+    tlayer = T*shim[None, :]
+    tmask = T > 0.35
+
+    ox, oy, z, inside, shade, _ = bird_at(t)
+    gap = ndimage.binary_dilation(inside, iterations=2)
+    bg0 = np.zeros_like(shade)
+    if z < 0:
+        # behind: bird first, then the text with a thin dark gap around the letters
+        place(img, shade, inside, ox, oy)
+        tgap = ndimage.binary_dilation(tmask, iterations=2)
+        place(img, np.zeros_like(tlayer), tgap & ~tmask, tx, ty)  # gap only reads where the bird is
+        place(img, tlayer, tmask, tx, ty)
+    else:
+        # in front: text first, then a dark gap ring, then the bird
+        place(img, tlayer, tmask, tx, ty)
+        place(img, bg0, gap & ~inside, ox, oy)
+        place(img, shade, inside, ox, oy)
 
     bits = img > TH
     if invert:
@@ -145,9 +177,10 @@ def frame(t, invert=False):
     out = np.empty((GH, GW, 3), np.uint8); out[:] = bg; out[bits] = fg
     return Image.fromarray(out).resize((GW*PX, GH*PX), Image.NEAREST)
 
-for name, inv in [("dark", False), ("light", True)]:
-    frames = [frame(i/N, inv).convert("P", palette=Image.ADAPTIVE, colors=2) for i in range(N)]
-    path = OUT+f"tern-hero-{name}.gif"
-    frames[0].save(path, save_all=True, append_images=frames[1:], duration=50, loop=0, optimize=True, disposal=1)
-    frame(0.25, inv).save(OUT+f"tern-hero-still-{name}.png")
-    print(path)
+if __name__ == "__main__":
+    for name, inv in [("dark", False), ("light", True)]:
+        frames = [frame(i/N, inv).convert("P", palette=Image.ADAPTIVE, colors=2) for i in range(N)]
+        path = OUT+f"tern-hero-{name}.gif"
+        frames[0].save(path, save_all=True, append_images=frames[1:], duration=40, loop=0, optimize=True, disposal=1)
+        frame(0.06, inv).save(OUT+f"tern-hero-still-{name}.png")
+        print(path, os.path.getsize(path))
