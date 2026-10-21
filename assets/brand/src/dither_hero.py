@@ -154,16 +154,23 @@ def tail_mesh(spread):
     return np.vstack(V), np.concatenate(A), np.vstack(T)
 
 # ------------------------------------------------------------------ timeline (seconds)
-T_GLIDE = 4.6     # last wingbeat ends, wings held raised for the landing
-T_LAND = 5.6      # bird reaches the logo position
-X0, X1 = 5.0, 5.9 # 3D bird dissolves into the flat mark
+T_GLIDE = 11/2.4 + 0.35        # last wingbeat has eased to a stop, wings held raised
+T_LAND = 6.2      # bird reaches the logo position (velocity eases to zero)
+X0, X1 = 5.3, 6.6 # bird silhouette morphs into the flat mark (distance-field blend)
 F0, F1 = 15.2, 16.0  # mark fades out before the next flight
 BEATS = 11
+WB_F = 2.4                     # wingbeats per second in cruise
+WB_D = 0.7                     # the last beat decelerates over this long
+WB_TA = BEATS/WB_F - WB_D/2    # cruise ends here; T_GLIDE = WB_TA + WB_D
+def beat_count(t):
+    if t <= WB_TA: return WB_F*t
+    d = min(t - WB_TA, WB_D)
+    return WB_F*WB_TA + WB_F*(d - d*d/(2*WB_D))
 def smooth(a, b, x):
     u = np.clip((x-a)/(b-a), 0, 1); return u*u*(3-2*u)
 
 def bird_mesh(t):
-    phase = (BEATS/T_GLIDE*min(t, T_GLIDE)) % 1.0
+    phase = beat_count(t) % 1.0
     amp = 1.0
     ph = TAU*phase
     head_pitch = -0.10*np.cos(ph)*(1-smooth(4.2, T_GLIDE, t))
@@ -209,7 +216,7 @@ def catmull(P, u):
     return 0.5*((2*p1) + (-p0+p2)*f + (2*p0-5*p1+4*p2-p3)*f*f + (-p0+3*p1-3*p2+p3)*f*f*f)
 def u_of(t):
     s = np.clip(t/T_LAND, 0, 1)
-    return 1 - (1-s)**1.7               # decelerates into the landing
+    return 1 - (1-s)**2.2               # long, soft deceleration into the landing
 
 M_WORLD = to_world((MARK_BOX[0]+MARK_BOX[1])/2, (MARK_BOX[2]+MARK_BOX[3])/2, Z_END)
 CP = ctrl(M_WORLD)
@@ -218,10 +225,11 @@ def path(t):
 
 def pose(t):
     e = 1e-3
-    if t >= T_LAND - 0.02:
+    if t >= T_LAND - 1e-3:
         f = DIVE
         up = nrm(np.array([0, 1.0, 0]) - np.dot([0, 1.0, 0], f)*f)
         return path(T_LAND), np.stack([f, up, np.cross(f, up)], axis=1)
+    t = min(t, T_LAND - 2e-3)
     p = path(t); v = (path(t+e) - path(t-e))/(2*e); a = (path(t+e) - 2*p + path(t-e))/(e*e)
     f = nrm(v)
     k = 1 - smooth(4.4, T_LAND, t)
@@ -352,9 +360,8 @@ def frame(sec, invert=False):
     if front.any():
         fgap = ndimage.binary_dilation(front, iterations=3) & ~front & tmask
         hi[fgap] = 0
-        hi[front] = cbuf[front]*(1-w); cov |= front
+        hi[front] = cbuf[front]; cov |= front
     if w > 0 and fade > 0:
-        mmask = MARK > 0.4
         # shimmer: a soft light band sweeps diagonally across the mark every 2.6 s
         hold = max(0.0, sec - X1)
         pos = ((hold/2.6) % 1.0)*1.6 - 0.3
@@ -362,11 +369,30 @@ def frame(sec, invert=False):
         gy = (np.arange(RH) - MARK_BOX[2])/(MARK_BOX[3]-MARK_BOX[2])
         d = gx[None, :]*0.8 + gy[:, None]*0.45 - pos
         band = np.exp(-(d/0.07)**2) - 0.5*np.exp(-((d+0.12)/0.05)**2)
-        mval = np.clip(0.90 + 0.25*band*(hold > 0), 0, 1)*MARK
-        m_on = mmask
-        prev = hi[m_on]
-        hi[m_on] = np.maximum(prev*(1-w), mval[m_on]*w*fade)
-        cov |= m_on
+        sh_on = smooth(X1, X1 + 0.6, sec)
+        mval = np.clip(0.90 + 0.25*band*sh_on, 0, 1)
+        if w < 1 and front.any():
+            # morph: blend signed distance fields of the bird and the mark
+            pad = 30
+            x0 = max(0, min(MARK_BOX[0], np.where(front.any(0))[0].min()) - pad)
+            x1 = min(RW, max(MARK_BOX[1], np.where(front.any(0))[0].max()) + pad)
+            y0 = max(0, min(MARK_BOX[2], np.where(front.any(1))[0].min()) - pad)
+            y1 = min(RH, max(MARK_BOX[3], np.where(front.any(1))[0].max()) + pad)
+            bm = front[y0:y1, x0:x1]; mm = MARK[y0:y1, x0:x1] > 0.5
+            sdf = lambda m: ndimage.distance_transform_edt(~m) - ndimage.distance_transform_edt(m)
+            sd = (1-w)*sdf(bm) + w*sdf(mm)
+            shape = sd < 0
+            bc = cbuf[y0:y1, x0:x1]
+            bc = np.where(bm, bc, ndimage.grey_dilation(np.where(bm, bc, 0), size=7))
+            val = (1-w)*bc + w*mval[y0:y1, x0:x1]
+            reg = hi[y0:y1, x0:x1]; creg = cov[y0:y1, x0:x1]
+            reg[bm & ~shape] = 0; creg[bm & ~shape] = False
+            reg[shape] = val[shape]; creg[shape] = True
+        else:
+            mmask = MARK > 0.4
+            mv = (mval*MARK)
+            hi[mmask] = mv[mmask]*fade
+            cov |= mmask
     # down to the dither grid
     hs = hi.reshape(GH, SS, GW, SS).mean(axis=(1, 3))
     cs = cov.reshape(GH, SS, GW, SS).mean(axis=(1, 3))
