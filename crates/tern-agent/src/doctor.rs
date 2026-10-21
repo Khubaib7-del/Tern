@@ -101,7 +101,10 @@ fn keychain(store: Result<&dyn SecretStore, String>) -> Check {
             return Check {
                 name,
                 status: Status::Fail,
-                detail: format!("{}. API keys cannot be saved on this machine yet.", capitalise(&e)),
+                detail: format!(
+                    "{}. API keys cannot be saved on this machine yet.",
+                    capitalise(&e)
+                ),
             };
         }
     };
