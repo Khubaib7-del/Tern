@@ -1,6 +1,6 @@
 # 03 · Architecture
 
-> Status: planned, 21 October 2026. No crate exists yet. Library names are candidates to evaluate in the phase that needs them, not commitments. The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
+> Status: phase 2 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, and the `tern doctor` checks in `tern-agent` have code and tests, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`. Other library names are candidates to evaluate in the phase that needs them, not commitments. The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
 
 ## 1. Shape
 

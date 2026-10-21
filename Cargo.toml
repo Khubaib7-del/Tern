@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+license-file = "LICENSE"
+publish = false
+repository = "https://github.com/Khubaib7-del/Tern"
+
+[workspace.dependencies]
+tern-core = { path = "crates/tern-core" }
+tern-platform = { path = "crates/tern-platform" }
+tern-store = { path = "crates/tern-store" }
+tern-agent = { path = "crates/tern-agent" }
+tern-providers = { path = "crates/tern-providers" }
+tern-decision = { path = "crates/tern-decision" }
+tern-crawl = { path = "crates/tern-crawl" }
+tern-research = { path = "crates/tern-research" }
+tern-study = { path = "crates/tern-study" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+ulid = { version = "1", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+regex = "1"
+directories = "6"
+fs4 = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+keyring-core = "1"
+windows-native-keyring-store = "1"
+toml = "1"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -6,7 +6,7 @@ Rules for AI coding agents working in the Tern repository. Human contributors fo
 
 Tern is a research and study agent harness: a Rust shared core with two front ends, a CLI/TUI (ratatui) and a desktop app (GPUI). It runs on bring-your-own-key providers and local models, and delivers verified, cited research and study material.
 
-**Status: pre-alpha, roadmap phase 0.** No application code exists. Nothing is released or distributed.
+**Status: pre-alpha, roadmap phase 2 (core skeleton) in progress.** Only the skeleton and `tern doctor` exist. Nothing is released or distributed.
 
 ## 2. Read before you act
 

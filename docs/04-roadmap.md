@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | 0 | Repository baseline | Licence, docs, brand assets, process files | Done (PR #1) |
 | 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Planned |
-| 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Planned |
+| 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | In progress |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | Planned |
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Planned |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Planned |
