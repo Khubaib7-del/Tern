@@ -1,11 +1,11 @@
 # Renders the animated dither hero at the top of the README.
 #
-# A procedural 3D tern (lofted body, black cap, beak, forked tail streamers,
-# articulated wings with shoulder, elbow and wrist) flies a loop around the
-# TERN Research wordmark. The wordmark is a plane in the same 3D space, so the
-# bird passes in front of it and behind it with true per-pixel depth. Banking
-# follows the turn (coordinated-turn physics), the head is stabilised while the
-# body bobs, and the hand lags the arm so the wing bends like a real wing.
+# Story (16 s loop): the wordmark sits alone in a live dither sky. A procedural
+# 3D tern (lofted body, black cap, beak, tail streamers, wings jointed at the
+# shoulder, elbow and wrist) flies in, loops behind the wordmark and back in
+# front of it, banks into its turns, then glides into the logo's place and
+# settles into the exact original mark. The sky stays alive and a shimmer runs
+# across the mark until the mark fades and the tern flies in again.
 # The lit frame is reduced to two tones with an 8x8 Bayer ordered dither.
 #
 # Requires: Python 3.10+, numpy, pillow, scipy, numba.
@@ -23,7 +23,9 @@ OUT = BR
 GW, GH = 600, 200            # dither grid
 SS = 2                       # supersampling for the 3D render
 PX = 2                       # output pixel size -> 1200 x 400
-N = 200                      # frames: 8 s at 25 fps, seamless loop
+FPS = 20
+DUR = 16.0                   # seconds per loop
+N = int(FPS*DUR)
 TAU = 2*np.pi
 RW, RH = GW*SS, GH*SS
 FOC = 820.0*SS/2             # focal length in render pixels
@@ -151,43 +153,88 @@ def tail_mesh(spread):
         T.append(t_ + sum(len(x) for x in V)); V.append(v_); A.append(a_)
     return np.vstack(V), np.concatenate(A), np.vstack(T)
 
+# ------------------------------------------------------------------ timeline (seconds)
+T_GLIDE = 4.6     # last wingbeat ends, wings held raised for the landing
+T_LAND = 5.6      # bird reaches the logo position
+X0, X1 = 5.0, 5.9 # 3D bird dissolves into the flat mark
+F0, F1 = 15.2, 16.0  # mark fades out before the next flight
+BEATS = 11
+def smooth(a, b, x):
+    u = np.clip((x-a)/(b-a), 0, 1); return u*u*(3-2*u)
+
 def bird_mesh(t):
-    beats = 18
-    phase = (beats*t) % 1.0
-    amp = 0.85 + 0.15*np.cos(TAU*t)
+    phase = (BEATS/T_GLIDE*min(t, T_GLIDE)) % 1.0
+    amp = 1.0
     ph = TAU*phase
-    head_pitch = -0.10*np.cos(ph)              # counter-rotates against the bob
+    head_pitch = -0.10*np.cos(ph)*(1-smooth(4.2, T_GLIDE, t))
     parts = [body_mesh(head_pitch), wing_mesh(1, phase, amp), wing_mesh(-1, phase, amp),
-             tail_mesh(0.5 + 0.5*np.sin(TAU*t))]
+             tail_mesh(0.3 + 0.7*smooth(4.4, T_LAND, t))]
     V, A, T, off = [], [], [], 0
     for v, a, tr in parts:
         V.append(v); A.append(a); T.append(tr + off); off += len(v)
     V = np.vstack(V); A = np.concatenate(A); T = np.vstack(T)
-    # body bob (rises on the downstroke) and slight pitch
-    V = V @ rz(0.05*np.sin(ph)).T
-    V[:, 1] += 0.035*np.cos(ph)
+    k = 1 - smooth(4.2, T_GLIDE, t)
+    V = V @ rz(0.05*np.sin(ph)*k).T
+    V[:, 1] += 0.035*np.cos(ph)*k
     return V, A, T
 
+# ------------------------------------------------------------------ lockup layout
+lk = Image.open(BR + "tern-lockup-on-dark.png")
+LA = np.array(lk.split()[-1]).astype(float)/255.0       # 136 x 743, mark cols < 170
+LK = 38*SS/56.0                                    # render px per lockup px
+LKW, LKH = int(LA.shape[1]*LK), int(LA.shape[0]*LK)
+LAr = np.array(Image.fromarray((LA*255).astype(np.uint8)).resize((LKW, LKH), Image.LANCZOS))/255.0
+LX, LY = (RW-LKW)//2, (RH-LKH)//2
+CUT = int(170*LK)
+MARK = np.zeros((RH, RW)); TEXT = np.zeros((RH, RW))
+MARK[LY:LY+LKH, LX:LX+CUT] = LAr[:, :CUT]
+TEXT[LY:LY+LKH, LX+CUT:LX+LKW] = LAr[:, CUT:]
+_my, _mx = np.where(MARK > 0.5)
+MARK_BOX = (_mx.min(), _mx.max(), _my.min(), _my.max())
+
+def to_world(px, py, z):
+    return np.array([(px-RW/2)*z/FOC, -(py-RH/2)*z/FOC + CAM_Y, z])
+
 # ------------------------------------------------------------------ flight path
+Z_END = 4.0
+DIVE = nrm(np.array([1.0, -0.62, 0.0]))
+def ctrl(M):
+    return np.array([[-9.0, 1.6, 11.0], [-2.5, 1.1, 9.6], [3.0, 0.55, 8.2], [3.0, -0.40, 5.2],
+                     [0.6, -0.85, 4.5], [-1.9, -0.1, 4.6], [M[0]-1.6, M[1]+1.0, Z_END+0.15],
+                     M, M + DIVE*1.2])
+def catmull(P, u):
+    n = len(P) - 3                      # segments between P[1]..P[-2]
+    u = np.clip(u, 0, 1)*n; i = min(int(u), n-1); f = u - i
+    p0, p1, p2, p3 = P[i], P[i+1], P[i+2], P[i+3]
+    return 0.5*((2*p1) + (-p0+p2)*f + (2*p0-5*p1+4*p2-p3)*f*f + (-p0+3*p1-3*p2+p3)*f*f*f)
+def u_of(t):
+    s = np.clip(t/T_LAND, 0, 1)
+    return 1 - (1-s)**1.7               # decelerates into the landing
+
+M_WORLD = to_world((MARK_BOX[0]+MARK_BOX[1])/2, (MARK_BOX[2]+MARK_BOX[3])/2, Z_END)
+CP = ctrl(M_WORLD)
 def path(t):
-    th = TAU*t
-    X = 3.1*np.sin(th)
-    Z = Z0 + 2.8*np.cos(th)
-    Y = 0.12 + 0.32*np.sin(2*th) + 0.12*np.cos(th)
-    return np.array([X, Y, Z])
+    return catmull(CP, u_of(t))
 
 def pose(t):
     e = 1e-3
+    if t >= T_LAND - 0.02:
+        f = DIVE
+        up = nrm(np.array([0, 1.0, 0]) - np.dot([0, 1.0, 0], f)*f)
+        return path(T_LAND), np.stack([f, up, np.cross(f, up)], axis=1)
     p = path(t); v = (path(t+e) - path(t-e))/(2*e); a = (path(t+e) - 2*p + path(t-e))/(e*e)
     f = nrm(v)
-    g = np.array([0.0, 9.0, 0.0])               # "gravity" scale vs path accel
+    k = 1 - smooth(4.4, T_LAND, t)
+    f = nrm(f*(1-(1-k)) + DIVE*(1-k)) if k < 1 else f
     a_lat = a - np.dot(a, f)*f
-    up = g + a_lat*0.022
+    up = np.array([0.0, 9.0, 0.0]) + a_lat*0.0018*k
     up = nrm(up - np.dot(up, f)*f)
-    side = np.cross(f, up)
-    return p, np.stack([f, up, side], axis=1)   # columns: local x, y, z in world
+    return p, np.stack([f, up, np.cross(f, up)], axis=1)
 
-SCALE = 1.05                                    # bird size in world units
+S_FLY = 1.05
+S_END = 1.0       # calibrated below so the landed bird matches the mark's size
+def scale_at(t):
+    return S_FLY + (S_END - S_FLY)*smooth(3.4, T_LAND, t)
 
 # ------------------------------------------------------------------ raster
 @njit
@@ -222,10 +269,12 @@ def vertex_normals(V, T):
 
 LIGHT = nrm(np.array([-0.45, 0.85, -0.55]))     # from upper left, camera side
 
-def render_bird(t):
+def render_bird(t, scale=None, offset=(0.0, 0.0)):
     V, A, T = bird_mesh(t)
     p, R = pose(t)
-    W_ = (V*SCALE) @ R.T + p
+    sc = scale_at(t) if scale is None else scale
+    W_ = (V*sc) @ R.T + p
+    W_[:, 0] += offset[0]*smooth(3.4, T_LAND, t); W_[:, 1] += offset[1]*smooth(3.4, T_LAND, t)
     Nl = vertex_normals(V, T) @ R.T
     cam = np.array([0.0, CAM_Y, 0.0])
     view = cam - W_; view /= np.linalg.norm(view, axis=1, keepdims=True)
@@ -242,15 +291,19 @@ def render_bird(t):
     raster(sx, sy, W_[:, 2].copy(), inten, T.astype(np.int64), zbuf, cbuf)
     return zbuf, cbuf, p
 
-# ------------------------------------------------------------------ wordmark plane
-lk = Image.open(BR + "tern-lockup-on-dark.png")
-a = np.array(lk.split()[-1])
-txt = Image.fromarray(a[:, 180:]); txt = txt.crop(txt.getbbox())
-TXT_H = 42*SS
-txt = txt.resize((int(txt.width*TXT_H/txt.height), TXT_H), Image.LANCZOS)
-TM = np.array(txt)/255.0
-TXT_X = (RW - TM.shape[1])//2; TXT_Y = (RH - TXT_H)//2
-TEXT = np.zeros((RH, RW)); TEXT[TXT_Y:TXT_Y+TXT_H, TXT_X:TXT_X+TM.shape[1]] = TM
+# ------------------------------------------------------------------ landing calibration
+def _calibrate():
+    global S_END, OFFSET
+    OFFSET = (0.0, 0.0)
+    z, _, _ = render_bird(T_LAND, scale=1.0)
+    ys, xs = np.where(np.isfinite(z))
+    S_END = (MARK_BOX[1]-MARK_BOX[0])*0.98/(xs.max()-xs.min())
+    z, _, _ = render_bird(T_LAND, scale=S_END)
+    ys, xs = np.where(np.isfinite(z))
+    dx = (MARK_BOX[0]+MARK_BOX[1])/2 - (xs.min()+xs.max())/2
+    dy = (MARK_BOX[2]+MARK_BOX[3])/2 - (ys.min()+ys.max())/2
+    OFFSET = (dx*Z_END/FOC, -dy*Z_END/FOC)
+OFFSET = (0.0, 0.0)
 
 # ------------------------------------------------------------------ atmosphere
 yy, xx = np.mgrid[0:GH, 0:GW].astype(float)
@@ -266,7 +319,8 @@ NP = 120
 p0x = rng.uniform(0, GW, NP); p0y = rng.uniform(0, GH, NP)
 pv = rng.integers(1, 4, NP); pb = rng.uniform(0.3, 0.9, NP); pl = rng.integers(1, 6, NP)
 
-def frame(t, invert=False):
+def frame(sec, invert=False):
+    t = sec/DUR                                   # loop phase for the sky
     fog = pnoise(xx, yy, t, 3)*0.5 + pnoise(xx*1.7, yy*1.7, t, 11)*0.5
     fog = np.clip((fog - 0.05)*0.40, 0, 0.20)
     vig = np.clip(1.15 - (((xx-GW/2)/(GW*0.62))**2 + ((yy-GH/2)/(GH*0.9))**2), 0, 1)
@@ -278,21 +332,41 @@ def frame(t, invert=False):
             for k in range(pl[i]):
                 img[yi, (xi+k) % GW] = max(img[yi, (xi+k) % GW], pb[i]*(1 - k/pl[i])*0.7)
 
-    zbuf, cbuf, p = render_bird(t)
-    bird = np.isfinite(zbuf)
-    front = bird & (zbuf < Z0)
-    tmask = TEXT > 0.4
-    shim = 0.84 + 0.12*np.sin(TAU*2*t + np.linspace(0, TAU, RW))[None, :]
     hi = np.zeros((RH, RW)); cov = np.zeros((RH, RW), bool)
-    # behind-the-text bird, then text with a thin dark gap, then the front bird
+    tmask = TEXT > 0.4
+    tshim = 0.86 + 0.08*np.sin(TAU*sec/4.0 + np.linspace(0, TAU, RW))[None, :]
+    w = smooth(X0, X1, sec)                       # bird -> mark
+    fade = 1 - smooth(F0, F1, sec)                # mark fades before the loop restarts
+    if sec < X1:
+        zbuf, cbuf, _ = render_bird(min(sec, T_LAND), offset=OFFSET)
+        bird = np.isfinite(zbuf)
+    else:
+        bird = np.zeros((RH, RW), bool); zbuf = None; cbuf = None
+    front = bird & (zbuf < Z0) if zbuf is not None else bird
     behind = bird & ~front
-    hi[behind] = cbuf[behind]; cov |= behind
-    tgap = ndimage.binary_dilation(tmask, iterations=3) & behind & ~tmask
-    hi[tgap] = 0; cov |= tgap
-    hi[tmask] = (TEXT*shim)[tmask]; cov |= tmask
-    fgap = ndimage.binary_dilation(front, iterations=3) & ~front & tmask
-    hi[fgap] = 0
-    hi[front] = cbuf[front]; cov |= front
+    if behind.any():
+        hi[behind] = cbuf[behind]; cov |= behind
+        tgap = ndimage.binary_dilation(tmask, iterations=3) & behind & ~tmask
+        hi[tgap] = 0; cov |= tgap
+    hi[tmask] = (TEXT*tshim)[tmask]; cov |= tmask
+    if front.any():
+        fgap = ndimage.binary_dilation(front, iterations=3) & ~front & tmask
+        hi[fgap] = 0
+        hi[front] = cbuf[front]*(1-w); cov |= front
+    if w > 0 and fade > 0:
+        mmask = MARK > 0.4
+        # shimmer: a soft light band sweeps diagonally across the mark every 2.6 s
+        hold = max(0.0, sec - X1)
+        pos = ((hold/2.6) % 1.0)*1.6 - 0.3
+        gx = (np.arange(RW) - MARK_BOX[0])/(MARK_BOX[1]-MARK_BOX[0])
+        gy = (np.arange(RH) - MARK_BOX[2])/(MARK_BOX[3]-MARK_BOX[2])
+        d = gx[None, :]*0.8 + gy[:, None]*0.45 - pos
+        band = np.exp(-(d/0.07)**2) - 0.5*np.exp(-((d+0.12)/0.05)**2)
+        mval = np.clip(0.90 + 0.25*band*(hold > 0), 0, 1)*MARK
+        m_on = mmask
+        prev = hi[m_on]
+        hi[m_on] = np.maximum(prev*(1-w), mval[m_on]*w*fade)
+        cov |= m_on
     # down to the dither grid
     hs = hi.reshape(GH, SS, GW, SS).mean(axis=(1, 3))
     cs = cov.reshape(GH, SS, GW, SS).mean(axis=(1, 3))
@@ -302,11 +376,13 @@ def frame(t, invert=False):
     out = np.empty((GH, GW, 3), np.uint8); out[:] = bg; out[bits] = fg
     return Image.fromarray(out).resize((GW*PX, GH*PX), Image.NEAREST)
 
+_calibrate()
+
 if __name__ == "__main__":
     for name, inv in [("dark", False), ("light", True)]:
-        frames = [frame(i/N, inv).convert("P", palette=Image.ADAPTIVE, colors=2) for i in range(N)]
+        frames = [frame(i/FPS, inv).convert("P", palette=Image.ADAPTIVE, colors=2) for i in range(N)]
         path_ = OUT + f"tern-hero-{name}.gif"
-        frames[0].save(path_, save_all=True, append_images=frames[1:], duration=40, loop=0,
+        frames[0].save(path_, save_all=True, append_images=frames[1:], duration=int(1000/FPS), loop=0,
                        optimize=True, disposal=1)
-        frame(0.62, inv).save(OUT + f"tern-hero-still-{name}.png")
+        frame(9.0, inv).save(OUT + f"tern-hero-still-{name}.png")
         print(path_, os.path.getsize(path_))

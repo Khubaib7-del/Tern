@@ -6,7 +6,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ### Changed
 
-- README header is now an animated dither scene (dark and light, 8 s loop): a procedural 3D tern with jointed wings flies a loop around the wordmark, banking into its turns and passing in front of the text and behind it with true depth. Replaces the static lockup and the text-art banner; generator script in `assets/brand/src/`.
+- README header is now an animated dither scene (dark and light, 16 s loop): a procedural 3D tern with jointed wings flies around the wordmark, in front of the text and behind it, then lands in the logo position and becomes the original mark, which shimmers while the sky stays live. Replaces the static lockup and the text-art banner; generator script in `assets/brand/src/`.
 - UI definition: live working line (tern mark animated per agent state beside a shimmering status phrase), message actions (swipe or button reply, copy, multi-branch), and composer input (attachments, long paste to `.txt`, `@` prompt or context roles, locked mic).
 - Product spec: topic branching into several sub-sessions at once, file intake for any parseable file, recursive archive and folder reading, voice input planned with a transcription model.
 - UI definition revised after the v2 concept review: ChatGPT-style title bar, icon rail and sidebar; Research │ Study toggle at the top of the chat area; session tabs; responsive composer rules; providers screen with logo rows, `Add` and toggles; Hoplite-style model picker; context ring and popover in the composer; Git and GitHub panel; Explain in 3D as its own mode; motion and theme-switch benchmarks.
