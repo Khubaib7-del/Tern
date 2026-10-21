@@ -6,7 +6,7 @@
 
 | Phase | Name | Outcome | Status |
 | --- | --- | --- | --- |
-| 0 | Repository baseline | Licence, docs, brand assets, process files | In progress (this baseline) |
+| 0 | Repository baseline | Licence, docs, brand assets, process files | Done (PR #1) |
 | 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Planned |
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Planned |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | Planned |
@@ -32,7 +32,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | README, docs 00–05, ADR 0001 | Docs agree with each other; nothing described as shipped |
 | Security policy, contributing guide, code of conduct, agent rules, changelog | Present and linked from the README |
 | Editor and git config, issue forms, PR template, code owners | Present |
-| Brand assets and text-art banner | In `assets/brand/` |
+| Brand assets and README hero | In `assets/brand/` |
 
 ### Phase 1 · Design lock
 
@@ -81,6 +81,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | Workers per sub-question with their own budgets | Only final reports return to the parent |
 | Checkpoints, safe pause, resume | Resume after a forced quit without repeating paid work |
 | Live steering and the watcher | Steer lands at the next safe point |
+| Parallel sub-researchers with a Subagents tab | Two workers run at once without sharing budget or context |
 | Loop and drift detection | Synthetic loops are paused; legitimate pagination is not |
 | Goal and decision ledger with loss-aware compaction | An early constraint survives several compactions |
 
@@ -88,7 +89,12 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 
 | Deliverable | Exit check |
 | --- | --- |
-| GPUI shell: ribbon, sidebar, title bar, transcript, composer, right rail, status bar | Matches [02-ui-definition.md](02-ui-definition.md) |
+| GPUI shell: title bar, icon rail, sidebar, harness toggle, session tabs, transcript, composer, right rail | Matches [02-ui-definition.md](02-ui-definition.md) |
+| Responsive composer | Nothing overflows at 1280, 1440, and 1920px with both side panels open |
+| Motion and theme switch | Panel motion on one curve at 60 fps; the circular light/dark wipe matches the concept video |
+| Providers screen, model picker, context ring | Rows with logos, `Add` and toggles; context popover matches the sidebar view |
+| Built-in browser tab | Page text is isolated from instructions; network guard applies |
+| Git and GitHub panel | Commit, branch, push, and open a PR from a project vault |
 | Summary, Detailed, and Raw views of the same run | Same event stream renders all three |
 | Vault editor: Markdown, wikilinks, backlinks, outline, agent edits as diffs | Vault opens in Obsidian unchanged |
 | Scout states driven by real events | Reduced-motion still frame works |
@@ -152,5 +158,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | Skill discovery and repository reading without cloning | Later |
 | Lecture video and slide intake | Later |
 | Interactive explainer export | Later |
+| Explain in 3D mode | Planned with the Study harness (phase 7) |
+| Computer use, scoped to research chores | Later, off by default |
 | Shared study and research rooms | Parked |
 | Hardware research pack | Parked |

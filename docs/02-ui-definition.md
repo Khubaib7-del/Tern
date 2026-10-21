@@ -18,37 +18,92 @@ What counts as slop, concretely: gradient logos, sparkles, rotating witty status
 
 ## 2. Desktop layout (GPUI)
 
+Revised after the owner's review of the v2 concept video, with the ChatGPT desktop app and Hoplite as structure references.
+
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ ◣ Tern   FYP-thesis ▾ / Lit review ▾ / Research ▾        ⌕   ◧ ◨   ⚙        │ title bar 36px
+│ ← →  ◧  File Edit View Help                                    ⇪  ⧉  ◨      │ title bar 36px
 ├───┬───────────────────┬──────────────────────────────────────┬───────────────┤
-│ R │ SESSIONS          │                                      │ PLAN  SOURCES │
-│ i │ ▸ Lit review   2m │   user message                       │ REPORT        │
-│ b │   ↳ RAG eval      │                                      │ ───────────── │
-│ b │ ▸ Viva prep    ◆  │   Searched 14 · read 6 · 3 verified ›│ 1 ✓ Scope     │
-│ o │ ▸ Flashcards  1d  │                                      │ 2 ◌ Search    │
-│ n │                   │   Answer text with citations [1] [2] │ 3   Verify    │
-│   │ VAULT             │                                      │ 4   Write     │
-│   │ ▸ notes/          │                                      │               │
-│   │ ▸ papers/         │  ┌────────────────────────────────┐  │ budget ▮▮▯    │
-│   │                   │  │ Ask, or steer the run…         │  │ $0.42 / $2    │
-│   │                   │  │ Research ▾  model ▾  ▮▮▯  @ /  │  │               │
-│   │              Scout│  └────────────────────────────────┘  │               │
-├───┴───────────────────┴──────────────────────────────────────┴───────────────┤
-│ ● running · step 2 of 4 · 18k / 200k ctx                       Windows · v0.1 │ status bar 24px
-└──────────────────────────────────────────────────────────────────────────────┘
+│ ⌂ │ Tern ▾      ⍾  ⌕  │          ┌─────────────────────┐     │ PLAN  SOURCES │
+│ ▤ │ ✎ New session     │          │ Research │  Study   │     │ REPORT  GRAPH │
+│ ◷ │ PINNED ▾          │          └─────────────────────┘     │ ───────────── │
+│ ✎ │   Lit review      │  Chat · Report · Sources · +         │ 1 ✓ Scope     │
+│ ⚙ │ PROJECTS          │                                      │ 2 ◌ Search    │
+│ ⋯ │ ▸ FYP-thesis      │   user message                       │ 3   Verify    │
+│   │     Lit review    │   Worked for 4m 12s · 14 sources  ›  │ 4   Write     │
+│   │     ↳ RAG eval    │   Answer text with citations [1] [2] │               │
+│   │ RECENTS           │  ┌────────────────────────────────┐  │               │
+│   │                   │  │ Ask, or steer the run…         │  │               │
+│   │ [Scout]           │  │ +  Approve plan ▾  model·Medium ◔ ↑│ │               │
+│ ◉ │                   │  │ Project · Files · Sources       │  │               │
+└───┴───────────────────┴──┴────────────────────────────────┴──┴───────────────┘
 ```
 
 | Zone | Contents | Rules |
 | --- | --- | --- |
-| Ribbon (44px) | Five icons: Chat, Vault, Library, Study deck, Settings at the bottom | Monochrome, 16px; active = text colour plus a 2px left bar |
-| Left sidebar (240px, collapsible) | Sessions by project, sub-sessions indented with `↳`, then the vault tree | Status only on the row: spinner, "2m", or one ◆ when it needs you |
-| Title bar | Breadcrumb dropdowns `project ▾ / session ▾ / harness ▾`, search, pane toggles, settings | The harness switch lives here, not as a large toggle |
-| Centre | Transcript, max width 720px | User messages on a tinted band; agent prose unboxed; work folded to one line per turn |
-| Composer | A raised card with one chip row: harness, model, effort (3-segment meter), `@` context, `/` commands | Becomes "Steer" while running: Enter steers, Tab queues, Esc interrupts |
-| Right rail (300px, only with content) | Tabs: Plan · Sources · Report · Graph · Context | Plan approval, evidence quotes, verdicts, checkpoints, and budget live here |
-| Status bar (24px) | Run state, step, context use, platform | Text only; the one place cost and context are always visible |
-| Vault editor | Tabs and breadcrumb, editor, right pane with Backlinks, Outline, Local graph | Plain `.md` and `[[links]]`, so the vault opens in Obsidian too |
+| Title bar | Back, forward, sidebar toggle, File Edit View Help on the left; share/export, open in new window, right-rail toggle on the right | Same cluster as the ChatGPT desktop app on Windows |
+| Icon rail (44px) | Home, Library, Scheduled, Editor, Customize, More; account avatar at the bottom | Lucide 16px, 1.5px stroke; active = filled tile behind the icon, no colour |
+| Sidebar (260px, collapsible) | `Tern ▾` workspace switcher, notifications, search; New session; Pinned; Projects (folders → sessions → `↳` sub-sessions); Recents; Scout in the bottom corner | Status only on the row: spinner, "2m", or one ◆ when it needs you. Nothing is printed under Scout; its pose carries the run state |
+| Harness toggle | A segmented pill, **Research │ Study**, centred at the top of the chat area | Moved out of the composer; mirrors ChatGPT's Chat │ Work toggle |
+| Session tabs | Chat · Report · Sources · `+` (Graph, Editor, Browser, Subagents, Explain in 3D) | Tabs can split right or down |
+| Centre | Transcript, max width 720px | User messages on a tinted band; agent prose unboxed; work folded to one line per turn ("Worked for 4m 12s · 14 sources") |
+| Composer | `+`, permission chip, model · effort, context ring, mic, send; under-row chips Project · Files · Sources | Becomes "Steer" while running: Enter steers, Tab queues, Esc interrupts. See §2.2 for the responsive rules |
+| Right rail (300px, only with content) | Plan · Sources · Report · Graph · Context | Plan approval, evidence quotes, verdicts, checkpoints, and budget live here |
+| Account menu | Usage and budget (monthly %, reset time), Show Scout (toggle with a hotkey), Settings, Help, Log out | Opens from the avatar |
+| Vault editor | Opened from the Editor rail item: vault tree in the sidebar, tabs and breadcrumb, editor, right pane with Backlinks, Outline, Local graph | Plain `.md` and `[[links]]`, so the vault opens in Obsidian too |
+
+There is no separate terminal window in the desktop app and no sparkle or star icon anywhere. A popped-out side chat window uses the tern mark top-left.
+
+### 2.1 Pages from the icon rail
+
+| Page | Contents |
+| --- | --- |
+| Home | Empty state: "What should we research?" with the composer and a few starter cards |
+| Library | Reports, Sources, Notes, Decks, Files, All; grid or list; `New ▾` (note, report, deck, folder, upload) |
+| Scheduled | Topic watches, weekly paper digests, spaced-repetition reminders; suggestion cards when empty |
+| Customize | Skills, MCP servers, Providers |
+| Settings | General, Providers, Models, Decision model, Privacy, Integrations (Git and GitHub, MCP, Browser), Study, Appearance, Shortcuts, About. Scout sits beside each page title |
+
+### 2.2 Responsive composer (acceptance test)
+
+With both side panels open the composer content must never float out of its card.
+
+| Centre width | Behaviour |
+| --- | --- |
+| ≥ 720px | Full chip labels |
+| 520–719px | Chips collapse to icons with tooltips |
+| < 520px | Secondary chips move into a `⋯` overflow; the right rail becomes an overlay sheet |
+
+Every screen is checked at 1280, 1440, and 1920px wide with both side panels open.
+
+### 2.3 Providers screen
+
+Each provider is a row, not a bare name: a 36px rounded tile with the provider's monochrome logo, the name in text colour, and a muted status line underneath ("Not connected.", "Connected · 12 models", "Key invalid."). A 1px-bordered card holds the rows, separated by 1px rules.
+
+| State | Right-hand control |
+| --- | --- |
+| Not connected | `Add` button (opens the key sheet: paste key, Test, models listed) |
+| Connected | The standard toggle used elsewhere in Settings (enabled or disabled), plus a `⋯` menu (edit key, test, remove) |
+| Local (Ollama, LM Studio, OpenAI-compatible) | `Add` with an endpoint field instead of a key |
+
+No "Install" wording: providers are connected, not installed. Logos come from an MIT-licensed icon set (for example Lobe Icons) and are drawn in one colour. A refresh icon at the top re-probes all connected providers.
+
+### 2.4 Model picker
+
+From Hoplite: a search field ("Search all N models"), a provider column with model counts, a model column, and a hover card with neutral Speed and Intelligence bars and the context size. Favourites and keyboard hints sit in the footer. Effort is a menu from None to Max (None, Low, Medium, High, X-high, Max).
+
+### 2.5 Context display
+
+Context shows in two places from the same data.
+
+| Place | Form |
+| --- | --- |
+| Sidebar | The context view the owner approved in the v2 video, shown in the session header |
+| Composer | A 16px ring in the composer's chip row, no floating text. Click opens a popover: one bar split into System · Sources · Chat · Memory with token counts, the compaction threshold marked (default 60%), and `Compact now` |
+
+### 2.6 Git and GitHub
+
+Each project vault can be a git repository. Integrations › Git and GitHub sets the git name and email, the GitHub connection, and baseline templates (README, LICENSE, SECURITY, CONTRIBUTING). In a project: a branch chip in the title bar shows the branch and the count of changes; actions are commit (also a checkpoint), branch, push, and open a pull request.
 
 ## 3. How agent activity streams
 
@@ -124,7 +179,9 @@ Research and Study are told apart by tone and shape, not hue:
 | Borders | 1px; no shadows except popovers |
 | Motion curve | One curve, `cubic-bezier(.32,.72,0,1)`: 200ms for UI, 700ms for the mark |
 | Motion rule | Moves only on a real event: a step starts, a source lands, a claim is verified, the run needs you. Respects reduced motion; never blocks input |
-| Texture | Dither only on the launch card, empty states, and Scout |
+| Texture | Dither only on the launch card, empty states, the README hero, and Scout |
+| Smoothness | The v2 concept video is the benchmark. Panels slide and fade together on the one curve; nothing jumps or reflows mid-animation; 60 fps at 1080p on mid-range Windows hardware |
+| Theme switch | Light and dark cross over as a soft circular wipe from the toggle, about 600 ms, with every token interpolated at once. The owner's favourite moment in the video; keep it exactly this calm |
 
 ## 7. Scout
 
@@ -149,6 +206,7 @@ A no-character mini mode and a still frame under reduced motion are required.
 | --- | --- |
 | Line-only, pointer-reactive figures | Live research map in the right rail's Graph tab: the flow lights up branch by branch as phases run, with true numbers in a corner readout |
 | Solid isometric machines | Onboarding and docs art: research as a bench (funnel, sieves, magnifier, balance, press); study as a card box with drawers |
+| **Explain in 3D** (separate mode) | Its own session tab, separate from the Graph tab. Takes a concept from the session and builds an interactive isometric explainer: an Anatomy-style solid machine with a Hairline line-figure overlay, pointer-reactive, step-through, with captions tied to cited sources. Saved to the Library; also the base of the Study playground |
 
 ## 9. Adopt and avoid
 
@@ -173,13 +231,14 @@ A no-character mini mode and a still frame under reduced motion are required.
 | Rotating witty status text | Filler |
 | Badge chains, avatars on every row | Noise |
 | Multicolour tiles and verdict meters | Breaks the one-accent rule |
-| Always-on credit counters | Anxiety; cost belongs in the status bar |
+| Always-on credit counters | Anxiety; cost belongs in the context popover and the account menu |
 | Permanent TUI sidebar | Wastes columns at 80×24 |
 | Emoji, sparkles, robot heads, SaaS blue, violet | Slop markers |
+| A status line printed under Scout | The pose already says it |
+| "Install" buttons for providers | Providers are connected with a key, not installed |
 
 ## 10. Open decisions
 
 1. Palette: C (lichen), A (brass), or B (ink).
 2. Fonts: IBM Plex throughout, or Inter with Plex Mono.
-3. Map the author's hand sketches onto this layout, including usage limits, scaling, and level-selection screens.
-4. Redraw the concept screens in the chosen palette before any UI code.
+3. Hand sketches (usage limits, scaling, level selection) are parked by the owner.
