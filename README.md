@@ -1,31 +1,10 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/tern-lockup-on-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/tern-lockup-on-light.png">
-    <img alt="Tern" src="assets/brand/tern-lockup-on-light.png" width="520">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/tern-hero-dark.gif">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/tern-hero-light.gif">
+    <img alt="Tern, a diving tern drawn in moving dither beside the TERN Research wordmark" src="assets/brand/tern-hero-light.gif" width="100%">
   </picture>
 </p>
-
-```text
-  %#o___                            @@@@@@  @@@@@  @@@@@   @@   @@
-    "%@@@@>__                         @@    @@     @@  @@  @@@  @@
-      *#@@@@@@@__                     @@    @@@@   @@@@@   @@ @ @@
-         *@@@@@@@@#>__                @@    @@     @@ @@   @@  @@@
-          `*#@@@@@@@@@@%__            @@    @@@@@  @@  @@  @@   @@
-              "#@@@@@@@@@@@%_
-                 *@@@@@@@@@@@@\
-                   "@@@@@@@@@@@|  ________
-      `%,            @@@@@@@@@@'  _#@@@@@@@%
-`*~,_    "%__        @@@@@@@@@@ (@@@@@@@@@@*
-     ^*%>___*@>_     %@@@@@@@@@L %@@@@#*`
-          `"*#@@@#@#>_   `@@@@@@_ |@@'
-                `*@@@@@#o@@@@@@@@@@@#L
-                   '#_  `"#@@@@@@@@   "*o_
-                     `%,_  Y@@@@@@@@>_   '%
-                        `*%@@@@@@@@@@@#___@
-                              `"****^^``^*%#
-research . study                            ".
-```
 
 <p align="center"><b>A local-first agent harness for research and study, with every claim cited and checked.</b></p>
 
@@ -59,6 +38,8 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | Control | Editable plans before spend, live steering, a watcher you can ask what the agent is doing, checkpoints, safe pause at budget limits |
 | Memory | Stable IDs for every query, file, and source; a goal and decision ledger that survives compaction |
 | Surfaces | A terminal UI and a desktop app over the same core; MCP client and ACP server |
+| Workspace | Session tabs, parallel sub-researchers, a built-in browser for reading sources, and Explain in 3D for interactive concept models |
+| Git | Project vaults as git repositories: commit, branch, push, and open pull requests from the app |
 | Vault | Plain Markdown, Obsidian-compatible, with agent edits as diffs |
 
 Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
@@ -110,7 +91,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 
 | Phase | Focus | Status |
 | --- | --- | --- |
-| 0 | Repository baseline | In progress |
+| 0 | Repository baseline | Done |
 | 1 | Design lock: palette, fonts, concept screens, SVG mark | Planned |
 | 2 | Core skeleton, keychain, store, `tern doctor` | Planned |
 | 3 | Providers and the first cited answer in the TUI | Planned |
@@ -136,7 +117,7 @@ Not yet released. There are no builds, installers, or packages.
 .
 ├── .github/              issue forms, PR template, code owners
 ├── assets/
-│   └── brand/            mark, lockups, app icon, banner images
+│   └── brand/            mark, lockups, app icon, animated dither hero
 ├── docs/
 │   ├── 00-vision.md
 │   ├── 01-product-spec.md

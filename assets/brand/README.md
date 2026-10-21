@@ -10,8 +10,10 @@ Reserved brand property. See the brand clause in [LICENSE](../../LICENSE). Do no
 | `tern-lockup-on-dark.png` | Dark lockup on a transparent background, trimmed | README header in dark mode |
 | `tern-lockup-on-light.png` | Light lockup on a transparent background, trimmed | README header in light mode |
 | `tern-app-icon.png` | App icon, 512 × 512 | Desktop app icon (planned) |
-| `tern-banner-dark.png` | The README text-art banner rendered in a monospaced font, dark | Social preview, docs |
-| `tern-banner-light.png` | Same banner, light | Social preview, docs |
+| `tern-hero-dark.gif` | Animated dither hero: the mark floats and catches a light sweep, motes drift past, wordmark shimmers. 1200 × 360, 60 frames, 3 s seamless loop | README header in dark mode |
+| `tern-hero-light.gif` | Same hero, ink on paper | README header in light mode |
+| `tern-hero-still-dark.png` / `-light.png` | One still frame of the hero | Social preview, reduced-motion fallback |
+| `src/dither_hero.py` | Generator for the hero files (8 × 8 Bayer ordered dither over a shaded scene; needs numpy, pillow, scipy) | Re-render after any mark or wordmark change |
 
 ## Rules
 
