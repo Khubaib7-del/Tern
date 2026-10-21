@@ -4,7 +4,18 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
-### Added (phase 2, in progress)
+### Added (phase 3, in progress)
+
+- `tern-providers`: catalog of 13 providers (11 remote, Ollama and LM Studio local), own adapters for OpenAI-compatible, Anthropic, and Gemini APIs (ADR 0003), model listing with kinds and context windows, a no-token probe, non-streaming chat, and a usage ledger that marks estimates.
+- `tern provider list | add | test | models | remove`. `add` reads the key from a hidden prompt, tests it, and saves it to the keychain only if the provider accepts it.
+- ADR 0003: own provider adapters.
+
+### Changed
+
+- `SecretString` moved to `tern-core` so providers never depend on the platform crate.
+- `UsageDelta.cost_micros` is optional: no cost is shown until it is known.
+
+### Added (phase 2, done)
 
 - Cargo workspace with all eleven crates; dependency rules from `docs/03-architecture.md` enforced by a test that reads every manifest.
 - `tern-core`: prefixed ULID IDs, `Q12` / `Q12.3` message references, effect classes, the versioned event envelope, the turn state machine with safe pause and resume, and the secret redactor.

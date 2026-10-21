@@ -15,8 +15,11 @@ workspace = true
 tern-core.workspace = true
 tern-platform.workspace = true
 tern-store.workspace = true
+tern-providers.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true

@@ -12,32 +12,7 @@ use crate::{PlatformError, PlatformResult};
 /// The keychain service name every Tern entry is filed under.
 pub const SERVICE: &str = "tern";
 
-/// A secret value. Its `Debug` and `Display` never print the value.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SecretString(String);
-
-impl SecretString {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// The value itself. Call only where it is handed to its consumer.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("SecretString([redacted])")
-    }
-}
-
-impl fmt::Display for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[redacted]")
-    }
-}
+pub use tern_core::SecretString;
 
 /// A store for named secrets, such as `provider.openai`.
 pub trait SecretStore: Send + Sync + fmt::Debug {
@@ -190,12 +165,6 @@ mod tests {
             default_secret_store(),
             Err(PlatformError::KeychainUnsupported(_))
         ));
-    }
-
-    #[test]
-    fn secret_values_never_print() {
-        let s = SecretString::new("sk-live-secret");
-        assert!(!format!("{s:?} {s}").contains("sk-live"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "tern-providers"
-description = "BYOK provider layer for remote and local models (planned)."
+description = "BYOK provider layer for Tern: catalog, adapters, model listing, probing, usage ledger."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,5 +13,12 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock.workspace = true

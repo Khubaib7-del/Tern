@@ -21,8 +21,10 @@ pub enum Measure {
 pub struct UsageDelta {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// Cost in micro-units of `currency` (1 USD = 1_000_000).
-    pub cost_micros: u64,
+    /// Cost in micro-units of `currency` (1 USD = 1_000_000). `None` when the
+    /// price is unknown; Tern never shows a made-up cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micros: Option<u64>,
     pub currency: String,
     pub measure: Measure,
 }
