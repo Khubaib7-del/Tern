@@ -1,0 +1,38 @@
+# Normalise text to LF in the repository and working tree.
+* text=auto eol=lf
+
+# Windows scripts keep CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Source and docs
+*.rs    text diff=rust
+*.toml  text
+*.md    text diff=markdown
+*.yml   text
+*.yaml  text
+*.json  text
+*.svg   text
+
+# Lockfiles: keep diffs readable, avoid merge noise
+Cargo.lock  text -merge linguist-generated
+
+# Binary assets
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.icns  binary
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.wasm  binary
+*.mp4   binary
+*.webm  binary

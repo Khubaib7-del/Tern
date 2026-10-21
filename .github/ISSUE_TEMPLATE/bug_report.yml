@@ -1,0 +1,64 @@
+name: Bug report
+description: Something does not work as the docs or the build say it should.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tern is pre-alpha and not yet released. If the problem is in the documentation, choose "Docs" below.
+        Never paste API keys, tokens, or private research content.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Docs
+        - Core / agent loop
+        - Providers (BYOK / local models)
+        - Decision model
+        - Crawler (tern-crawl)
+        - Storage / vault / library
+        - Research harness
+        - Study harness
+        - CLI / TUI
+        - Desktop app
+        - Platform (Windows / Linux / macOS)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What the relevant document, spec section, or behaviour promised.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands run, inputs, and the smallest case that shows the problem.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and version, terminal (for the TUI), commit SHA or branch.
+      placeholder: "Windows 11 23H2, Windows Terminal, commit abc1234"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Redact secrets before pasting.
+      render: text

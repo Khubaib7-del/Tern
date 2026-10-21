@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose a feature or a change to the plan.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check docs/01-product-spec.md and docs/04-roadmap.md first: the idea may already be planned.
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Where does it belong?
+      options:
+        - Research harness
+        - Study harness
+        - Shared core
+        - CLI / TUI
+        - Desktop app
+        - Docs / process
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Tern do? Keep it concrete.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: principles
+    attributes:
+      label: Fit with Tern's principles
+      options:
+        - label: Works local-first and keeps the user in control of what leaves the machine
+        - label: Does not weaken citation verification, permissions, or secret handling
+        - label: Adds no decoration that moves when nothing is happening
