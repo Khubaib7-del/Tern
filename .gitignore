@@ -1,0 +1,86 @@
+# ── Rust ────────────────────────────────────────────────
+# Cargo.lock is committed: Tern ships binaries.
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+/coverage/
+lcov.info
+
+# ── Secrets and environment ─────────────────────────────
+# Provider keys belong in the OS keychain, never in files.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+*.secret
+*.secrets
+
+# ── Local Tern data ─────────────────────────────────────
+# Vaults, libraries, indexes, event logs and caches created
+# while running Tern locally. Never commit personal research.
+.tern/
+/vault/
+/vaults/
+/data/
+/library/
+/cache/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+*.tantivy/
+*.lance/
+/runs/
+/traces/
+
+# ── Test and tool output ────────────────────────────────
+/tmp/
+*.log
+*.tmp
+*.orig
+*.rej
+/snapshots/*.new
+*.snap.new
+
+# ── Editors ─────────────────────────────────────────────
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.iml
+.zed/
+*.swp
+*.swo
+*~
+.fleet/
+.history/
+
+# ── Windows ─────────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ── macOS ───────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Linux ───────────────────────────────────────────────
+.directory
+.Trash-*
+.nfs*
