@@ -4,6 +4,16 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed
+
+- README header is now an animated dither hero (dark and light) in place of the static lockup and the text-art banner; generator script in `assets/brand/src/`.
+- UI definition revised after the v2 concept review: ChatGPT-style title bar, icon rail and sidebar; Research │ Study toggle at the top of the chat area; session tabs; responsive composer rules; providers screen with logo rows, `Add` and toggles; Hoplite-style model picker; context ring and popover in the composer; Git and GitHub panel; Explain in 3D as its own mode; motion and theme-switch benchmarks.
+- Product spec and roadmap: tabs, parallel sub-researchers, built-in browser, Explain in 3D, Git and GitHub, scheduled research; computer use moved to later, off by default. Phase 0 marked done.
+
+### Removed
+
+- Text-art banner from the README and the `tern-banner-*.png` renders.
+
 ### Added
 
 - Repository baseline (roadmap phase 0). No application code exists yet.

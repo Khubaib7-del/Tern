@@ -80,7 +80,7 @@ The Study harness looks different from Research by tone and shape, not by colour
 
 | Feature | Detail |
 | --- | --- |
-| BYOK providers | Pick a provider, paste a key, test, models are listed, assign roles (planner, reader, writer, verifier, tutor). Keys stored in the OS keychain |
+| BYOK providers | A list of provider rows with logos; `Add` a provider, paste a key, test, models are listed, then enable or disable it with a toggle and assign roles (planner, reader, writer, verifier, tutor). Keys stored in the OS keychain |
 | Local models | Ollama, LM Studio, and any OpenAI-compatible endpoint |
 | Decision-model slot | A scorer beside the reasoning model for fixed-choice decisions; remote or a local reranker as fallback |
 | Stable IDs | Every query, file, source, chat, and claim has a short ID the agent passes around instead of full text |
@@ -96,6 +96,12 @@ The Study harness looks different from Research by tone and shape, not by colour
 | Permissions | Effect classes, scoped and expiring approvals, grouped previews to avoid approval fatigue |
 | Self-diagnostics | `tern doctor` checks keys, models, crawler, disk, and index, and explains fixes in plain language |
 | MCP and ACP | MCP client for tools; ACP server so Tern can run inside editors that speak it |
+| Tabs | Each session has tabs (Chat, Report, Sources, Graph, Editor, Browser, Subagents, Explain in 3D) that can split right or down |
+| Parallel tasks | Sub-researchers run in parallel under the watcher, each with its own budget; a Subagents tab shows each one as a single rollup line |
+| Built-in browser | A Browser tab for reading sources with the evidence highlighter and signing in to library portals; shares the `tern-crawl` network guard and treats page text as untrusted |
+| Explain in 3D | A separate mode that turns a concept into an interactive isometric explainer (solid machine plus line-figure overlay); saved to the Library |
+| Git and GitHub | A project vault can be a git repository: commit (as a checkpoint), branch, push, open a pull request, and set up baseline files |
+| Scheduled | Topic watches, weekly paper digests, and spaced-repetition reminders |
 
 ## 5. Chat and editing behaviour
 
@@ -127,7 +133,8 @@ Obsidian-compatible: plain `.md` files, `[[wikilinks]]`, backlinks, outline, loc
 | Find, install, or write skills for the current project; read a GitHub repo without cloning it | Later |
 | Shared research and study rooms with per-person cursors and spectating | Parked until after v1 |
 | Hardware research pack (datasheets, part comparison) | Parked |
-| Interactive explainer export of a report or session | Later |
+| Interactive explainer export of a report or session | Later (builds on Explain in 3D) |
+| Computer use | Later, scoped to research chores (library portals, downloading PDFs, citation tools), with per-app permission; off by default |
 
 ## 8. Open questions
 
