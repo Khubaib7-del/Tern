@@ -352,7 +352,11 @@ mod tests {
         m.on_event("tool.executed", "web_search: 5 results");
         m.on_event("policy.decided", "read_url allowed");
         assert_eq!(m.run_steps(), ["web_search: 5 results"]);
-        assert!(m.working_line().unwrap().starts_with("Checking permissions… "));
+        assert!(
+            m.working_line()
+                .unwrap()
+                .starts_with("Checking permissions… ")
+        );
         m.finish_turn(
             &outcome(TurnState::Completed, Some("RAG is…"), None),
             Usage::measured(1000, 234),
