@@ -19,7 +19,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
 scraper.workspace = true
-tokio = { workspace = true, features = ["net"] }
+ego-tree.workspace = true
+tokio = { workspace = true, features = ["net", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -47,7 +47,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | --- | --- |
 | Models | Bring your own key for many providers; local models through Ollama, LM Studio, or any OpenAI-compatible endpoint; keys kept in the OS keychain |
 | Decision model | A fast scorer beside the main model that decides fixed choices (which source first, which tool next, does a claim pass) while hard checks keep the final word |
-| Crawler | Tern's own reader and crawler, with a network guard and stable quote anchors |
+| Crawler | Tern's own reader and crawler: network guard, robots.txt, per-site pacing, a day-long page cache, and Readability-style main text |
 | Control | Editable plans before spend, live steering, a watcher you can ask what the agent is doing, checkpoints, safe pause at budget limits |
 | Memory | Stable IDs for every query, file, and source; a goal and decision ledger that survives compaction |
 | Surfaces | A terminal UI and a desktop app over the same core; MCP client and ACP server |

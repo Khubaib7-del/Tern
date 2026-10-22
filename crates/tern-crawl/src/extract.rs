@@ -19,7 +19,7 @@ pub struct Extracted {
 }
 
 /// A link in the page's main text.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Anchor {
     pub text: String,
     pub url: String,
@@ -102,10 +102,7 @@ pub fn extract_html(html: &str, base: &Url) -> Extracted {
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .map(|u| u.to_string());
 
-    let root = ["article", "main", r#"[role="main"]"#, "body"]
-        .iter()
-        .find_map(|s| doc.select(&sel(s)).next())
-        .unwrap_or_else(|| doc.root_element());
+    let root = main_content(&doc);
     let mut out = String::new();
     let mut plain = Walk {
         base,
@@ -136,6 +133,146 @@ pub fn extract_html(html: &str, base: &Url) -> Extracted {
     }
 }
 
+/// Tags never dropped for their class name (the text itself).
+const BLOCK_KEEP: &[&str] = &[
+    "p", "pre", "code", "h1", "h2", "h3", "h4", "h5", "h6", "table",
+];
+
+const POSITIVE: &[&str] = &[
+    "article", "content", "post", "entry", "main", "body", "text", "story", "paper", "abstract",
+    "prose", "markdown",
+];
+const NEGATIVE: &[&str] = &[
+    "comment",
+    "sidebar",
+    "footer",
+    "nav",
+    "menu",
+    "advert",
+    "ad-",
+    "promo",
+    "related",
+    "share",
+    "social",
+    "cookie",
+    "banner",
+    "newsletter",
+    "subscribe",
+    "breadcrumb",
+    "popup",
+    "modal",
+    "widget",
+    "sponsor",
+    "masthead",
+    "toolbar",
+];
+
+/// Readability's hint from an element's class and id: +25 for content
+/// words, -25 for page furniture.
+fn class_weight(e: &scraper::node::Element) -> i32 {
+    let hints = format!(
+        "{} {}",
+        e.attr("class").unwrap_or_default(),
+        e.attr("id").unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+    if hints.trim().is_empty() {
+        return 0;
+    }
+    let mut w = 0;
+    if NEGATIVE.iter().any(|n| hints.contains(n)) {
+        w -= 25;
+    }
+    if POSITIVE.iter().any(|n| hints.contains(n)) {
+        w += 25;
+    }
+    w
+}
+
+fn text_len(el: ElementRef<'_>) -> usize {
+    el.text().map(|t| t.trim().len()).sum()
+}
+
+fn link_density(el: ElementRef<'_>) -> f32 {
+    let all = text_len(el).max(1) as f32;
+    let links: usize = el.select(&sel("a")).map(text_len).sum();
+    (links as f32 / all).min(1.0)
+}
+
+/// The element holding the page's main text, found the way Readability
+/// does: each paragraph scores its parent fully and its grandparent by
+/// half; scores are cut by link density and nudged by class names. The
+/// winner is widened until it holds most of the paragraph text, so an
+/// article split across sibling blocks is not cut short.
+pub fn main_content(doc: &Html) -> ElementRef<'_> {
+    use std::collections::HashMap;
+    let fallback = || {
+        ["article", "main", r#"[role="main"]"#, "body"]
+            .iter()
+            .find_map(|s| doc.select(&sel(s)).next())
+            .unwrap_or_else(|| doc.root_element())
+    };
+    let mut scores: HashMap<ego_tree::NodeId, f32> = HashMap::new();
+    let mut total = 0usize;
+    for p in doc.select(&sel("p, pre, blockquote, li")) {
+        let len = text_len(p);
+        if len < 25 {
+            continue;
+        }
+        total += len;
+        let score = 1.0
+            + p.text().map(|t| t.matches(',').count()).sum::<usize>() as f32
+            + (len as f32 / 100.0).min(3.0);
+        let mut node = p.parent();
+        for share in [1.0, 0.5] {
+            let Some(n) = node else { break };
+            if ElementRef::wrap(n).is_some() {
+                *scores.entry(n.id()).or_default() += score * share;
+            }
+            node = n.parent();
+        }
+    }
+    let best = scores
+        .iter()
+        .filter_map(|(id, s)| {
+            let el = ElementRef::wrap(doc.tree.get(*id)?)?;
+            if matches!(el.value().name(), "html" | "body") {
+                return None;
+            }
+            let tag = match el.value().name() {
+                "article" | "main" => 10.0,
+                "div" | "section" => 5.0,
+                "ul" | "ol" | "form" | "aside" | "nav" | "footer" => -5.0,
+                _ => 0.0,
+            };
+            let s = (s + tag + class_weight(el.value()) as f32) * (1.0 - link_density(el));
+            Some((el, s))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    let Some((mut el, score)) = best else {
+        return fallback();
+    };
+    if score < 10.0 || total == 0 {
+        return fallback();
+    }
+    let held = |e: ElementRef<'_>| -> usize {
+        e.select(&sel("p, pre, blockquote, li"))
+            .map(text_len)
+            .filter(|l| *l >= 25)
+            .sum()
+    };
+    for _ in 0..4 {
+        if held(el) * 10 >= total * 6 {
+            break;
+        }
+        match el.parent().and_then(ElementRef::wrap) {
+            Some(up) if up.value().name() != "html" => el = up,
+            _ => break,
+        }
+    }
+    el
+}
+
 fn walk(el: ElementRef<'_>, out: &mut String, w: &mut Walk<'_>) {
     for child in el.children() {
         match child.value() {
@@ -160,6 +297,7 @@ fn walk(el: ElementRef<'_>, out: &mut String, w: &mut Walk<'_>) {
                 if SKIP.contains(&name)
                     || e.attr("hidden").is_some()
                     || e.attr("aria-hidden") == Some("true")
+                    || (!BLOCK_KEEP.contains(&name) && class_weight(e) <= -25)
                 {
                     continue;
                 }
@@ -249,6 +387,50 @@ pub fn tidy(s: &str) -> String {
         out.push_str(line);
     }
     out
+}
+
+#[cfg(test)]
+mod readability_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_article_among_furniture() {
+        let para = "Retrieval augmented generation pairs a retriever with a generator, so answers cite what they used, and errors can be traced to a source.";
+        let html = format!(
+            r#"<html><body>
+            <div class="sidebar"><p>Popular: {para}</p><ul><li><a href="/a">One link that is long enough to count</a></li></ul></div>
+            <div class="cookie-banner">We use cookies to make this site better for everyone who visits it.</div>
+            <div id="story"><h2>How RAG works</h2><p>{para}</p><p>{para}</p><p>{para}</p></div>
+            <div class="share-tools">Share this on every network you can think of today.</div>
+            <div class="comments"><p>Great post, thanks for writing it up so clearly.</p></div>
+            </body></html>"#
+        );
+        let base = Url::parse("https://example.org/rag").unwrap();
+        let e = extract_html(&html, &base);
+        assert!(e.text.contains("How RAG works"), "{}", e.text);
+        assert_eq!(
+            e.text.matches("Retrieval augmented").count(),
+            3,
+            "{}",
+            e.text
+        );
+        for furniture in ["Popular", "cookies", "Share this", "Great post"] {
+            assert!(!e.text.contains(furniture), "kept {furniture}: {}", e.text);
+        }
+    }
+
+    #[test]
+    fn an_article_split_across_blocks_stays_whole() {
+        let para = "Each block holds part of the article, and the reader must keep every one of them, not only the first.";
+        let html = format!(
+            "<html><body><div class='wrap'><div><p>{para} One.</p><p>{para}</p></div><div><p>{para} Two.</p><p>{para}</p></div><div><p>{para} Three.</p></div></div></body></html>"
+        );
+        let base = Url::parse("https://example.org/").unwrap();
+        let e = extract_html(&html, &base);
+        for part in ["One.", "Two.", "Three."] {
+            assert!(e.text.contains(part), "lost {part}");
+        }
+    }
 }
 
 #[cfg(test)]

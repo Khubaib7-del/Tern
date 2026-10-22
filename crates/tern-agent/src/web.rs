@@ -71,8 +71,27 @@ impl Tool for WebSearchTool {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+/// The app's one reader: every chat, quick ask, and the browser share its
+/// robots files, per-host pacing, and page cache (on disk for a day under
+/// the data folder's `cache/crawl`).
+pub fn shared_reader() -> Fetcher {
+    static READER: std::sync::OnceLock<Fetcher> = std::sync::OnceLock::new();
+    READER
+        .get_or_init(|| match tern_platform::AppPaths::discover() {
+            Ok(paths) => Fetcher::new().with_cache_dir(paths.crawl_cache()),
+            Err(_) => Fetcher::new(),
+        })
+        .clone()
+}
+
+#[derive(Debug, Clone)]
 pub struct ReadUrlTool(pub Fetcher);
+
+impl Default for ReadUrlTool {
+    fn default() -> Self {
+        Self(shared_reader())
+    }
+}
 
 impl Tool for ReadUrlTool {
     fn name(&self) -> &'static str {

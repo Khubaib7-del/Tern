@@ -436,7 +436,7 @@ pub async fn ask_with(
     let ledger = UsageLedger::default();
     // Results are read from the open web, so the guard stays on even when
     // the search service itself runs on this machine.
-    let fetcher = Fetcher::new();
+    let fetcher = crate::web::shared_reader();
     let deps = AskDeps {
         session,
         model: &provider,

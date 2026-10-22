@@ -7506,6 +7506,7 @@ dependencies = [
 name = "tern-crawl"
 version = "0.0.0"
 dependencies = [
+ "ego-tree",
  "reqwest",
  "scraper",
  "serde",
