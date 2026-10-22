@@ -212,6 +212,9 @@ pub struct Model {
     pub icons: HashMap<String, SiteIcon>,
     /// Attachments waiting in the composer, sent with the next message.
     pub attachments: Vec<Attachment>,
+    /// Pictures from the attachments of the turn just started, taken by the
+    /// window when it hands the message to the session.
+    pub outgoing_images: Vec<tern_agent::ImageInput>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
     /// The built-in browser pane.
@@ -258,6 +261,7 @@ impl Model {
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),
+            outgoing_images: Vec::new(),
             mention: None,
             browser: crate::browser::BrowserState::default(),
             git: crate::git::GitState::default(),
@@ -339,6 +343,7 @@ impl Model {
             })
             .collect();
         let quote = self.reply_to.take();
+        self.outgoing_images = attach::images(&attachments);
         let message = attach::compose(&reply::compose(quote.as_deref(), text), &attachments);
         self.entries.push(Entry::User {
             text: text.to_owned(),

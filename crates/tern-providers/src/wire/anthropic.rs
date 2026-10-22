@@ -5,11 +5,28 @@ use crate::{ChatRequest, ChatResponse, ModelInfo, Usage};
 
 pub(crate) const VERSION: &str = "2023-06-01";
 
+/// Plain text, or pictures then text as content blocks (Anthropic reads
+/// images best ahead of the question).
+fn content(m: &crate::ChatMessage) -> Value {
+    if m.images.is_empty() {
+        return json!(m.content);
+    }
+    let mut parts: Vec<Value> = m
+        .images
+        .iter()
+        .map(|i| {
+            json!({"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}})
+        })
+        .collect();
+    parts.push(json!({"type": "text", "text": m.content}));
+    Value::Array(parts)
+}
+
 pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     let messages: Vec<Value> = req
         .messages
         .iter()
-        .map(|m| json!({"role": m.role, "content": m.content}))
+        .map(|m| json!({"role": m.role, "content": content(m)}))
         .collect();
     let mut body = json!({"model": req.model, "max_tokens": req.max_tokens, "messages": messages});
     if let Some(s) = &req.system {

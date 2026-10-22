@@ -21,11 +21,13 @@ pub mod extract;
 pub mod fetch;
 pub mod guard;
 pub mod icon;
+pub mod pdf;
 pub mod robots;
 pub mod search;
 
 pub use extract::Anchor;
 pub use fetch::{FetchError, Fetcher, Page};
-pub use icon::{SourceIcon, TERN_READER, site_of};
+pub use icon::{SourceIcon, TERN_CRAWL, TERN_READER, site_of};
+pub use pdf::{PdfError, PdfText};
 pub use robots::Robots;
 pub use search::{SEARCH_CATALOG, SearchClient, SearchError, SearchHit, SearchSpec, find_search};

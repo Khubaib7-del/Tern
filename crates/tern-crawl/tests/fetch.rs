@@ -88,7 +88,7 @@ async fn errors_are_plain() {
     let e = f.fetch(&format!("{}/gone", s.uri())).await.unwrap_err();
     assert_eq!(e.to_string(), "127.0.0.1 answered HTTP 404");
     let e = f.fetch(&format!("{}/pdf", s.uri())).await.unwrap_err();
-    assert!(e.to_string().contains("PDF reading arrives"), "{e}");
+    assert!(e.to_string().contains("PDF Tern could not read"), "{e}");
     assert!(matches!(
         f.fetch(&format!("{}/img", s.uri())).await.unwrap_err(),
         FetchError::Unsupported { .. }

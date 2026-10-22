@@ -181,6 +181,42 @@ impl Workspace {
                                     ),
                             ),
                     )
+                    .child(section("Tern Crawl"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .children(assets::glyph("tern-crawl").map(|path| {
+                                svg().path(path).size(px(40.)).text_color(p.text)
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_baseline()
+                                            .gap_2()
+                                            .child(div().font_weight(FontWeight::SEMIBOLD).text_lg().child("TERN"))
+                                            .child(
+                                                div()
+                                                    .font_family(SERIF_FONT)
+                                                    .italic()
+                                                    .text_lg()
+                                                    .text_color(p.muted)
+                                                    .child("Crawl"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(p.muted)
+                                            .child("Tern's own crawler and reader. Shown wherever Tern read the pages itself."),
+                                    ),
+                            ),
+                    )
                     .child(section("Tern glyphs"))
                     .child(
                         div().flex().flex_wrap().children(

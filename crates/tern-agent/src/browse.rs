@@ -39,6 +39,7 @@ impl BrowsedPage {
                 cut,
             }],
             skipped: Vec::new(),
+            images: Vec::new(),
         }
     }
 }

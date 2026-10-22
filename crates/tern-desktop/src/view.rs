@@ -387,6 +387,8 @@ impl Workspace {
         let Some(session) = self.session.take() else {
             return;
         };
+        let mut session = session;
+        session.attach_images(std::mem::take(&mut self.model.outgoing_images));
         self.cancel = CancelFlag::default();
         self.bridge.send(session, text, self.cancel.clone());
         self.composer
@@ -2074,6 +2076,7 @@ impl Workspace {
             .gap_1()
             .children(self.model.attachments.iter().enumerate().map(|(i, a)| {
                 let icon = match a.source {
+                    AttachSource::File if a.is_image() => AssetIcon::FileImage,
                     AttachSource::File => AssetIcon::FileText,
                     AttachSource::Folder => AssetIcon::Folder,
                     AttachSource::Archive => AssetIcon::FileArchive,

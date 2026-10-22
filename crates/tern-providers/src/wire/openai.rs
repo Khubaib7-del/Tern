@@ -3,6 +3,20 @@ use serde_json::{Value, json};
 use super::{str_at, u64_at};
 use crate::{ChatRequest, ChatResponse, ModelInfo, Usage};
 
+/// Plain text, or text and pictures as content parts.
+fn content(m: &crate::ChatMessage) -> Value {
+    if m.images.is_empty() {
+        return json!(m.content);
+    }
+    let mut parts = vec![json!({"type": "text", "text": m.content})];
+    parts.extend(
+        m.images
+            .iter()
+            .map(|i| json!({"type": "image_url", "image_url": {"url": i.data_url()}})),
+    );
+    Value::Array(parts)
+}
+
 pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     let mut messages = Vec::new();
     if let Some(s) = &req.system {
@@ -11,7 +25,7 @@ pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     messages.extend(
         req.messages
             .iter()
-            .map(|m| json!({"role": m.role, "content": m.content})),
+            .map(|m| json!({"role": m.role, "content": content(m)})),
     );
     let mut body = json!({"model": req.model, "messages": messages, "max_tokens": req.max_tokens, "stream": false});
     if let Some(t) = req.temperature {

@@ -16,6 +16,7 @@ tern-core.workspace = true
 tern-platform.workspace = true
 tern-store.workspace = true
 tern-providers.workspace = true
+base64.workspace = true
 tern-crawl.workspace = true
 regex.workspace = true
 url.workspace = true

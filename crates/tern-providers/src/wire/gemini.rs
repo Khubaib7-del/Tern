@@ -12,7 +12,13 @@ pub(crate) fn chat_body(req: &ChatRequest) -> Value {
                 Role::User => "user",
                 Role::Assistant => "model",
             };
-            json!({"role": role, "parts": [{"text": m.content}]})
+            let mut parts = vec![json!({"text": m.content})];
+            parts.extend(
+                m.images
+                    .iter()
+                    .map(|i| json!({"inline_data": {"mime_type": i.media_type, "data": i.data}})),
+            );
+            json!({"role": role, "parts": parts})
         })
         .collect();
     let mut config = json!({"maxOutputTokens": req.max_tokens});

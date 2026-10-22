@@ -24,8 +24,8 @@ const GLYPHS: &[(&str, &[u8])] = &[
     ("steer", include_bytes!("../assets/glyphs/steer.svg")),
     ("study", include_bytes!("../assets/glyphs/study.svg")),
     (
-        "tern-reader",
-        include_bytes!("../assets/glyphs/tern-reader.svg"),
+        "tern-crawl",
+        include_bytes!("../assets/glyphs/tern-crawl.svg"),
     ),
     (
         "verdict-contested",

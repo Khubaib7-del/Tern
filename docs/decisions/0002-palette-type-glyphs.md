@@ -45,7 +45,7 @@ The title bar shows the lockup: the tern mark, **TERN** in Plex Sans semibold, a
 
 ### Glyphs
 
-Twelve custom glyphs, 16 px on a 16 grid, 1.5 px stroke in `currentColor`, matching Lucide: `research` (square), `study` (round), five verdicts (`supported`, `partial`, `contested`, `unsupported`, `unverified`), `checkpoint`, `watcher`, `steer`, `branch-reply`, and `tern-reader` for Tern's own reader. Research and Study keep the square and round markers from §5.
+Twelve custom glyphs, 16 px on a 16 grid, 1.5 px stroke in `currentColor`, matching Lucide: `research` (square), `study` (round), five verdicts (`supported`, `partial`, `contested`, `unsupported`, `unverified`), `checkpoint`, `watcher`, `steer`, `branch-reply`, and `tern-crawl`, the logo of **Tern Crawl**, Tern's own crawler and reader (a tern diving into lines of text; filled, unlike the stroked glyphs, because it is a product mark; brand files in `assets/brand/tern-crawl.svg` and `tern-crawl-tile.svg`). Research and Study keep the square and round markers from §5.
 
 Built-in service logos, one colour, from Simple Icons (CC0 data; each mark belongs to its owner): GitHub, arXiv, Wikipedia, DOI, Semantic Scholar, PubMed, Brave, DuckDuckGo, Google Scholar, ORCID, Zotero, ResearchGate. A source row shows the built-in logo when the site is one of these, otherwise its favicon (ADR 0005).
 

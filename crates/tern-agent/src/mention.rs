@@ -150,6 +150,7 @@ pub fn source_attachment(page: &PageRef) -> Attachment {
             cut: false,
         }],
         skipped: Vec::new(),
+        images: Vec::new(),
     }
 }
 

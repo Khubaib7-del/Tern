@@ -88,7 +88,7 @@ async fn searches_reads_answers_and_checks_citations() {
     assert!(r.unread[0].reason.contains("404"));
     assert_eq!(r.usage.total(), 960);
     assert_eq!(r.search_service, "SearXNG");
-    assert_eq!(r.reader_icon, "tern-reader");
+    assert_eq!(r.reader_icon, "tern-crawl");
 
     let kinds: Vec<String> = sink.events().into_iter().map(|e| e.kind).collect();
     assert_eq!(
