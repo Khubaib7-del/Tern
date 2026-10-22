@@ -65,7 +65,8 @@ impl Tool for WebSearchTool {
             Ok(ToolOutput {
                 content: out,
                 evidence_refs: hits.iter().map(|h| h.url.clone()).collect(),
-                meta: json!({ "query": q, "results": hits.len() }),
+                meta: json!({ "query": q, "results": hits.len(),
+                    "hits": hits.iter().map(|h| json!({"url": h.url, "title": h.title, "site": h.site})).collect::<Vec<_>>() }),
             })
         })
     }

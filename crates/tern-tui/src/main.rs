@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod research;
+mod runs;
 mod tui;
 
 use std::io::{BufRead, IsTerminal};
@@ -92,6 +93,49 @@ enum Command {
         /// List recent chats and their ids instead.
         #[arg(long)]
         list: bool,
+    },
+    /// Resume a research run that stopped (a crash, a forced quit, a stop)
+    /// from its last checkpoint, without paying again for finished work.
+    Resume {
+        /// The chat: `last` (the default), its id, or the start of its id.
+        #[arg(default_value = "last")]
+        chat: String,
+        /// List every run waiting to be resumed instead.
+        #[arg(long)]
+        list: bool,
+        /// Forget the chat's unfinished run instead of resuming it.
+        #[arg(long)]
+        discard: bool,
+        /// Print the run report as JSON instead of the answer.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        args: ChatArgs,
+    },
+    /// Steer a run going in another window or terminal: `focus on 2024
+    /// sources`, `drop sub-question 3`, `add: cost comparison`,
+    /// `redirect 2: open-source options`.
+    Steer {
+        /// The chat: `last`, its id, or the start of its id.
+        chat: String,
+        /// The note.
+        #[arg(required = true, num_args = 1..)]
+        note: Vec<String>,
+    },
+    /// Put research questions on watch and see what changed since the last run.
+    #[command(subcommand)]
+    Watch(runs::WatchCmd),
+    /// Print a run's source ledger (every URL considered, read, or skipped,
+    /// and why) and budget ledger (tokens, pages, and time per step and
+    /// per worker).
+    Ledger {
+        /// The chat: `last` (the default), its id, or the start of its id.
+        #[arg(default_value = "last")]
+        chat: String,
+        #[arg(long, short)]
+        turn: Option<usize>,
+        #[arg(long)]
+        json: bool,
     },
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
@@ -235,6 +279,22 @@ fn main() -> ExitCode {
             json,
         )),
         Command::Search(cmd) => block_on(run_search(cmd)),
+        Command::Resume {
+            chat,
+            list,
+            discard,
+            json,
+            args,
+        } => block_on(runs::resume(chat, args, list, discard, json)),
+        Command::Steer { chat, note } => match runs::steer(chat, note) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(msg) => {
+                eprintln!("{msg}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Watch(cmd) => block_on(runs::watch(cmd)),
+        Command::Ledger { chat, turn, json } => block_on(runs::ledger(chat, turn, json)),
         Command::Report {
             chat,
             turn,

@@ -8,6 +8,8 @@ use tern_crawl::SourceIcon;
 use tern_providers::{ChatResponse, ProviderResult};
 
 use super::*;
+use crate::steer::Steering;
+
 use crate::engine::MemorySink;
 use crate::policy::{Mode, PolicyConfig};
 use crate::run::Run;
@@ -24,6 +26,10 @@ struct Mock {
     notes_tokens: u64,
     /// Worker whose notes ask for one more search.
     again: Option<&'static str>,
+    /// Worker whose notes never come back (the app is killed meanwhile).
+    hang: Option<&'static str>,
+    calls: AtomicUsize,
+    prompts: std::sync::Mutex<Vec<String>>,
 }
 
 impl Default for Mock {
@@ -32,7 +38,16 @@ impl Default for Mock {
             plan: PLAN.into(),
             notes_tokens: 1_000,
             again: None,
+            hang: None,
+            calls: AtomicUsize::new(0),
+            prompts: std::sync::Mutex::default(),
         }
+    }
+}
+
+impl Mock {
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 
@@ -54,6 +69,11 @@ impl Model for Mock {
         "mock"
     }
     fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.prompts
+            .lock()
+            .unwrap()
+            .push(req.messages[0].content.clone());
         Box::pin(async move {
             let system = req.system.clone().unwrap_or_default();
             let message = req.messages[0].content.clone();
@@ -66,6 +86,9 @@ impl Model for Mock {
                     .find_map(|l| l.strip_prefix("Your sub-question: "))
                     .unwrap_or_default()
                     .to_owned();
+                if self.hang.is_some_and(|h| sub.starts_with(h)) {
+                    std::future::pending::<()>().await;
+                }
                 let sources = message.lines().filter(|l| l.starts_with('[')).count();
                 let mut text = format!("{sub} fact one [1].");
                 if sources > 1 {
@@ -220,6 +243,8 @@ impl Fixture {
             ledger: &self.ledger,
             gate,
             on_text: None,
+            checkpoints: None,
+            steering: None,
         };
         run_deep(
             deps,
@@ -717,4 +742,484 @@ fn controls_and_picks() {
     assert_eq!(question_of("  What is\nRAG? "), "What is RAG?");
     let plan = fallback_plan("Why?", PlanBudget::default(), 5);
     assert_eq!(turn_budget(&plan).max_model_calls, 2 + 3 * ROUNDS as u32);
+}
+
+/// Counts searches on top of [`MockSearch`].
+#[derive(Default)]
+struct CountSearch {
+    queries: std::sync::Mutex<Vec<String>>,
+}
+
+impl CountSearch {
+    fn queries(&self) -> Vec<String> {
+        self.queries.lock().unwrap().clone()
+    }
+}
+
+impl Searcher for CountSearch {
+    fn id(&self) -> &str {
+        "mock-search"
+    }
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        self.queries.lock().unwrap().push(query.to_owned());
+        MockSearch.search(query, limit)
+    }
+}
+
+/// One run with checkpoints and steering wired in.
+#[allow(clippy::too_many_arguments)]
+async fn run_with(
+    session: SessionId,
+    sink: &MemorySink,
+    model: &Mock,
+    search: &CountSearch,
+    reader: &MockReader,
+    checkpoints: &crate::checkpoint::MemoryCheckpoints,
+    steering: Option<&Steering>,
+    resume: Option<RunCheckpoint>,
+    control: &DeepControl,
+    workers: usize,
+) -> TurnOutcome {
+    let ledger = UsageLedger::default();
+    let deps = DeepDeps {
+        session,
+        model,
+        model_name: "mock",
+        search,
+        reader,
+        sink,
+        ledger: &ledger,
+        gate: None,
+        on_text: None,
+        checkpoints: Some(checkpoints),
+        steering,
+    };
+    match resume {
+        Some(c) => resume_deep(deps, c, &opts(workers), control).await,
+        None => {
+            run_deep(
+                deps,
+                "How do alpha, beta, and gamma relate?",
+                &opts(workers),
+                &RunAsDrafted,
+                control,
+            )
+            .await
+        }
+    }
+}
+
+fn view(sink: &MemorySink) -> Run {
+    let mut run = Run::new();
+    for e in sink.events() {
+        run.push(&e);
+    }
+    run
+}
+
+#[tokio::test]
+async fn a_killed_run_resumes_without_repeating_paid_work() {
+    let session = SessionId::new();
+    let saved = crate::checkpoint::MemoryCheckpoints::default();
+    // First run: worker 2's notes never come back, and the app is killed
+    // (the run's future is dropped) while it waits.
+    let model = Mock {
+        hang: Some("beta"),
+        ..Mock::default()
+    };
+    let search = CountSearch::default();
+    let reader = MockReader::default();
+    let sink = MemorySink::default();
+    let killed = tokio::time::timeout(
+        Duration::from_millis(800),
+        run_with(
+            session,
+            &sink,
+            &model,
+            &search,
+            &reader,
+            &saved,
+            None,
+            None,
+            &DeepControl::default(),
+            3,
+        ),
+    )
+    .await;
+    assert!(killed.is_err(), "the first run never finishes");
+    assert_eq!(search.queries().len(), 3);
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 9);
+    let ck = saved.latest().expect("a checkpoint");
+    assert_eq!(ck.version, crate::checkpoint::CHECKPOINT_VERSION);
+    assert_eq!(ck.stage, crate::checkpoint::Stage::Workers);
+    let d = ck.deep.as_ref().unwrap();
+    let by_n = |n: usize| d.workers.iter().find(|w| w.n == n).unwrap();
+    assert_eq!(by_n(1).finished, Some(WorkerStatus::Done));
+    assert_eq!(by_n(3).finished, Some(WorkerStatus::Done));
+    assert_eq!(by_n(2).finished, None);
+    assert!(
+        by_n(2).pending_notes,
+        "its pages were read; its notes were not"
+    );
+    assert_eq!(by_n(2).pages.len(), 3);
+    assert_eq!(
+        ck.progress(),
+        "Deep research · workers running · 2 of 3 workers done"
+    );
+
+    // Resume with fresh mocks that count everything.
+    let model2 = Mock::default();
+    let search2 = CountSearch::default();
+    let reader2 = MockReader::default();
+    let sink2 = MemorySink::default();
+    let out = run_with(
+        session,
+        &sink2,
+        &model2,
+        &search2,
+        &reader2,
+        &saved,
+        None,
+        Some(ck),
+        &DeepControl::default(),
+        3,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert!(search2.queries().is_empty(), "no search ran again");
+    assert_eq!(
+        reader2.reads.load(Ordering::SeqCst),
+        0,
+        "no page was read again"
+    );
+    // Worker 2's notes and the answer; no plan, no notes for workers 1 and 3.
+    assert_eq!(model2.calls(), 2);
+    assert!(
+        !model2
+            .prompts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.contains("alpha part") && p.contains("Your sub-question")),
+        "worker 1 did not write notes again"
+    );
+    assert!(saved.latest().is_none(), "the answer clears the checkpoint");
+    let kinds: Vec<String> = sink2.events().into_iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&"run.resumed".to_owned()));
+    assert!(!kinds.contains(&"plan.drafted".to_owned()));
+    // The resumed run's view and report show all three workers.
+    let run = view(&sink2);
+    let deep = run.deep.clone().unwrap();
+    assert_eq!(deep.workers.len(), 3);
+    assert!(deep.workers.iter().all(|w| w.status == WorkerStatus::Done));
+    assert!(deep.workers.iter().all(|w| !w.pages.is_empty()));
+    assert!(run.resumed.is_some());
+    let past = crate::transcript::past_turns(&sink2.events());
+    let report = crate::report::from_turn(session, 1, &past[0], "mock", None);
+    assert!(report.resumed_from.is_some());
+    let counts = report.ledger.counts();
+    assert!(
+        report
+            .ledger
+            .sources
+            .iter()
+            .any(|s| s.reason == LedgerReason::Restored),
+        "pages kept from the checkpoint are in the ledger"
+    );
+    assert!(counts.read >= 8, "{counts:?}");
+    assert!(report.to_markdown().contains("## Resume and steering"));
+}
+
+#[tokio::test]
+async fn a_stopped_run_resumes_its_unfinished_workers() {
+    let session = SessionId::new();
+    let saved = crate::checkpoint::MemoryCheckpoints::default();
+    let control = DeepControl::default();
+    let reader = MockReader {
+        delay_ms: 200,
+        cancel_all_on: Some(("gamma-a", control.clone())),
+        ..MockReader::default()
+    };
+    let sink = MemorySink::default();
+    let search = CountSearch::default();
+    let out = run_with(
+        session,
+        &sink,
+        &Mock::default(),
+        &search,
+        &reader,
+        &saved,
+        None,
+        None,
+        &control,
+        1,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Cancelled);
+    let ck = saved.latest().expect("a stopped run keeps its checkpoint");
+    let done = ck.workers_done().unwrap();
+    assert_eq!(done, (2, 3), "workers 1 and 2 finished before the stop");
+    let run = view(&sink);
+    assert!(run.resumable);
+
+    let search2 = CountSearch::default();
+    let reader2 = MockReader::default();
+    let sink2 = MemorySink::default();
+    let out = run_with(
+        session,
+        &sink2,
+        &Mock::default(),
+        &search2,
+        &reader2,
+        &saved,
+        None,
+        Some(ck),
+        &DeepControl::default(),
+        1,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    // Only worker 3 searched again; workers 1 and 2 were kept.
+    assert_eq!(search2.queries(), ["gamma"]);
+    assert!(reader2.reads.load(Ordering::SeqCst) <= 3);
+}
+
+#[tokio::test]
+async fn steering_drops_adds_and_guides_workers() {
+    let steer = Steering::new();
+    steer.send("drop sub-question 3");
+    steer.send("add: delta part");
+    steer.send("focus on 2024 sources");
+    steer.send("drop 9");
+    let saved = crate::checkpoint::MemoryCheckpoints::default();
+    let model = Mock::default();
+    let sink = MemorySink::default();
+    let search = CountSearch::default();
+    let out = run_with(
+        SessionId::new(),
+        &sink,
+        &model,
+        &search,
+        &MockReader::default(),
+        &saved,
+        Some(&steer),
+        None,
+        &DeepControl::default(),
+        2,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let events = sink.events();
+    let received = events.iter().filter(|e| e.kind == "steer.received").count();
+    let applied: Vec<&EventEnvelope> = events
+        .iter()
+        .filter(|e| e.kind == "steer.applied")
+        .collect();
+    assert_eq!(received, 4);
+    assert_eq!(applied.len(), 4);
+    assert_eq!(
+        applied[3].payload["applied"], false,
+        "there is no sub-question 9"
+    );
+    // Steering lands before any worker starts (the first safe point).
+    let first_steer = events
+        .iter()
+        .position(|e| e.kind == "steer.applied")
+        .unwrap();
+    let first_worker = events
+        .iter()
+        .position(|e| e.kind == "worker.started")
+        .unwrap();
+    assert!(first_steer < first_worker);
+    // Gamma never searched; delta did, as worker 4.
+    let q = search.queries();
+    assert!(!q.iter().any(|x| x == "gamma"), "{q:?}");
+    assert!(q.iter().any(|x| x == "delta part"), "{q:?}");
+    let run = view(&sink);
+    let deep = run.deep.unwrap();
+    assert_eq!(deep.workers.len(), 4);
+    let w3 = deep.workers.iter().find(|w| w.n == 3).unwrap();
+    assert_eq!(w3.status, WorkerStatus::Cancelled);
+    assert_eq!(w3.note, "dropped by your steer");
+    assert!(
+        deep.workers
+            .iter()
+            .any(|w| w.n == 4 && w.status == WorkerStatus::Done)
+    );
+    // The guidance reached every notes call and the answer.
+    let prompts = model.prompts.lock().unwrap().clone();
+    let with_guidance = prompts
+        .iter()
+        .filter(|p| p.contains("focus on 2024 sources"))
+        .count();
+    assert_eq!(with_guidance, 3 + 1, "three workers' notes and the answer");
+    assert_eq!(run.steers.len(), 4);
+    assert!(run.steers.iter().all(|s| s.applied.is_some()));
+}
+
+#[tokio::test]
+async fn a_running_worker_takes_a_redirect_at_its_next_round() {
+    let steer = Steering::new();
+    // Sent while worker 1 reads its pages.
+    struct SteerReader {
+        inner: MockReader,
+        steer: Steering,
+    }
+    impl Reader for SteerReader {
+        fn read<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<ReadPage, String>> {
+            if url.contains("alpha-a") {
+                self.steer.send("redirect 1: alpha costs");
+            }
+            self.inner.read(url)
+        }
+    }
+    let reader = SteerReader {
+        inner: MockReader {
+            delay_ms: 120,
+            ..MockReader::default()
+        },
+        steer: steer.clone(),
+    };
+    let ledger = UsageLedger::default();
+    let sink = MemorySink::default();
+    let search = CountSearch::default();
+    let model = Mock::default();
+    let deps = DeepDeps {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "mock",
+        search: &search,
+        reader: &reader,
+        sink: &sink,
+        ledger: &ledger,
+        gate: None,
+        on_text: None,
+        checkpoints: None,
+        steering: Some(&steer),
+    };
+    let out = run_deep(
+        deps,
+        "alpha, beta, gamma?",
+        &opts(3),
+        &RunAsDrafted,
+        &DeepControl::default(),
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert!(
+        search.queries().iter().any(|q| q == "alpha costs"),
+        "{:?}",
+        search.queries()
+    );
+    let applied: Vec<Value> = sink
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == "steer.applied")
+        .map(|e| e.payload)
+        .collect();
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0]["worker"], 1);
+    assert_eq!(applied[0]["applied"], true);
+    let prompts = model.prompts.lock().unwrap().clone();
+    assert!(
+        prompts
+            .iter()
+            .any(|p| p.contains("redirected this sub-question while it ran: alpha costs"))
+    );
+}
+
+#[tokio::test]
+async fn a_late_steer_is_logged_but_not_applied() {
+    let steer = Steering::new();
+    let ledger = UsageLedger::default();
+    let sink = MemorySink::default();
+    struct LateModel {
+        inner: Mock,
+        steer: Steering,
+    }
+    impl Model for LateModel {
+        fn provider_id(&self) -> &str {
+            "mock"
+        }
+        fn complete<'a>(
+            &'a self,
+            req: &'a ChatRequest,
+        ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+            if req
+                .system
+                .as_deref()
+                .is_some_and(|s| s.contains("Several workers researched"))
+            {
+                self.steer.send("also cover pricing");
+            }
+            self.inner.complete(req)
+        }
+    }
+    let model = LateModel {
+        inner: Mock::default(),
+        steer: steer.clone(),
+    };
+    let deps = DeepDeps {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "mock",
+        search: &MockSearch,
+        reader: &MockReader::default(),
+        sink: &sink,
+        ledger: &ledger,
+        gate: None,
+        on_text: None,
+        checkpoints: None,
+        steering: Some(&steer),
+    };
+    let out = run_deep(
+        deps,
+        "alpha, beta, gamma?",
+        &opts(3),
+        &RunAsDrafted,
+        &DeepControl::default(),
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let e = sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "steer.applied")
+        .expect("logged");
+    assert_eq!(e.payload["applied"], false);
+    assert!(e.user_summary.contains("already being written"));
+}
+
+#[tokio::test]
+async fn the_ledger_lists_every_url_and_what_each_worker_used() {
+    let f = Fixture::new();
+    let out = f
+        .run(
+            &Mock::default(),
+            &MockReader::default(),
+            opts(3),
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let l = f.run_view().ledger();
+    // Each search returns four results; three are read per worker.
+    let c = l.counts();
+    assert_eq!(c.considered, 12, "{l:#?}");
+    assert_eq!(c.read, 8);
+    assert!(l.sources.iter().any(|s| s.reason == LedgerReason::Robots));
+    assert_eq!(c.skipped, 4, "3 not picked and 1 robots.txt");
+    let lanes: Vec<Option<usize>> = l.lanes.iter().map(|x| x.worker).collect();
+    assert_eq!(lanes, [None, Some(1), Some(2), Some(3)]);
+    let w1 = &l.lanes[1];
+    assert_eq!((w1.model_calls, w1.pages, w1.searches), (1, 3, 1));
+    assert!(w1.budget.is_some());
+    let run = &l.lanes[0];
+    assert_eq!(run.model_calls, 2, "the plan and the answer");
 }

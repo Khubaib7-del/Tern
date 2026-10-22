@@ -272,6 +272,31 @@ pub fn from_turn(
         claims: run.checks.clone(),
         usage,
         errors,
+        ledger: run.ledger(),
+        steers: run
+            .steers
+            .iter()
+            .map(|s| {
+                if s.outcome.is_empty() {
+                    format!("“{}” (not applied before the run ended)", s.text)
+                } else {
+                    format!("“{}” → {}", s.text, s.outcome)
+                }
+            })
+            .collect(),
+        resumed_from: run.resumed.as_ref().map(|r| {
+            let mut line = r.progress.clone();
+            if !r.saved_at.is_empty() {
+                line.push_str(&format!(", saved {}", r.saved_at));
+            }
+            if r.prior_tokens > 0 {
+                line.push_str(&format!(
+                    "; {} tokens were used before the stop and are not counted again here",
+                    r.prior_tokens
+                ));
+            }
+            line
+        }),
     }
 }
 
@@ -330,6 +355,18 @@ pub fn find_session(store: &Store, which: &str) -> Result<SessionId, String> {
             hits.len()
         )),
     }
+}
+
+/// The chat `which` names (`last`, an id, or the start of one), from the
+/// app's database.
+pub fn find_chat(which: &str) -> Result<SessionId, String> {
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let db = paths.database();
+    if !db.exists() {
+        return Err("There are no chats yet.".into());
+    }
+    let store = Store::open(&db).map_err(|e| e.to_string())?;
+    find_session(&store, which)
 }
 
 /// `tern report`: the report for a chat's turn, rebuilt from the log and

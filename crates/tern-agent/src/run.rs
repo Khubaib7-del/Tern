@@ -45,6 +45,8 @@ pub enum StepKind {
     Plan,
     /// A deep research worker started or finished.
     Worker,
+    /// A steering note from the user, received or applied.
+    Steer,
 }
 
 /// The Raw view's filter chips.
@@ -80,9 +82,10 @@ impl RawFilter {
                     | StepKind::Problem
                     | StepKind::Worker
             ),
-            Self::Approvals => {
-                matches!(kind, StepKind::Approval | StepKind::Policy | StepKind::Plan)
-            }
+            Self::Approvals => matches!(
+                kind,
+                StepKind::Approval | StepKind::Policy | StepKind::Plan | StepKind::Steer
+            ),
             Self::Search => matches!(kind, StepKind::Search | StepKind::Read),
         }
     }
@@ -218,6 +221,20 @@ pub struct WorkerRow {
     pub took: Duration,
 }
 
+impl WorkerRow {
+    /// Work kept from a checkpoint: pages, searches, and tokens.
+    fn restore(&mut self, p: &Value) {
+        for page in p["pages"].as_array().into_iter().flatten() {
+            if let Ok(pg) = serde_json::from_value::<PageRef>(page.clone()) {
+                push_unique(&mut self.pages, pg);
+            }
+        }
+        self.searches += p["searches"].as_u64().unwrap_or_default() as usize;
+        self.tokens_in += p["tokens"]["input"].as_u64().unwrap_or_default();
+        self.tokens_out += p["tokens"]["output"].as_u64().unwrap_or_default();
+    }
+}
+
 /// A deep run's plan and workers, rebuilt from its events.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeepRun {
@@ -293,10 +310,38 @@ impl DeepRun {
                     w.status = WorkerStatus::Running;
                     w.budget = serde_json::from_value(p["budget"].clone()).ok();
                     w.took = at;
+                    if p.get("restored").is_some() {
+                        w.restore(&p["restored"]);
+                    }
+                }
+            }
+            "steer.applied" => {
+                if let Some(add) = p.get("added")
+                    && let Some(n) = add["n"].as_u64()
+                {
+                    let n = n as usize;
+                    if self.worker(n).is_none() {
+                        self.workers.push(WorkerRow {
+                            n,
+                            question: str_at(add, "question").unwrap_or_default().to_owned(),
+                            budget: serde_json::from_value(add["budget"].clone()).ok(),
+                            ..WorkerRow::default()
+                        });
+                    }
+                }
+                if let Some(r) = p.get("redirected")
+                    && let Some(n) = r["n"].as_u64()
+                    && let Some(w) = self.worker(n as usize)
+                    && let Some(q) = str_at(r, "question")
+                {
+                    w.question = q.to_owned();
                 }
             }
             "worker.finished" => {
                 if let Some(w) = worker.and_then(|n| self.worker(n)) {
+                    if p["restored"] == true {
+                        w.restore(p);
+                    }
                     w.status = serde_json::from_value(p["status"].clone()).unwrap_or_default();
                     w.note = str_at(p, "note").unwrap_or_default().to_owned();
                     w.took = Duration::from_millis(p["took_ms"].as_u64().unwrap_or_default());
@@ -328,6 +373,29 @@ impl DeepRun {
     }
 }
 
+/// One steering note and what became of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SteerRow {
+    pub text: String,
+    /// What the run did with it, once applied (or why not).
+    pub outcome: String,
+    /// `None` while it waits for the next safe point.
+    pub applied: Option<bool>,
+}
+
+/// Where a resumed run picked up.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResumeInfo {
+    /// The interrupted turn's id.
+    pub from_turn: String,
+    pub stage: String,
+    pub saved_at: String,
+    /// "Deep research · workers running · 2 of 3 workers done".
+    pub progress: String,
+    /// Tokens the run had used before the stop.
+    pub prior_tokens: u64,
+}
+
 /// One turn's steps, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Run {
@@ -340,6 +408,12 @@ pub struct Run {
     pub report: Option<ReportFiles>,
     /// The plan and workers, for a deep research turn.
     pub deep: Option<Box<DeepRun>>,
+    /// Steering notes sent while it ran.
+    pub steers: Vec<SteerRow>,
+    /// Set when the turn picked up from a checkpoint.
+    pub resumed: Option<Box<ResumeInfo>>,
+    /// It stopped short and left a checkpoint to resume from.
+    pub resumable: bool,
 }
 
 impl Run {
@@ -372,11 +446,57 @@ impl Run {
         if let Some(deep) = self.deep.as_mut() {
             deep.push(e, at);
         }
+        match e.kind.as_str() {
+            "steer.received" => self.steers.push(SteerRow {
+                text: str_at(&e.payload, "text").unwrap_or_default().to_owned(),
+                ..SteerRow::default()
+            }),
+            "steer.applied" => {
+                let text = str_at(&e.payload, "text").unwrap_or_default();
+                let applied = e.payload["applied"] != false;
+                let i = self
+                    .steers
+                    .iter()
+                    .position(|s| s.applied.is_none() && s.text == text)
+                    .or_else(|| self.steers.iter().rposition(|s| s.applied.is_none()));
+                match i.map(|i| &mut self.steers[i]) {
+                    Some(row) => {
+                        row.applied = Some(applied);
+                        row.outcome = e.user_summary.clone();
+                    }
+                    None => self.steers.push(SteerRow {
+                        text: text.to_owned(),
+                        outcome: e.user_summary.clone(),
+                        applied: Some(applied),
+                    }),
+                }
+            }
+            "run.resumed" => {
+                let p = &e.payload;
+                self.resumed = Some(Box::new(ResumeInfo {
+                    from_turn: str_at(p, "turn").unwrap_or_default().to_owned(),
+                    stage: str_at(p, "stage").unwrap_or_default().to_owned(),
+                    saved_at: str_at(p, "saved_at").unwrap_or_default().to_owned(),
+                    progress: str_at(p, "progress").unwrap_or_default().to_owned(),
+                    prior_tokens: p["prior"]["input"].as_u64().unwrap_or_default()
+                        + p["prior"]["output"].as_u64().unwrap_or_default(),
+                }));
+            }
+            "turn.finished" | "run.cancelled" | "budget.exceeded" => {
+                self.resumable = e.payload["resumable"] == true;
+            }
+            _ => {}
+        }
         if e.kind == "claims.checked" {
             self.checks = serde_json::from_value(e.payload["checks"].clone()).unwrap_or_default();
             self.report = serde_json::from_value(e.payload["report"].clone()).ok();
         }
         self.steps.push(step_of(e, at));
+    }
+
+    /// The run's source and budget ledgers.
+    pub fn ledger(&self) -> crate::ledger::Ledger {
+        crate::ledger::of_run(self)
     }
 
     /// When the turn started.
@@ -579,6 +699,46 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                 note.push_str(&format!(" · {why}"));
             }
             step.note = note;
+        }
+        "steer.received" => {
+            step.kind = StepKind::Steer;
+            step.verb = "You steered";
+            step.target = str_at(p, "text").unwrap_or_default().to_owned();
+        }
+        "steer.applied" => {
+            step.kind = StepKind::Steer;
+            let applied = p["applied"] != false;
+            step.verb = if applied {
+                "Applied steer"
+            } else {
+                "Steer not applied"
+            };
+            step.target = str_at(p, "text").unwrap_or_default().to_owned();
+            step.note = e
+                .user_summary
+                .trim_start_matches("Applied: ")
+                .trim_start_matches("Not applied: ")
+                .to_owned();
+        }
+        "run.resumed" => {
+            step.verb = "Resumed";
+            step.target = str_at(p, "progress").unwrap_or_default().to_owned();
+            step.note = str_at(p, "saved_at")
+                .map(|t| format!("checkpoint saved {t}"))
+                .unwrap_or_default();
+        }
+        "sources.skipped" => {
+            step.kind = StepKind::Tool;
+            step.verb = "Skipped";
+            let n = p["skipped"].as_array().map(Vec::len).unwrap_or_default();
+            step.target = plural(n, "result");
+            step.detailed = false;
+        }
+        "checkpoint.failed" => {
+            step.kind = StepKind::Problem;
+            step.verb = "Checkpoint not saved";
+            step.note = str_at(p, "error").unwrap_or_default().to_owned();
+            step.ok = false;
         }
         "policy.decided" => {
             step.kind = StepKind::Policy;

@@ -34,6 +34,7 @@ mod browser_view;
 mod deep_view;
 mod editor_view;
 mod git_view;
+mod runs_view;
 mod scout_view;
 
 use crate::layout::{Layout, Tab, Tabs};
@@ -101,6 +102,8 @@ pub struct Workspace {
     git_inputs: git_view::GitInputs,
     /// The Editor screen's text field.
     note_input: Entity<TextareaState>,
+    /// Runs due watches in the background while the window is open.
+    _watch_timer: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -211,6 +214,26 @@ impl Workspace {
             }
         });
         bridge.connect();
+        bridge.load_watches();
+        // Due watches run a minute after start, then every 15 minutes, one
+        // batch at a time.
+        let watch_timer = cx.spawn_in(window, async move |this, cx| {
+            let mut wait = Duration::from_secs(60);
+            loop {
+                cx.background_executor().timer(wait).await;
+                wait = Duration::from_secs(15 * 60);
+                let alive = this.update(cx, |this, cx| {
+                    if this.model.watches_running == 0 && !this.model.watches.is_empty() {
+                        this.model.watches_running += 1;
+                        this.bridge.run_watches(Vec::new());
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
         let mut model = Model::new();
         if let Ok(v) = tern_agent::vault::Vault::open_default() {
             let root = v.root().to_path_buf();
@@ -251,6 +274,7 @@ impl Workspace {
             scroll: ScrollHandle::new(),
             ticker: None,
             _listener: listener,
+            _watch_timer: watch_timer,
             note_input,
             address_input,
             git_inputs,
@@ -270,6 +294,7 @@ impl Workspace {
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
                 self.tabs.set_active(s.session_id(), "New chat");
+                self.model.set_resume_offer(None);
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
@@ -292,6 +317,7 @@ impl Workspace {
                 self.tabs.set_active(s.session_id(), &title);
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
+                self.model.set_resume_offer(s.checkpoint().as_ref());
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
@@ -350,6 +376,8 @@ impl Workspace {
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
             Msg::Done(s, out, usage, recent) => {
                 self.model.finish_turn(&out, usage);
+                self.model
+                    .set_resume_offer(s.checkpoint().filter(|_| out.answer.is_none()).as_ref());
                 self.model.sessions = recent;
                 self.session = Some(s);
                 self.ticker = None;
@@ -386,11 +414,35 @@ impl Workspace {
             Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
                 "Tern could not save your choice: {e}"
             ))),
+            Msg::Watches(list, note, finished) => {
+                self.model.watches_loaded(list);
+                self.model.watches_running = self.model.watches_running.saturating_sub(finished);
+                // A watch's result is told on the Watches screen and in the
+                // sidebar; only errors and edits are noted in the chat.
+                if let Some(n) = note
+                    && finished == 0
+                    && self.model.screen == Screen::Chat
+                    && !self.model.is_busy()
+                {
+                    self.model.entries.push(Entry::Notice(n));
+                }
+            }
         }
         cx.notify();
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // While a run goes, Enter sends a steering note instead.
+        if self.model.can_steer() {
+            let text = self.composer.read(cx).value().to_string();
+            if self.model.steer(&text) {
+                self.composer
+                    .update(cx, |c, cx| c.set_value("", window, cx));
+                self.scroll.scroll_to_bottom();
+            }
+            cx.notify();
+            return;
+        }
         if self.session.is_none() {
             return;
         }
@@ -403,6 +455,8 @@ impl Workspace {
         };
         let mut session = session;
         session.attach_images(std::mem::take(&mut self.model.outgoing_images));
+        self.model.steering = Some(session.steering());
+        self.model.resume_offer = None;
         self.cancel = CancelFlag::default();
         if self.model.deep_mode {
             self.deep_control = tern_agent::DeepControl::new(self.cancel.clone());
@@ -1487,6 +1541,7 @@ impl Workspace {
                     })
                     .children(rows),
             )
+            .children(self.watches_section(p, cx))
             .child(self.scout_corner(p))
     }
 
@@ -1664,6 +1719,28 @@ impl Workspace {
                         "Save to vault",
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.save_answer(i, cx))),
+                )
+            })
+            .when(answer, |d| {
+                let watched = self
+                    .model
+                    .question_before(i)
+                    .is_some_and(|q| self.model.is_watched(&q));
+                d.child(
+                    action(
+                        "watch",
+                        if watched {
+                            AssetIcon::Check
+                        } else {
+                            AssetIcon::Eye
+                        },
+                        if watched {
+                            "On watch"
+                        } else {
+                            "Watch this question (daily)"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.watch_answer(i, cx))),
                 )
             })
             .when(answer && !busy, |d| {
@@ -2014,7 +2091,9 @@ impl Workspace {
                     this.mention_keys(e, window, cx);
                 }))
                 .children(self.mention_menu(p, cx))
+                .children(self.resume_banner(p, cx))
                 .children(self.reply_bar(p, cx))
+                .children(self.steer_hint(p))
                 .when(
                     !self.model.attachments.is_empty() || self.model.attaching > 0,
                     |d| d.child(self.attachment_chips(p, cx)),
@@ -2719,6 +2798,7 @@ impl Workspace {
                 RunView::Raw => self.run_raw(run, p, cx),
                 RunView::Report => self.run_report(run, p, cx),
                 RunView::Workers => self.run_workers(run, p, cx),
+                RunView::Ledger => self.run_ledger(run, p, cx),
             }
         };
         div()
@@ -2792,6 +2872,7 @@ impl Workspace {
             .when(!pages.is_empty(), |d| {
                 d.child(section("Pages read")).children(page_rows)
             })
+            .children(self.run_extras(run, p))
             .when(!problems.is_empty(), |d| {
                 d.child(section("Problems"))
                     .children(problems.into_iter().map(|s| step_line(s, p, false)))
@@ -3172,6 +3253,7 @@ impl Render for Workspace {
             Screen::Editor => "screen-editor",
             Screen::Git => "screen-git",
             Screen::Appearance => "screen-appearance",
+            Screen::Watches => "screen-watches",
         };
         div()
             .relative()
@@ -3207,6 +3289,7 @@ impl Render for Workspace {
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),
                                 Screen::Appearance => d.child(self.appearance_screen(p, cx)),
+                                Screen::Watches => d.child(self.watches_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,
@@ -3288,6 +3371,7 @@ fn step_line(s: &RunStep, p: Palette, with_time: bool) -> AnyElement {
         StepKind::Problem => AssetIcon::TriangleAlert,
         StepKind::Plan => AssetIcon::ListChecks,
         StepKind::Worker => AssetIcon::Workflow,
+        StepKind::Steer => AssetIcon::Compass,
     };
     div()
         .flex()

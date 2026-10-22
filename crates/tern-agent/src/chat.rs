@@ -69,6 +69,10 @@ pub struct ChatSession {
     budget: Budget,
     max_output_tokens: u32,
     check_claims: crate::verify::CheckClaims,
+    /// Where runs save their checkpoints (`<data>/checkpoints`).
+    checkpoints: Option<crate::checkpoint::CheckpointDir>,
+    /// Steering notes for the running turn, from the front end or `tern steer`.
+    steering: crate::steer::Steering,
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -271,7 +275,19 @@ impl ChatSession {
                     .map_err(|e| e.to_string())?
             }
         };
+        let paths = AppPaths::discover().ok();
+        let checkpoints = paths
+            .as_ref()
+            .map(|p| crate::checkpoint::CheckpointDir::new(p.checkpoints()));
+        let steering = match &paths {
+            Some(p) => {
+                crate::steer::Steering::with_file(crate::steer::inbox_path(p, &session.to_string()))
+            }
+            None => crate::steer::Steering::new(),
+        };
         let s = Self {
+            checkpoints,
+            steering,
             provider,
             model,
             context_window,
@@ -419,6 +435,15 @@ impl ChatSession {
             inner: &self.sink,
             observer,
         };
+        self.steering.clear();
+        let hooks = crate::engine::RunHooks {
+            checkpoints: self
+                .checkpoints
+                .as_ref()
+                .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
+            steering: Some(&self.steering),
+            resume: None,
+        };
         let out = TurnLoop {
             session: self.session,
             model: &self.provider,
@@ -433,6 +458,7 @@ impl ChatSession {
             instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
             max_output_tokens: self.max_output_tokens,
             on_text,
+            hooks,
         }
         .run_message(
             self.history.clone(),
@@ -506,7 +532,13 @@ impl ChatSession {
             ledger: &self.ledger,
             gate: Some(&mut self.gate),
             on_text,
+            checkpoints: self
+                .checkpoints
+                .as_ref()
+                .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
+            steering: Some(&self.steering),
         };
+        self.steering.clear();
         let out = crate::deep::run_deep(deps, text, opts, approver, control).await;
         if !self.titled {
             self.titled = true;
@@ -520,6 +552,111 @@ impl ChatSession {
             self.history.push(ChatMessage::assistant(answer.clone()));
         }
         out
+    }
+
+    /// The inbox for steering notes; send to a clone of it while a turn
+    /// runs (the run takes notes in at its next safe point).
+    pub fn steering(&self) -> crate::steer::Steering {
+        self.steering.clone()
+    }
+
+    /// This chat's unfinished run, if it has one to resume.
+    pub fn checkpoint(&self) -> Option<crate::checkpoint::RunCheckpoint> {
+        self.checkpoints
+            .as_ref()?
+            .load(&self.session.to_string())
+            .ok()
+            .flatten()
+    }
+
+    /// Forgets this chat's unfinished run.
+    pub fn discard_checkpoint(&self) -> Result<(), String> {
+        use crate::checkpoint::CheckpointSink;
+        match &self.checkpoints {
+            Some(c) => c.clear(&self.session.to_string()),
+            None => Ok(()),
+        }
+    }
+
+    /// Resumes this chat's unfinished run from its checkpoint: a quick turn
+    /// with its conversation so far, or a deep run with its approved plan,
+    /// finished workers, and pages already read (see
+    /// [`crate::deep::resume_deep`]). Nothing done before the stop is paid
+    /// for again. Call [`ChatSession::check_last_turn`] afterwards, as after
+    /// any turn.
+    pub async fn resume_run(
+        &mut self,
+        opts: &crate::deep::DeepOptions,
+        approver: &dyn Approver,
+        control: &crate::deep::DeepControl,
+        observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
+        on_text: Option<crate::OnText<'_>>,
+    ) -> Result<TurnOutcome, String> {
+        use crate::checkpoint::RunMode;
+        let ck = self
+            .checkpoint()
+            .ok_or("This chat has no unfinished run to resume.")?;
+        let tee = Tee {
+            inner: &self.sink,
+            observer,
+        };
+        let sink = self
+            .checkpoints
+            .as_ref()
+            .map(|c| c as &dyn crate::checkpoint::CheckpointSink);
+        let message = ck.message.clone();
+        let out = match ck.mode {
+            RunMode::Deep => {
+                let Some(search) = self.search.clone() else {
+                    return Err("Resuming deep research needs web search. Add a key with `tern search add tavily` (or `brave`), or use your own SearXNG.".into());
+                };
+                let reader = crate::web::shared_reader();
+                let deps = crate::deep::DeepDeps {
+                    session: self.session,
+                    model: &self.provider,
+                    model_name: &self.model,
+                    search: search.as_ref(),
+                    reader: &reader,
+                    sink: &tee,
+                    ledger: &self.ledger,
+                    gate: Some(&mut self.gate),
+                    on_text,
+                    checkpoints: sink,
+                    steering: Some(&self.steering),
+                };
+                crate::deep::resume_deep(deps, ck, opts, control).await
+            }
+            RunMode::Quick => {
+                let hooks = crate::engine::RunHooks {
+                    checkpoints: sink,
+                    steering: Some(&self.steering),
+                    resume: Some(&ck),
+                };
+                TurnLoop {
+                    session: self.session,
+                    model: &self.provider,
+                    model_name: &self.model,
+                    tools: &self.tools,
+                    gate: &mut self.gate,
+                    approver,
+                    sink: &tee,
+                    ledger: &self.ledger,
+                    budget: self.budget,
+                    cancel: control.flag(),
+                    instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
+                    max_output_tokens: self.max_output_tokens,
+                    on_text,
+                    hooks,
+                }
+                .run(self.history.clone(), &message)
+                .await
+            }
+        };
+        if let Some(answer) = &out.answer {
+            self.history.push(ChatMessage::user(message));
+            self.history.push(ChatMessage::assistant(answer.clone()));
+        }
+        Ok(out)
     }
 
     /// Checks the latest turn's claims against the pages it read and

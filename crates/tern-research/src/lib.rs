@@ -15,12 +15,18 @@
 
 pub mod claims;
 pub mod deep;
+pub mod ledger;
 pub mod plan;
 pub mod report;
+pub mod steer;
 pub mod verdict;
+pub mod watch;
 
 pub use claims::{Claim, extract};
 pub use deep::{Final, Merged, NoteSource, WorkerNotes, WorkerStatus};
+pub use ledger::{Ledger, LedgerReason, SourceFate};
 pub use plan::{PlanBudget, PlanSource, ResearchPlan, SourceKind, SubQuestion, WorkerBudget};
 pub use report::{ReportBudget, ReportSource, ReportStep, ReportUsage, ReportWorker, RunReport};
+pub use steer::{SteerAction, parse_steer};
 pub use verdict::{ClaimCheck, Evidence, Method, SourceText, Tally, Verdict, check_lexical};
+pub use watch::{WhatChanged, diff};
