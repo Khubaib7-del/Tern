@@ -7,8 +7,8 @@ use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
-    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, ContextUse, PageRef,
-    PastTurn, Preferences, SessionSummary, TurnOutcome,
+    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, ContextUse, PastTurn,
+    Preferences, SessionSummary, TurnOutcome,
 };
 use tern_core::SecretString;
 use tern_core::SessionId;
@@ -28,12 +28,8 @@ pub enum Msg {
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
-    Event {
-        kind: String,
-        summary: String,
-        /// The page a `read_url` returned, for the answer's source rows.
-        page: Option<PageRef>,
-    },
+    /// An event from the running turn, as logged.
+    Event(Box<tern_core::EventEnvelope>),
     /// Reply text streaming in: the model call's number and the new text.
     Text(u32, String),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
@@ -61,7 +57,7 @@ impl std::fmt::Debug for Msg {
             Self::Notice(e) => write!(f, "Notice({e})"),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
-            Self::Event { kind, .. } => write!(f, "Event({kind})"),
+            Self::Event(e) => write!(f, "Event({})", e.kind),
             Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
@@ -193,11 +189,7 @@ impl Bridge {
             let approver = UiApprover(tx.clone());
             let events = tx.clone();
             let observer = move |e: &tern_core::EventEnvelope| {
-                let _ = events.send(Msg::Event {
-                    kind: e.kind.clone(),
-                    summary: e.user_summary.clone(),
-                    page: tern_agent::sources::page_of(&e.kind, &e.payload),
-                });
+                let _ = events.send(Msg::Event(Box::new(e.clone())));
             };
             let texts = tx.clone();
             let on_text = move |call: u32, t: &str| {

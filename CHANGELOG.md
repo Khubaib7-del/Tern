@@ -9,6 +9,12 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - `tern-desktop`: first GPUI window on `gpui-kit` 0.8 (ADR 0006). Title bar with the Research or Study switch, icon rail, chat list, transcript with Markdown answers, working line, inline approvals, composer (Enter sends, Shift+Enter new line, stop), tokens used of the context window, and a run panel. Neutral greys until ADR 0002.
 - CI uploads `tern-desktop.exe` and `tern.exe` (release, Windows x64) on every PR as the `tern-windows-x64` artifact.
 - `tern-store`: `recent_sessions` and `rename_session`; a chat takes its title from the first message.
+- Run panel views: **Summary** (rollup line, pages read, problems), **Detailed** (each step verb first with its target, note, and time), and **Raw** (every logged event with seq, type, time, and its JSON payload on click; filters All, Tools, Approvals, Search). All three read one `tern_agent::run::Run`, built live or from the log on reopen. "N steps" under an answer opens that answer's run.
+- `web_search` results carry `query` and `results` in their event meta.
+
+### Fixed (desktop)
+
+- Icons outside the components' default set (Pencil, Archive, run-panel icons) rendered blank: the app now registers the full Lucide catalog (`AllAssets`, about 750 KB).
 
 ### Added (phase 3, in progress)
 

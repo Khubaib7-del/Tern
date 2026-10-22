@@ -5,11 +5,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tern_agent::sources::push_unique;
+use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
-    ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, SessionSummary, TurnOutcome,
+    ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, Run, SessionSummary,
+    TurnOutcome,
 };
-use tern_core::TurnState;
+use tern_core::{EventEnvelope, TurnState};
 
 use crate::providers::ProvidersState;
 
@@ -24,10 +25,10 @@ pub enum Screen {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     User(String),
-    /// A finished answer, with the steps that led to it and how long it took.
+    /// A finished answer, with the run that led to it and how long it took.
     Assistant {
         text: String,
-        steps: Vec<String>,
+        run: Run,
         took: Duration,
         /// Pages read on the way, shown as source rows.
         pages: Vec<PageRef>,
@@ -55,16 +56,49 @@ pub enum Phase {
     Working {
         since: Instant,
         label: String,
-        steps: Vec<String>,
+        run: Run,
         /// Reply text streaming in, and which model call of the turn it is.
         draft: String,
         draft_call: u32,
     },
     Approval {
         since: Instant,
-        steps: Vec<String>,
+        run: Run,
         request: ApprovalRequest,
     },
+}
+
+/// The run panel's three views of the same run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RunView {
+    #[default]
+    Summary,
+    Detailed,
+    Raw,
+}
+
+impl RunView {
+    pub const ALL: [RunView; 3] = [Self::Summary, Self::Detailed, Self::Raw];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Summary => "Summary",
+            Self::Detailed => "Detailed",
+            Self::Raw => "Raw",
+        }
+    }
+}
+
+/// The run panel's own state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunPanel {
+    pub view: RunView,
+    pub filter: RawFilter,
+    /// Raw rows opened to show their payload, by event seq and position.
+    pub open: std::collections::HashSet<usize>,
+    /// The answer whose run is shown (an index into `entries`), when the user
+    /// picked an older one; otherwise the latest run.
+    pub pinned: Option<usize>,
 }
 
 /// The connected model, shown under the composer.
@@ -88,6 +122,9 @@ pub struct Model {
     pub sessions: Vec<SessionSummary>,
     pub sidebar_open: bool,
     pub run_panel_open: bool,
+    pub run_panel: RunPanel,
+    /// The latest turn's run, kept even when it ended without an answer.
+    pub last_run: Run,
     pub dark: bool,
     pub stopping: bool,
     pub screen: Screen,
@@ -114,6 +151,8 @@ impl Model {
             sessions: Vec::new(),
             sidebar_open: true,
             run_panel_open: false,
+            run_panel: RunPanel::default(),
+            last_run: Run::new(),
             dark: true,
             stopping: false,
             screen: Screen::Chat,
@@ -153,10 +192,12 @@ impl Model {
         }
         self.entries.push(Entry::User(text.to_owned()));
         self.turn_pages.clear();
+        self.run_panel.pinned = None;
+        self.run_panel.open.clear();
         self.phase = Phase::Working {
             since: Instant::now(),
             label: "Thinking".into(),
-            steps: Vec::new(),
+            run: Run::new(),
             draft: String::new(),
             draft_call: 0,
         };
@@ -164,14 +205,14 @@ impl Model {
         Some(text.to_owned())
     }
 
-    /// An event from the run, by type and its one-line summary.
-    pub fn on_event(&mut self, kind: &str, summary: &str, page: Option<PageRef>) {
-        if let Some(p) = page
+    /// An event from the running turn.
+    pub fn on_event(&mut self, e: &EventEnvelope) {
+        if let Some(p) = page_of(&e.kind, &e.payload)
             && self.is_busy()
         {
             push_unique(&mut self.turn_pages, p);
         }
-        let label = match kind {
+        let label = match e.kind.as_str() {
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected" => Some("Thinking"),
             "model.replied" => Some("Reading the reply"),
             "policy.decided" => Some("Checking permissions"),
@@ -179,19 +220,14 @@ impl Model {
             "tool.started" => Some("Using a tool"),
             _ => None,
         };
-        let is_step = is_step(kind, summary);
         match &mut self.phase {
-            Phase::Working {
-                label: l, steps, ..
-            } => {
+            Phase::Working { label: l, run, .. } => {
                 if let Some(new) = label {
                     *l = new.to_owned();
                 }
-                if is_step {
-                    steps.push(summary.to_owned());
-                }
+                run.push(e);
             }
-            Phase::Approval { steps, .. } if is_step => steps.push(summary.to_owned()),
+            Phase::Approval { run, .. } => run.push(e),
             _ => {}
         }
     }
@@ -226,27 +262,24 @@ impl Model {
     }
 
     pub fn ask_approval(&mut self, request: ApprovalRequest) {
-        let (since, steps) = match std::mem::replace(&mut self.phase, Phase::Ready) {
-            Phase::Working { since, steps, .. } | Phase::Approval { since, steps, .. } => {
-                (since, steps)
-            }
-            _ => (Instant::now(), Vec::new()),
+        let (since, run) = match std::mem::replace(&mut self.phase, Phase::Ready) {
+            Phase::Working { since, run, .. } | Phase::Approval { since, run, .. } => (since, run),
+            _ => (Instant::now(), Run::new()),
         };
         self.phase = Phase::Approval {
             since,
-            steps,
+            run,
             request,
         };
     }
 
     pub fn approval_answered(&mut self) {
-        if let Phase::Approval { since, steps, .. } =
-            std::mem::replace(&mut self.phase, Phase::Ready)
+        if let Phase::Approval { since, run, .. } = std::mem::replace(&mut self.phase, Phase::Ready)
         {
             self.phase = Phase::Working {
                 since,
                 label: "Working".into(),
-                steps,
+                run,
                 draft: String::new(),
                 draft_call: 0,
             };
@@ -260,18 +293,19 @@ impl Model {
     }
 
     pub fn finish_turn(&mut self, out: &TurnOutcome, context: ContextUse) {
-        let (took, steps) = match std::mem::replace(&mut self.phase, Phase::Ready) {
-            Phase::Working { since, steps, .. } | Phase::Approval { since, steps, .. } => {
-                (since.elapsed(), steps)
+        let (took, run) = match std::mem::replace(&mut self.phase, Phase::Ready) {
+            Phase::Working { since, run, .. } | Phase::Approval { since, run, .. } => {
+                (since.elapsed(), run)
             }
-            _ => (Duration::ZERO, Vec::new()),
+            _ => (Duration::ZERO, Run::new()),
         };
+        self.last_run = run.clone();
         self.context = context;
         self.stopping = false;
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
-                steps,
+                run,
                 took,
                 pages: std::mem::take(&mut self.turn_pages),
             }),
@@ -299,6 +333,9 @@ impl Model {
     /// Fills the transcript from a reopened chat's past turns.
     pub fn restore(&mut self, turns: &[PastTurn]) {
         self.entries.clear();
+        self.run_panel.pinned = None;
+        self.run_panel.open.clear();
+        self.last_run = turns.last().map(|t| t.run.clone()).unwrap_or_default();
         let mut missing = 0;
         for t in turns {
             match &t.message {
@@ -306,15 +343,9 @@ impl Model {
                 None => missing += 1,
             }
             if let Some(a) = &t.answer {
-                let steps = t
-                    .events
-                    .iter()
-                    .filter(|(k, s)| is_step(k, s))
-                    .map(|(_, s)| s.clone())
-                    .collect();
                 self.entries.push(Entry::Assistant {
                     text: a.clone(),
-                    steps,
+                    run: t.run.clone(),
                     took: t.took,
                     pages: t.pages.clone(),
                 });
@@ -402,19 +433,53 @@ impl Model {
         }
     }
 
-    /// Steps of the run in progress, or of the last answer, for the run panel.
-    pub fn run_steps(&self) -> &[String] {
+    /// The run the panel shows: the one in progress, else a pinned answer's,
+    /// else the latest turn's.
+    pub fn panel_run(&self) -> &Run {
         match &self.phase {
-            Phase::Working { steps, .. } | Phase::Approval { steps, .. } => steps,
+            Phase::Working { run, .. } | Phase::Approval { run, .. } => run,
             _ => self
-                .entries
-                .iter()
-                .rev()
-                .find_map(|e| match e {
-                    Entry::Assistant { steps, .. } => Some(steps.as_slice()),
+                .run_panel
+                .pinned
+                .and_then(|i| match self.entries.get(i) {
+                    Some(Entry::Assistant { run, .. }) => Some(run),
                     _ => None,
                 })
-                .unwrap_or(&[]),
+                .unwrap_or(&self.last_run),
+        }
+    }
+
+    /// Opens the panel on an answer's run.
+    pub fn show_run_of(&mut self, entry: usize) {
+        if matches!(self.entries.get(entry), Some(Entry::Assistant { .. })) {
+            self.run_panel.pinned = Some(entry);
+            self.run_panel.open.clear();
+            self.run_panel_open = true;
+        }
+    }
+
+    /// Whether the panel shows an older answer's run rather than the latest.
+    pub fn panel_is_pinned(&self) -> bool {
+        let latest = self
+            .entries
+            .iter()
+            .rposition(|e| matches!(e, Entry::Assistant { .. }));
+        !self.is_busy() && self.run_panel.pinned.is_some_and(|i| Some(i) != latest)
+    }
+
+    pub fn set_run_view(&mut self, view: RunView) {
+        self.run_panel.view = view;
+    }
+
+    pub fn set_raw_filter(&mut self, filter: RawFilter) {
+        self.run_panel.filter = filter;
+        self.run_panel.open.clear();
+    }
+
+    /// Opens or closes one Raw row's payload.
+    pub fn toggle_raw(&mut self, row: usize) {
+        if !self.run_panel.open.remove(&row) {
+            self.run_panel.open.insert(row);
         }
     }
 
@@ -514,13 +579,6 @@ pub fn grouped(n: u64) -> String {
 }
 
 /// Events that show as a step under an answer.
-fn is_step(kind: &str, summary: &str) -> bool {
-    matches!(
-        kind,
-        "tool.executed" | "tool.failed" | "tool.rejected" | "approval.answered" | "loop.suspected"
-    ) || (kind == "policy.decided" && !summary.contains("allowed"))
-}
-
 /// The part of a streaming reply worth showing: everything before a tool
 /// fence, minus a fence that is still arriving. `None` when nothing is left.
 pub fn draft_visible(draft: &str) -> Option<&str> {
@@ -560,7 +618,33 @@ fn trim(v: f64, unit: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-    use tern_core::{EffectClass, TurnId};
+    use tern_core::{EffectClass, SessionId, TurnId};
+
+    fn ev(kind: &str, summary: &str, payload: serde_json::Value) -> EventEnvelope {
+        EventEnvelope::new(
+            SessionId::new(),
+            kind,
+            EffectClass::Analysis,
+            summary,
+            payload,
+        )
+    }
+
+    fn read(p: PageRef) -> EventEnvelope {
+        ev(
+            "tool.executed",
+            "Ran `read_url`",
+            json!({"tool": "read_url", "args": {"url": p.url}, "meta": {"page": p}}),
+        )
+    }
+
+    fn search(q: &str) -> EventEnvelope {
+        ev(
+            "tool.executed",
+            "Ran `web_search`",
+            json!({"tool": "web_search", "args": {"query": q}, "meta": {"results": 5}}),
+        )
+    }
 
     fn outcome(state: TurnState, answer: Option<&str>, reason: Option<&str>) -> TurnOutcome {
         TurnOutcome {
@@ -612,13 +696,9 @@ mod tests {
     fn pages_follow_the_turn_and_icons_are_asked_once() {
         let mut m = ready();
         m.start_turn("q");
-        m.on_event("tool.executed", "Ran `read_url`", Some(page("a.org", true)));
-        m.on_event("tool.executed", "Ran `read_url`", Some(page("a.org", true)));
-        m.on_event(
-            "tool.executed",
-            "Ran `read_url`",
-            Some(page("b.org", false)),
-        );
+        m.on_event(&read(page("a.org", true)));
+        m.on_event(&read(page("a.org", true)));
+        m.on_event(&read(page("b.org", false)));
         assert_eq!(m.turn_pages.len(), 2);
         assert_eq!(
             m.wanted_icons(),
@@ -657,15 +737,15 @@ mod tests {
     fn restore_rebuilds_the_transcript() {
         let mut m = ready();
         m.entries.push(Entry::Notice("old".into()));
+        let mut run = Run::new();
+        run.push(&ev("model.replied", "replied", json!({})));
+        run.push(&search("rag"));
         let turns = vec![
             PastTurn::default(),
             PastTurn {
                 message: Some("What is RAG?".into()),
                 answer: Some("Retrieval [1].".into()),
-                events: vec![
-                    ("model.replied".into(), "replied".into()),
-                    ("tool.executed".into(), "Searched the web".into()),
-                ],
+                run: run.clone(),
                 took: Duration::from_secs(3),
                 ..PastTurn::default()
             },
@@ -685,7 +765,7 @@ mod tests {
                 Entry::User("What is RAG?".into()),
                 Entry::Assistant {
                     text: "Retrieval [1].".into(),
-                    steps: vec!["Searched the web".into()],
+                    run: run.clone(),
                     took: Duration::from_secs(3),
                     pages: Vec::new(),
                 },
@@ -760,10 +840,10 @@ mod tests {
     fn steps_follow_the_run_and_stay_with_the_answer() {
         let mut m = ready();
         m.start_turn("What is RAG?");
-        m.on_event("turn.started", "Turn started", None);
-        m.on_event("tool.executed", "web_search: 5 results", None);
-        m.on_event("policy.decided", "read_url allowed", None);
-        assert_eq!(m.run_steps(), ["web_search: 5 results"]);
+        m.on_event(&ev("turn.started", "Turn started", json!({})));
+        m.on_event(&search("rag"));
+        m.on_event(&ev("policy.decided", "read_url allowed", json!({})));
+        assert_eq!(m.panel_run().step_count(), 1);
         assert!(
             m.working_line()
                 .unwrap()
@@ -775,13 +855,14 @@ mod tests {
         );
         assert!(!m.is_busy());
         match m.entries.last().unwrap() {
-            Entry::Assistant { text, steps, .. } => {
+            Entry::Assistant { text, run, .. } => {
                 assert_eq!(text, "RAG is…");
-                assert_eq!(steps, &["web_search: 5 results".to_owned()]);
+                assert_eq!(run.step_count(), 1);
             }
             e => panic!("{e:?}"),
         }
-        assert_eq!(m.run_steps(), ["web_search: 5 results"]);
+        assert_eq!(m.panel_run().steps.len(), 3);
+        assert_eq!(m.panel_run().summary().searches, 1);
         assert_eq!(m.context_label(), "1.2k of 128k tokens");
         assert!((m.context_fraction().unwrap() - 1234.0 / 128_000.0).abs() < 1e-6);
     }
@@ -790,7 +871,7 @@ mod tests {
     fn approvals_pause_and_resume_the_same_run() {
         let mut m = ready();
         m.start_turn("q");
-        m.on_event("tool.executed", "one", None);
+        m.on_event(&search("one"));
         m.ask_approval(ApprovalRequest {
             tool: "read_url".into(),
             summary: "Read example.com".into(),
@@ -802,7 +883,7 @@ mod tests {
         assert!(m.working_line().unwrap().starts_with("Waiting for you"));
         m.approval_answered();
         assert!(matches!(m.phase, Phase::Working { .. }));
-        assert_eq!(m.run_steps(), ["one"]);
+        assert_eq!(m.panel_run().step_count(), 1);
     }
 
     #[test]
@@ -840,5 +921,49 @@ mod tests {
         assert_eq!(compact(128_000), "128k");
         assert_eq!(compact(2_000), "2k");
         assert_eq!(compact(1_000_000), "1M");
+    }
+
+    #[test]
+    fn the_panel_follows_the_latest_run_unless_pinned() {
+        let mut m = ready();
+        for q in ["first", "second"] {
+            m.start_turn(q);
+            m.on_event(&search(q));
+            m.finish_turn(&outcome(TurnState::Completed, Some("A"), None), ctx(1, 1));
+        }
+        assert_eq!(m.panel_run().steps[0].target, "second");
+        assert!(!m.panel_is_pinned());
+        m.show_run_of(1);
+        assert!(m.run_panel_open);
+        assert!(m.panel_is_pinned());
+        assert_eq!(m.panel_run().steps[0].target, "first");
+        m.show_run_of(0);
+        assert_eq!(m.run_panel.pinned, Some(1), "only answers can be pinned");
+        m.start_turn("third");
+        assert!(m.panel_run().is_empty(), "a new turn takes over");
+        m.on_event(&ev("run.cancelled", "You stopped the turn", json!({})));
+        m.finish_turn(
+            &outcome(TurnState::Cancelled, None, Some("You stopped the turn")),
+            ctx(1, 1),
+        );
+        assert_eq!(
+            m.panel_run().problems().count(),
+            1,
+            "stopped runs stay visible"
+        );
+    }
+
+    #[test]
+    fn raw_rows_open_and_filters_reset_them() {
+        let mut m = ready();
+        m.toggle_raw(2);
+        assert!(m.run_panel.open.contains(&2));
+        m.toggle_raw(2);
+        assert!(m.run_panel.open.is_empty());
+        m.toggle_raw(1);
+        m.set_raw_filter(RawFilter::Search);
+        assert!(m.run_panel.open.is_empty());
+        m.set_run_view(RunView::Raw);
+        assert_eq!(m.run_panel.view, RunView::Raw);
     }
 }

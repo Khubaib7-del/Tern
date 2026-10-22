@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tern_core::EventEnvelope;
 
+use crate::run::Run;
 use crate::sources::{PageRef, page_of, push_unique};
 
 /// One past turn.
@@ -16,9 +17,8 @@ pub struct PastTurn {
     pub answer: Option<String>,
     /// Why the turn ended without a full answer (stopped, failed, over budget).
     pub stop: Option<String>,
-    /// The turn's events after it started, as `(kind, summary)`, for a front
-    /// end to rebuild its step list the same way it does live.
-    pub events: Vec<(String, String)>,
+    /// The turn's events, start to end, for the run panel.
+    pub run: Run,
     /// Pages the turn read, in order, without repeats.
     pub pages: Vec<PageRef>,
     pub took: Duration,
@@ -49,16 +49,18 @@ pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
                 t.stop = Some("This turn did not finish.".into());
                 out.push(t);
             }
-            let turn = PastTurn {
+            let mut turn = PastTurn {
                 message: text_at(&e.payload, "message"),
                 ..PastTurn::default()
             };
+            turn.run.push(e);
             open = Some((turn, e.ts));
             continue;
         }
         let Some((turn, started)) = open.as_mut() else {
             continue;
         };
+        turn.run.push(e);
         if ENDS.contains(&e.kind.as_str()) {
             turn.answer = text_at(&e.payload, "answer");
             let completed = e.kind == "turn.finished"
@@ -76,7 +78,6 @@ pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
             if let Some(p) = page_of(&e.kind, &e.payload) {
                 push_unique(&mut turn.pages, p);
             }
-            turn.events.push((e.kind.clone(), e.user_summary.clone()));
         }
     }
     if let Some((mut t, _)) = open {
@@ -146,10 +147,9 @@ mod tests {
         let t = past_turns(&events);
         assert_eq!(t.len(), 4);
         assert_eq!(t[0].exchange(), Some(("What is RAG?", "Retrieval...")));
-        assert_eq!(
-            t[0].events[0],
-            ("tool.executed".to_owned(), "Searched the web".to_owned())
-        );
+        assert_eq!(t[0].run.steps[0].event, "turn.started");
+        assert_eq!(t[0].run.steps[1].summary, "Searched the web");
+        assert_eq!(t[0].run.end, Some(crate::run::RunEnd::Answered));
         assert_eq!(t[0].pages.len(), 1);
         assert_eq!(t[0].pages[0].url, "https://a.org/rag");
         assert_eq!(t[1].stop.as_deref(), Some("You stopped the run."));

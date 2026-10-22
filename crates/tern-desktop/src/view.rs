@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -18,12 +19,15 @@ use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, ScrollHandle, SharedString, Subscription, Task,
     Window, div, px,
 };
-use tern_agent::{ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef};
+use tern_agent::{
+    ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef, RawFilter, Run, RunEnd, RunStep,
+    StepKind,
+};
 use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bridge::{Bridge, Msg};
-use crate::model::{Connection, ContextLevel, Entry, Model, Phase, Screen, SiteIcon};
+use crate::model::{Connection, ContextLevel, Entry, Model, Phase, RunView, Screen, SiteIcon};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
@@ -31,6 +35,8 @@ const RAIL_W: f32 = 52.;
 const SIDEBAR_W: f32 = 264.;
 const RUN_PANEL_W: f32 = 300.;
 const COLUMN_MAX_W: f32 = 760.;
+/// How much of an event's payload the Raw view shows when opened.
+const RAW_PAYLOAD_CHARS: usize = 4_000;
 
 /// The one window of the app.
 pub struct Workspace {
@@ -179,12 +185,8 @@ impl Workspace {
             }
             Msg::Sessions(recent) => self.model.sessions = recent,
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
-            Msg::Event {
-                kind,
-                summary,
-                page,
-            } => {
-                self.model.on_event(&kind, &summary, page);
+            Msg::Event(e) => {
+                self.model.on_event(&e);
                 self.request_icons();
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
@@ -978,18 +980,37 @@ impl Workspace {
                 .into_any_element(),
             Entry::Assistant {
                 text,
-                steps,
+                run,
                 took,
                 pages,
             } => {
                 let mut meta = format!("Worked for {}s", took.as_secs().max(1));
-                if !steps.is_empty() {
+                let steps = run.step_count();
+                if steps > 0 {
                     meta.push_str(&format!(
                         " · {} step{}",
-                        steps.len(),
-                        if steps.len() == 1 { "" } else { "s" }
+                        steps,
+                        if steps == 1 { "" } else { "s" }
                     ));
                 }
+                let clickable = !run.is_empty();
+                let meta = div()
+                    .id(("answer-run", i))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(meta)
+                    .when(clickable, |d| {
+                        d.cursor_pointer()
+                            .hover(|d| d.text_color(p.text))
+                            .child(gpui_kit::component::Icon::new(IconName::ChevronRight).xsmall())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.model.show_run_of(i);
+                                cx.notify();
+                            }))
+                    });
                 div()
                     .flex()
                     .flex_col()
@@ -1002,7 +1023,7 @@ impl Workspace {
                     .when(!pages.is_empty(), |d| {
                         d.child(self.sources(i, pages, p, cx))
                     })
-                    .child(div().text_xs().text_color(p.faint).child(meta))
+                    .child(meta)
                     .into_any_element()
             }
             Entry::Notice(t) => div()
@@ -1677,40 +1698,299 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn run_panel(&self, p: Palette) -> impl IntoElement {
-        let steps = self.model.run_steps();
+    /// The run panel: one run in three views (Summary, Detailed, Raw).
+    fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let run = self.model.panel_run();
+        let view = self.model.run_panel.view;
+        let tabs = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .children(RunView::ALL.map(|v| {
+                let selected = v == view;
+                div()
+                    .id(SharedString::from(format!("run-view-{}", v.label())))
+                    .px_2()
+                    .py(px(2.))
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(if selected { p.text } else { p.muted })
+                    .when(selected, |d| d.bg(p.hover))
+                    .hover(|d| d.text_color(p.text))
+                    .child(v.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.set_run_view(v);
+                        cx.notify();
+                    }))
+            }));
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(div().text_xs().text_color(p.faint).child("Run"))
+            .child(tabs);
+        let status: Option<AnyElement> = if let Some(line) = self.model.working_line() {
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(Spinner::new().small())
+                    .child(line)
+                    .into_any_element(),
+            )
+        } else {
+            run.end.as_ref().map(|end| {
+                let took = run.summary().took.as_secs_f32();
+                let (icon, text) = match end {
+                    RunEnd::Answered => (AssetIcon::CircleCheck, format!("Answered in {took:.1}s")),
+                    RunEnd::Stopped(why) => (AssetIcon::CircleStop, why.clone()),
+                };
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(
+                        div()
+                            .pt(px(2.))
+                            .child(gpui_kit::component::Icon::new(icon).small()),
+                    )
+                    .child(div().flex_1().min_w_0().child(text))
+                    .into_any_element()
+            })
+        };
+        let pinned = self.model.panel_is_pinned().then(|| {
+            div()
+                .id("run-latest")
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .bg(p.raised)
+                .text_xs()
+                .text_color(p.muted)
+                .child("An earlier answer")
+                .child(
+                    div()
+                        .cursor_pointer()
+                        .text_color(p.text)
+                        .hover(|d| d.underline())
+                        .child("Show latest"),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.model.run_panel.pinned = None;
+                    this.model.run_panel.open.clear();
+                    cx.notify();
+                }))
+        });
+        let body: AnyElement = if run.is_empty() {
+            div()
+                .text_sm()
+                .text_color(p.faint)
+                .child("Searches, pages read, tool calls, and approvals show here.")
+                .into_any_element()
+        } else {
+            match view {
+                RunView::Summary => self.run_summary(run, p, cx),
+                RunView::Detailed => self.run_detailed(run, p),
+                RunView::Raw => self.run_raw(run, p, cx),
+            }
+        };
         div()
             .w(px(RUN_PANEL_W))
             .h_full()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .p_3()
             .bg(p.sidebar)
             .border_l_1()
             .border_color(p.border)
-            .child(div().text_xs().text_color(p.faint).child("Run"))
-            .when(steps.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_sm()
-                        .text_color(p.faint)
-                        .child("Tool calls and approvals show here."),
-                )
-            })
-            .children(steps.iter().map(|s| {
-                div()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(SharedString::from(s.clone()))
-            }))
+            .child(header)
+            .children(pinned)
+            .children(status)
             .child(
                 div()
-                    .mt_auto()
+                    .id("run-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(body),
+            )
+            .child(
+                div()
                     .text_xs()
                     .text_color(p.faint)
                     .child(self.model.context_label()),
             )
+    }
+
+    /// The rollup line, the pages read, and anything that went wrong.
+    fn run_summary(&self, run: &Run, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let line = run.summary().line();
+        let pages = run.pages();
+        let section = |title: &'static str| div().pt_2().text_xs().text_color(p.faint).child(title);
+        let page_rows = pages.iter().enumerate().map(|(k, pg)| {
+            let url = pg.url.clone();
+            div()
+                .id(SharedString::from(format!("run-page-{k}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_1()
+                .py(px(4.))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|d| d.bg(p.hover))
+                .child(self.site_icon(pg, 14., p))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(SharedString::from(pg.label().to_owned())),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+        });
+        let problems: Vec<_> = run
+            .problems()
+            .filter(|s| s.event != "turn.finished")
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when(!line.is_empty(), |d| {
+                d.child(div().text_sm().text_color(p.text).child(line))
+            })
+            .when(!pages.is_empty(), |d| {
+                d.child(section("Pages read")).children(page_rows)
+            })
+            .when(!problems.is_empty(), |d| {
+                d.child(section("Problems"))
+                    .children(problems.into_iter().map(|s| step_line(s, p, false)))
+            })
+            .into_any_element()
+    }
+
+    /// Each step as one line, verb first.
+    fn run_detailed(&self, run: &Run, p: Palette) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .children(run.detailed().map(|s| step_line(s, p, true)))
+            .into_any_element()
+    }
+
+    /// Every event as logged, filterable, each row opening to its payload.
+    fn run_raw(&self, run: &Run, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let filter = self.model.run_panel.filter;
+        let chips = div()
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .children(RawFilter::ALL.map(|f| {
+                let selected = f == filter;
+                div()
+                    .id(SharedString::from(format!("raw-filter-{}", f.label())))
+                    .px_2()
+                    .py(px(1.))
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if selected { p.muted } else { p.border })
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(if selected { p.text } else { p.muted })
+                    .hover(|d| d.text_color(p.text))
+                    .child(f.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.set_raw_filter(f);
+                        cx.notify();
+                    }))
+            }));
+        let open = &self.model.run_panel.open;
+        let rows: Vec<AnyElement> = run
+            .raw(filter)
+            .enumerate()
+            .map(|(k, s)| {
+                let is_open = open.contains(&k);
+                div()
+                    .id(SharedString::from(format!("raw-{k}")))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .text_xs()
+                            .font_family("monospace")
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_color(p.text)
+                                    .child(SharedString::from(format!("#{} {}", s.seq, s.event))),
+                            )
+                            .child(div().flex_none().text_color(p.faint).child(offset(s))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(SharedString::from(s.summary.clone())),
+                    )
+                    .when(is_open, |d| {
+                        d.child(
+                            div()
+                                .p_2()
+                                .rounded_sm()
+                                .bg(p.canvas)
+                                .text_xs()
+                                .font_family("monospace")
+                                .text_color(p.muted)
+                                .child(SharedString::from(s.payload_text(RAW_PAYLOAD_CHARS))),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.toggle_raw(k);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(chips)
+            .when(rows.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_sm()
+                        .text_color(p.faint)
+                        .child("Nothing of this kind in this run."),
+                )
+            })
+            .children(rows)
+            .into_any_element()
     }
 }
 
@@ -1740,7 +2020,9 @@ impl Render for Workspace {
                             Screen::Providers => d.child(self.providers_screen(p, window, cx)),
                         }
                     }))
-                    .when(self.model.run_panel_open, |d| d.child(self.run_panel(p))),
+                    .when(self.model.run_panel_open, |d| {
+                        d.child(self.run_panel(p, cx))
+                    }),
             )
     }
 }
@@ -1769,4 +2051,86 @@ fn stream_motion() -> TextViewMotion {
     TextViewMotion::default()
         .with_stream_fade(Duration::from_millis(240))
         .with_stream_fade_stagger(Duration::from_millis(16))
+}
+
+/// One step as a line: its icon, the verb, what it acted on, and a note.
+/// Problems keep the same colours (no hue before ADR 0002) but get a
+/// distinct icon and full-strength text.
+fn step_line(s: &RunStep, p: Palette, with_time: bool) -> AnyElement {
+    let icon = match s.kind {
+        _ if !s.ok => AssetIcon::CircleX,
+        StepKind::Turn => AssetIcon::CircleCheck,
+        StepKind::Model => AssetIcon::Sparkles,
+        StepKind::Search => AssetIcon::Search,
+        StepKind::Read => AssetIcon::Globe,
+        StepKind::Tool => AssetIcon::Wrench,
+        StepKind::Policy => AssetIcon::ShieldCheck,
+        StepKind::Approval => AssetIcon::UserCheck,
+        StepKind::Problem => AssetIcon::TriangleAlert,
+    };
+    div()
+        .flex()
+        .items_start()
+        .gap_2()
+        .text_sm()
+        .child(
+            div()
+                .pt(px(2.))
+                .text_color(if s.ok { p.faint } else { p.text })
+                .child(gpui_kit::component::Icon::new(icon).small()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.text)
+                                .child(s.verb),
+                        )
+                        .when(!s.target.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(p.muted)
+                                    .child(SharedString::from(s.target.clone())),
+                            )
+                        })
+                        .when(with_time, |d| {
+                            d.child(
+                                div()
+                                    .ml_auto()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(p.faint)
+                                    .child(offset(s)),
+                            )
+                        }),
+                )
+                .when(!s.note.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(if s.ok { p.faint } else { p.muted })
+                            .child(SharedString::from(s.note.clone())),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+/// "+3.2s" from the turn's start.
+fn offset(s: &RunStep) -> SharedString {
+    format!("+{:.1}s", s.at.as_secs_f32()).into()
 }

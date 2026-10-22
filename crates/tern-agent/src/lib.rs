@@ -16,6 +16,7 @@ pub mod policy;
 pub mod prefs;
 pub mod protocol;
 pub mod providers;
+pub mod run;
 pub mod search;
 pub mod sources;
 pub mod tools;
@@ -33,6 +34,7 @@ pub use engine::{
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;
+pub use run::{RawFilter, Run, RunEnd, RunStep, RunSummary, StepKind};
 pub use sources::PageRef;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
