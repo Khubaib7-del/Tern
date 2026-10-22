@@ -64,6 +64,8 @@ pub struct ChatSession {
     /// The chat has its sidebar title (from its first message).
     titled: bool,
     search_name: Option<&'static str>,
+    /// The search service, shared with the web tools, for deep research.
+    search: Option<Arc<tern_crawl::SearchClient>>,
     budget: Budget,
     max_output_tokens: u32,
     check_claims: crate::verify::CheckClaims,
@@ -248,8 +250,9 @@ impl ChatSession {
                 Err(_) => None,
             };
         let search_name = search.as_ref().map(|c| c.spec().name);
-        if let Some(c) = search {
-            tools.register(WebSearchTool(Arc::new(c)));
+        let search = search.map(Arc::new);
+        if let Some(c) = &search {
+            tools.register(WebSearchTool(c.clone()));
             tools.register(ReadUrlTool::default());
         }
         // A vault that cannot be opened only leaves its tools out.
@@ -281,6 +284,7 @@ impl ChatSession {
             next_images: Vec::new(),
             titled: resume.is_some(),
             search_name,
+            search,
             budget: opts.budget,
             check_claims: opts.check_claims,
             max_output_tokens: if opts.max_output_tokens == 0 {
@@ -454,6 +458,70 @@ impl ChatSession {
 }
 
 impl ChatSession {
+    /// Runs one deep research turn: the model drafts a plan, `approver`
+    /// shows it to the user, then the plan's workers search and read in
+    /// parallel and one cited answer is written from their notes (see
+    /// [`crate::deep`]). Events reach `observer` as they are logged;
+    /// `on_text` gets the answer as it streams. Call
+    /// [`ChatSession::check_last_turn`] afterwards for the claim checks and
+    /// run report, as after [`ChatSession::send`].
+    pub async fn deep_research(
+        &mut self,
+        text: &str,
+        opts: &crate::deep::DeepOptions,
+        approver: &dyn crate::deep::PlanApprover,
+        control: &crate::deep::DeepControl,
+        observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
+        on_text: Option<crate::OnText<'_>>,
+    ) -> TurnOutcome {
+        // Deep research reads the web; pictures are not sent.
+        self.next_images.clear();
+        let Some(search) = self.search.clone() else {
+            return TurnOutcome {
+                turn_id: tern_core::TurnId::new(),
+                state: tern_core::TurnState::Failed,
+                answer: None,
+                reason: Some(
+                    "Deep research needs web search. Add a key with `tern search add tavily` (or `brave`), or use your own SearXNG."
+                        .into(),
+                ),
+                states: vec![tern_core::TurnState::Failed],
+                usage: Usage::measured(0, 0),
+                model_calls: 0,
+                tool_calls: 0,
+            };
+        };
+        let reader = crate::web::shared_reader();
+        let tee = Tee {
+            inner: &self.sink,
+            observer,
+        };
+        let deps = crate::deep::DeepDeps {
+            session: self.session,
+            model: &self.provider,
+            model_name: &self.model,
+            search: search.as_ref(),
+            reader: &reader,
+            sink: &tee,
+            ledger: &self.ledger,
+            gate: Some(&mut self.gate),
+            on_text,
+        };
+        let out = crate::deep::run_deep(deps, text, opts, approver, control).await;
+        if !self.titled {
+            self.titled = true;
+            let title = title_from(&crate::deep::question_of(text));
+            let _ = self
+                .sink
+                .with_store(|s| s.rename_session(self.session, &title));
+        }
+        if let Some(answer) = &out.answer {
+            self.history.push(ChatMessage::user(text));
+            self.history.push(ChatMessage::assistant(answer.clone()));
+        }
+        out
+    }
+
     /// Checks the latest turn's claims against the pages it read and
     /// writes its run report (`runs/<chat>/turn-<n>.md|json` in the data
     /// folder). Logs `claims.checking`, then `claims.checked` with the

@@ -117,6 +117,11 @@ fn list_number(t: &str) -> Option<usize> {
     matches!(after, '.' | ')' | ':').then(|| digits.parse().ok())?
 }
 
+/// The answer without its closing link list.
+pub fn body(answer: &str) -> &str {
+    answer[..body_len(answer)].trim_end()
+}
+
 /// The numbered links an answer lists at its end, as (number, URL).
 pub fn link_list(answer: &str) -> Vec<(usize, String)> {
     let body = body_len(answer);

@@ -34,6 +34,8 @@ pub struct Preferences {
     pub git_email: Option<String>,
     /// Credit Tern with a `Co-authored-by` trailer on checkpoints.
     pub git_credit_tern: bool,
+    /// Deep research workers that run at once. `None` means 3.
+    pub deep_workers: Option<usize>,
 }
 
 impl Preferences {
@@ -110,6 +112,16 @@ impl Preferences {
         }
     }
 
+    /// How deep research runs: workers at once from these choices, 1 to
+    /// [`crate::deep::MAX_WORKERS`].
+    pub fn deep_options(&self) -> crate::deep::DeepOptions {
+        let mut opts = crate::deep::DeepOptions::default();
+        if let Some(n) = self.deep_workers {
+            opts.workers = n.clamp(1, crate::deep::MAX_WORKERS);
+        }
+        opts
+    }
+
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
         ChatOptions {
@@ -140,6 +152,7 @@ mod tests {
             git_name: Some("Khubaib".into()),
             git_email: None,
             git_credit_tern: true,
+            deep_workers: Some(4),
         };
         p.save_to(&path).unwrap();
         assert_eq!(Preferences::load_from(&path), p);
@@ -180,5 +193,22 @@ mod tests {
         assert_eq!(o.provider.as_deref(), Some("groq"));
         assert_eq!(o.model.as_deref(), Some("m"));
         assert_eq!(o.search, None);
+    }
+
+    #[test]
+    fn deep_workers_default_to_three_and_are_capped() {
+        assert_eq!(Preferences::default().deep_options().workers, 3);
+        let p = Preferences {
+            deep_workers: Some(40),
+            ..Preferences::default()
+        };
+        assert_eq!(p.deep_options().workers, crate::deep::MAX_WORKERS);
+        let p = Preferences {
+            deep_workers: Some(0),
+            ..Preferences::default()
+        };
+        assert_eq!(p.deep_options().workers, 1);
+        let old: Preferences = serde_json::from_str(r#"{"provider": "groq"}"#).unwrap();
+        assert_eq!(old.deep_workers, None);
     }
 }

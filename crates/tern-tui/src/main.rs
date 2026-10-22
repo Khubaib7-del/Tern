@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod research;
 mod tui;
 
 use std::io::{BufRead, IsTerminal};
@@ -48,6 +49,28 @@ enum Command {
         #[arg(long, default_value_t = 4)]
         reads: usize,
         /// Print the full report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deep research: Tern drafts a plan for you to run, edit, or skip,
+    /// then workers research its parts in parallel and one cited answer
+    /// is written from their notes.
+    Research {
+        /// The question. Quote it, or pass several words.
+        #[arg(required = true, num_args = 1..)]
+        question: Vec<String>,
+        /// Plan and run workers (required for now; `tern ask` is the quick path).
+        #[arg(long)]
+        deep: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
+        /// Workers at once (1 to 6). Defaults to your preference, or 3.
+        #[arg(long, short)]
+        workers: Option<usize>,
+        /// Run the plan as drafted without asking.
+        #[arg(long, short)]
+        yes: bool,
+        /// Print the run report as JSON instead of the answer.
         #[arg(long)]
         json: bool,
     },
@@ -105,7 +128,7 @@ enum SearchCmd {
 }
 
 #[derive(Debug, Default, clap::Args)]
-struct ChatArgs {
+pub(crate) struct ChatArgs {
     /// Provider id. Defaults to the first provider with a saved key.
     #[arg(long, short)]
     provider: Option<String>,
@@ -196,6 +219,21 @@ fn main() -> ExitCode {
             reads,
             json,
         } => block_on(run_ask(question.join(" "), chat, reads, json)),
+        Command::Research {
+            question,
+            deep,
+            chat,
+            workers,
+            yes,
+            json,
+        } => block_on(research::run(
+            question.join(" "),
+            deep,
+            chat,
+            workers,
+            yes,
+            json,
+        )),
         Command::Search(cmd) => block_on(run_search(cmd)),
         Command::Report {
             chat,

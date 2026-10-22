@@ -11,7 +11,7 @@
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Done |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | In progress |
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Mostly built (PRs #31 to #33); scholarly sources and reports in the vault remain |
-| 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Planned |
+| 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | In progress (PR #34: plans and parallel workers); checkpoints, steering, and the watcher remain |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
 | 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Planned |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Planned |
@@ -77,12 +77,12 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 
 | Deliverable | Exit check |
 | --- | --- |
-| Clarify and plan with an editable plan and preflight cost range | No paid step runs before approval |
-| Workers per sub-question with their own budgets | Only final reports return to the parent |
+| Clarify and plan with an editable plan and preflight cost range | No paid step runs before approval (built, PR #34: the model drafts a typed plan with sub-questions, searches, source types, and budget shares, or Tern splits the question itself; run, edit, skip, or cancel it; a preflight token range is shown. Drafting the plan is the one model call before approval; no search, read, or worker runs until the user says so. Clarifying questions remain) |
+| Workers per sub-question with their own budgets | Only final reports return to the parent (built, PR #34: each worker gets its own slice of tokens, pages, and time and hands back only its notes and their pages) |
 | File intake: any parseable file, images by model capability, archives unpacked and folders read recursively in order | A nested zip of mixed files is read completely and in a stable order |
 | Checkpoints, safe pause, resume | Resume after a forced quit without repeating paid work |
 | Live steering and the watcher | Steer lands at the next safe point |
-| Parallel sub-researchers with a Subagents tab | Two workers run at once without sharing budget or context |
+| Parallel sub-researchers with a Subagents tab | Two workers run at once without sharing budget or context (built, PR #34: up to 3 at once by default, 1 to 6 in preferences, each cancellable; desktop Workers view in the run panel, `tern research --deep` in the terminal) |
 | Loop and drift detection | Synthetic loops are paused; legitimate pagination is not |
 | Goal and decision ledger with loss-aware compaction | An early constraint survives several compactions |
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tern_core::{EventEnvelope, SessionId};
 use tern_platform::AppPaths;
 pub use tern_research::report::{
-    REPORT_VERSION, ReportBudget, ReportSource, ReportStep, ReportUsage, RunReport,
+    REPORT_VERSION, ReportBudget, ReportSource, ReportStep, ReportUsage, ReportWorker, RunReport,
 };
 use tern_store::Store;
 
@@ -168,6 +168,32 @@ pub fn from_turn(
         }
     }
 
+    // A deep turn is measured against its plan's budget, not the chat's.
+    let plan = run.deep.as_ref().and_then(|d| d.plan.as_ref());
+    let budget = plan.map(crate::deep::turn_budget).or(budget);
+    let workers: Vec<ReportWorker> = run
+        .deep
+        .as_ref()
+        .map(|d| {
+            d.workers
+                .iter()
+                .map(|w| ReportWorker {
+                    n: w.n,
+                    question: w.question.clone(),
+                    status: w.status,
+                    note: w.note.clone(),
+                    searches: w.searches as u64,
+                    pages: w.pages.len() as u64,
+                    urls: w.pages.iter().map(|p| p.url.clone()).collect(),
+                    tokens_in: w.tokens_in,
+                    tokens_out: w.tokens_out,
+                    took_ms: w.took.as_millis() as u64,
+                    budget: w.budget,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let summary = run.summary();
     let finished = run.steps.iter().rev().find(|s| {
         matches!(
@@ -239,9 +265,10 @@ pub fn from_turn(
         },
         provider: provider.to_owned(),
         model,
-        plan: Vec::new(),
+        plan: plan.map(|p| p.lines()).unwrap_or_default(),
         steps,
         sources,
+        workers,
         claims: run.checks.clone(),
         usage,
         errors,
