@@ -13,7 +13,7 @@ Reserved brand property. See the brand clause in [LICENSE](../../LICENSE). Do no
 | `tern-hero-dark.gif` | Animated dither scene, 1200 × 400, 320 frames, 16 s loop. A procedural 3D tern with jointed wings flies in, loops behind and in front of the wordmark, banks into its turns, then its last wingbeat eases to a stop, it glides into the logo position, and its silhouette morphs into the original mark. The sky stays live and a shimmer sweeps across the mark until it fades and the flight repeats | README header in dark mode |
 | `tern-hero-light.gif` | Same hero, ink on paper | README header in light mode |
 | `tern-hero-still-dark.png` / `-light.png` | One still frame of the hero | Social preview, reduced-motion fallback |
-| `tern-crawl.svg` | **Tern Crawl**, Tern's own crawler and reader: a tern diving into a disc, deep-sea gradient `#0B4F7A` to `#1FB5C4` | "Read N pages" rows, crawler docs, service listings |
+| `tern-crawl.svg` | **Tern Crawl**, Tern's own crawler and reader: a tern diving (forked tail, black cap, orange bill) on an emerald disc, `#3ECF8E` to `#0F8F5E` | "Read N pages" rows, crawler docs, service listings |
 | `tern-crawl-mono.svg` | The same mark in one colour | Print, tinted UI (the app's `tern-crawl` glyph) |
 | `tern-crawl-tile.svg` | The colour mark on a black rounded square, tern in white | Standalone app or plugin icon |
 | `src/dither_hero.py` | Generator for the hero files (software 3D render of the bird and wordmark plane, then 8 × 8 Bayer ordered dither; needs numpy, pillow, scipy, numba) | Re-render after any mark or wordmark change |
