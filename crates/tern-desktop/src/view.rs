@@ -12,9 +12,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, Textar
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewMotion};
-use gpui_kit::component::{
-    Disableable as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar,
-};
+use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, Context, Entity, FontWeight, Hsla, ScrollHandle,
@@ -31,9 +29,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+mod appearance_view;
 mod browser_view;
 mod editor_view;
 mod git_view;
+mod scout_view;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -77,6 +77,13 @@ pub struct Workspace {
     sidebar_slide: Slide,
     panel_slide: Slide,
     wipe: Option<ThemeWipe>,
+    /// Scout's rig, when it was last stepped, the last beat it saw, the
+    /// wake-up for its next blink, and a mood picked on Appearance.
+    scout: crate::scout::Rig,
+    scout_at: Option<Instant>,
+    scout_beat: usize,
+    scout_wake: Option<Task<()>>,
+    scout_preview: Option<crate::scout::Mood>,
     reduced_motion: bool,
     _listener: Task<()>,
     /// The built-in browser's address bar.
@@ -209,6 +216,11 @@ impl Workspace {
             sidebar_slide: Slide::new(sidebar_open),
             panel_slide: Slide::new(panel_open),
             wipe: None,
+            scout: crate::scout::Rig::default(),
+            scout_at: None,
+            scout_beat: 0,
+            scout_wake: None,
+            scout_preview: None,
             reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
             model,
             bridge,
@@ -617,6 +629,21 @@ impl Workspace {
                 .child(SharedString::from(initial.clone()))
                 .into_any_element()
         };
+        if let Some(service) = assets::service_for(&page.site) {
+            return div()
+                .size(px(size))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    svg()
+                        .path(assets::service_path(service))
+                        .size(px(size * 0.85))
+                        .text_color(p.text),
+                )
+                .into_any_element();
+        }
         match self.model.icons.get(&page.site) {
             Some(SiteIcon::Ready(path)) => gpui_kit::img(path.clone())
                 .size(px(size))
@@ -921,12 +948,7 @@ impl Workspace {
                 to_dark: self.model.dark,
             });
         }
-        let mode = if self.model.dark {
-            ThemeMode::Dark
-        } else {
-            ThemeMode::Light
-        };
-        Theme::change(mode, Some(window), cx);
+        crate::theme::apply_kit(self.model.dark, Some(window), cx);
         cx.notify();
     }
 
@@ -1047,8 +1069,22 @@ impl Workspace {
                 .text_sm()
                 .cursor_pointer()
                 .text_color(if selected { p.text } else { p.muted })
+                .flex()
+                .items_center()
+                .gap_1p5()
                 .when(selected, |d| d.bg(p.hover))
                 .hover(|d| d.text_color(p.text))
+                .when(selected, |d| {
+                    let glyph = if h == Harness::Study {
+                        "study"
+                    } else {
+                        "research"
+                    };
+                    d.children(
+                        assets::glyph(glyph)
+                            .map(|path| svg().path(path).size(px(12.)).text_color(p.accent)),
+                    )
+                })
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.model.choose_harness(h);
@@ -1067,12 +1103,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Tern"),
-                        )
+                        .child(self.wordmark(p))
                         // `occlude` keeps title-bar controls out of the window's
                         // drag region; on Windows a click there otherwise goes to
                         // the OS as a caption drag and the button never sees it.
@@ -1235,6 +1266,22 @@ impl Workspace {
                     ),
             )
             .child(
+                Button::new("rail-appearance")
+                    .icon(IconName::Palette)
+                    .ghost()
+                    .when(self.model.screen == Screen::Appearance, |b| {
+                        b.selected(true)
+                    })
+                    .tooltip("Appearance")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Appearance {
+                            this.close_appearance(window, cx);
+                        } else {
+                            this.open_appearance(cx);
+                        }
+                    })),
+            )
+            .child(
                 Button::new("rail-settings")
                     .icon(IconName::Settings)
                     .ghost()
@@ -1247,6 +1294,34 @@ impl Workspace {
                             this.open_providers(cx);
                         }
                     })),
+            )
+    }
+
+    /// The lockup: the mark, TERN, and the harness in italic serif.
+    fn wordmark(&self, p: Palette) -> impl IntoElement {
+        let harness = if self.model.harness == Harness::Study {
+            "Study"
+        } else {
+            "Research"
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(svg().path(assets::MARK).size(px(15.)).text_color(p.text))
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("TERN"),
+            )
+            .child(
+                div()
+                    .font_family(assets::SERIF_FONT)
+                    .italic()
+                    .text_base()
+                    .text_color(p.muted)
+                    .child(harness),
             )
     }
 
@@ -1387,6 +1462,7 @@ impl Workspace {
                     })
                     .children(rows),
             )
+            .child(self.scout_corner(p))
     }
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -2095,7 +2171,7 @@ impl Workspace {
     fn context_ring(&self, p: Palette) -> impl IntoElement {
         let fraction = self.model.context_fraction();
         let color = match self.model.context_level() {
-            ContextLevel::Fine => p.muted,
+            ContextLevel::Fine => p.accent,
             ContextLevel::Filling => gpui_kit::hsla(38. / 360., 0.85, 0.55, 1.),
             ContextLevel::Full => gpui_kit::hsla(0., 0.75, 0.58, 1.),
         };
@@ -2805,6 +2881,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.tick_scout(window, cx);
         let now = Instant::now();
         let layout = Layout::for_width(f32::from(window.viewport_size().width));
         if Layout::sidebar_squeezed(self.last_layout, layout) {
@@ -2863,6 +2940,7 @@ impl Render for Workspace {
             Screen::Providers => "screen-providers",
             Screen::Editor => "screen-editor",
             Screen::Git => "screen-git",
+            Screen::Appearance => "screen-appearance",
         };
         div()
             .relative()
@@ -2897,6 +2975,7 @@ impl Render for Workspace {
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),
+                                Screen::Appearance => d.child(self.appearance_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,
