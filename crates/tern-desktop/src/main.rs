@@ -8,8 +8,10 @@
 // Hide the console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod assets;
 mod bridge;
 mod model;
+mod motion;
 mod providers;
 mod theme;
 mod view;
@@ -31,9 +33,9 @@ fn main() {
     // The kit's Lucide icons are embedded assets; without a source every
     // icon renders empty. `Assets` holds only the components' default set,
     // so icons outside it (Pencil, Archive, the run panel's) need the full
-    // catalog.
+    // catalog, behind Tern's own mark.
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::AllAssets)
+        .with_assets(assets::TernAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Dark, None, cx);

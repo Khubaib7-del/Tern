@@ -57,7 +57,7 @@ pub enum Phase {
     Ready,
     Working {
         since: Instant,
-        label: String,
+        activity: Activity,
         run: Run,
         /// Reply text streaming in, and which model call of the turn it is.
         draft: String,
@@ -68,6 +68,31 @@ pub enum Phase {
         run: Run,
         request: ApprovalRequest,
     },
+}
+
+/// What a running turn is doing, for the working line's mark and phrase
+/// (`docs/02-ui-definition.md` §2.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    Thinking,
+    Searching,
+    Reading,
+    /// Running a tool other than search or read.
+    Tool,
+    Writing,
+    NeedsYou,
+    Stopping,
+}
+
+/// The working line, ready to draw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkingLine {
+    pub activity: Activity,
+    pub phrase: String,
+    pub seconds: u64,
+    /// Bumps on every real event (a step, a page, a burst of text), so the
+    /// mark can beat in time with the work rather than a timer.
+    pub beat: usize,
 }
 
 /// The run panel's three views of the same run.
@@ -228,7 +253,7 @@ impl Model {
         self.run_panel.open.clear();
         self.phase = Phase::Working {
             since: Instant::now(),
-            label: "Thinking".into(),
+            activity: Activity::Thinking,
             run: Run::new(),
             draft: String::new(),
             draft_call: 0,
@@ -285,18 +310,20 @@ impl Model {
         {
             push_unique(&mut self.turn_pages, p);
         }
-        let label = match e.kind.as_str() {
-            "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected" => Some("Thinking"),
-            "model.replied" => Some("Reading the reply"),
-            "policy.decided" => Some("Checking permissions"),
-            "approval.answered" => Some("Working"),
-            "tool.started" => Some("Using a tool"),
+        let next = match e.kind.as_str() {
+            "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
+            | "model.replied" | "approval.answered" => Some(Activity::Thinking),
+            "tool.started" => Some(match e.payload["tool"].as_str() {
+                Some("web_search") => Activity::Searching,
+                Some("read_url") => Activity::Reading,
+                _ => Activity::Tool,
+            }),
             _ => None,
         };
         match &mut self.phase {
-            Phase::Working { label: l, run, .. } => {
-                if let Some(new) = label {
-                    *l = new.to_owned();
+            Phase::Working { activity, run, .. } => {
+                if let Some(next) = next {
+                    *activity = next;
                 }
                 run.push(e);
             }
@@ -311,7 +338,7 @@ impl Model {
         if let Phase::Working {
             draft,
             draft_call,
-            label,
+            activity,
             ..
         } = &mut self.phase
         {
@@ -321,7 +348,7 @@ impl Model {
             }
             draft.push_str(text);
             if draft_visible(draft).is_some() {
-                "Writing".clone_into(label);
+                *activity = Activity::Writing;
             }
         }
     }
@@ -351,7 +378,7 @@ impl Model {
         {
             self.phase = Phase::Working {
                 since,
-                label: "Working".into(),
+                activity: Activity::Thinking,
                 run,
                 draft: String::new(),
                 draft_call: 0,
@@ -498,18 +525,50 @@ impl Model {
         }
     }
 
-    /// The working line: label and whole seconds, while a turn runs.
-    pub fn working_line(&self) -> Option<String> {
-        match &self.phase {
-            Phase::Working { since, label, .. } => {
-                let label = if self.stopping { "Stopping" } else { label };
-                Some(format!("{label}… {}s", since.elapsed().as_secs()))
-            }
-            Phase::Approval { since, .. } => {
-                Some(format!("Waiting for you… {}s", since.elapsed().as_secs()))
-            }
-            _ => None,
-        }
+    /// The working line while a turn runs: what it is doing, the phrase,
+    /// whole seconds, and a beat counter driven by real events.
+    pub fn working_line(&self) -> Option<WorkingLine> {
+        let (since, run, activity, draft) = match &self.phase {
+            Phase::Working {
+                since,
+                run,
+                activity,
+                draft,
+                ..
+            } => (since, run, *activity, draft.len()),
+            Phase::Approval { since, run, .. } => (since, run, Activity::NeedsYou, 0),
+            _ => return None,
+        };
+        let activity = if self.stopping {
+            Activity::Stopping
+        } else {
+            activity
+        };
+        let started = |tool: &str| {
+            run.steps
+                .iter()
+                .filter(|s| s.event == "tool.started" && s.payload["tool"] == tool)
+                .count()
+        };
+        let phrase = match activity {
+            Activity::Thinking => "Thinking".to_owned(),
+            Activity::Searching => match started("web_search") {
+                1 => "Searching · 1 query".to_owned(),
+                n => format!("Searching · {n} queries"),
+            },
+            Activity::Reading => format!("Reading page {}", started("read_url").max(1)),
+            Activity::Tool => "Using a tool".to_owned(),
+            Activity::Writing => "Writing".to_owned(),
+            Activity::NeedsYou => "Needs your approval".to_owned(),
+            Activity::Stopping => "Stopping".to_owned(),
+        };
+        Some(WorkingLine {
+            activity,
+            phrase,
+            seconds: since.elapsed().as_secs(),
+            // Text beats every ~60 characters streamed.
+            beat: run.steps.len() + draft / 60,
+        })
     }
 
     /// The run the panel shows: the one in progress, else a pinned answer's,
@@ -762,7 +821,7 @@ mod tests {
         m.on_text(2, "Paris is the ");
         m.on_text(2, "capital.");
         assert_eq!(m.draft(), Some("Paris is the capital."));
-        assert_eq!(m.working_line().unwrap().split('…').next(), Some("Writing"));
+        assert_eq!(m.working_line().unwrap().phrase, "Writing");
         m.on_text(3, "Let me check. `");
         assert_eq!(m.draft(), Some("Let me check."));
         assert_eq!(draft_visible("Answer\n```tool\n{}"), Some("Answer"));
@@ -931,11 +990,8 @@ mod tests {
         m.on_event(&search("rag"));
         m.on_event(&ev("policy.decided", "read_url allowed", json!({})));
         assert_eq!(m.panel_run().step_count(), 1);
-        assert!(
-            m.working_line()
-                .unwrap()
-                .starts_with("Checking permissions… ")
-        );
+        assert_eq!(m.working_line().unwrap().phrase, "Thinking");
+
         m.finish_turn(
             &outcome(TurnState::Completed, Some("RAG is…"), None),
             ctx(1000, 234),
@@ -955,6 +1011,28 @@ mod tests {
     }
 
     #[test]
+    fn the_working_line_follows_real_events() {
+        let mut m = ready();
+        m.start_turn("q");
+        m.on_event(&ev(
+            "tool.started",
+            "web_search",
+            json!({"tool": "web_search"}),
+        ));
+        m.on_event(&ev(
+            "tool.started",
+            "web_search",
+            json!({"tool": "web_search"}),
+        ));
+        let line = m.working_line().unwrap();
+        assert_eq!(line.activity, Activity::Searching);
+        assert_eq!(line.phrase, "Searching · 2 queries");
+        m.on_event(&ev("tool.started", "read_url", json!({"tool": "read_url"})));
+        assert_eq!(m.working_line().unwrap().phrase, "Reading page 1");
+        assert!(m.working_line().unwrap().beat > line.beat, "events beat");
+    }
+
+    #[test]
     fn approvals_pause_and_resume_the_same_run() {
         let mut m = ready();
         m.start_turn("q");
@@ -967,7 +1045,7 @@ mod tests {
             args: json!({}),
         });
         assert!(matches!(m.phase, Phase::Approval { .. }));
-        assert!(m.working_line().unwrap().starts_with("Waiting for you"));
+        assert_eq!(m.working_line().unwrap().activity, Activity::NeedsYou);
         m.approval_answered();
         assert!(matches!(m.phase, Phase::Working { .. }));
         assert_eq!(m.panel_run().step_count(), 1);
@@ -978,7 +1056,7 @@ mod tests {
         let mut m = ready();
         m.start_turn("q");
         m.request_stop();
-        assert!(m.working_line().unwrap().starts_with("Stopping"));
+        assert_eq!(m.working_line().unwrap().phrase, "Stopping");
         m.finish_turn(
             &outcome(TurnState::Cancelled, None, Some("You stopped this turn.")),
             ctx(0, 0),

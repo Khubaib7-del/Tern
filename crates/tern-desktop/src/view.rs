@@ -2,7 +2,7 @@
 //! transcript, composer, and the run panel.
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::ExternalPaths;
 use gpui_kit::assets::IconName as AssetIcon;
@@ -17,8 +17,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FontWeight, ScrollHandle, SharedString, Subscription, Task,
-    Window, div, px,
+    Animation, AnimationExt as _, AnyElement, Context, Entity, FontWeight, Hsla, ScrollHandle,
+    SharedString, Subscription, Task, Transformation, Window, div, point, px, radians, size, svg,
 };
 use tern_agent::Role;
 use tern_agent::attach::Source as AttachSource;
@@ -29,8 +29,12 @@ use tern_agent::{
 use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::assets;
 use crate::bridge::{Bridge, Msg};
-use crate::model::{Connection, ContextLevel, Entry, Model, Phase, RunView, Screen, SiteIcon};
+use crate::model::{
+    Activity, Connection, ContextLevel, Entry, Model, Phase, RunView, Screen, SiteIcon, WorkingLine,
+};
+use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
@@ -59,6 +63,11 @@ pub struct Workspace {
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     scroll: ScrollHandle,
     ticker: Option<Task<()>>,
+    /// Motion state: the side panels' slides and a theme switch in flight.
+    sidebar_slide: Slide,
+    panel_slide: Slide,
+    wipe: Option<ThemeWipe>,
+    reduced_motion: bool,
     _listener: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -127,8 +136,14 @@ impl Workspace {
             }
         });
         bridge.connect();
+        let model = Model::new();
+        let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
         Self {
-            model: Model::new(),
+            sidebar_slide: Slide::new(sidebar_open),
+            panel_slide: Slide::new(panel_open),
+            wipe: None,
+            reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
+            model,
             bridge,
             session: None,
             current: None,
@@ -588,6 +603,14 @@ impl Workspace {
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model.dark = !self.model.dark;
+        if !self.reduced_motion {
+            let at = window.mouse_position();
+            self.wipe = Some(ThemeWipe {
+                since: Instant::now(),
+                origin: (f32::from(at.x), f32::from(at.y)),
+                to_dark: self.model.dark,
+            });
+        }
         let mode = if self.model.dark {
             ThemeMode::Dark
         } else {
@@ -1222,16 +1245,7 @@ impl Workspace {
             column = column.child(card);
         }
         if let Some(line) = self.model.working_line() {
-            column = column.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(Spinner::new().small().color(p.muted))
-                    .child(line),
-            );
+            column = column.child(working_line(&line, p, self.reduced_motion, "transcript"));
         }
         div()
             .id("transcript")
@@ -1931,17 +1945,7 @@ impl Workspace {
             .child(div().text_xs().text_color(p.faint).child("Run"))
             .child(tabs);
         let status: Option<AnyElement> = if let Some(line) = self.model.working_line() {
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(Spinner::new().small())
-                    .child(line)
-                    .into_any_element(),
-            )
+            Some(working_line(&line, p, self.reduced_motion, "panel").into_any_element())
         } else {
             run.end.as_ref().map(|end| {
                 let took = run.summary().took.as_secs_f32();
@@ -2196,8 +2200,43 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = Palette::get(self.model.dark);
+        let now = Instant::now();
+        let reduced = self.reduced_motion;
+        if self.wipe.is_some_and(|w| w.done(now)) {
+            self.wipe = None;
+        }
+        let p = match &self.wipe {
+            Some(w) => w.palette(now),
+            None => Palette::get(self.model.dark),
+        };
+        let sidebar = self
+            .sidebar_slide
+            .frame(self.model.sidebar_open, now, reduced);
+        let panel = self
+            .panel_slide
+            .frame(self.model.run_panel_open, now, reduced);
+        if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
+            window.request_animation_frame();
+        }
+        let ripple = self.wipe.map(|w| {
+            let (grow, strength) = w.circle(now);
+            let view = window.viewport_size();
+            let diag = f32::from(view.width).hypot(f32::from(view.height));
+            let r = diag * grow;
+            div()
+                .absolute()
+                .left(px(w.origin.0 - r))
+                .top(px(w.origin.1 - r))
+                .size(px(r * 2.))
+                .rounded_full()
+                .bg(p.text.opacity(strength * 0.25))
+        });
+        let screen_id: &'static str = match self.model.screen {
+            Screen::Chat => "screen-chat",
+            Screen::Providers => "screen-providers",
+        };
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -2211,19 +2250,33 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.rail(p, cx))
-                    .when(self.model.sidebar_open, |d| d.child(self.sidebar(p, cx)))
-                    .child(div().flex().flex_col().flex_1().min_w_0().map(|d| {
-                        match self.model.screen {
-                            Screen::Chat => {
-                                d.child(self.transcript(p, cx)).child(self.composer(p, cx))
-                            }
-                            Screen::Providers => d.child(self.providers_screen(p, window, cx)),
-                        }
-                    }))
-                    .when(self.model.run_panel_open, |d| {
-                        d.child(self.run_panel(p, cx))
+                    .when_some(sidebar, |d, f| {
+                        d.child(sliding(self.sidebar(p, cx), SIDEBAR_W, f, false))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .map(|d| match self.model.screen {
+                                Screen::Chat => {
+                                    d.child(self.transcript(p, cx)).child(self.composer(p, cx))
+                                }
+                                Screen::Providers => d.child(self.providers_screen(p, window, cx)),
+                            })
+                            .with_animation(
+                                screen_id,
+                                Animation::new(if reduced { Duration::ZERO } else { motion::UI })
+                                    .with_easing(motion::ease),
+                                |d, t| d.opacity(t),
+                            ),
+                    )
+                    .when_some(panel, |d, f| {
+                        d.child(sliding(self.run_panel(p, cx), RUN_PANEL_W, f, true))
                     }),
             )
+            .children(ripple)
     }
 }
 
@@ -2354,4 +2407,136 @@ fn sent_chip(c: &tern_agent::Chip, p: Palette) -> AnyElement {
             d.child(div().text_color(p.text).child("· Prompt"))
         })
         .into_any_element()
+}
+
+/// A side panel part-way open: it keeps its full width inside a clip that
+/// grows, and fades with it, so its contents never reflow mid-slide.
+fn sliding(panel: impl IntoElement, width: f32, f: f32, from_right: bool) -> impl IntoElement {
+    div()
+        .flex_none()
+        .h_full()
+        .w(px(width * f))
+        .overflow_hidden()
+        .opacity(f)
+        .flex()
+        .when(from_right, |d| d.justify_start())
+        .when(!from_right, |d| d.justify_end())
+        .child(div().flex_none().h_full().w(px(width)).child(panel))
+}
+
+/// The live line while a turn runs: the tern mark moving with the work, a
+/// shimmering phrase, and elapsed seconds (`docs/02-ui-definition.md` §2.7).
+fn working_line(
+    line: &WorkingLine,
+    p: Palette,
+    reduced: bool,
+    at: &'static str,
+) -> impl IntoElement {
+    let still = reduced || matches!(line.activity, Activity::NeedsYou | Activity::Stopping);
+    let mark_color = match line.activity {
+        Activity::NeedsYou => p.text,
+        Activity::Stopping => p.faint,
+        _ => p.muted,
+    };
+    let phrase: AnyElement = if still {
+        div()
+            .text_color(if line.activity == Activity::NeedsYou {
+                p.text
+            } else {
+                p.muted
+            })
+            .child(SharedString::from(line.phrase.clone()))
+            .into_any_element()
+    } else {
+        let chars: Vec<char> = line.phrase.chars().collect();
+        div()
+            .flex()
+            .with_animation(
+                (at, 0usize),
+                Animation::new(motion::SHIMMER).repeat(),
+                move |d, phase| {
+                    let weights = motion::shimmer(chars.len(), phase);
+                    d.children(chars.iter().zip(weights).map(|(c, w)| {
+                        div()
+                            .text_color(motion::lerp_color(p.muted, p.text, w))
+                            .child(SharedString::from(c.to_string()))
+                    }))
+                },
+            )
+            .into_any_element()
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_sm()
+        .text_color(p.muted)
+        .child(
+            div()
+                .size(px(16.))
+                .flex_none()
+                .child(mark(line, mark_color, still, at)),
+        )
+        .child(phrase)
+        .child(
+            div()
+                .text_color(p.faint)
+                .child(format!("{}s", line.seconds)),
+        )
+}
+
+/// The tern mark, animated by what the turn is doing. Continuous motion
+/// (the glide, the wingbeats) runs only while that state lasts; the
+/// one-off beats restart on each real event through the beat counter.
+fn mark(line: &WorkingLine, color: Hsla, still: bool, at: &'static str) -> AnyElement {
+    use std::f32::consts::PI;
+    let base = svg().path(assets::MARK).size(px(16.)).text_color(color);
+    if still {
+        return base.into_any_element();
+    }
+    match line.activity {
+        // Slow glide: a 2px bob every 2 s.
+        Activity::Thinking => base
+            .with_animation(
+                (at, 1usize),
+                Animation::new(Duration::from_secs(2)).repeat(),
+                |s, t| {
+                    let lift = (PI * (t / 0.35).min(1.0)).sin();
+                    s.with_transformation(Transformation::translate(point(px(0.), px(-2. * lift))))
+                },
+            )
+            .into_any_element(),
+        // Quick wingbeats while a query or tool is in flight.
+        Activity::Searching | Activity::Tool => base
+            .with_animation(
+                (at, 2usize),
+                Animation::new(Duration::from_millis(360)).repeat(),
+                |s, t| {
+                    let beat = (2. * PI * t).sin().abs();
+                    s.with_transformation(Transformation::scale(size(1., 1. - 0.22 * beat)))
+                },
+            )
+            .into_any_element(),
+        // Head dips once per page fetched.
+        Activity::Reading => base
+            .with_animation(
+                SharedString::from(format!("{at}-read-{}", line.beat)),
+                Animation::new(motion::MARK).with_easing(motion::ease),
+                |s, t| {
+                    s.with_transformation(Transformation::rotate(radians(0.28 * (PI * t).sin())))
+                },
+            )
+            .into_any_element(),
+        // Small beats in time with the streamed text.
+        _ => base
+            .with_animation(
+                SharedString::from(format!("{at}-write-{}", line.beat)),
+                Animation::new(Duration::from_millis(320)),
+                |s, t| {
+                    let beat = (PI * t).sin();
+                    s.with_transformation(Transformation::scale(size(1., 1. - 0.14 * beat)))
+                },
+            )
+            .into_any_element(),
+    }
 }

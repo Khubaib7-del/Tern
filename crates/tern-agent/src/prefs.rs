@@ -23,9 +23,19 @@ pub struct Preferences {
     pub model: Option<String>,
     /// Search service id (`tavily`). `None` means the first with a key.
     pub search: Option<String>,
+    /// Turns motion off: the mark stays still, panels appear without
+    /// sliding, and the theme switches at once. `TERN_REDUCED_MOTION=1`
+    /// does the same.
+    pub reduced_motion: bool,
 }
 
 impl Preferences {
+    /// Whether motion is off, from the saved choice or the environment.
+    pub fn wants_reduced_motion(&self) -> bool {
+        self.reduced_motion
+            || std::env::var("TERN_REDUCED_MOTION").is_ok_and(|v| v == "1" || v == "true")
+    }
+
     pub fn path(paths: &AppPaths) -> PathBuf {
         paths.data_dir.join(FILE)
     }
@@ -108,6 +118,7 @@ mod tests {
             provider: Some("groq".into()),
             model: Some("llama-3.3-70b-versatile".into()),
             search: Some("tavily".into()),
+            reduced_motion: true,
         };
         p.save_to(&path).unwrap();
         assert_eq!(Preferences::load_from(&path), p);
@@ -142,6 +153,7 @@ mod tests {
             provider: Some("groq".into()),
             model: Some("m".into()),
             search: None,
+            ..Preferences::default()
         };
         let o = p.chat_options();
         assert_eq!(o.provider.as_deref(), Some("groq"));
