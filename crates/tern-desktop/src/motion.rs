@@ -82,44 +82,49 @@ pub fn progress(start: Instant, dur: Duration, now: Instant) -> f32 {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Slide {
     open: bool,
-    since: Option<Instant>,
+    /// The slide in flight: when it started and how open it was then.
+    moving: Option<(Instant, f32)>,
+    shown: f32,
 }
 
 impl Slide {
     pub fn new(open: bool) -> Self {
-        Self { open, since: None }
+        Self {
+            open,
+            moving: None,
+            shown: if open { 1.0 } else { 0.0 },
+        }
     }
 
     /// How far open to draw the panel (0 to 1), or `None` to leave it out.
-    /// Call every frame with the panel's real state; a change starts the
-    /// slide from wherever the last one had reached.
+    /// Call every frame with the panel's real state; a change starts a
+    /// slide from wherever the panel is now, so reversing never jumps.
     pub fn frame(&mut self, open: bool, now: Instant, reduced: bool) -> Option<f32> {
         if open != self.open {
-            // Reverse mid-way without a jump: start the new slide as if it
-            // had already covered what the old one still had to go.
-            let done = self.since.map_or(1.0, |s| raw(s, UI, now));
-            let back = Duration::from_secs_f32(UI.as_secs_f32() * (1.0 - done));
-            self.since = Some(now.checked_sub(back).unwrap_or(now));
             self.open = open;
+            self.moving = Some((now, self.shown));
         }
-        let t = match self.since {
-            Some(s) if !reduced => {
-                let r = raw(s, UI, now);
+        let target = if self.open { 1.0 } else { 0.0 };
+        self.shown = match self.moving {
+            Some((since, from)) if !reduced => {
+                let r = raw(since, UI, now);
                 if r >= 1.0 {
-                    self.since = None;
-                    1.0
+                    self.moving = None;
+                    target
                 } else {
-                    ease(r)
+                    from + (target - from) * ease(r)
                 }
             }
-            _ => 1.0,
+            _ => {
+                self.moving = None;
+                target
+            }
         };
-        let shown = if self.open { t } else { 1.0 - t };
-        (shown > 0.0).then_some(shown)
+        (self.shown > 0.0 || self.moving.is_some()).then_some(self.shown)
     }
 
     pub fn moving(&self) -> bool {
-        self.since.is_some()
+        self.moving.is_some()
     }
 }
 
@@ -167,6 +172,12 @@ pub fn shimmer(len: usize, phase: f32) -> Vec<f32> {
 }
 
 pub fn lerp_color(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
     // Neutral greys: hue and saturation barely matter, so plain lerp works.
     Hsla {
         h: a.h + (b.h - a.h) * t,
