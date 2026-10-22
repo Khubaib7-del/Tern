@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, and a first desktop app work today (see below); the Study harness has its tutor, quizzes, and viva practice, with flashcards still ahead.
+It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, the desktop app, Tern Crawl, claim checks with run reports, deep research with parallel workers, and the Study harness (tutor, quizzes, viva) work today (see below); flashcards, the decision model, the library, MCP, evaluation, and the Linux and macOS ports are still ahead.
 
 ## What works today
 
@@ -24,6 +24,8 @@ It is being built as the research tool for its author's final-year project. It i
 | Providers | 13 providers (11 remote, Ollama and LM Studio local) on Tern's own adapters; keys tested before they are saved to Windows Credential Manager; streaming replies |
 | Turn loop | Bounded by model calls, tool calls, and tokens; loop detection; cancel; policy gate with Allow, Ask, Deny and inline approvals |
 | Web answers | `tern ask` and chat search through Tavily, Brave, or SearXNG, read pages behind a network guard, and cite them with a citation check |
+| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
+| PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups |
 | Claim checks | Every cited sentence of an answer is checked against the text Tern Crawl read for its source: Supported, Partly supported, Not supported, or No source, with the quoted passage and a link to it. The chat's model judges; a word-overlap check works offline and fills gaps |
 | Deep research | A plan first: the model splits the question into sub-questions (searches, expected source types, budget share) and you run, edit, skip, or cancel it before anything is searched. Workers then research the parts in parallel (3 at once by default), each with its own slice of tokens, pages, and time, reading through Tern Crawl; one answer is written from their notes with one set of citations, then checked and reported like any answer. `tern research --deep "question"` in the terminal; the composer's **Deep research** mode on desktop |
 | Run reports | Each answer writes a Markdown and JSON report (question, steps, sources with robots and cache status, claim verdicts, budget and tokens, errors, and a section per worker for deep research); `tern report` prints or exports one |
@@ -53,16 +55,17 @@ Both share the same projects, library, vault, memory, providers, and permissions
 
 | Area | Planned |
 | --- | --- |
-| Models | Bring your own key for many providers; local models through Ollama, LM Studio, or any OpenAI-compatible endpoint; keys kept in the OS keychain |
+| Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
 | Decision model | A fast scorer beside the main model that decides fixed choices (which source first, which tool next, does a claim pass) while hard checks keep the final word |
-| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
-| PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups |
-| Control | Safe pause at budget limits, loop and drift detection, and a scheduler that runs watches while Tern is closed (steering, run checkpoints, and the in-app watcher are built) |
+| Control | Safe pause at budget limits, drift detection, and a scheduler that runs watches while Tern is closed (loop detection, steering, run checkpoints, and the in-app watcher are built) |
 | Memory | Stable IDs for every query, file, and source; a goal and decision ledger that survives compaction |
-| Surfaces | A terminal UI and a desktop app over the same core; MCP client and ACP server |
-| Workspace | A built-in browser for reading sources, and Explain in 3D for interactive concept models |
-| Git | Project vaults as git repositories: commit, branch, push, and open pull requests from the app |
-| Vault | Plain Markdown, Obsidian-compatible, with agent edits as diffs |
+| Surfaces | MCP client and ACP server (the terminal UI and desktop app are built) |
+| Workspace | Explain in 3D for interactive concept models (the built-in browser is built) |
+| Vault | Agent edits shown as diffs (plain Markdown notes, `[[links]]`, backlinks, and Git for the vault are built) |
+| Study | Flashcards with Anki export, Explain in 3D, and study plans |
+| Library | Chat ranges, sub-sessions, handoffs, a library, bulk delete, highlights and side chats |
+| Evaluation | Benchmarks for citation accuracy, cost, and reliability |
+| Platforms | Linux and macOS builds |
 
 Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
 
@@ -79,7 +82,7 @@ Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
 | 7 | **The user steers.** Plans first; pause, redirect, and resume at any point. |
 | 8 | **One core, many surfaces.** The core owns state and security; UIs only render its events. |
 
-## Planned architecture
+## Architecture
 
 A single Rust workspace. The headless core owns execution and security; the TUI and desktop app subscribe to its events.
 
@@ -114,11 +117,11 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | Phase | Focus | Status |
 | --- | --- | --- |
 | 0 | Repository baseline | Done |
-| 1 | Design lock: palette, fonts, concept screens, SVG mark | Planned |
+| 1 | Design lock: palette, fonts, concept screens, SVG mark | Done |
 | 2 | Core skeleton, keychain, store, `tern doctor` | Done |
 | 3 | Providers and the first cited answer in the TUI | Done |
-| 4 | Crawler and claim verification | Planned |
-| 5 | Deep research: plans, workers, checkpoints, steering | Planned |
+| 4 | Crawler and claim verification | Mostly done |
+| 5 | Deep research: plans, workers, checkpoints, steering | Mostly done |
 | 6 | Desktop app | In progress |
 | 7 | Study harness | In progress |
 | 8 | Decision model | Planned |
@@ -169,6 +172,11 @@ Not yet released. There are no installers or packages; test builds come from CI 
 | `cargo run -p tern-tui -- provider add groq` | Adds a provider key (hidden prompt, tested before saving) |
 | `cargo run -p tern-tui -- search add tavily` | Adds a web search key |
 | `cargo run -p tern-tui -- ask "your question"` | A cited answer from the web |
+| `cargo run -p tern-tui -- research --deep "your question"` | Deep research: a plan to approve, then parallel workers |
+| `cargo run -p tern-tui -- report` | Prints the last run report (`--json`, `--out FILE`, `--list`) |
+| `cargo run -p tern-tui -- resume <chat>` | Resumes a stopped research run |
+| `cargo run -p tern-tui -- watch add "question" --every weekly` | Puts a question on watch (`watch list\|rm\|run`) |
+| `cargo run -p tern-tui -- study add notes.pdf` | Adds study materials (`study topics`, `tutor`, `quiz`, `viva`) |
 | `cargo run -p tern-tui` | The terminal chat (`-- chat --provider ollama` for a local model) |
 
 Set `TERN_REDUCED_MOTION=1` (or `"reduced_motion": true` in `preferences.json`) to turn motion off in the desktop app.

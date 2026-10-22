@@ -7,9 +7,9 @@
 | Phase | Name | Outcome | Status |
 | --- | --- | --- | --- |
 | 0 | Repository baseline | Licence, docs, brand assets, process files | Done (PR #1) |
-| 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Planned |
+| 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Done (PR #30; Tern Crawl logo PR #32) |
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Done |
-| 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | In progress |
+| 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | Done |
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Mostly built (PRs #31 to #33); scholarly sources and reports in the vault remain |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Mostly built (PR #34: plans and parallel workers; PR #35: checkpoints, steering, the in-app watcher, ledgers); budget pause and an OS scheduler remain |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
