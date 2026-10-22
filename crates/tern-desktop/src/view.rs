@@ -33,6 +33,7 @@ use crate::assets;
 use crate::bridge::{Bridge, Msg};
 mod browser_view;
 mod editor_view;
+mod git_view;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -80,6 +81,8 @@ pub struct Workspace {
     _listener: Task<()>,
     /// The built-in browser's address bar.
     address_input: Entity<InputState>,
+    /// The Git screen's text fields.
+    git_inputs: git_view::GitInputs,
     /// The Editor screen's text field.
     note_input: Entity<TextareaState>,
     _subscriptions: Vec<Subscription>,
@@ -171,6 +174,7 @@ impl Workspace {
                 }
             },
         );
+        let git_inputs = git_view::GitInputs::new(window, cx);
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Chat title"));
         let rename_sub = cx.subscribe_in(
             &rename_input,
@@ -193,7 +197,12 @@ impl Workspace {
         bridge.connect();
         let mut model = Model::new();
         if let Ok(v) = tern_agent::vault::Vault::open_default() {
+            let root = v.root().to_path_buf();
             model.editor.attach(v);
+            let refresh = crate::git::GitOp::Refresh;
+            if model.git.start(&refresh) {
+                bridge.git(root, refresh);
+            }
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
         Self {
@@ -219,6 +228,7 @@ impl Workspace {
             _listener: listener,
             note_input,
             address_input,
+            git_inputs,
             _subscriptions: vec![sub, key_sub, rename_sub, note_sub, address_sub],
         }
     }
@@ -283,6 +293,15 @@ impl Workspace {
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
+            Msg::Git(snapshot, result) => {
+                if self.model.git.status().is_none() && snapshot.status.is_repo {
+                    let remote = snapshot.status.remote.clone().unwrap_or_default();
+                    self.git_inputs
+                        .remote
+                        .update(cx, |i, cx| i.set_value(remote, window, cx));
+                }
+                self.model.git.finished(snapshot, result);
+            }
             Msg::Browsed(request, page) => {
                 if self.model.browser.loaded(request, page) {
                     let address = self.model.browser.address();
@@ -1069,7 +1088,8 @@ impl Workspace {
                                         cx.notify();
                                     })),
                             ),
-                        ),
+                        )
+                        .children(self.git_chip(p, cx)),
                 )
                 .child(
                     div()
@@ -1198,6 +1218,20 @@ impl Workspace {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("rail-git")
+                            .icon(AssetIcon::GitBranch)
+                            .ghost()
+                            .when(self.model.screen == Screen::Git, |b| b.selected(true))
+                            .tooltip("Git")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.model.screen == Screen::Git {
+                                    this.close_git(window, cx);
+                                } else {
+                                    this.open_git(window, cx);
+                                }
+                            })),
                     ),
             )
             .child(
@@ -2828,6 +2862,7 @@ impl Render for Workspace {
             Screen::Chat => "screen-chat",
             Screen::Providers => "screen-providers",
             Screen::Editor => "screen-editor",
+            Screen::Git => "screen-git",
         };
         div()
             .relative()
@@ -2861,6 +2896,7 @@ impl Render for Workspace {
                                     .child(self.composer(p, cx)),
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
+                                Screen::Git => d.child(self.git_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,

@@ -29,9 +29,23 @@ pub struct Preferences {
     pub reduced_motion: bool,
     /// The vault folder. `None` means `<data>/vault`.
     pub vault: Option<String>,
+    /// Name and email for vault checkpoints; `None` uses git's own config.
+    pub git_name: Option<String>,
+    pub git_email: Option<String>,
+    /// Credit Tern with a `Co-authored-by` trailer on checkpoints.
+    pub git_credit_tern: bool,
 }
 
 impl Preferences {
+    /// Who commits vault checkpoints.
+    pub fn git_identity(&self) -> crate::git::Identity {
+        crate::git::Identity {
+            name: self.git_name.clone(),
+            email: self.git_email.clone(),
+            credit_tern: self.git_credit_tern,
+        }
+    }
+
     /// Whether motion is off, from the saved choice or the environment.
     pub fn wants_reduced_motion(&self) -> bool {
         self.reduced_motion
@@ -123,6 +137,9 @@ mod tests {
             search: Some("tavily".into()),
             reduced_motion: true,
             vault: Some("D:/Notes".into()),
+            git_name: Some("Khubaib".into()),
+            git_email: None,
+            git_credit_tern: true,
         };
         p.save_to(&path).unwrap();
         assert_eq!(Preferences::load_from(&path), p);

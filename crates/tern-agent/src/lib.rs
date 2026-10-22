@@ -15,6 +15,7 @@ pub mod browse;
 pub mod chat;
 pub mod doctor;
 pub mod engine;
+pub mod git;
 pub mod mention;
 pub mod policy;
 pub mod prefs;
