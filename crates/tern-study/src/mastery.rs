@@ -17,6 +17,8 @@ use crate::quiz::Difficulty;
 
 /// How far one answer can move the rating.
 pub const K: f32 = 0.25;
+/// How far one flashcard review can move the rating.
+pub const CARD_K: f32 = 0.08;
 /// Days until a topic in box `n` is due again (index 0 is box 1).
 pub const BOX_DAYS: [i64; 5] = [1, 2, 4, 8, 16];
 const DAY: i64 = 86_400;
@@ -31,8 +33,11 @@ pub struct Mastery {
     pub attempts: u32,
     /// Sum of credit (1 right, 0.5 partly, 0 wrong).
     pub credit: f32,
-    /// Last graded answer or tutor session, Unix seconds.
+    /// Last graded answer, card review, or tutor session, Unix seconds.
     pub last_seen: Option<i64>,
+    /// Flashcard reviews on the topic's cards.
+    #[serde(default)]
+    pub card_reviews: u32,
 }
 
 impl Default for Mastery {
@@ -43,6 +48,7 @@ impl Default for Mastery {
             attempts: 0,
             credit: 0.0,
             last_seen: None,
+            card_reviews: 0,
         }
     }
 }
@@ -91,13 +97,24 @@ impl Mastery {
         self.last_seen = Some(now);
     }
 
+    /// A flashcard review on one of the topic's cards: `credit` from the
+    /// rating (Again 0, Hard 0.5, Good and Easy 1). Moves the rating by at
+    /// most [`CARD_K`] and leaves the Leitner box alone.
+    pub fn nudge(&mut self, credit: f32, now: i64) {
+        let credit = credit.clamp(0.0, 1.0);
+        let e = expected(self.rating, Difficulty::Medium);
+        self.rating = (self.rating + CARD_K * (credit - e)).clamp(0.0, 1.0);
+        self.card_reviews += 1;
+        self.last_seen = Some(now);
+    }
+
     /// A tutor session on the topic: it counts as seen, nothing more.
     pub fn touch(&mut self, now: i64) {
         self.last_seen = Some(now);
     }
 
     pub fn level(&self) -> Level {
-        if self.attempts == 0 {
+        if self.attempts == 0 && self.card_reviews == 0 {
             Level::New
         } else if self.rating >= 0.85 && self.leitner >= 4 {
             Level::Mastered
@@ -133,6 +150,18 @@ impl Mastery {
 
     /// `Solid · 7 of 9 right · box 4 · seen 2 days ago`.
     pub fn explain(&self, now: i64) -> String {
+        if self.attempts == 0 && self.card_reviews > 0 {
+            let mut s = format!(
+                "{} · {} card review{} · no quiz yet",
+                self.level().label(),
+                self.card_reviews,
+                if self.card_reviews == 1 { "" } else { "s" }
+            );
+            if let Some(t) = self.last_seen {
+                s.push_str(&format!(" · seen {}", ago(now - t)));
+            }
+            return s;
+        }
         if self.attempts == 0 {
             return match self.last_seen {
                 Some(t) => format!("New · no quiz yet · tutored {}", ago(now - t)),
@@ -203,6 +232,7 @@ mod tests {
             attempts: 5,
             credit: 5.0,
             last_seen: Some(0),
+            card_reviews: 0,
         };
         let mut weak = Mastery {
             rating: 0.1,
@@ -237,6 +267,28 @@ mod tests {
         assert_eq!(m.due_at(), Some(2 * DAY));
         assert!(m.is_due(2 * DAY));
         assert!(!m.is_due(DAY));
+    }
+
+    #[test]
+    fn card_reviews_nudge_gently_and_keep_the_box() {
+        let mut quiz = Mastery::default();
+        let mut card = Mastery {
+            leitner: 3,
+            ..Mastery::default()
+        };
+        quiz.record(1.0, Difficulty::Medium, 0);
+        card.nudge(1.0, 0);
+        assert!(card.rating > 0.0 && card.rating < quiz.rating);
+        assert_eq!(card.leitner, 3);
+        assert_eq!(card.attempts, 0);
+        assert_eq!(card.level(), Level::Learning);
+        assert_eq!(
+            card.explain(60),
+            "Learning · 1 card review · no quiz yet · seen 1 minute ago"
+        );
+        let before = card.rating;
+        card.nudge(0.0, 1);
+        assert!(card.rating < before);
     }
 
     #[test]

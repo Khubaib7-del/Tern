@@ -12,6 +12,8 @@
 //! <data>/study/materials/<id>.json each material's chunks
 //! <data>/study/quizzes/<id>.json   a quiz, its key, and every attempt
 //! <data>/study/vivas/<id>.json|md  a viva transcript and its rubric report
+//! <data>/study/cards.json          the flashcard deck (see `crate::cards`)
+//! <data>/study/explain/<id>.json   saved Explain in 3D scenes (`crate::explain`)
 //! ```
 //!
 //! Every model step falls back to `tern-study`'s deterministic version
@@ -64,7 +66,7 @@ pub struct StudyStore {
     root: PathBuf,
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Tern could not make {}: {e}", dir.display()))?;
@@ -75,7 +77,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => serde_json::from_str(&text)
             .map(Some)

@@ -22,6 +22,9 @@ pub enum Mood {
     Verifying,
     /// Thinking or writing: still, eyes up.
     Thinking,
+    /// Flashcard review: holds up a card (arm raised, scroll open) and
+    /// reacts to each answer ([`Rig::react`]).
+    Studying,
     /// A run finished: a small nod, then idle.
     Ready,
     #[default]
@@ -29,7 +32,7 @@ pub enum Mood {
 }
 
 impl Mood {
-    pub const ALL: [Mood; 8] = [
+    pub const ALL: [Mood; 9] = [
         Mood::Idle,
         Mood::Thinking,
         Mood::Searching,
@@ -37,6 +40,7 @@ impl Mood {
         Mood::Verifying,
         Mood::NeedsYou,
         Mood::Blocked,
+        Mood::Studying,
         Mood::Ready,
     ];
 
@@ -48,6 +52,7 @@ impl Mood {
             Mood::Reading => "Reading",
             Mood::Verifying => "Verifying",
             Mood::Thinking => "Thinking",
+            Mood::Studying => "Studying",
             Mood::Ready => "Ready",
             Mood::Idle => "Idle",
         }
@@ -56,6 +61,8 @@ impl Mood {
 
 /// How long the Ready nod lasts before Scout settles to idle.
 pub const READY_SECS: f32 = 1.6;
+/// How long Scout reacts to a flashcard answer.
+pub const REACT_SECS: f32 = 0.9;
 
 /// A damped spring on one number.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -126,6 +133,8 @@ pub struct Rig {
     blink_at: Option<f32>,
     /// A sweep or tap from the last event, by its start time.
     kick_at: Option<f32>,
+    /// A reaction to a flashcard answer: right or wrong, and when.
+    reaction: Option<(bool, f32)>,
     seed: u32,
 }
 
@@ -152,6 +161,7 @@ impl Rig {
             next_blink: 0.0,
             blink_at: None,
             kick_at: None,
+            reaction: None,
             seed: seed.max(1),
         };
         rig.next_blink = rig.blink_gap();
@@ -194,6 +204,20 @@ impl Rig {
         }
     }
 
+    /// A flashcard was answered: a nod for right, a small head shake for
+    /// wrong.
+    pub fn react(&mut self, right: bool) {
+        self.reaction = Some((right, self.now));
+    }
+
+    /// The reaction in progress: right or wrong, and how far through (0
+    /// to 1).
+    fn reacting(&self) -> Option<(bool, f32)> {
+        let (right, at) = self.reaction?;
+        let t = (self.now - at) / REACT_SECS;
+        (t < 1.0).then_some((right, t.max(0.0)))
+    }
+
     fn targets(&self) -> (f32, f32, f32, f32, f32, f32) {
         // (lantern angle, raise, scroll, look x, look y, sit)
         match self.mood {
@@ -203,6 +227,7 @@ impl Rig {
             Mood::Reading => (0.0, 0.0, 1.0, -0.5, 0.2, 0.0),
             Mood::Verifying => (0.0, 0.0, 1.0, -0.5, 0.4, 0.0),
             Mood::Thinking => (0.0, 0.0, 0.0, 0.2, -0.7, 0.0),
+            Mood::Studying => (0.0, 0.7, 1.0, 0.3, -0.3, 0.0),
             Mood::Ready | Mood::Idle => (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         }
     }
@@ -237,6 +262,13 @@ impl Rig {
             } else {
                 self.kick_at = None;
             }
+        }
+        match self.reacting() {
+            // Wrong: the eyes shake side to side, fading out.
+            Some((false, t)) => lx += (t * 18.0).sin() * 0.8 * (1.0 - t),
+            // Right: eyes up, toward you.
+            Some((true, _)) => ly -= 0.4,
+            None => self.reaction = None,
         }
         // Moving the arm swings the lantern by itself.
         let arm_before = self.raise.value;
@@ -275,6 +307,9 @@ impl Rig {
             } else {
                 0.0
             }
+        } else if let Some((true, t)) = self.reacting() {
+            // Two quick nods.
+            (t * std::f32::consts::TAU).sin().abs() * 2.0 * (1.0 - t)
         } else {
             0.0
         };
@@ -297,6 +332,7 @@ impl Rig {
     pub fn busy(&self) -> bool {
         let (lantern, raise, scroll, _, _, sit) = self.targets();
         self.mood != Mood::Idle
+            || self.reacting().is_some()
             || self.blink_at.is_some()
             || !self.lantern.settled(lantern)
             || !self.raise.settled(raise)
@@ -385,5 +421,31 @@ mod tests {
         // Leaving Blocked does not nod.
         rig.set_mood(Mood::Idle);
         assert_eq!(rig.mood(), Mood::Idle);
+    }
+
+    #[test]
+    fn studying_holds_up_a_card_and_reacts() {
+        let mut rig = Rig::new(5);
+        rig.set_mood(Mood::Studying);
+        run(&mut rig, 2.0);
+        let p = rig.pose();
+        assert!(p.raise > 0.6 && p.scroll > 0.9, "{p:?}");
+        let rest = rig.pose().bob;
+        rig.react(true);
+        run(&mut rig, 0.25);
+        assert!(rig.pose().bob > rest + 0.5, "a nod");
+        assert!(rig.busy());
+        run(&mut rig, 1.0);
+        rig.react(false);
+        let mut xs = Vec::new();
+        for _ in 0..30 {
+            rig.step(1.0 / 60.0);
+            xs.push(rig.pose().look_x);
+        }
+        let spread = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(spread > 0.1, "a head shake: {spread}");
+        run(&mut rig, 2.0);
+        assert!(rig.reacting().is_none());
     }
 }

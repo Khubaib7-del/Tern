@@ -31,8 +31,10 @@ use crate::assets;
 use crate::bridge::{Bridge, Msg};
 mod appearance_view;
 mod browser_view;
+mod cards_view;
 mod deep_view;
 mod editor_view;
+mod explain_view;
 mod git_view;
 mod runs_view;
 mod scout_view;
@@ -109,6 +111,15 @@ pub struct Workspace {
     study_inputs: study_view::StudyInputs,
     /// Ticks the viva clock.
     study_ticker: Option<Task<()>>,
+    /// Takes the keys on the flashcard review and in explainer tabs.
+    keys: gpui_kit::FocusHandle,
+    /// Explain in 3D tabs, by key, and the next key.
+    explains: std::collections::HashMap<u32, crate::explain::ExplainState>,
+    next_explain: u32,
+    /// When the explainer's tilt last eased.
+    explain_at: Option<Instant>,
+    /// Steps explainers on autoplay.
+    explain_ticker: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -284,6 +295,11 @@ impl Workspace {
             _watch_timer: watch_timer,
             study_inputs,
             study_ticker: None,
+            keys: cx.focus_handle(),
+            explains: Default::default(),
+            next_explain: 0,
+            explain_at: None,
+            explain_ticker: None,
             note_input,
             address_input,
             git_inputs,
@@ -858,6 +874,16 @@ impl Workspace {
 
     /// Reopens a chat from the list. Ignored mid-turn or for the open chat.
     fn open_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        // From an explainer, a chat that is already open is only focused.
+        if self.tabs.active_tab().is_explain()
+            && let Some(i) = self.tabs.list.iter().position(|t| t.id == Some(id))
+            && self.current == Some(id)
+        {
+            self.tabs.focus(i);
+            self.model.screen = Screen::Chat;
+            cx.notify();
+            return;
+        }
         if self.model.is_busy() || self.current == Some(id) {
             return;
         }
@@ -899,26 +925,54 @@ impl Workspace {
     }
 
     fn focus_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
+        let from_explain = self.tabs.active_tab().is_explain();
+        let to_explain = self.tabs.list.get(i).is_some_and(Tab::is_explain);
+        // Explainers never interrupt a run; moving between them and the
+        // chat on screen is always allowed.
+        if self.model.is_busy() && !from_explain && !to_explain {
             return;
         }
         if let Some(tab) = self.tabs.focus(i).cloned() {
+            if from_explain && tab.id.is_none() && !tab.is_explain() && self.current.is_none() {
+                // Back to the fresh chat that was on screen.
+                cx.notify();
+                return;
+            }
+            if self.model.is_busy() && !tab.is_explain() && tab.id != self.current {
+                return;
+            }
             self.show_tab(tab, window, cx);
         }
     }
 
     fn close_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_busy() && i == self.tabs.active {
+        let closing = self.tabs.list.get(i).cloned();
+        let was_explain = self.tabs.active_tab().is_explain();
+        if self.model.is_busy() && i == self.tabs.active && !was_explain {
             return;
         }
+        if let Some(key) = closing.as_ref().and_then(|t| t.explain) {
+            self.explains.remove(&key);
+        }
         if let Some(tab) = self.tabs.close(i).cloned() {
+            if was_explain && tab.id == self.current && !tab.is_explain() {
+                cx.notify();
+                return;
+            }
             self.show_tab(tab, window, cx);
         }
         cx.notify();
     }
 
-    /// Shows a tab's chat: reopens it, or starts a fresh one.
+    /// Shows a tab's chat: reopens it, or starts a fresh one. An
+    /// explainer's tab shows itself; the chat behind it is kept.
     fn show_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if tab.is_explain() {
+            self.model.screen = Screen::Chat;
+            self.keys.focus(window, cx);
+            cx.notify();
+            return;
+        }
         match tab.id {
             Some(id) if self.current != Some(id) => self.load_chat(id, cx),
             Some(_) => {}
@@ -1752,6 +1806,30 @@ impl Workspace {
                         },
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.watch_answer(i, cx))),
+                )
+            })
+            .when(answer, |d| {
+                d.child(
+                    action(
+                        "explain3d",
+                        AssetIcon::Cuboid,
+                        "Explain in 3D: this answer as an isometric machine, step by step",
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let Some(text) = this.model.entry_text(i).map(str::to_owned) else {
+                            return;
+                        };
+                        let label = this
+                            .model
+                            .question_before(i)
+                            .unwrap_or_else(|| "this answer".into());
+                        let ask = tern_agent::explain::Ask {
+                            concept: String::new(),
+                            topic: None,
+                            context: Some(text),
+                        };
+                        this.open_explain(ask, &label, window, cx);
+                    })),
                 )
             })
             .when(answer && !busy, |d| {
@@ -3205,7 +3283,19 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick_scout(window, cx);
+        self.tick_explain(window);
         let now = Instant::now();
+        // A flashcard turning over draws every frame until it lands.
+        if self.model.screen == Screen::Study
+            && self
+                .model
+                .study
+                .review
+                .as_ref()
+                .is_some_and(|r| r.turning(now, self.reduced_motion))
+        {
+            window.request_animation_frame();
+        }
         let layout = Layout::for_width(f32::from(window.viewport_size().width));
         if Layout::sidebar_squeezed(self.last_layout, layout) {
             self.model.sidebar_open = false;
@@ -3293,10 +3383,15 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .map(|d| match self.model.screen {
-                                Screen::Chat => d
-                                    .children(self.tab_strip(p, cx))
-                                    .child(self.transcript(p, cx))
-                                    .child(self.composer(p, cx)),
+                                Screen::Chat => match self.active_explain() {
+                                    Some(key) => d
+                                        .children(self.tab_strip(p, cx))
+                                        .child(self.explain_view(key, p, cx)),
+                                    None => d
+                                        .children(self.tab_strip(p, cx))
+                                        .child(self.transcript(p, cx))
+                                        .child(self.composer(p, cx)),
+                                },
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),

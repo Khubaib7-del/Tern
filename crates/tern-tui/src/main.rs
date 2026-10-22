@@ -5,12 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+mod cards;
 mod research;
 mod runs;
 mod study;
 mod tui;
 
 use std::io::{BufRead, IsTerminal};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -189,6 +191,38 @@ enum Command {
         n: Option<usize>,
         #[arg(long)]
         offline: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
+    },
+    /// Flashcards from your materials with spaced repetition (SM-2):
+    /// write, review, edit, and export to Anki (.apkg), CSV, or TSV.
+    #[command(subcommand)]
+    Cards(cards::CardsCmd),
+    /// Explain a concept as an isometric machine with cited, step-by-step
+    /// captions; saved to your study library, optionally as an SVG.
+    #[command(name = "explain3d")]
+    Explain3d {
+        /// The concept. Leave out to explain a topic (--topic) or let the
+        /// model pick the key idea in your materials.
+        concept: Vec<String>,
+        /// Draw the passages from this topic (its number, id, or title).
+        #[arg(long, short)]
+        topic: Option<String>,
+        /// Write an SVG snapshot here.
+        #[arg(long, value_name = "FILE")]
+        svg: Option<PathBuf>,
+        /// With --svg, the step to light (1-based); the whole machine otherwise.
+        #[arg(long)]
+        step: Option<usize>,
+        /// Also save it to the vault as Explain/<concept>.md with the SVG.
+        #[arg(long)]
+        vault: bool,
+        /// No model: build the scene from your materials' key terms.
+        #[arg(long)]
+        offline: bool,
+        /// Print the scene as JSON.
+        #[arg(long)]
+        json: bool,
         #[command(flatten)]
         chat: ChatArgs,
     },
@@ -373,6 +407,19 @@ fn main() -> ExitCode {
             offline,
             chat,
         } => block_on(study::viva(title, n, offline, chat)),
+        Command::Cards(cmd) => block_on(cards::run(cmd)),
+        Command::Explain3d {
+            concept,
+            topic,
+            svg,
+            step,
+            vault,
+            offline,
+            json,
+            chat,
+        } => block_on(cards::explain3d(
+            concept, topic, svg, step, vault, offline, json, chat,
+        )),
         Command::Ledger { chat, turn, json } => block_on(runs::ledger(chat, turn, json)),
         Command::Report {
             chat,

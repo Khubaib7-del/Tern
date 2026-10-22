@@ -1,12 +1,14 @@
 //! The Study harness's window state, free of GPUI so it can be tested:
 //! the library as last loaded, which Study view is open, the tutor chat,
-//! the quiz in progress, and the viva with its timer.
+//! the quiz in progress, the viva with its timer, and the flashcard deck
+//! with the review in progress.
 //!
 //! The bridge does the work (`tern_agent::study`); this only holds what
 //! the screen shows and moves between steps.
 
 use std::time::{Duration, Instant};
 
+use tern_agent::cards::{Card, Deck, Rating};
 use tern_agent::study::{
     Answered, Difficulty, Grade, Quiz, QuizAttempt, QuizSummary, StudyLibrary, Topic, TutorMode,
     TutorTurn, Viva, VivaReport,
@@ -21,6 +23,59 @@ pub enum StudyView {
     Tutor,
     Quiz,
     Viva,
+    /// A flashcard review session.
+    Cards,
+    /// The deck: edit, suspend, delete, export, import.
+    Deck,
+}
+
+/// How long the card takes to turn over.
+pub const FLIP: Duration = Duration::from_millis(320);
+
+/// The flashcard review in progress.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReviewRun {
+    /// Only cards on this topic (its id).
+    pub topic: Option<String>,
+    pub card: Option<Card>,
+    pub flipped: bool,
+    /// When the card was last turned over.
+    pub flip_at: Option<Instant>,
+    /// Cards answered this session.
+    pub done: usize,
+    /// Due when the session started, for the progress line.
+    pub due_at_start: usize,
+    /// The last answer, for Scout's reaction and the progress line.
+    pub last: Option<Rating>,
+}
+
+impl ReviewRun {
+    /// How far the card has turned: 0 front up, 1 back up. Without
+    /// motion it turns at once.
+    pub fn turn(&self, now: Instant, reduced: bool) -> f32 {
+        let target = if self.flipped { 1.0 } else { 0.0 };
+        match self.flip_at {
+            Some(at) if !reduced => {
+                let t = crate::motion::progress(at, FLIP, now);
+                if self.flipped { t } else { 1.0 - t }
+            }
+            _ => target,
+        }
+    }
+
+    /// The card's width as a share of its full width at turn `t`, and
+    /// whether the back is the side showing. The card narrows to an edge
+    /// and opens again on the other side.
+    pub fn face(t: f32) -> (f32, bool) {
+        ((1.0 - 2.0 * t).abs().max(0.02), t >= 0.5)
+    }
+
+    pub fn turning(&self, now: Instant, reduced: bool) -> bool {
+        !reduced
+            && self
+                .flip_at
+                .is_some_and(|t| now.saturating_duration_since(t) < FLIP)
+    }
 }
 
 /// One tutor message with the passages it cited.
@@ -199,6 +254,16 @@ pub struct StudyState {
     pub offline: bool,
     /// Who the passages go to: `Groq · llama-3.3-70b`; `None` offline.
     pub engine: Option<String>,
+    // Flashcards.
+    pub deck: Deck,
+    pub deck_loaded: bool,
+    pub review: Option<ReviewRun>,
+    /// The deck screen's topic filter (a topic id).
+    pub deck_topic: Option<String>,
+    /// The card being edited on the deck screen.
+    pub editing: Option<String>,
+    /// The local clock's offset from UTC, for "today".
+    pub offset: i64,
 }
 
 impl StudyState {
@@ -206,6 +271,7 @@ impl StudyState {
         Self {
             quiz_count: 5,
             viva_questions: 6,
+            offset: tern_agent::cards::local_offset(),
             ..Self::default()
         }
     }
@@ -237,6 +303,90 @@ impl StudyState {
     pub fn go_home(&mut self) {
         self.view = StudyView::Home;
         self.busy = None;
+        self.editing = None;
+    }
+
+    // ---- Flashcards ----
+
+    pub fn deck_ready(&mut self, deck: Deck) {
+        self.deck = deck;
+        self.deck_loaded = true;
+        if let Some(id) = &self.editing
+            && self.deck.get(id).is_none()
+        {
+            self.editing = None;
+        }
+    }
+
+    /// Cards due today, on one topic or all.
+    pub fn due(&self, topic: Option<&str>, now: i64) -> usize {
+        self.deck.due_count(now, self.offset, topic)
+    }
+
+    /// Opens a review session and shows its first card.
+    pub fn open_review(&mut self, topic: Option<String>, now: i64) {
+        let due = self.deck.due_count(now, self.offset, topic.as_deref());
+        self.review = Some(ReviewRun {
+            topic,
+            card: None,
+            flipped: false,
+            flip_at: None,
+            done: 0,
+            due_at_start: due,
+            last: None,
+        });
+        self.view = StudyView::Cards;
+        self.notice = None;
+        self.next_card(now);
+    }
+
+    /// Puts the next card up, or none when the session is through.
+    pub fn next_card(&mut self, now: i64) {
+        let (deck, offset) = (&self.deck, self.offset);
+        if let Some(r) = &mut self.review {
+            r.card = deck.next_card(now, offset, r.topic.as_deref()).cloned();
+            r.flipped = false;
+            r.flip_at = None;
+        }
+    }
+
+    /// Turns the card over (either way).
+    pub fn flip(&mut self, at: Instant) {
+        if let Some(r) = &mut self.review
+            && r.card.is_some()
+        {
+            r.flipped = !r.flipped;
+            r.flip_at = Some(at);
+        }
+    }
+
+    /// Answers the card on screen, once it is turned over: schedules it
+    /// here at once and returns (card id, rating) for the bridge to save.
+    pub fn rate(&mut self, rating: Rating, now: i64) -> Option<(String, Rating)> {
+        let r = self.review.as_mut()?;
+        if !r.flipped {
+            return None;
+        }
+        let id = r.card.as_ref()?.id.clone();
+        self.deck.review(&id, rating, now).ok()?;
+        let r = self.review.as_mut()?;
+        r.done += 1;
+        r.last = Some(rating);
+        self.next_card(now);
+        Some((id, rating))
+    }
+
+    /// The deck screen's cards, by the topic filter.
+    pub fn deck_cards(&self) -> Vec<&Card> {
+        self.deck
+            .cards
+            .iter()
+            .filter(|c| {
+                self.deck_topic
+                    .as_ref()
+                    .is_none_or(|t| c.topic.as_ref() == Some(t))
+            })
+            .collect()
     }
 
     // ---- Tutor ----
@@ -407,6 +557,7 @@ impl StudyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tern_agent::cards::{Card, Deck, Rating};
     use tern_agent::study::{GradeMethod, Mark, Question, QuestionKind, TutorReply, VivaTurn};
 
     fn topic() -> Topic {
@@ -555,6 +706,56 @@ mod tests {
         );
         s.open_viva();
         assert!(s.viva.is_none(), "a finished viva makes way for a new one");
+    }
+
+    #[test]
+    fn review_flips_rates_and_moves_on() {
+        use tern_agent::cards::{CardKind, CardState};
+        let mut s = StudyState::new();
+        s.offset = 0;
+        let mut d = Deck::default();
+        d.add(vec![
+            Card::new(CardKind::Basic, "Front one?", "Back one", "you", 0),
+            Card::new(CardKind::Cloze, "A {{c1::gap}} here", "", "you", 0),
+        ]);
+        s.deck_ready(d);
+        let now = 1_000_000;
+        assert_eq!(s.due(None, now), 2);
+        s.open_review(None, now);
+        assert_eq!(s.view, StudyView::Cards);
+        let first = s.review.as_ref().unwrap().card.clone().unwrap();
+        assert_eq!(first.id, "k1");
+        assert!(s.rate(Rating::Good, now).is_none(), "turn it over first");
+        let t0 = Instant::now();
+        s.flip(t0);
+        let r = s.review.as_ref().unwrap();
+        let mid = r.turn(t0 + FLIP / 4, false);
+        assert!(mid > 0.5, "front-loaded: {mid}");
+        assert_eq!(r.turn(t0, true), 1.0, "reduced motion turns at once");
+        assert!(r.turning(t0, false));
+        assert_eq!(ReviewRun::face(0.0), (1.0, false));
+        assert_eq!(ReviewRun::face(1.0), (1.0, true));
+        assert!(ReviewRun::face(0.5).0 < 0.05);
+        assert_eq!(s.rate(Rating::Good, now), Some(("k1".into(), Rating::Good)));
+        assert_eq!(s.deck.get("k1").unwrap().sched.state, CardState::Learning);
+        let r = s.review.as_ref().unwrap();
+        assert_eq!(r.card.as_ref().unwrap().id, "k2");
+        assert!(!r.flipped);
+        assert_eq!((r.done, r.last), (1, Some(Rating::Good)));
+        s.flip(t0);
+        s.rate(Rating::Easy, now);
+        // k1 is learning, due in ten minutes: learn-ahead brings it back.
+        assert_eq!(s.review.as_ref().unwrap().card.as_ref().unwrap().id, "k1");
+        s.flip(t0);
+        s.rate(Rating::Good, now + 600);
+        assert!(s.review.as_ref().unwrap().card.is_none(), "all done");
+        s.deck_topic = Some("none".into());
+        assert!(s.deck_cards().is_empty());
+        s.deck_topic = None;
+        assert_eq!(s.deck_cards().len(), 2);
+        s.editing = Some("k9".into());
+        s.deck_ready(s.deck.clone());
+        assert!(s.editing.is_none(), "a deleted card stops editing");
     }
 
     fn tern_study_report() -> VivaReport {

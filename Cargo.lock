@@ -7700,10 +7700,12 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha1_smol",
  "tempfile",
  "tern-core",
  "thiserror 2.0.21",
  "time",
+ "zip",
 ]
 
 [[package]]

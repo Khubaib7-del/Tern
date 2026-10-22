@@ -14,27 +14,38 @@
 //! directory. Every model step has a deterministic fallback, so the harness
 //! works offline and its tests need no network.
 //!
-//! Flashcards and Explain in 3D build on the same pieces: a topic's chunks
-//! ([`library::StudyLibrary::topic`], [`material::Chunk`]) and its Leitner
-//! box and due date ([`mastery::Mastery::due_at`]).
+//! Flashcards ([`cards`]) are written from the same passages, by the model
+//! or deterministically, each with its source anchor, and scheduled with
+//! SM-2 ([`srs`]); reviews nudge the topic's mastery. [`cards_io`] reads
+//! and writes them as CSV and Anki-ready TSV. Explain in 3D
+//! ([`explain3d`]) turns a concept into a typed isometric scene with
+//! ordered, cited steps, and projects it for the desktop renderer and the
+//! SVG snapshot.
 
 #![forbid(unsafe_code)]
 
+pub mod cards;
+pub mod cards_io;
+pub mod explain3d;
 pub mod grade;
 pub mod library;
 pub mod mastery;
 pub mod material;
 pub mod quiz;
+pub mod srs;
 pub mod text;
 pub mod topics;
 pub mod tutor;
 pub mod viva;
 
+pub use cards::{Card, CardKind, CardSpec, Deck, DeckStats, ReviewLog};
+pub use explain3d::{Scene, Shape};
 pub use grade::{Grade, GradeMethod, Mark};
 pub use library::{QuizSummary, StudyLibrary, VivaSummary};
 pub use mastery::{Level, Mastery};
 pub use material::{Anchor, Chunk, Material, MaterialKind, MaterialText, Source};
 pub use quiz::{Difficulty, Question, QuestionKind, Quiz, QuizAttempt, QuizRecord, QuizSpec};
+pub use srs::{CardState, Rating, Sched};
 pub use topics::Topic;
 pub use tutor::TutorMode;
 pub use viva::{Rubric, Viva, VivaReport, VivaTurn};
