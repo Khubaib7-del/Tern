@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{StoreError, StoreResult};
 
 /// Bumped with every migration. Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const V1: &str = "
 CREATE TABLE projects (
@@ -39,6 +39,10 @@ CREATE TRIGGER events_no_delete BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'the event log is append-only'); END;
 ";
 
+/// Chats can be archived (hidden from the list). The event log itself stays
+/// append-only, so archiving never deletes events.
+const V2: &str = "ALTER TABLE sessions ADD COLUMN archived_at TEXT;";
+
 pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -49,6 +53,9 @@ pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     }
     if found < 1 {
         conn.execute_batch(&format!("BEGIN; {V1} PRAGMA user_version = 1; COMMIT;"))?;
+    }
+    if found < 2 {
+        conn.execute_batch(&format!("BEGIN; {V2} PRAGMA user_version = 2; COMMIT;"))?;
     }
     Ok(())
 }

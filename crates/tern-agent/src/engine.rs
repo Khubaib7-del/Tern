@@ -318,6 +318,8 @@ impl Run<'_, '_> {
                 "provider": self.cfg.model.provider_id(),
                 "tools": self.cfg.tools.names().collect::<Vec<_>>(),
                 "budget": self.cfg.budget,
+                // Kept so the chat can be reopened (see `transcript`).
+                "message": user_message,
             }),
         ))?;
         let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
@@ -614,6 +616,7 @@ impl Run<'_, '_> {
                     "model_calls": self.model_calls,
                     "tool_calls": self.tool_calls,
                     "answer_chars": answer.as_ref().map(String::len),
+                    "answer": answer,
                 }),
             )
             .with_usage(self.usage.to_delta()),
