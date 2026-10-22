@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tern_agent::sources::push_unique;
-use tern_agent::{ApprovalRequest, Harness, PageRef, PastTurn, SessionSummary, TurnOutcome, Usage};
+use tern_agent::{
+    ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, SessionSummary, TurnOutcome,
+};
 use tern_core::TurnState;
 
 use crate::providers::ProvidersState;
@@ -80,7 +82,8 @@ pub struct Model {
     pub entries: Vec<Entry>,
     pub phase: Phase,
     pub connection: Option<Connection>,
-    pub usage: Usage,
+    /// How full the model's context window is.
+    pub context: ContextUse,
     pub harness: Harness,
     pub sessions: Vec<SessionSummary>,
     pub sidebar_open: bool,
@@ -106,7 +109,7 @@ impl Model {
             entries: Vec::new(),
             phase: Phase::Connecting,
             connection: None,
-            usage: Usage::measured(0, 0),
+            context: ContextUse::default(),
             harness: Harness::Research,
             sessions: Vec::new(),
             sidebar_open: true,
@@ -121,6 +124,10 @@ impl Model {
     }
 
     pub fn connected(&mut self, connection: Connection) {
+        self.context = ContextUse {
+            window: connection.context_window,
+            ..ContextUse::default()
+        };
         self.connection = Some(connection);
         self.phase = Phase::Ready;
     }
@@ -252,14 +259,14 @@ impl Model {
         }
     }
 
-    pub fn finish_turn(&mut self, out: &TurnOutcome, usage: Usage) {
+    pub fn finish_turn(&mut self, out: &TurnOutcome, context: ContextUse) {
         let (took, steps) = match std::mem::replace(&mut self.phase, Phase::Ready) {
             Phase::Working { since, steps, .. } | Phase::Approval { since, steps, .. } => {
                 (since.elapsed(), steps)
             }
             _ => (Duration::ZERO, Vec::new()),
         };
-        self.usage = usage;
+        self.context = context;
         self.stopping = false;
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
@@ -370,7 +377,10 @@ impl Model {
             return;
         }
         self.entries.clear();
-        self.usage = Usage::measured(0, 0);
+        self.context = ContextUse {
+            window: self.context.window,
+            ..ContextUse::default()
+        };
         if self.connection.is_some() {
             self.phase = Phase::Ready;
         } else {
@@ -410,21 +420,97 @@ impl Model {
 
     /// Context used, from 0.0 to 1.0, when the model's window is known.
     pub fn context_fraction(&self) -> Option<f32> {
-        let window = self.connection.as_ref()?.context_window?;
-        if window == 0 {
-            return None;
-        }
-        Some((self.usage.total() as f32 / window as f32).clamp(0.0, 1.0))
+        self.context.fraction()
     }
 
     /// "1.2k of 128k tokens", or just the count when the window is unknown.
+    /// A leading "~" marks an estimate.
     pub fn context_label(&self) -> String {
-        let used = compact(self.usage.total());
-        match self.connection.as_ref().and_then(|c| c.context_window) {
+        let c = &self.context;
+        let used = format!(
+            "{}{}",
+            if c.estimated { "~" } else { "" },
+            compact(c.used())
+        );
+        match c.window {
             Some(w) => format!("{used} of {} tokens", compact(w)),
             None => format!("{used} tokens"),
         }
     }
+
+    /// How full the window is, as a level the ring is drawn in.
+    pub fn context_level(&self) -> ContextLevel {
+        match self.context.fraction() {
+            Some(f) if f >= 0.9 => ContextLevel::Full,
+            Some(f) if f >= 0.7 => ContextLevel::Filling,
+            _ => ContextLevel::Fine,
+        }
+    }
+
+    /// The hover card's lines, as (label, value) with exact numbers.
+    pub fn context_details(&self) -> Vec<(&'static str, String)> {
+        let c = &self.context;
+        let mut rows = Vec::new();
+        let pct = c
+            .fraction()
+            .map(|f| format!(" ({:.1}%)", f * 100.0))
+            .unwrap_or_default();
+        let window = c
+            .window
+            .map(|w| format!(" of {}", grouped(w)))
+            .unwrap_or_default();
+        rows.push(("Context", format!("{}{window}{pct}", grouped(c.used()))));
+        if c.calls > 0 {
+            rows.push(("Last prompt", grouped(c.prompt)));
+            rows.push(("Last reply", grouped(c.reply)));
+        } else if c.used() > 0 {
+            rows.push(("History", grouped(c.prompt)));
+        }
+        if let Some(left) = c.left() {
+            rows.push(("Free", grouped(left)));
+        }
+        if c.calls > 0 {
+            rows.push((
+                "This chat",
+                format!(
+                    "{} tokens over {} call{}",
+                    grouped(c.session_tokens),
+                    c.calls,
+                    if c.calls == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+        rows.push((
+            "Counted",
+            if c.estimated {
+                "estimated, 4 characters a token".into()
+            } else {
+                "by the provider".into()
+            },
+        ));
+        rows
+    }
+}
+
+/// How full the context window is, for the ring's colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextLevel {
+    Fine,
+    Filling,
+    Full,
+}
+
+/// 12,345 with thousands separators.
+pub fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Events that show as a step under an answer.
@@ -483,7 +569,7 @@ mod tests {
             answer: answer.map(str::to_owned),
             reason: reason.map(str::to_owned),
             states: vec![],
-            usage: Usage::measured(0, 0),
+            usage: tern_agent::Usage::measured(0, 0),
             model_calls: 1,
             tool_calls: 0,
         }
@@ -542,10 +628,7 @@ mod tests {
         assert!(m.wanted_icons().is_empty(), "asked once");
         m.icon_loaded("a.org".into(), Some(PathBuf::from("/c/a.org")));
         assert_eq!(m.icons["a.org"], SiteIcon::Ready(PathBuf::from("/c/a.org")));
-        m.finish_turn(
-            &outcome(TurnState::Completed, Some("A"), None),
-            Usage::measured(1, 1),
-        );
+        m.finish_turn(&outcome(TurnState::Completed, Some("A"), None), ctx(1, 1));
         assert!(m.turn_pages.is_empty());
         match m.entries.last() {
             Some(Entry::Assistant { pages, .. }) => assert_eq!(pages.len(), 2),
@@ -612,6 +695,43 @@ mod tests {
         );
     }
 
+    /// What the session reports after one measured call.
+    fn ctx(prompt: u64, reply: u64) -> ContextUse {
+        ContextUse {
+            prompt,
+            reply,
+            window: Some(128_000),
+            estimated: false,
+            session_tokens: prompt + reply,
+            calls: 1,
+        }
+    }
+
+    #[test]
+    fn context_details_are_exact() {
+        let mut m = ready();
+        assert_eq!(m.context_label(), "0 of 128k tokens");
+        m.context = ctx(90_000, 2_345);
+        assert_eq!(m.context_level(), ContextLevel::Filling);
+        let d = m.context_details();
+        assert_eq!(d[0], ("Context", "92,345 of 128,000 (72.1%)".to_owned()));
+        assert_eq!(d[1], ("Last prompt", "90,000".to_owned()));
+        assert_eq!(d[3], ("Free", "35,655".to_owned()));
+        assert_eq!(d[4], ("This chat", "92,345 tokens over 1 call".to_owned()));
+        m.context = ContextUse {
+            prompt: 8,
+            window: Some(128_000),
+            estimated: true,
+            ..ContextUse::default()
+        };
+        assert_eq!(m.context_label(), "~8 of 128k tokens");
+        assert_eq!(m.context_details()[1], ("History", "8".to_owned()));
+        m.context.prompt = 120_000;
+        assert_eq!(m.context_level(), ContextLevel::Full);
+        assert_eq!(grouped(1_234_567), "1,234,567");
+        assert_eq!(grouped(999), "999");
+    }
+
     fn ready() -> Model {
         let mut m = Model::new();
         m.connected(Connection {
@@ -651,7 +771,7 @@ mod tests {
         );
         m.finish_turn(
             &outcome(TurnState::Completed, Some("RAG is…"), None),
-            Usage::measured(1000, 234),
+            ctx(1000, 234),
         );
         assert!(!m.is_busy());
         match m.entries.last().unwrap() {
@@ -693,7 +813,7 @@ mod tests {
         assert!(m.working_line().unwrap().starts_with("Stopping"));
         m.finish_turn(
             &outcome(TurnState::Cancelled, None, Some("You stopped this turn.")),
-            Usage::measured(0, 0),
+            ctx(0, 0),
         );
         assert_eq!(
             m.entries.last(),

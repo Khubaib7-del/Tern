@@ -73,6 +73,19 @@ impl UsageLedger {
         self.entries.lock().expect("ledger lock").clone()
     }
 
+    /// The most recent call's usage, if any call was made.
+    pub fn last(&self) -> Option<Usage> {
+        self.entries
+            .lock()
+            .expect("ledger lock")
+            .last()
+            .map(|e| e.usage)
+    }
+
+    pub fn calls(&self) -> usize {
+        self.entries.lock().expect("ledger lock").len()
+    }
+
     /// Totals across all calls. `Estimated` if any call was estimated.
     pub fn total(&self) -> Usage {
         let entries = self.entries.lock().expect("ledger lock");
