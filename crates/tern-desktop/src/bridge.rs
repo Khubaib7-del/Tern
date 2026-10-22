@@ -3,7 +3,9 @@
 //! The window never calls a provider or the store itself: it hands a
 //! [`ChatSession`] to the bridge, which gives it back with the outcome.
 
+use tern_agent::cards::{self as cards, CardSpec, Deck, Format, Rating};
 use tern_agent::deep::{DeepControl, PlanAnswer, PlanApprover};
+use tern_agent::explain::{self as explain, Scene};
 use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::study::{
@@ -93,6 +95,15 @@ pub enum StudyMsg {
         Option<String>,
         Option<StudyLibrary>,
     ),
+    /// The flashcard deck as saved, and a line to tell the user (cards
+    /// written, an export, an import).
+    Deck(Result<Deck, String>, Option<String>),
+    /// A review was saved; the library with its nudged mastery.
+    Reviewed(Result<StudyLibrary, String>),
+    /// An Explain in 3D scene for tab `key`.
+    Explain(u32, Result<(Scene, Option<String>), String>),
+    /// Saving or exporting tab `key`'s scene: where it went.
+    ExplainSaved(u32, Result<String, String>),
 }
 
 impl std::fmt::Debug for StudyMsg {
@@ -106,6 +117,10 @@ impl std::fmt::Debug for StudyMsg {
             Self::QuizDone(r, _) => write!(f, "QuizDone(ok: {})", r.is_ok()),
             Self::Viva(r, _) => write!(f, "Viva(ok: {})", r.is_ok()),
             Self::VivaReport(r, ..) => write!(f, "VivaReport(ok: {})", r.is_ok()),
+            Self::Deck(r, _) => write!(f, "Deck(ok: {})", r.is_ok()),
+            Self::Reviewed(r) => write!(f, "Reviewed(ok: {})", r.is_ok()),
+            Self::Explain(k, r) => write!(f, "Explain({k}, ok: {})", r.is_ok()),
+            Self::ExplainSaved(k, r) => write!(f, "ExplainSaved({k}, ok: {})", r.is_ok()),
         }
     }
 }
@@ -932,6 +947,218 @@ impl Bridge {
             Self::study_send(&tx, m);
         });
     }
+
+    // ---- Flashcards ----
+
+    /// Loads the deck.
+    pub fn cards_load(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = StudyStore::discover().and_then(|s| cards::load_deck(&s));
+            Self::study_send(&tx, StudyMsg::Deck(r, None));
+        });
+    }
+
+    /// Writes cards on a topic (or all materials).
+    pub fn cards_gen(&self, spec: CardSpec) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let g = cards::generate(&store, &mut lib, engine.as_ref(), &spec).await?;
+                let deck = cards::load_deck(&store)?;
+                Ok::<_, String>((g, deck))
+            }
+            .await;
+            let m = match r {
+                Ok((g, deck)) => {
+                    let n = g.added.len();
+                    let mut line = format!(
+                        "{n} new card{} written by {}",
+                        if n == 1 { "" } else { "s" },
+                        if g.written_by == "model" {
+                            "the model"
+                        } else {
+                            "Tern from your materials"
+                        }
+                    );
+                    if g.repeats > 0 {
+                        line.push_str(&format!(
+                            "; {} repeat{} skipped",
+                            g.repeats,
+                            if g.repeats == 1 { "" } else { "s" }
+                        ));
+                    }
+                    line.push('.');
+                    if let Some(note) = g.note {
+                        line = format!("{note} {line}");
+                    }
+                    StudyMsg::Deck(Ok(deck), Some(line))
+                }
+                Err(e) => StudyMsg::Deck(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Saves an answer and nudges the card's topic.
+    pub fn cards_review(&self, card: String, rating: Rating, at: i64) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let mut deck = cards::load_deck(&store)?;
+                cards::review(&store, &mut lib, &mut deck, &card, rating, at)?;
+                Ok::<_, String>(lib)
+            })();
+            Self::study_send(&tx, StudyMsg::Reviewed(r));
+        });
+    }
+
+    /// Changes the deck: edit, suspend, or delete one card.
+    pub fn cards_change(&self, change: CardChange) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut deck = cards::load_deck(&store)?;
+                let line = match change {
+                    CardChange::Edit(id, front, back) => {
+                        deck.edit(&id, &front, &back)?;
+                        "Card saved.".to_owned()
+                    }
+                    CardChange::Suspend(id, on) => {
+                        deck.suspend(&id, on)?;
+                        if on {
+                            "Card suspended; it will not come up until you bring it back.".into()
+                        } else {
+                            "Card back in review.".into()
+                        }
+                    }
+                    CardChange::Delete(id) => {
+                        deck.delete(&id)?;
+                        "Card deleted.".into()
+                    }
+                };
+                cards::save_deck(&store, &deck)?;
+                Ok::<_, String>((deck, line))
+            })();
+            let m = match r {
+                Ok((d, line)) => StudyMsg::Deck(Ok(d), Some(line)),
+                Err(e) => StudyMsg::Deck(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Exports the deck (or one topic's cards).
+    pub fn cards_export(&self, path: std::path::PathBuf, format: Format, topic: Option<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let deck = cards::load_deck(&store)?;
+                let line = cards::export(&deck, topic.as_deref(), &path, format)?;
+                Ok::<_, String>((deck, line))
+            })();
+            let m = match r {
+                Ok((d, line)) => StudyMsg::Deck(Ok(d), Some(format!("Exported {line}"))),
+                Err(e) => StudyMsg::Deck(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Imports cards from CSV or TSV.
+    pub fn cards_import(&self, path: std::path::PathBuf) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut deck = cards::load_deck(&store)?;
+                let (added, skipped) = cards::import(&store, &mut deck, &path)?;
+                Ok::<_, String>((deck, added, skipped))
+            })();
+            let m = match r {
+                Ok((d, added, skipped)) => StudyMsg::Deck(
+                    Ok(d),
+                    Some(format!(
+                        "{added} card{} imported{}.",
+                        if added == 1 { "" } else { "s" },
+                        if skipped > 0 {
+                            format!(", {skipped} already in the deck")
+                        } else {
+                            String::new()
+                        }
+                    )),
+                ),
+                Err(e) => StudyMsg::Deck(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    // ---- Explain in 3D ----
+
+    /// Builds a scene for tab `key`.
+    pub fn explain_build(&self, key: u32, ask: explain::Ask) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                explain::build(&store, &mut lib, engine.as_ref(), &ask).await
+            }
+            .await;
+            Self::study_send(&tx, StudyMsg::Explain(key, r));
+        });
+    }
+
+    /// Saves a scene to the study library (JSON and SVG), and to the vault
+    /// when `vault` is set.
+    pub fn explain_save(&self, key: u32, scene: Scene, vault: bool) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                explain::save(&store, &scene)?;
+                if vault {
+                    let v = tern_agent::vault::Vault::open_default()?;
+                    let name = explain::save_to_vault(&v, &scene)?;
+                    return Ok(format!(
+                        "Saved to your study library and the vault as {name}."
+                    ));
+                }
+                Ok::<_, String>("Saved to your study library.".into())
+            })();
+            Self::study_send(&tx, StudyMsg::ExplainSaved(key, r));
+        });
+    }
+
+    /// Writes an SVG snapshot of the scene at `step`.
+    pub fn explain_svg(&self, key: u32, scene: Scene, step: usize, path: std::path::PathBuf) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = explain::export_svg(&scene, Some(step), &path)
+                .map(|()| format!("Snapshot saved to {}.", path.display()));
+            Self::study_send(&tx, StudyMsg::ExplainSaved(key, r));
+        });
+    }
+}
+
+/// One change to the deck from the deck screen.
+#[derive(Clone, Debug)]
+pub enum CardChange {
+    /// Card id, new front, new back.
+    Edit(String, String, String),
+    Suspend(String, bool),
+    Delete(String),
 }
 
 /// The study model: the cached one, or the chat's provider and model

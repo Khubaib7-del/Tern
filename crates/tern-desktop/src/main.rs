@@ -12,6 +12,7 @@ mod assets;
 mod bridge;
 mod browser;
 mod editor;
+mod explain;
 mod git;
 mod layout;
 mod model;

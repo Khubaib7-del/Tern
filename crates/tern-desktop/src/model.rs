@@ -457,6 +457,12 @@ impl Model {
                     Mood::Thinking
                 }
             },
+            Phase::Connecting | Phase::Ready
+                if self.screen == Screen::Study
+                    && self.study.view == crate::study::StudyView::Cards =>
+            {
+                Mood::Studying
+            }
             Phase::Connecting | Phase::Ready => Mood::Idle,
         }
     }

@@ -53,7 +53,7 @@ pub enum StudyCmd {
     History,
 }
 
-fn dim(line: &str) {
+pub(crate) fn dim(line: &str) {
     if std::io::stderr().is_terminal() {
         eprintln!("\x1b[2m• {line}\x1b[0m");
     } else {
@@ -68,7 +68,7 @@ fn open() -> Result<(StudyStore, StudyLibrary), String> {
 }
 
 /// The user's model, unless they asked for offline study or none connects.
-async fn engine(chat: ChatArgs, offline: bool) -> Option<StudyEngine> {
+pub(crate) async fn engine(chat: ChatArgs, offline: bool) -> Option<StudyEngine> {
     let (opts, prefs) = crate::runs::options(chat);
     if offline || prefs.study_offline {
         dim("Offline study: no model; passages come straight from your materials.");
@@ -90,7 +90,7 @@ async fn engine(chat: ChatArgs, offline: bool) -> Option<StudyEngine> {
     }
 }
 
-fn read_line(prompt: &str) -> Option<String> {
+pub(crate) fn read_line(prompt: &str) -> Option<String> {
     eprint!("{prompt}");
     let _ = std::io::stderr().flush();
     let mut line = String::new();

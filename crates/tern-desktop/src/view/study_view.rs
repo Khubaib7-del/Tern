@@ -2,7 +2,9 @@
 //! mastery rings, and the Tutor, Quiz, and Viva actions), the tutor chat
 //! with its mode chips, the quiz card (one question at a time with instant
 //! feedback and a score summary), and the viva screen with its timer and
-//! rubric report.
+//! rubric report. Flashcards (review and deck) are in `cards_view`; the
+//! Explain in 3D action on a topic opens an explainer tab
+//! (`explain_view`).
 //!
 //! Study is told apart from Research by tone and shape, not hue: a warmer
 //! surface, round markers, pill radius, and italic serif labels.
@@ -31,7 +33,7 @@ use crate::study::{StudyView, fmt_score};
 use crate::theme::Palette;
 
 /// Study's pill radius.
-const PILL: f32 = 16.;
+pub(super) const PILL: f32 = 16.;
 
 /// The Study screen's text fields.
 pub(super) struct StudyInputs {
@@ -41,6 +43,9 @@ pub(super) struct StudyInputs {
     pub viva: Entity<TextareaState>,
     /// What the viva is on.
     pub title: Entity<InputState>,
+    /// A card's two sides on the deck screen.
+    pub card_front: Entity<InputState>,
+    pub card_back: Entity<InputState>,
 }
 
 impl StudyInputs {
@@ -55,6 +60,8 @@ impl StudyInputs {
             InputState::new(window, cx)
                 .placeholder("What is being examined (defaults to your report)")
         });
+        let card_front = cx.new(|cx| InputState::new(window, cx).placeholder("Front"));
+        let card_back = cx.new(|cx| InputState::new(window, cx).placeholder("Back"));
         let subs = vec![
             cx.subscribe_in(
                 &answer,
@@ -80,6 +87,8 @@ impl StudyInputs {
                 answer,
                 viva,
                 title,
+                card_front,
+                card_back,
             },
             subs,
         )
@@ -106,7 +115,7 @@ fn icon(name: AssetIcon, color: gpui_kit::Hsla) -> AnyElement {
 }
 
 /// An italic serif label, Study's voice.
-fn serif(text: impl Into<SharedString>, p: Palette) -> gpui_kit::Div {
+pub(super) fn serif(text: impl Into<SharedString>, p: Palette) -> gpui_kit::Div {
     div()
         .font_family(assets::SERIF_FONT)
         .italic()
@@ -162,6 +171,7 @@ impl Workspace {
         if h == Harness::Study {
             self.model.study.busy = Some("Opening your study library…".into());
             self.bridge.study_load();
+            self.bridge.cards_load();
         }
         cx.notify();
     }
@@ -225,6 +235,31 @@ impl Workspace {
                 s.fail(e);
                 if let Some(run) = &mut s.viva {
                     run.thinking = false;
+                }
+            }
+            StudyMsg::Deck(Ok(deck), note) => {
+                s.busy = None;
+                // A review in progress keeps its own copy of the deck; the
+                // saved one is the same plus nothing new.
+                if s.view != StudyView::Cards {
+                    s.deck_ready(deck);
+                } else {
+                    s.deck_loaded = true;
+                }
+                if note.is_some() {
+                    s.notice = note;
+                }
+            }
+            StudyMsg::Deck(Err(e), _) => s.fail(e),
+            StudyMsg::Reviewed(Ok(lib)) => s.library = lib,
+            StudyMsg::Reviewed(Err(e)) => s.notice = Some(e),
+            StudyMsg::Explain(key, r) => self.on_explain(key, r),
+            StudyMsg::ExplainSaved(key, r) => {
+                if let Some(x) = self.explains.get_mut(&key) {
+                    x.saved = Some(match r {
+                        Ok(line) => line,
+                        Err(e) => e,
+                    });
                 }
             }
         }
@@ -429,6 +464,8 @@ impl Workspace {
             StudyView::Tutor => self.tutor_view(p, cx),
             StudyView::Quiz => self.quiz_view(p, cx),
             StudyView::Viva => self.viva_view(p, cx),
+            StudyView::Cards => self.review_view(p, cx),
+            StudyView::Deck => self.deck_view(p, cx),
         };
         div()
             .id("study-screen")
@@ -503,7 +540,7 @@ impl Workspace {
         out
     }
 
-    fn back_row(&self, title: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn back_row(&self, title: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .items_center()
@@ -523,7 +560,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn card(&self, p: Palette) -> gpui_kit::Div {
+    pub(super) fn card(&self, p: Palette) -> gpui_kit::Div {
         div()
             .flex()
             .flex_col()
@@ -679,6 +716,49 @@ impl Workspace {
                     }
                 })),
             )
+            .child({
+                let due = s.due(None, now);
+                let total = s.deck.cards.len();
+                action(
+                    "study-act-cards",
+                    AssetIcon::WalletCards,
+                    "Flashcards",
+                    if total == 0 {
+                        "Write cards from your materials".into()
+                    } else if due == 0 {
+                        format!("Nothing due · {total} cards")
+                    } else {
+                        format!("{due} due today · {total} cards")
+                    },
+                )
+                .when(due > 0, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(px(10.))
+                            .right(px(12.))
+                            .size(px(7.))
+                            .rounded_full()
+                            .bg(p.accent),
+                    )
+                })
+                .relative()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let now = tern_agent::study::now();
+                    let s = &this.model.study;
+                    if s.deck.cards.is_empty() {
+                        if !s.library.materials.is_empty() {
+                            this.model.study.view = StudyView::Deck;
+                            this.gen_cards(None, cx);
+                        }
+                    } else if s.due(None, now) > 0 {
+                        this.start_review(None, window, cx);
+                    } else {
+                        this.model.study.view = StudyView::Deck;
+                        cx.notify();
+                    }
+                }))
+            })
             .child(
                 action(
                     "study-act-viva",
@@ -866,7 +946,56 @@ impl Workspace {
                                 this.model.study.open_quiz(Some(quiz_t.clone()));
                                 cx.notify();
                             })),
-                    ),
+                    )
+                    .child({
+                        let cards_n = s.deck.for_topic(&t.id).count();
+                        let due_t = s.due(Some(&t.id), now);
+                        let tid = t.id.clone();
+                        Button::new(SharedString::from(format!("topic-cards-{i}")))
+                            .label(SharedString::from(if due_t > 0 {
+                                format!("Cards · {due_t}")
+                            } else {
+                                "Cards".to_owned()
+                            }))
+                            .ghost()
+                            .xsmall()
+                            .disabled(busy && cards_n == 0)
+                            .tooltip(if cards_n == 0 {
+                                "Write flashcards on this topic"
+                            } else {
+                                "Review this topic's cards (or write more from the deck)"
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let now = tern_agent::study::now();
+                                if this.model.study.deck.for_topic(&tid).count() == 0 {
+                                    this.gen_cards(Some(tid.clone()), cx);
+                                } else if this.model.study.due(Some(&tid), now) > 0 {
+                                    this.start_review(Some(tid.clone()), window, cx);
+                                } else {
+                                    this.model.study.deck_topic = Some(tid.clone());
+                                    this.model.study.view = StudyView::Deck;
+                                    cx.notify();
+                                }
+                            }))
+                    })
+                    .child({
+                        let x_t = t.clone();
+                        Button::new(SharedString::from(format!("topic-3d-{i}")))
+                            .icon(AssetIcon::Cuboid)
+                            .ghost()
+                            .xsmall()
+                            .tooltip(
+                                "Explain in 3D: this topic as an isometric machine, step by step",
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let ask = tern_agent::explain::Ask {
+                                    concept: String::new(),
+                                    topic: Some(x_t.id.clone()),
+                                    context: None,
+                                };
+                                this.open_explain(ask, &x_t.title.clone(), window, cx);
+                            }))
+                    }),
             );
         }
 

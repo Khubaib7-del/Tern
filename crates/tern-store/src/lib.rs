@@ -1,4 +1,5 @@
-//! Persistence: SQLite for projects, sessions, and the append-only event log.
+//! Persistence: SQLite for projects, sessions, and the append-only event log,
+//! and Anki packages ([`anki`]) for flashcard export.
 //!
 //! Full-text and vector indexes, artifacts, and checkpoints are planned for
 //! later phases. The event log is the source of truth: every UI view is a
@@ -6,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anki;
 mod schema;
 
 use std::path::Path;

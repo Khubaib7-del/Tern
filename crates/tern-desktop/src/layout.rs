@@ -40,11 +40,13 @@ impl Layout {
     }
 }
 
-/// One open chat. `id` is `None` until a fresh chat has its session.
+/// One open chat, or an Explain in 3D view. `id` is `None` until a fresh
+/// chat has its session; `explain` names an explainer's state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tab {
     pub id: Option<SessionId>,
     pub title: String,
+    pub explain: Option<u32>,
 }
 
 impl Tab {
@@ -52,7 +54,12 @@ impl Tab {
         Self {
             id: None,
             title: "New chat".into(),
+            explain: None,
         }
+    }
+
+    pub fn is_explain(&self) -> bool {
+        self.explain.is_some()
     }
 }
 
@@ -86,11 +93,45 @@ impl Tabs {
             self.active = i;
             return load;
         }
+        // An explainer keeps its tab; the chat opens beside it.
+        if self.active_tab().is_explain() {
+            self.add();
+        }
         self.list[self.active] = Tab {
             id: Some(id),
             title: title.to_owned(),
+            explain: None,
         };
         true
+    }
+
+    /// Opens an explainer in a new tab after the active one and focuses it.
+    pub fn open_explain(&mut self, key: u32, title: &str) {
+        self.active += 1;
+        self.list.insert(
+            self.active,
+            Tab {
+                id: None,
+                title: title.to_owned(),
+                explain: Some(key),
+            },
+        );
+    }
+
+    /// An explainer's title changed (its scene arrived).
+    pub fn retitle_explain(&mut self, key: u32, title: &str) {
+        for t in self.list.iter_mut().filter(|t| t.explain == Some(key)) {
+            t.title = title.to_owned();
+        }
+    }
+
+    /// The chat tab to show when leaving an explainer: the nearest one
+    /// before it, else after it.
+    pub fn nearest_chat(&self) -> Option<usize> {
+        (0..self.active)
+            .rev()
+            .chain(self.active + 1..self.list.len())
+            .find(|&i| !self.list[i].is_explain())
     }
 
     /// Adds a fresh tab after the active one and focuses it.
@@ -133,7 +174,17 @@ impl Tabs {
     /// The active tab's chat now has a session (a fresh chat connected, or
     /// a branch opened).
     pub fn set_active(&mut self, id: SessionId, title: &str) {
-        let tab = &mut self.list[self.active];
+        // A chat that connects while an explainer is up takes the nearest
+        // chat tab instead.
+        let i = if self.active_tab().is_explain() {
+            match self.nearest_chat() {
+                Some(i) => i,
+                None => return,
+            }
+        } else {
+            self.active
+        };
+        let tab = &mut self.list[i];
         tab.id = Some(id);
         tab.title = title.to_owned();
     }
@@ -160,6 +211,29 @@ impl Tabs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explainers_get_their_own_tabs() {
+        let mut t = Tabs::default();
+        t.open_explain(7, "3D · TLB");
+        assert_eq!(t.active, 1);
+        assert!(t.active_tab().is_explain());
+        assert_eq!(t.nearest_chat(), Some(0));
+        t.retitle_explain(7, "3D · Paging");
+        assert_eq!(t.list[1].title, "3D · Paging");
+        // Opening a chat from the list leaves the explainer alone.
+        let id = SessionId::new();
+        assert!(t.open(id, "Chat"));
+        assert_eq!(t.list.len(), 3);
+        assert_eq!(t.list[1].explain, Some(7));
+        assert_eq!(t.active_tab().id, Some(id));
+        // A chat connecting under an explainer lands on a chat tab.
+        t.focus(1);
+        let other = SessionId::new();
+        t.set_active(other, "Fresh");
+        assert_eq!(t.list[0].id, Some(other));
+        assert!(t.list[1].is_explain());
+    }
 
     #[test]
     fn layout_by_width() {
