@@ -92,6 +92,8 @@ pub enum Activity {
     /// Running a tool other than search or read.
     Tool,
     Writing,
+    /// Checking the answer's claims against their sources.
+    Checking,
     NeedsYou,
     Stopping,
 }
@@ -153,16 +155,19 @@ pub enum RunView {
     Summary,
     Detailed,
     Raw,
+    /// The run report: claim verdicts with their evidence, and the files.
+    Report,
 }
 
 impl RunView {
-    pub const ALL: [RunView; 3] = [Self::Summary, Self::Detailed, Self::Raw];
+    pub const ALL: [RunView; 4] = [Self::Summary, Self::Detailed, Self::Raw, Self::Report];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Summary => "Summary",
             Self::Detailed => "Detailed",
             Self::Raw => "Raw",
+            Self::Report => "Report",
         }
     }
 }
@@ -177,6 +182,8 @@ pub struct RunPanel {
     /// The answer whose run is shown (an index into `entries`), when the user
     /// picked an older one; otherwise the latest run.
     pub pinned: Option<usize>,
+    /// The claim the Report view points at (from a badge in the answer).
+    pub claim: Option<usize>,
 }
 
 /// The connected model, shown under the composer.
@@ -295,7 +302,7 @@ impl Model {
             Phase::Approval { .. } => Mood::NeedsYou,
             Phase::Working { activity, .. } => match activity {
                 Activity::Searching => Mood::Searching,
-                Activity::Reading => Mood::Reading,
+                Activity::Reading | Activity::Checking => Mood::Reading,
                 Activity::NeedsYou => Mood::NeedsYou,
                 Activity::Thinking | Activity::Tool | Activity::Writing | Activity::Stopping => {
                     Mood::Thinking
@@ -595,6 +602,7 @@ impl Model {
         let next = match e.kind.as_str() {
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
             | "model.replied" | "approval.answered" => Some(Activity::Thinking),
+            "claims.checking" => Some(Activity::Checking),
             "tool.started" => Some(match e.payload["tool"].as_str() {
                 Some("web_search") => Activity::Searching,
                 Some("read_url") => Activity::Reading,
@@ -846,6 +854,19 @@ impl Model {
             Activity::Reading => format!("Reading page {}", started("read_url").max(1)),
             Activity::Tool => "Using a tool".to_owned(),
             Activity::Writing => "Writing".to_owned(),
+            Activity::Checking => {
+                let n = run
+                    .steps
+                    .iter()
+                    .rev()
+                    .find(|s| s.event == "claims.checking")
+                    .and_then(|s| s.payload["claims"].as_u64())
+                    .unwrap_or(0);
+                match n {
+                    1 => "Checking 1 claim".to_owned(),
+                    n => format!("Checking {n} claims"),
+                }
+            }
             Activity::NeedsYou => "Needs your approval".to_owned(),
             Activity::Stopping => "Stopping".to_owned(),
         };
@@ -894,6 +915,20 @@ impl Model {
 
     pub fn set_run_view(&mut self, view: RunView) {
         self.run_panel.view = view;
+        if view != RunView::Report {
+            self.run_panel.claim = None;
+        }
+    }
+
+    /// Opens the panel's Report view on one claim of an answer (a badge
+    /// in the answer was clicked).
+    pub fn show_claim(&mut self, entry: usize, claim: usize) {
+        if matches!(self.entries.get(entry), Some(Entry::Assistant { .. })) {
+            self.show_run_of(entry);
+            self.run_panel.view = RunView::Report;
+            self.run_panel.claim = Some(claim);
+            self.browser.visible = false;
+        }
     }
 
     pub fn set_raw_filter(&mut self, filter: RawFilter) {
@@ -1559,6 +1594,37 @@ mod tests {
                 }],
                 quote: None,
             }
+        );
+    }
+
+    #[test]
+    fn badges_open_their_claim_in_the_report() {
+        let mut m = Model::new();
+        m.entries.push(Entry::User {
+            text: "q".into(),
+            chips: vec![],
+            quote: None,
+        });
+        m.entries.push(Entry::Assistant {
+            text: "Water boils at 100 C [1].".into(),
+            run: Run::new(),
+            took: Duration::ZERO,
+            pages: vec![],
+        });
+        m.browser.visible = true;
+        m.show_claim(1, 1);
+        assert!(m.run_panel_open);
+        assert!(!m.browser.visible, "the report takes the panel's place");
+        assert_eq!(m.run_panel.view, RunView::Report);
+        assert_eq!(m.run_panel.claim, Some(1));
+        assert_eq!(m.run_panel.pinned, Some(1));
+        m.set_run_view(RunView::Summary);
+        assert_eq!(m.run_panel.claim, None);
+        m.show_claim(0, 2);
+        assert_eq!(
+            m.run_panel.view,
+            RunView::Summary,
+            "only answers have claims"
         );
     }
 }

@@ -22,7 +22,7 @@ use tern_agent::Role;
 use tern_agent::attach::Source as AttachSource;
 use tern_agent::{
     ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef, RawFilter, Run, RunEnd, RunStep,
-    StepKind,
+    StepKind, Verdict,
 };
 use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
@@ -1548,7 +1548,7 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .child(
-                        TextView::markdown(("answer", i), text.clone())
+                        TextView::markdown(("answer", i), with_badges(i, text, run))
                             .on_link_click(self.link_opener(cx))
                             .selectable(true)
                             .motion(stream_motion()),
@@ -2690,6 +2690,7 @@ impl Workspace {
                 RunView::Summary => self.run_summary(run, p, cx),
                 RunView::Detailed => self.run_detailed(run, p),
                 RunView::Raw => self.run_raw(run, p, cx),
+                RunView::Report => self.run_report(run, p, cx),
             }
         };
         div()
@@ -2767,6 +2768,204 @@ impl Workspace {
                 d.child(section("Problems"))
                     .children(problems.into_iter().map(|s| step_line(s, p, false)))
             })
+            .into_any_element()
+    }
+
+    /// The run report: the verdict tally, each claim with its badge,
+    /// evidence, and source, and the saved files.
+    fn run_report(&self, run: &Run, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        if run.checks.is_empty() && run.report.is_none() {
+            let why = if run.end.is_some() {
+                "This answer was not checked. Answers are checked when they finish."
+            } else {
+                "Claims are checked against their sources when the answer is done."
+            };
+            return div()
+                .text_sm()
+                .text_color(p.faint)
+                .child(why)
+                .into_any_element();
+        }
+        let section = |title: &'static str| div().pt_2().text_xs().text_color(p.faint).child(title);
+        let tally = run.tally();
+        let counts = div().flex().flex_wrap().gap_3().children(
+            Verdict::ALL.iter().filter(|v| tally.get(**v) > 0).map(|v| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(verdict_badge(*v, p))
+                    .child(SharedString::from(format!(
+                        "{} {}",
+                        tally.get(*v),
+                        v.label().to_lowercase()
+                    )))
+            }),
+        );
+        let pages = run.pages();
+        let focus = self.model.run_panel.claim;
+        let claims = run.checks.iter().map(|c| {
+            let focused = focus == Some(c.claim);
+            let source = c.evidence.as_ref().map(|ev| {
+                let page = pages
+                    .iter()
+                    .find(|pg| pg.url == ev.url)
+                    .cloned()
+                    .unwrap_or_else(|| PageRef {
+                        title: ev.title.clone(),
+                        url: ev.url.clone(),
+                        site: ev.site.clone(),
+                        builtin: None,
+                        favicon: None,
+                    });
+                let url = ev.url.clone();
+                let where_ = match ev.page {
+                    Some(n) => format!("[{}] {} · page {n}", ev.source, page.label()),
+                    None => format!("[{}] {}", ev.source, page.label()),
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .pl_2()
+                            .border_l_2()
+                            .border_color(p.border)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(SharedString::from(format!("“{}”", ev.quote))),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("claim-src-{}", c.claim)))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_1()
+                            .py(px(2.))
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|d| d.bg(p.hover))
+                            .child(self.site_icon(&page, 14., p))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(p.muted)
+                                    .child(SharedString::from(where_)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.browse(&url, window, cx)
+                            })),
+                    )
+            });
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(if focused { p.muted } else { p.border })
+                .when(focused, |d| d.bg(p.raised))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(verdict_badge(c.verdict, p))
+                        .child(c.verdict.label())
+                        .child(div().text_color(p.faint).child(SharedString::from(format!(
+                            "Claim {}{}",
+                            c.claim,
+                            if c.method == tern_agent::verify::Method::Model {
+                                " · judged by the model"
+                            } else {
+                                ""
+                            }
+                        )))),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(p.text)
+                        .child(SharedString::from(c.text.clone())),
+                )
+                .children(source)
+                .when(!c.note.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(c.note.clone())),
+                    )
+                })
+        });
+        let files = run.report.clone().map(|f| {
+            let md = f.markdown.to_string_lossy().to_string();
+            let json = f.json.to_string_lossy().to_string();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(section("Saved report"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            Button::new("report-open-md")
+                                .label("Open report")
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Open the Markdown report")
+                                .on_click(move |_, _, cx| cx.open_url(&md)),
+                        )
+                        .child(
+                            Button::new("report-open-json")
+                                .label("JSON")
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Open the report as JSON")
+                                .on_click(move |_, _, cx| cx.open_url(&json)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .truncate()
+                        .child(SharedString::from(
+                            f.markdown
+                                .parent()
+                                .map(|d| d.to_string_lossy().to_string())
+                                .unwrap_or_default(),
+                        )),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(!run.checks.is_empty(), |d| d.child(counts))
+            .when(run.checks.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_sm()
+                        .text_color(p.faint)
+                        .child("The answer makes no cited claims."),
+                )
+            })
+            .children(claims)
+            .children(files)
             .into_any_element()
     }
 
@@ -3165,6 +3364,38 @@ fn sliding(panel: impl IntoElement, width: f32, f: f32, from_right: bool) -> imp
 
 /// The live line while a turn runs: the tern mark moving with the work, a
 /// shimmering phrase, and elapsed seconds (`docs/02-ui-definition.md` §2.7).
+/// The answer with a verdict badge after each checked claim; a badge
+/// opens that claim in the run panel's Report view.
+fn with_badges(entry: usize, text: &str, run: &Run) -> String {
+    tern_agent::verify::annotate(text, &run.checks, |claim| {
+        tern_agent::verify::claim_link(entry, claim)
+    })
+}
+
+/// A verdict as its Tern glyph (ADR 0002's verdict set). Shape carries
+/// the meaning; the palette stays black, white, and grey.
+fn verdict_badge(v: Verdict, p: Palette) -> AnyElement {
+    let (name, color) = match v {
+        Verdict::Supported => ("verdict-supported", p.text),
+        Verdict::Partly => ("verdict-partial", p.muted),
+        Verdict::NotSupported => ("verdict-unsupported", p.text),
+        Verdict::NoSource => ("verdict-unverified", p.faint),
+    };
+    match assets::glyph(name) {
+        Some(path) => svg()
+            .path(path)
+            .size(px(14.))
+            .flex_none()
+            .text_color(color)
+            .into_any_element(),
+        None => div()
+            .text_xs()
+            .text_color(color)
+            .child(v.glyph())
+            .into_any_element(),
+    }
+}
+
 fn working_line(
     line: &WorkingLine,
     p: Palette,
@@ -3257,7 +3488,7 @@ fn mark(line: &WorkingLine, color: Hsla, still: bool, at: &'static str) -> AnyEl
             )
             .into_any_element(),
         // Head dips once per page fetched.
-        Activity::Reading => base
+        Activity::Reading | Activity::Checking => base
             .with_animation(
                 SharedString::from(format!("{at}-read-{}", line.beat)),
                 Animation::new(motion::MARK).with_easing(motion::ease),

@@ -1,6 +1,6 @@
 [package]
 name = "tern-research"
-description = "Research harness (planned)."
+description = "Research harness: claim extraction, claim verdicts, run reports."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,5 +13,7 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]

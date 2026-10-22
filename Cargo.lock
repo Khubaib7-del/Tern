@@ -7598,6 +7598,7 @@ dependencies = [
  "tern-crawl",
  "tern-platform",
  "tern-providers",
+ "tern-research",
  "tern-store",
  "time",
  "tokio",
@@ -7686,6 +7687,8 @@ dependencies = [
 name = "tern-research"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tern-core",
 ]
 

@@ -127,6 +127,8 @@ fn event_loop(
                                 });
                             };
                             let out = s.send(&text, &approver, flag, &observer).await;
+                            // Verdicts and the run report, logged as events.
+                            s.check_last_turn(&observer).await;
                             let usage = s.usage();
                             let _ = tx.send(Msg::Done(Box::new(s), out, usage));
                         });

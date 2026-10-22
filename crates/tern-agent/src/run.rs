@@ -16,7 +16,9 @@ use serde_json::Value;
 use tern_core::EventEnvelope;
 use time::OffsetDateTime;
 
+use crate::report::ReportFiles;
 use crate::sources::{PageRef, page_of, push_unique};
+use crate::verify::{ClaimCheck, Tally};
 
 /// What a step was, for its icon and for the Raw view's filters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -180,6 +182,10 @@ pub struct Run {
     started: Option<OffsetDateTime>,
     pub steps: Vec<RunStep>,
     pub end: Option<RunEnd>,
+    /// The answer's claims and their verdicts, once checked.
+    pub checks: Vec<ClaimCheck>,
+    /// Where the run's report was written.
+    pub report: Option<ReportFiles>,
 }
 
 impl Run {
@@ -203,7 +209,21 @@ impl Run {
                 RunEnd::Stopped(e.user_summary.clone())
             });
         }
+        if e.kind == "claims.checked" {
+            self.checks = serde_json::from_value(e.payload["checks"].clone()).unwrap_or_default();
+            self.report = serde_json::from_value(e.payload["report"].clone()).ok();
+        }
         self.steps.push(step_of(e, at));
+    }
+
+    /// When the turn started.
+    pub fn started(&self) -> Option<OffsetDateTime> {
+        self.started
+    }
+
+    /// Counts per verdict.
+    pub fn tally(&self) -> Tally {
+        Tally::of(&self.checks)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -369,6 +389,20 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                 _ => ("You declined", String::new()),
             };
             step.ok = answer != "deny";
+        }
+        "claims.checking" => {
+            step.verb = "Checking claims";
+            step.detailed = false;
+        }
+        "claims.checked" => {
+            let checks: Vec<ClaimCheck> =
+                serde_json::from_value(p["checks"].clone()).unwrap_or_default();
+            step.verb = "Checked";
+            step.target = plural(checks.len(), "claim");
+            step.note = Tally::of(&checks).line();
+            if let Some(err) = str_at(p, "judge_error") {
+                step.note = format!("{} · judged by word overlap: {err}", step.note);
+            }
         }
         "tool.executed" => {
             let args = &p["args"];

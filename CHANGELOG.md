@@ -4,6 +4,14 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #33)
+
+- **Claim verdicts** (`tern-research`, GPUI-free and tested offline): after each answer, Tern finds its claims (every sentence with a `[n]` citation; the closing link list is read for which page each number means, never as claims) and checks each against the text Tern Crawl read for the pages it cites. Verdicts: **Supported**, **Partly supported**, **Not supported**, **No source**, each with the quoted evidence passage and an anchor to it (a `#:~:text=` fragment, or `#page=N` for a PDF page). Two paths: the chat's own model judges the best three passages per claim (one call, up to 16 claims, temperature 0), and a deterministic word-overlap check (content words, every number present, negation agreeing) gives the verdict offline and fills in for anything the model does not answer. Seeded fixtures cover supported, misquoted number, contradicted, unrelated, and unreachable sources.
+- **Run reports**: each answered turn writes `runs/<chat>/turn-<n>.md` and `.json` in the data folder: the question, plan and steps, every source read with its reader (Tern Crawl), robots.txt result, and cache hit or miss, the claims with verdicts and evidence, model calls, tool calls, tokens and time against the turn's budget, and errors. Built from the event log alone (`tern_agent::report`), so any past turn can be rebuilt.
+- `tern report [chat] [--turn N] [--json] [--out FILE] [--list]` prints or exports a report (`last` by default, or a chat id or its start). A turn that was never checked is checked then, by word overlap.
+- Desktop: a verdict badge after each checked claim in the answer (click to open that claim in the report), a **Report** view in the run panel (tally, each claim with its verdict glyph, quoted evidence, and its source row with the site's logo; **Open report** and **JSON** open the saved files), and the working line says "Checking 3 claims" while it runs. The TUI logs the check too.
+- Events `claims.checking` and `claims.checked` (verdicts, tally, report paths, judge tokens); `read_url` events carry a `crawl` block (reader, robots, cache). `Fetcher::has_cached`.
+
 ### Added (PR #32)
 
 - **Tern Crawl** gets its own logo: a snail, because it crawls: cyan-to-blue gradient with film grain, no background, the one Tern mark with colour. Shown on every "Read N pages" row and on Appearance; one-colour `tern-crawl` glyph for tinted contexts; `assets/brand/tern-crawl.svg`, `tern-crawl-mono.svg`, and `tern-crawl-tile.svg` for standalone use. `TERN_READER` stays as an alias of `TERN_CRAWL`.

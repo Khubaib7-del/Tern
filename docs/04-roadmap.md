@@ -10,7 +10,7 @@
 | 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Planned |
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Done |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | In progress |
-| 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Planned |
+| 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Mostly built (PRs #31 to #33); scholarly sources and reports in the vault remain |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Planned |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
 | 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Planned |
@@ -70,8 +70,8 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 | `tern-crawl`: fetch, robots, rate limits, cache, content router, readability, Markdown, anchors | Fixture pages parse to stable anchors |
 | Network guard: private, loopback, link-local, metadata ranges blocked; redirects re-checked; DNS pinning | SSRF test matrix passes |
 | PDF and scholarly sources | arXiv, DOI, open-access PDF paths work |
-| Claim extraction and verdicts | Seeded fixtures: supported, contradicted, misquoted, retracted, unreachable |
-| Run report and methods log | One screen per run, saved to the vault |
+| Claim extraction and verdicts | Seeded fixtures: supported, contradicted, misquoted, retracted, unreachable (built, PR #33: supported, partly, not supported, no source; model judge with an offline word-overlap fallback; retraction checks remain) |
+| Run report and methods log | One screen per run, saved to the vault (built, PR #33: Report view in the run panel, Markdown and JSON per turn in the data folder, `tern report`; saving into the vault remains) |
 
 ### Phase 5 · Deep research
 
