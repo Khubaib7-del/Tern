@@ -131,6 +131,30 @@ impl Workspace {
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
+            Msg::Resumed(s, turns, recent) => {
+                self.model.connected(Connection {
+                    provider: s.provider_name().to_owned(),
+                    model: s.model().to_owned(),
+                    search: s.search_name().map(str::to_owned),
+                    context_window: s.context_window(),
+                });
+                self.model.restore(&turns);
+                self.model.sessions = recent;
+                self.current = Some(s.session_id());
+                self.session = Some(s);
+                self.scroll.scroll_to_bottom();
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+            }
+            Msg::Notice(text) => {
+                self.model.entries.push(Entry::Notice(text));
+                // A chat that would not reopen leaves no session; open a
+                // fresh one so the composer works.
+                if self.session.is_none() && matches!(self.model.phase, Phase::Connecting) {
+                    self.current = None;
+                    self.bridge.connect();
+                }
+            }
+            Msg::Sessions(recent) => self.model.sessions = recent,
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
             Msg::Event { kind, summary } => self.model.on_event(&kind, &summary),
             Msg::Text(call, text) => {
@@ -240,6 +264,35 @@ impl Workspace {
             let _ = p.send(answer);
         }
         self.model.approval_answered();
+        cx.notify();
+    }
+
+    /// Reopens a chat from the list. Ignored mid-turn or for the open chat.
+    fn open_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        if self.model.is_busy() || self.current == Some(id) {
+            return;
+        }
+        self.session = None;
+        self.current = Some(id);
+        self.model.new_chat();
+        self.model.phase = Phase::Connecting;
+        self.model.screen = Screen::Chat;
+        self.bridge.resume(id);
+        cx.notify();
+    }
+
+    /// Hides a chat from the list; archiving the open chat starts a new one.
+    fn archive_chat(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.current == Some(id) {
+            if self.model.is_busy() {
+                return;
+            }
+            self.current = None;
+            self.model.entries.clear();
+            self.new_chat(window, cx);
+        }
+        self.model.sessions.retain(|s| s.id != id);
+        self.bridge.archive(id);
         cx.notify();
     }
 
@@ -551,19 +604,60 @@ impl Workspace {
             )
     }
 
-    fn sidebar(&self, p: Palette) -> impl IntoElement {
-        let rows = self.model.sessions.iter().map(|s| {
-            let current = Some(s.id) == self.current;
-            div()
-                .px_2()
-                .py(px(6.))
-                .rounded_md()
-                .text_sm()
-                .truncate()
-                .text_color(if current { p.text } else { p.muted })
-                .when(current, |d| d.bg(p.hover))
-                .child(SharedString::from(s.title.clone()))
-        });
+    fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.model.is_busy();
+        let rows: Vec<_> = self
+            .model
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(ix, s)| {
+                let current = Some(s.id) == self.current;
+                let id = s.id;
+                div()
+                    .id(("chat", ix))
+                    .group("chat-row")
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl_2()
+                    .pr_1()
+                    .py(px(3.))
+                    .rounded_md()
+                    .text_sm()
+                    .text_color(if current { p.text } else { p.muted })
+                    .when(current, |d| d.bg(p.hover))
+                    .when(!current && !busy, |d| {
+                        d.cursor_pointer()
+                            .hover(|d| d.bg(p.hover).text_color(p.text))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.open_chat(id, cx)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .py(px(3.))
+                            .truncate()
+                            .child(SharedString::from(s.title.clone())),
+                    )
+                    .child(
+                        div()
+                            .opacity(0.)
+                            .group_hover("chat-row", |d| d.opacity(1.))
+                            .child(
+                                Button::new(("archive", ix))
+                                    .icon(gpui_kit::assets::IconName::Archive)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Archive chat")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.archive_chat(id, window, cx);
+                                    })),
+                            ),
+                    )
+            })
+            .collect();
         div()
             .w(px(SIDEBAR_W))
             .h_full()
@@ -1311,7 +1405,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.rail(p, cx))
-                    .when(self.model.sidebar_open, |d| d.child(self.sidebar(p)))
+                    .when(self.model.sidebar_open, |d| d.child(self.sidebar(p, cx)))
                     .child(div().flex().flex_col().flex_1().min_w_0().map(|d| {
                         match self.model.screen {
                             Screen::Chat => {

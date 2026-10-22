@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use tern_agent::{ApprovalRequest, Harness, SessionSummary, TurnOutcome, Usage};
+use tern_agent::{ApprovalRequest, Harness, PastTurn, SessionSummary, TurnOutcome, Usage};
 use tern_core::TurnState;
 
 use crate::providers::ProvidersState;
@@ -147,14 +147,7 @@ impl Model {
             "tool.started" => Some("Using a tool"),
             _ => None,
         };
-        let is_step = matches!(
-            kind,
-            "tool.executed"
-                | "tool.failed"
-                | "tool.rejected"
-                | "approval.answered"
-                | "loop.suspected"
-        ) || (kind == "policy.decided" && !summary.contains("allowed"));
+        let is_step = is_step(kind, summary);
         match &mut self.phase {
             Phase::Working {
                 label: l, steps, ..
@@ -270,6 +263,42 @@ impl Model {
         }
     }
 
+    /// Fills the transcript from a reopened chat's past turns.
+    pub fn restore(&mut self, turns: &[PastTurn]) {
+        self.entries.clear();
+        let mut missing = 0;
+        for t in turns {
+            match &t.message {
+                Some(m) => self.entries.push(Entry::User(m.clone())),
+                None => missing += 1,
+            }
+            if let Some(a) = &t.answer {
+                let steps = t
+                    .events
+                    .iter()
+                    .filter(|(k, s)| is_step(k, s))
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                self.entries.push(Entry::Assistant {
+                    text: a.clone(),
+                    steps,
+                    took: t.took,
+                });
+            }
+            if let Some(why) = &t.stop {
+                self.entries.push(Entry::Notice(why.clone()));
+            }
+        }
+        if missing > 0 {
+            let note = format!(
+                "{missing} earlier {} from before Tern kept chat text, so {} not shown.",
+                if missing == 1 { "turn is" } else { "turns are" },
+                if missing == 1 { "it is" } else { "they are" },
+            );
+            self.entries.insert(0, Entry::Notice(note));
+        }
+    }
+
     /// Clears the transcript for a new chat. The caller opens a new session.
     pub fn new_chat(&mut self) {
         if self.is_busy() {
@@ -331,6 +360,14 @@ impl Model {
             None => format!("{used} tokens"),
         }
     }
+}
+
+/// Events that show as a step under an answer.
+fn is_step(kind: &str, summary: &str) -> bool {
+    matches!(
+        kind,
+        "tool.executed" | "tool.failed" | "tool.rejected" | "approval.answered" | "loop.suspected"
+    ) || (kind == "policy.decided" && !summary.contains("allowed"))
 }
 
 /// The part of a streaming reply worth showing: everything before a tool
@@ -408,6 +445,47 @@ mod tests {
         assert_eq!(m.draft(), Some("Let me check."));
         assert_eq!(draft_visible("Answer\n```tool\n{}"), Some("Answer"));
         assert_eq!(draft_visible("   "), None);
+    }
+
+    #[test]
+    fn restore_rebuilds_the_transcript() {
+        let mut m = ready();
+        m.entries.push(Entry::Notice("old".into()));
+        let turns = vec![
+            PastTurn::default(),
+            PastTurn {
+                message: Some("What is RAG?".into()),
+                answer: Some("Retrieval [1].".into()),
+                events: vec![
+                    ("model.replied".into(), "replied".into()),
+                    ("tool.executed".into(), "Searched the web".into()),
+                ],
+                took: Duration::from_secs(3),
+                ..PastTurn::default()
+            },
+            PastTurn {
+                message: Some("More".into()),
+                stop: Some("You stopped the run.".into()),
+                ..PastTurn::default()
+            },
+        ];
+        m.restore(&turns);
+        assert_eq!(
+            m.entries,
+            [
+                Entry::Notice(
+                    "1 earlier turn is from before Tern kept chat text, so it is not shown.".into()
+                ),
+                Entry::User("What is RAG?".into()),
+                Entry::Assistant {
+                    text: "Retrieval [1].".into(),
+                    steps: vec!["Searched the web".into()],
+                    took: Duration::from_secs(3),
+                },
+                Entry::User("More".into()),
+                Entry::Notice("You stopped the run.".into()),
+            ]
+        );
     }
 
     fn ready() -> Model {

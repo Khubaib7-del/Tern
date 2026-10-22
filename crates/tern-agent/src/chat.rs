@@ -19,6 +19,7 @@ use crate::policy::PolicyGate;
 use crate::providers::{self, SecretStore, SetupError};
 use crate::search;
 use crate::tools::ToolRegistry;
+use crate::transcript::{PastTurn, past_turns};
 use crate::web::{ReadUrlTool, WebSearchTool};
 
 /// The project quick chats are filed under until projects have a UI.
@@ -53,6 +54,8 @@ pub struct ChatSession {
     ledger: UsageLedger,
     tools: ToolRegistry,
     history: Vec<ChatMessage>,
+    /// The chat has its sidebar title (from its first message).
+    titled: bool,
     search_name: Option<&'static str>,
     budget: Budget,
     max_output_tokens: u32,
@@ -83,6 +86,13 @@ pub fn recent_sessions(limit: usize) -> Result<Vec<SessionSummary>, String> {
     store.recent_sessions(limit).map_err(|e| e.to_string())
 }
 
+/// Hides a chat from the list without opening a provider. Its log stays.
+pub fn archive_session(id: SessionId) -> Result<(), String> {
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
+    store.archive_session(id).map_err(|e| e.to_string())
+}
+
 /// Forwards each stored event to the front end as well.
 struct Tee<'a> {
     inner: &'a StoreSink,
@@ -108,11 +118,61 @@ impl ChatSession {
         Self::open_with(opts, secrets, store).await
     }
 
+    /// Reopens a past chat: same session id, its finished exchanges back in
+    /// the model's history, and its turns for the transcript. The provider
+    /// and model come from `opts` (the current choices), not the old chat.
+    pub async fn resume(
+        opts: ChatOptions,
+        session: SessionId,
+    ) -> Result<(Self, Vec<PastTurn>), String> {
+        let keychain = providers::keychain();
+        let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+        let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+        let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
+        Self::resume_with(opts, secrets, store, session).await
+    }
+
+    /// [`ChatSession::resume`] with the keychain and database given.
+    pub async fn resume_with(
+        opts: ChatOptions,
+        secrets: Option<&dyn SecretStore>,
+        store: Store,
+        session: SessionId,
+    ) -> Result<(Self, Vec<PastTurn>), String> {
+        if store.session(session).map_err(|e| e.to_string())?.is_none() {
+            return Err("That chat is no longer in the database.".into());
+        }
+        let events = store.replay(session, 0).map_err(|e| e.to_string())?;
+        let turns = past_turns(&events);
+        let mut s = Self::open_inner(opts, secrets, store, Some(session)).await?;
+        for (m, a) in turns.iter().filter_map(PastTurn::exchange) {
+            s.history.push(ChatMessage::user(m));
+            s.history.push(ChatMessage::assistant(a));
+        }
+        Ok((s, turns))
+    }
+
+    /// Hides a chat from the list. Its log stays.
+    pub fn archive(&self, session: SessionId) -> Result<(), String> {
+        self.sink
+            .with_store(|s| s.archive_session(session))?
+            .map_err(|e| e.to_string())
+    }
+
     /// [`ChatSession::open`] with the keychain and database given, for tests.
     pub async fn open_with(
         opts: ChatOptions,
         secrets: Option<&dyn SecretStore>,
         store: Store,
+    ) -> Result<Self, String> {
+        Self::open_inner(opts, secrets, store, None).await
+    }
+
+    async fn open_inner(
+        opts: ChatOptions,
+        secrets: Option<&dyn SecretStore>,
+        store: Store,
+        resume: Option<SessionId>,
     ) -> Result<Self, String> {
         let id = match opts.provider {
             Some(id) => id,
@@ -164,10 +224,15 @@ impl ChatSession {
             tools.register(WebSearchTool(Arc::new(c)));
             tools.register(ReadUrlTool::default());
         }
-        let project = store.ensure_project(INBOX).map_err(|e| e.to_string())?;
-        let session = store
-            .create_session(project, Harness::Research, "Chat")
-            .map_err(|e| e.to_string())?;
+        let session = match resume {
+            Some(id) => id,
+            None => {
+                let project = store.ensure_project(INBOX).map_err(|e| e.to_string())?;
+                store
+                    .create_session(project, Harness::Research, "Chat")
+                    .map_err(|e| e.to_string())?
+            }
+        };
         let s = Self {
             provider,
             model,
@@ -178,6 +243,7 @@ impl ChatSession {
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
+            titled: resume.is_some(),
             search_name,
             budget: opts.budget,
             max_output_tokens: if opts.max_output_tokens == 0 {
@@ -188,10 +254,19 @@ impl ChatSession {
         };
         s.sink.record(EventEnvelope::new(
             session,
-            "session.opened",
+            if resume.is_some() {
+                "session.resumed"
+            } else {
+                "session.opened"
+            },
             EffectClass::Analysis,
             format!(
-                "Opened a chat with {} on {}",
+                "{} a chat with {} on {}",
+                if resume.is_some() {
+                    "Reopened"
+                } else {
+                    "Opened"
+                },
                 s.model,
                 s.provider.spec().name
             ),
@@ -281,7 +356,8 @@ impl ChatSession {
         }
         .run(self.history.clone(), text)
         .await;
-        if self.history.is_empty() {
+        if !self.titled {
+            self.titled = true;
             let title = title_from(text);
             let _ = self
                 .sink

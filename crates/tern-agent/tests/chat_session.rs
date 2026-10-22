@@ -96,3 +96,58 @@ async fn a_remote_provider_without_a_key_says_so() {
         .unwrap();
     assert!(err.contains("needs an API key"), "{err}");
 }
+
+#[tokio::test]
+async fn reopened_chat_brings_back_turns_and_history() {
+    let s = server().await;
+    let dir = std::env::temp_dir().join(format!("tern-resume-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("tern.db");
+    let opts = || ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        ..Default::default()
+    };
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let mut chat = ChatSession::open_with(opts(), None, Store::open(&db).unwrap())
+        .await
+        .unwrap();
+    let id = chat.session_id();
+    chat.send("What is RAG?", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    drop(chat);
+
+    let (mut again, turns) = ChatSession::resume_with(opts(), None, Store::open(&db).unwrap(), id)
+        .await
+        .unwrap();
+    assert_eq!(again.session_id(), id);
+    assert_eq!(turns.len(), 1);
+    assert_eq!(
+        turns[0].exchange(),
+        Some(("What is RAG?", "Hello from the mock."))
+    );
+    again
+        .send("And GraphRAG?", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    let reqs = s.received_requests().await.unwrap();
+    let last: serde_json::Value = reqs.last().unwrap().body_json().unwrap();
+    let contents: Vec<_> = last["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] != "system")
+        .map(|m| m["content"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        contents,
+        ["What is RAG?", "Hello from the mock.", "And GraphRAG?"]
+    );
+    let recent = again.recent_sessions(5).unwrap();
+    assert_eq!(recent.len(), 1, "reopening adds no new chat");
+    assert_eq!(recent[0].title, "What is RAG?", "the title stays");
+
+    again.archive(id).unwrap();
+    assert!(again.recent_sessions(5).unwrap().is_empty());
+    drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+}

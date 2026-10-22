@@ -170,14 +170,37 @@ impl Store {
         Ok(())
     }
 
-    /// The newest sessions first. Sessions with no events are left out.
+    /// Hides a session from the list. Its events stay in the log.
+    pub fn archive_session(&self, id: SessionId) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE sessions SET archived_at = ?1 WHERE id = ?2",
+            params![now(), id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// One session's row, archived or not.
+    pub fn session(&self, id: SessionId) -> StoreResult<Option<SessionSummary>> {
+        Ok(self
+            .summaries("WHERE s.id = ?1", &id.to_string(), 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// The newest sessions first. Sessions with no events, and archived
+    /// ones, are left out.
     pub fn recent_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
-        let mut stmt = self.conn.prepare(
+        self.summaries("WHERE s.archived_at IS NULL AND ?1 = ?1", "", limit)
+    }
+
+    fn summaries(&self, filter: &str, arg: &str, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT s.id, s.title, s.harness, s.created_at, COUNT(e.seq) AS n
              FROM sessions s JOIN events e ON e.session_id = s.id
-             GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map([limit as i64], |r| {
+             {filter}
+             GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![arg, limit as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -310,6 +333,21 @@ mod tests {
         assert_eq!(rows[0].events, 2);
         assert_eq!(rows[0].harness, Harness::Research);
         assert_ne!(rows[0].id, empty);
+    }
+
+    #[test]
+    fn archived_sessions_leave_the_list_but_keep_their_events() {
+        let (mut s, ses) = setup();
+        s.append(&ev(ses, "turn.started")).unwrap();
+        assert_eq!(s.recent_sessions(10).unwrap().len(), 1);
+        s.archive_session(ses).unwrap();
+        assert!(s.recent_sessions(10).unwrap().is_empty());
+        assert_eq!(
+            s.session(ses).unwrap().unwrap().title,
+            "Transformers survey"
+        );
+        assert_eq!(s.replay(ses, 0).unwrap().len(), 1);
+        assert_eq!(s.schema_version().unwrap(), 2);
     }
 
     #[test]

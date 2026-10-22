@@ -7,10 +7,11 @@ use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
-    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, Preferences,
+    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, PastTurn, Preferences,
     SessionSummary, TurnOutcome, Usage,
 };
 use tern_core::SecretString;
+use tern_core::SessionId;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::providers::{Kind, ServiceRow, rows_from};
@@ -18,6 +19,12 @@ use crate::providers::{Kind, ServiceRow, rows_from};
 /// Everything the background side tells the window.
 pub enum Msg {
     Connected(Box<ChatSession>, Vec<SessionSummary>),
+    /// A past chat reopened, with its turns for the transcript.
+    Resumed(Box<ChatSession>, Vec<PastTurn>, Vec<SessionSummary>),
+    /// A plain note for the transcript (a chat that would not reopen).
+    Notice(String),
+    /// The chat list after archiving one.
+    Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
     Event {
         kind: String,
@@ -41,6 +48,9 @@ impl std::fmt::Debug for Msg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connected(..) => f.write_str("Connected"),
+            Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
+            Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
             Self::Event { kind, .. } => write!(f, "Event({kind})"),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
@@ -108,6 +118,39 @@ impl Bridge {
                     let _ = tx.send(Msg::ConnectFailed(e));
                 }
             }
+        });
+    }
+
+    /// Reopens a past chat with the saved provider choices.
+    pub fn resume(&self, id: SessionId) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let prefs = tokio::task::spawn_blocking(Preferences::load)
+                .await
+                .unwrap_or_default();
+            match ChatSession::resume(prefs.chat_options(), id).await {
+                Ok((s, turns)) => {
+                    let recent = s.recent_sessions(RECENT).unwrap_or_default();
+                    let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Notice(format!("Tern could not reopen that chat: {e}")));
+                }
+            }
+        });
+    }
+
+    /// Hides a chat from the list, then sends the list again.
+    pub fn archive(&self, id: SessionId) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = tern_agent::archive_session(id) {
+                let _ = tx.send(Msg::Notice(format!(
+                    "Tern could not archive that chat: {e}"
+                )));
+            }
+            let recent = tern_agent::recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Sessions(recent));
         });
     }
 
