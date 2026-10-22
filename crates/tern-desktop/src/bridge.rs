@@ -166,6 +166,7 @@ impl std::fmt::Debug for Msg {
             Self::Models(id, r) => write!(f, "Models({id}, {})", r.is_ok()),
             Self::PrefsFailed(e) => write!(f, "PrefsFailed({e})"),
             Self::Study(m) => write!(f, "Study({m:?})"),
+            Self::Decision(m) => write!(f, "Decision({m:?})"),
             Self::Watches(w, note, n) => {
                 write!(
                     f,
