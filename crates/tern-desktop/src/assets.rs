@@ -9,7 +9,7 @@ use gpui_kit::{App, AssetSource, SharedString};
 /// The tern mark as one-colour SVG; the view tints and animates it.
 pub const MARK: &str = "tern/mark.svg";
 const MARK_SVG: &[u8] = include_bytes!("../assets/tern-mark.svg");
-/// The Tern Crawl logo in colour (flame shell, emerald body), drawn with `img`
+/// The Tern Crawl logo in colour (cyan-to-blue, grained), drawn with `img`
 /// rather than `svg` so its gradient survives. The one-colour version is
 /// the `tern-crawl` glyph.
 pub const CRAWL_LOGO: &str = "tern/brand/tern-crawl.svg";
