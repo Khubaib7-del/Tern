@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tern_agent::attach::{self, Attachment, Chip};
+use tern_agent::attach::{self, Attachment, Chip, Role};
+use tern_agent::mention;
 use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
     ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, Run, SessionSummary,
@@ -95,6 +96,42 @@ pub struct WorkingLine {
     pub beat: usize,
 }
 
+/// The `@` menu: what is being typed and which row is highlighted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MentionMenu {
+    /// Byte index of the `@` in the composer text.
+    pub start: usize,
+    pub query: String,
+    pub role: Option<Role>,
+    pub selected: usize,
+}
+
+/// What a row of the `@` menu picks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Attachment(usize),
+    Source(PageRef),
+    /// Opens the file and folder picker.
+    Browse,
+}
+
+/// One row of the `@` menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub pick: Pick,
+    pub label: String,
+    pub detail: String,
+}
+
+/// What choosing a row does to the composer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chosen {
+    pub text: String,
+    pub browse: bool,
+}
+
+const MENU_ROWS: usize = 8;
+
 /// The run panel's three views of the same run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RunView {
@@ -161,6 +198,8 @@ pub struct Model {
     pub icons: HashMap<String, SiteIcon>,
     /// Attachments waiting in the composer, sent with the next message.
     pub attachments: Vec<Attachment>,
+    /// The `@` menu over the composer, while a reference is being typed.
+    pub mention: Option<MentionMenu>,
     /// Attachments still being read from disk.
     pub attaching: usize,
 }
@@ -191,6 +230,7 @@ impl Model {
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),
+            mention: None,
             attaching: 0,
         }
     }
@@ -235,7 +275,9 @@ impl Model {
             }
             text = "Read the attached files.";
         }
-        let attachments = std::mem::take(&mut self.attachments);
+        let mut attachments = std::mem::take(&mut self.attachments);
+        mention::apply(text, &mut attachments);
+        self.mention = None;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -260,6 +302,141 @@ impl Model {
         };
         self.stopping = false;
         Some(message)
+    }
+
+    /// The composer changed: opens, updates, or closes the `@` menu.
+    pub fn on_composer_text(&mut self, text: &str) {
+        let Some(a) = mention::active(text) else {
+            self.mention = None;
+            return;
+        };
+        let selected = match &self.mention {
+            Some(m) if m.start == a.start && m.query == a.query => m.selected,
+            _ => 0,
+        };
+        self.mention = Some(MentionMenu {
+            start: a.start,
+            query: a.query.to_owned(),
+            role: a.role,
+            selected,
+        });
+        let n = self.mention_candidates().len();
+        if let Some(m) = &mut self.mention {
+            m.selected = m.selected.min(n.saturating_sub(1));
+        }
+    }
+
+    /// Sources read earlier in this chat, newest first, without repeats.
+    pub fn chat_sources(&self) -> Vec<PageRef> {
+        let mut out: Vec<PageRef> = Vec::new();
+        for e in self.entries.iter().rev() {
+            if let Entry::Assistant { pages, .. } = e {
+                for p in pages {
+                    if !out.iter().any(|q| q.url == p.url) {
+                        out.push(p.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The `@` menu's rows: matching attachments, then sources from this
+    /// chat, then a row that opens the file picker.
+    pub fn mention_candidates(&self) -> Vec<Candidate> {
+        let Some(m) = &self.mention else {
+            return Vec::new();
+        };
+        let q = m.query.as_str();
+        let mut rows: Vec<(u8, Candidate)> = Vec::new();
+        for (i, a) in self.attachments.iter().enumerate() {
+            if mention::matches(q, &a.name) {
+                rows.push((
+                    mention::rank(q, &a.name),
+                    Candidate {
+                        pick: Pick::Attachment(i),
+                        label: a.name.clone(),
+                        detail: format!("{} · {}", a.role.label(), a.detail()),
+                    },
+                ));
+            }
+        }
+        for p in self.chat_sources() {
+            let label = p.label().to_owned();
+            let attached = self
+                .attachments
+                .iter()
+                .any(|a| a.source == attach::Source::Link && a.files[0].path == p.url);
+            if !attached && (mention::matches(q, &label) || mention::matches(q, &p.site)) {
+                rows.push((
+                    mention::rank(q, &label).min(mention::rank(q, &p.site)) + 4,
+                    Candidate {
+                        pick: Pick::Source(p.clone()),
+                        detail: p.site.clone(),
+                        label,
+                    },
+                ));
+            }
+        }
+        rows.sort_by_key(|(r, _)| *r);
+        let mut out: Vec<Candidate> = rows
+            .into_iter()
+            .map(|(_, c)| c)
+            .take(MENU_ROWS - 1)
+            .collect();
+        out.push(Candidate {
+            pick: Pick::Browse,
+            label: "Attach a file or folder…".into(),
+            detail: "Files, folders, and .zip".into(),
+        });
+        out
+    }
+
+    /// Moves the highlight up (-1) or down (+1), wrapping.
+    pub fn move_mention(&mut self, delta: i32) {
+        let n = self.mention_candidates().len() as i32;
+        if let Some(m) = &mut self.mention
+            && n > 0
+        {
+            m.selected = (m.selected as i32 + delta).rem_euclid(n) as usize;
+        }
+    }
+
+    /// Picks a row (the highlighted one when `index` is `None`) and returns
+    /// the composer's new text.
+    pub fn choose_mention(&mut self, text: &str, index: Option<usize>) -> Option<Chosen> {
+        let m = self.mention.clone()?;
+        let rows = self.mention_candidates();
+        let row = rows.get(index.unwrap_or(m.selected))?.clone();
+        self.mention = None;
+        let name = match row.pick {
+            Pick::Browse => {
+                return Some(Chosen {
+                    text: mention::clear_active(text),
+                    browse: true,
+                });
+            }
+            Pick::Attachment(i) => {
+                let a = self.attachments.get_mut(i)?;
+                if let Some(role) = m.role {
+                    a.role = role;
+                }
+                a.name.clone()
+            }
+            Pick::Source(page) => {
+                let mut a = mention::source_attachment(&page);
+                if let Some(role) = m.role {
+                    a.role = role;
+                }
+                let name = a.name.clone();
+                self.attachments.push(a);
+                name
+            }
+        };
+        Some(Chosen {
+            text: mention::complete(text, &name),
+            browse: false,
+        })
     }
 
     /// Text over the long-paste limit becomes a `Pasted text` attachment.
@@ -1130,6 +1307,64 @@ mod tests {
         assert!(m.run_panel.open.is_empty());
         m.set_run_view(RunView::Raw);
         assert_eq!(m.run_panel.view, RunView::Raw);
+    }
+
+    #[test]
+    fn the_at_menu_picks_attachments_sources_and_files() {
+        let mut m = ready();
+        let mut rubric = Attachment::paste("Grade on clarity.");
+        rubric.name = "rubric.md".into();
+        m.attachments.push(rubric);
+        m.entries.push(Entry::Assistant {
+            text: "a".into(),
+            run: Run::new(),
+            took: Duration::ZERO,
+            pages: vec![PageRef {
+                title: "RAG survey".into(),
+                url: "https://arxiv.org/abs/2312.10997".into(),
+                site: "arxiv.org".into(),
+                builtin: None,
+                favicon: None,
+            }],
+        });
+        m.on_composer_text("mail me@x.com");
+        assert!(m.mention.is_none(), "an email is not a mention");
+
+        m.on_composer_text("Grade it with @prompt:rub");
+        let rows = m.mention_candidates();
+        assert_eq!(rows[0].label, "rubric.md");
+        assert_eq!(rows.last().unwrap().pick, Pick::Browse);
+        let chosen = m.choose_mention("Grade it with @prompt:rub", None).unwrap();
+        assert_eq!(chosen.text, "Grade it with @prompt:rubric.md ");
+        assert_eq!(m.attachments[0].role, Role::Prompt);
+        assert!(m.mention.is_none());
+
+        m.on_composer_text("compare with @arx");
+        let rows = m.mention_candidates();
+        assert!(matches!(rows[0].pick, Pick::Source(_)));
+        let chosen = m.choose_mention("compare with @arx", Some(0)).unwrap();
+        assert_eq!(chosen.text, "compare with @RAG-survey ");
+        assert_eq!(m.attachments.len(), 2);
+        assert_eq!(m.attachments[1].source, attach::Source::Link);
+        m.on_composer_text("again @arx");
+        assert!(
+            !m.mention_candidates()
+                .iter()
+                .any(|c| matches!(c.pick, Pick::Source(_))),
+            "an attached source is offered once"
+        );
+
+        m.on_composer_text("open @");
+        let n = m.mention_candidates().len();
+        m.move_mention(-1);
+        assert_eq!(m.mention.as_ref().unwrap().selected, n - 1);
+        let chosen = m.choose_mention("open @", None).unwrap();
+        assert!(chosen.browse);
+        assert_eq!(chosen.text, "open ");
+
+        // Roles typed by hand apply on send.
+        let msg = m.start_turn("Summarise with @context:rubric.md").unwrap();
+        assert!(msg.contains(r#"name="rubric.md" role="context""#));
     }
 
     #[test]

@@ -32,7 +32,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
 use crate::model::{
-    Activity, Connection, ContextLevel, Entry, Model, Phase, RunView, Screen, SiteIcon, WorkingLine,
+    Activity, Connection, ContextLevel, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon,
+    WorkingLine,
 };
 use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
@@ -90,15 +91,28 @@ impl Workspace {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
-                .placeholder("Ask anything. Shift+Enter for a new line.")
+                .placeholder(
+                    "Ask anything. @ to reference a file or source, Shift+Enter for a new line.",
+                )
                 .submit_on_enter(true)
         });
         let sub = cx.subscribe_in(
             &composer,
             window,
             |this: &mut Self, _, event: &InputEvent, window, cx| match event {
-                InputEvent::PressEnter { shift: false, .. } => this.submit(window, cx),
-                InputEvent::Change => this.check_long_text(window, cx),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    if this.model.mention.is_some() {
+                        this.choose_mention(None, window, cx);
+                    } else {
+                        this.submit(window, cx);
+                    }
+                }
+                InputEvent::Change => {
+                    this.check_long_text(window, cx);
+                    let text = this.composer.read(cx).value().to_string();
+                    this.model.on_composer_text(&text);
+                    cx.notify();
+                }
                 _ => {}
             },
         );
@@ -281,6 +295,136 @@ impl Workspace {
         self.scroll.scroll_to_bottom();
         self.start_ticker(cx);
         cx.notify();
+    }
+
+    /// Picks a row of the `@` menu (the highlighted one for `None`).
+    fn choose_mention(
+        &mut self,
+        index: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.composer.read(cx).value().to_string();
+        if let Some(chosen) = self.model.choose_mention(&text, index) {
+            self.composer.update(cx, |c, cx| {
+                c.set_value(chosen.text, window, cx);
+                c.focus(window, cx);
+            });
+            if chosen.browse {
+                self.pick_attachments(cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Up, Down, Tab, and Escape drive the `@` menu while it is open.
+    fn mention_keys(
+        &mut self,
+        e: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model.mention.is_none() {
+            return;
+        }
+        match e.keystroke.key.as_str() {
+            "up" => self.model.move_mention(-1),
+            "down" => self.model.move_mention(1),
+            "tab" => {
+                cx.stop_propagation();
+                self.choose_mention(None, window, cx);
+                return;
+            }
+            "escape" => self.model.mention = None,
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// The `@` menu over the composer.
+    fn mention_menu(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.model.mention.as_ref()?;
+        let rows = self.model.mention_candidates();
+        let selected = menu.selected;
+        let heading = match menu.role {
+            Some(Role::Prompt) => "Reference as Prompt",
+            Some(Role::Context) => "Reference as Context",
+            None => "Reference",
+        };
+        Some(
+            div()
+                .id("mention-menu")
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .p_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(heading),
+                )
+                .children(rows.into_iter().enumerate().map(|(i, row)| {
+                    let icon = match &row.pick {
+                        Pick::Attachment(_) => AssetIcon::Paperclip,
+                        Pick::Source(_) => AssetIcon::Globe,
+                        Pick::Browse => AssetIcon::FolderOpen,
+                    };
+                    div()
+                        .id(("mention", i))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_sm()
+                        .cursor_pointer()
+                        .when(i == selected, |d| d.bg(p.hover))
+                        .hover(move |d| d.bg(p.hover))
+                        .child(
+                            div()
+                                .text_color(p.muted)
+                                .child(gpui_kit::component::Icon::new(icon).small()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(p.text)
+                                .child(SharedString::from(row.label)),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(row.detail)),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_mention(Some(i), window, cx);
+                        }))
+                }))
+                .with_animation(
+                    "mention-menu-in",
+                    Animation::new(if self.reduced_motion {
+                        Duration::ZERO
+                    } else {
+                        motion::UI
+                    })
+                    .with_easing(motion::ease),
+                    |d, t| d.opacity(t),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Moves text over the long-paste limit out of the composer and into a
@@ -1307,6 +1451,10 @@ impl Workspace {
                 .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                     this.attach_paths(paths.paths().to_vec(), cx);
                 }))
+                .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                    this.mention_keys(e, window, cx);
+                }))
+                .children(self.mention_menu(p, cx))
                 .when(
                     !self.model.attachments.is_empty() || self.model.attaching > 0,
                     |d| d.child(self.attachment_chips(p, cx)),
@@ -1398,6 +1546,7 @@ impl Workspace {
                     AttachSource::Folder => AssetIcon::Folder,
                     AttachSource::Archive => AssetIcon::FileArchive,
                     AttachSource::Paste => AssetIcon::ClipboardPaste,
+                    AttachSource::Link => AssetIcon::Link,
                 };
                 let prompt = a.role == Role::Prompt;
                 div()

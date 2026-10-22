@@ -85,6 +85,8 @@ pub enum Source {
     Folder,
     Archive,
     Paste,
+    /// A source from earlier in the chat, referenced with `@`.
+    Link,
 }
 
 /// One file read from an attachment.
@@ -188,6 +190,7 @@ impl Attachment {
                 parts.push(plural(self.files.len(), "file"));
                 parts.push(format!("{} chars", compact(self.chars())));
             }
+            Source::Link => parts.push("source from this chat".into()),
         }
         if !self.skipped.is_empty() {
             parts.push(format!("{} skipped", self.skipped.len()));
