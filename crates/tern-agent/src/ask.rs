@@ -111,6 +111,8 @@ pub struct AskDeps<'a> {
     pub fetcher: &'a Fetcher,
     pub sink: &'a dyn EventSink,
     pub ledger: &'a UsageLedger,
+    /// Ranks the results before they are read; `None` keeps search order.
+    pub decider: Option<&'a crate::decide::Decider>,
 }
 
 const SYSTEM: &str = "You are Tern, a careful research assistant. Answer the question using only the numbered sources provided. \
@@ -236,7 +238,17 @@ pub async fn run_ask(
         ));
     }
 
-    // 2. Read in parallel.
+    // 2. The decision model ranks what to read first; then read in parallel.
+    let hits = match deps.decider {
+        Some(d) => {
+            let (ranked, decision) = crate::decide::rank_hits(d, question, &hits, &|_: &str| false).await;
+            if let Some(dec) = &decision {
+                record(deps.sink, crate::decide::event(sid, None, dec))?;
+            }
+            ranked
+        }
+        None => hits,
+    };
     let chosen = pick(&hits, opts.reads.max(1));
     let reads = futures::future::join_all(chosen.iter().map(|h| deps.fetcher.fetch(&h.url))).await;
     let mut pages = Vec::new();
@@ -437,7 +449,10 @@ pub async fn ask_with(
     // Results are read from the open web, so the guard stays on even when
     // the search service itself runs on this machine.
     let fetcher = crate::web::shared_reader();
+    let decider =
+        crate::decide::decider_from(&crate::Preferences::load().decision, secrets);
     let deps = AskDeps {
+        decider: Some(&decider),
         session,
         model: &provider,
         model_name: &model,

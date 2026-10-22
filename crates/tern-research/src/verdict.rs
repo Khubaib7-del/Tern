@@ -76,6 +76,9 @@ pub enum Method {
     #[default]
     Lexical,
     Model,
+    /// The decision model's pre-score moved the word-overlap verdict by
+    /// one step, within the hard checks.
+    Decision,
 }
 
 /// The text of one source the answer could cite.

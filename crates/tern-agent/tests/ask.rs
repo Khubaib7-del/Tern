@@ -63,6 +63,7 @@ async fn ask(s: &MockServer, sink: &MemorySink) -> Result<tern_agent::AskReport,
         fetcher: &fetcher,
         sink,
         ledger: &ledger,
+        decider: None,
     };
     let lines = std::sync::Mutex::new(Vec::<String>::new());
     let progress = |l: &str| lines.lock().unwrap().push(l.to_owned());

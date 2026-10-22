@@ -13,8 +13,14 @@ use crate::tools::{BoxFuture, Tool, ToolError, ToolOutput};
 /// Characters of a page handed to the model per read.
 pub const READ_CHARS: usize = 8_000;
 
+/// Web search. With a decider, results come back ranked by the decision
+/// model (pages most worth reading first), and the decision rides in the
+/// tool's metadata for the run's Decisions view.
 #[derive(Debug, Clone)]
-pub struct WebSearchTool(pub Arc<SearchClient>);
+pub struct WebSearchTool(
+    pub Arc<SearchClient>,
+    pub Option<Arc<crate::decide::Decider>>,
+);
 
 impl Tool for WebSearchTool {
     fn name(&self) -> &'static str {
@@ -51,7 +57,23 @@ impl Tool for WebSearchTool {
                     ..ToolOutput::text(format!("No results for \"{q}\"."))
                 });
             }
+            let mut decision = None;
+            let hits = match &self.1 {
+                Some(d) => {
+                    let (ranked, dec) =
+                        crate::decide::rank_hits(d, q, &hits, &|_: &str| false).await;
+                    decision = dec;
+                    ranked
+                }
+                None => hits,
+            };
             let mut out = String::new();
+            if let Some(d) = &decision {
+                out.push_str(&format!(
+                    "Ranked by the decision model ({}): most worth reading first.\n",
+                    d.model
+                ));
+            }
             for (i, h) in hits.iter().enumerate() {
                 out.push_str(&format!(
                     "{}. {} ({})\n   {}\n   {}\n",
@@ -62,11 +84,15 @@ impl Tool for WebSearchTool {
                     h.snippet
                 ));
             }
+            let mut meta = json!({ "query": q, "results": hits.len(),
+                "hits": hits.iter().map(|h| json!({"url": h.url, "title": h.title, "site": h.site})).collect::<Vec<_>>() });
+            if let Some(d) = &decision {
+                meta["decision"] = serde_json::to_value(d).unwrap_or_default();
+            }
             Ok(ToolOutput {
                 content: out,
                 evidence_refs: hits.iter().map(|h| h.url.clone()).collect(),
-                meta: json!({ "query": q, "results": hits.len(),
-                    "hits": hits.iter().map(|h| json!({"url": h.url, "title": h.title, "site": h.site})).collect::<Vec<_>>() }),
+                meta,
             })
         })
     }

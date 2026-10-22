@@ -9,7 +9,8 @@
 //! while they run ([`steer`]), keep source and budget ledgers ([`ledger`]),
 //! and saved questions can be watched ([`watch`]). The Study harness
 //! ([`study`]) keeps the user's materials, topics, and mastery, and runs
-//! the tutor, quizzes, and viva practice.
+//! the tutor, quizzes, and viva practice. The decision model ([`decide`])
+//! ranks sources, hints the next tool, pre-scores claims, and orders work.
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +21,7 @@ pub mod browse;
 pub mod cards;
 pub mod chat;
 pub mod checkpoint;
+pub mod decide;
 pub mod deep;
 pub mod doctor;
 pub mod engine;
@@ -52,6 +54,7 @@ pub use chat::{
     rename_session, title_from,
 };
 pub use checkpoint::{CheckpointDir, CheckpointSink, RunCheckpoint, RunMode, Stage};
+pub use decide::{Decider, DecisionKind, DecisionPrefs};
 pub use deep::{DeepControl, DeepOptions, PlanAnswer, PlanApprover, ResearchPlan, RunAsDrafted};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,

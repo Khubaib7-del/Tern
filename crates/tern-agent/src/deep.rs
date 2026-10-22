@@ -249,6 +249,9 @@ pub struct DeepDeps<'a> {
     pub checkpoints: Option<&'a dyn CheckpointSink>,
     /// Steering notes from the user; `None` takes none.
     pub steering: Option<&'a Steering>,
+    /// Ranks each worker's results and orders the workers; `None` keeps
+    /// search order and plan order.
+    pub decider: Option<&'a crate::decide::Decider>,
 }
 
 /// Why a worker or the run stopped early.
@@ -294,6 +297,7 @@ struct Deep<'r> {
     calls: Mutex<(u32, u32)>,
     checkpoints: Option<&'r dyn CheckpointSink>,
     steering: Option<&'r Steering>,
+    decider: Option<&'r crate::decide::Decider>,
     /// The live checkpoint, once the plan is approved.
     ck: Mutex<Option<RunCheckpoint>>,
     prior: Prior,
@@ -439,6 +443,7 @@ async fn run(
         calls: Mutex::new((0, 0)),
         checkpoints: deps.checkpoints,
         steering: deps.steering,
+        decider: deps.decider,
         ck: Mutex::new(None),
         prior,
         save_failed: AtomicBool::new(false),
@@ -796,6 +801,24 @@ impl Deep<'_> {
                 })
                 .collect()
         };
+        // Now or later: with more sub-questions than slots, the decision
+        // model picks which start first. Worker numbers stay as planned.
+        if restored.is_empty()
+            && pending.len() > concurrency
+            && let Some(d) = self.decider
+        {
+            let subs: Vec<String> = pending.iter().map(|j| j.sub.question.clone()).collect();
+            if let Some((order, dec)) =
+                crate::decide::order_sub_questions(d, &question, &subs).await
+            {
+                let mut old: Vec<Option<Job>> = pending.drain(..).map(Some).collect();
+                pending = order.iter().filter_map(|&i| old[i].take()).collect();
+                pending.extend(old.into_iter().flatten());
+                let _ = self.record_event(
+                    crate::decide::event(self.session, Some(self.turn), &dec),
+                );
+            }
+        }
         let mut running = FuturesUnordered::new();
         let mut running_ids: Vec<usize> = Vec::new();
         loop {
@@ -1579,6 +1602,27 @@ impl Deep<'_> {
                         budget.pages
                     )));
                 }
+                // The decision model ranks what to read first; pages this
+                // worker already read are ruled out.
+                let hits = match self.decider {
+                    Some(d) if hits.len() > 1 => {
+                        let seen = &st.seen;
+                        let (ranked, dec) = crate::decide::rank_hits(
+                            d,
+                            &sub.question,
+                            &hits,
+                            &|u: &str| seen.contains(u),
+                        )
+                        .await;
+                        if let Some(dec) = dec {
+                            let mut e = crate::decide::event(self.session, Some(self.turn), &dec);
+                            e.payload["worker"] = json!(n);
+                            self.record_event(e).map_err(Halt::Failed)?;
+                        }
+                        ranked
+                    }
+                    _ => hits,
+                };
                 let chosen = pick(&hits, left.min(READS_PER_ROUND), &st.seen);
                 self.note_skips(n, &hits, &chosen, &st.seen, left)?;
                 if chosen.is_empty() && st.pages.is_empty() {

@@ -182,6 +182,10 @@ pub struct Decision {
     pub cached: bool,
 }
 
+// Probabilities are always finite (softmax and normalize clean them), so
+// equality is total.
+impl Eq for Decision {}
+
 impl Decision {
     /// The chosen choice's id.
     pub fn chosen_id(&self) -> &str {

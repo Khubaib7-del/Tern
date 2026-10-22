@@ -43,13 +43,129 @@ pub struct Judge<'a> {
 }
 
 /// Checks and what the judge cost.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Checked {
     pub checks: Vec<ClaimCheck>,
     /// Tokens in and out of the judge call.
     pub judge_tokens: Option<(u64, u64)>,
     /// Why the judge was not used, when it failed.
     pub judge_error: Option<String>,
+    /// The decision model's pre-score of each claim, in claim order.
+    pub decisions: Vec<crate::decide::Decision>,
+}
+
+/// The pre-score's choices, in this order.
+pub const PRESCORE_CHOICES: [&str; 3] = ["supported", "partly", "not_supported"];
+/// A pre-score below this confidence leaves the word-overlap verdict alone.
+pub const PRESCORE_CONFIDENCE: f32 = 0.3;
+
+fn verdict_rank(v: Verdict) -> i32 {
+    match v {
+        Verdict::Supported => 0,
+        Verdict::Partly => 1,
+        Verdict::NotSupported => 2,
+        Verdict::NoSource => 3,
+    }
+}
+
+/// The decision model's pre-score of each claim: supported, partly, or
+/// not, read from the best passages of its cited sources. Hard checks
+/// rule "supported" out when a number in the claim is missing from the
+/// best passage or the passage says the opposite; claims with no source
+/// text are not asked (they stay "No source"). A confident pre-score may
+/// move the word-overlap verdict one step; the model judge, when it runs,
+/// still has the final word.
+pub async fn prescore(
+    checks: &mut [ClaimCheck],
+    sources: &[SourceText],
+    decider: &crate::decide::Decider,
+) -> Vec<(usize, crate::decide::Decision)> {
+    use crate::decide::{Choice, DecisionKind, DecisionRequest, Rule};
+    use tern_research::verdict::passages;
+    let mut out = Vec::new();
+    if !decider.is_on() {
+        return out;
+    }
+    for check in checks.iter_mut() {
+        if check.verdict == Verdict::NoSource {
+            continue;
+        }
+        let cited: Vec<&SourceText> = check
+            .citations
+            .iter()
+            .filter_map(|n| sources.iter().find(|s| s.n == *n))
+            .filter(|s| !s.text.trim().is_empty())
+            .collect();
+        let found = passages(&check.text, &cited);
+        let Some(best) = found.first() else {
+            continue;
+        };
+        let context: String = found
+            .iter()
+            .take(3)
+            .filter_map(|p| {
+                cited
+                    .iter()
+                    .find(|s| s.n == p.source)
+                    .map(|s| s.text[p.start..p.end].to_owned())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut rules = Vec::new();
+        if !best.numbers_match {
+            rules.push(Rule::RuleOut {
+                choice: 0,
+                reason: "a number in the claim is not in the passage".into(),
+            });
+        }
+        if !best.polarity_match {
+            rules.push(Rule::RuleOut {
+                choice: 0,
+                reason: "the passage may say the opposite".into(),
+            });
+        }
+        let req = DecisionRequest::new(
+            DecisionKind::ClaimCheck,
+            check.text.clone(),
+            vec![
+                Choice::new(PRESCORE_CHOICES[0], "Supported: the passage states the claim"),
+                Choice::new(PRESCORE_CHOICES[1], "Partly supported: the passage states some of it"),
+                Choice::new(PRESCORE_CHOICES[2], "Not supported: the passage does not state it"),
+            ],
+        )
+        .with_context(context);
+        let Some(d) = decider.decide(&req, &rules).await else {
+            continue;
+        };
+        let proposed = match d.chosen {
+            0 => Verdict::Supported,
+            1 => Verdict::Partly,
+            _ => Verdict::NotSupported,
+        };
+        let step = verdict_rank(proposed) - verdict_rank(check.verdict);
+        if proposed != check.verdict && d.confidence >= PRESCORE_CONFIDENCE {
+            let to = match step.signum() {
+                1 => match check.verdict {
+                    Verdict::Supported => Verdict::Partly,
+                    _ => Verdict::NotSupported,
+                },
+                _ => match check.verdict {
+                    Verdict::NotSupported => Verdict::Partly,
+                    _ => Verdict::Supported,
+                },
+            };
+            check.verdict = to;
+            check.method = Method::Decision;
+            check.note = format!("Decision model: {}", d.rationale);
+            if to == Verdict::NotSupported {
+                check.evidence = None;
+            } else if check.evidence.is_none() {
+                check.evidence = Some(tern_research::verdict::evidence_of(best, &cited));
+            }
+        }
+        out.push((check.claim, d));
+    }
+    out
 }
 
 /// A URL compared loosely: no fragment, no trailing slash, no `www.`,
@@ -116,15 +232,49 @@ pub async fn source_texts(numbered: &[(usize, PageRef)], fetcher: &Fetcher) -> V
 /// Checks every claim of `answer` against `sources`, with the judge when
 /// one is given.
 pub async fn check_with(answer: &str, sources: &[SourceText], judge: Option<Judge<'_>>) -> Checked {
+    check_with_decider(answer, sources, judge, None).await
+}
+
+/// [`check_with`] with the decision model's pre-score: word overlap first,
+/// then the pre-score (within the hard checks), then the model judge. When
+/// there are more claims than the judge takes, the least certain go to it.
+pub async fn check_with_decider(
+    answer: &str,
+    sources: &[SourceText],
+    judge: Option<Judge<'_>>,
+    decider: Option<&crate::decide::Decider>,
+) -> Checked {
     let claims = extract_claims(answer);
     let mut out = Checked {
         checks: claims.iter().map(|c| check_lexical(c, sources)).collect(),
         ..Checked::default()
     };
+    let scored = match decider {
+        Some(d) => prescore(&mut out.checks, sources, d).await,
+        None => Vec::new(),
+    };
+    out.decisions = scored.iter().map(|(_, d)| d.clone()).collect();
     let Some(judge) = judge else {
         return out;
     };
-    let some: Vec<Claim> = claims.into_iter().take(JUDGE_CLAIMS).collect();
+    let mut claims = claims;
+    if claims.len() > JUDGE_CLAIMS && !scored.is_empty() {
+        let certainty = |c: &Claim| {
+            scored
+                .iter()
+                .find(|(n, _)| *n == c.n)
+                .map(|(_, d)| d.confidence)
+                .unwrap_or(0.0)
+        };
+        claims.sort_by(|a, b| {
+            certainty(a)
+                .partial_cmp(&certainty(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.n.cmp(&b.n))
+        });
+    }
+    let mut some: Vec<Claim> = claims.into_iter().take(JUDGE_CLAIMS).collect();
+    some.sort_by_key(|c| c.n);
     let Some((system, message)) = judge_prompt(&some, sources) else {
         return out;
     };
@@ -153,9 +303,20 @@ pub async fn check_answer(
     fetcher: &Fetcher,
     judge: Option<Judge<'_>>,
 ) -> Checked {
+    check_answer_with(answer, pages, fetcher, judge, None).await
+}
+
+/// [`check_answer`] with the decision model's pre-score.
+pub async fn check_answer_with(
+    answer: &str,
+    pages: &[PageRef],
+    fetcher: &Fetcher,
+    judge: Option<Judge<'_>>,
+    decider: Option<&crate::decide::Decider>,
+) -> Checked {
     let numbered = numbered(answer, pages);
     let sources = source_texts(&numbered, fetcher).await;
-    check_with(answer, &sources, judge).await
+    check_with_decider(answer, &sources, judge, decider).await
 }
 
 /// The answer with a small verdict badge after each checked claim: a

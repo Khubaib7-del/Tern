@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod cards;
+mod decide;
 mod research;
 mod runs;
 mod study;
@@ -226,6 +227,9 @@ enum Command {
         #[command(flatten)]
         chat: ChatArgs,
     },
+    /// Ask the decision model a fixed-choice question, set it up (off,
+    /// local, or a remote provider with your own key), or benchmark it.
+    Decide(decide::DecideArgs),
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
     Provider(ProviderCmd),
@@ -408,6 +412,7 @@ fn main() -> ExitCode {
             chat,
         } => block_on(study::viva(title, n, offline, chat)),
         Command::Cards(cmd) => block_on(cards::run(cmd)),
+        Command::Decide(args) => block_on(decide::run(args)),
         Command::Explain3d {
             concept,
             topic,

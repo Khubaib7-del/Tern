@@ -43,6 +43,8 @@ pub struct ChatOptions {
     pub vault: Option<std::path::PathBuf>,
     /// How answers' claims are checked after each turn.
     pub check_claims: crate::verify::CheckClaims,
+    /// The decision model the chat asks (see [`crate::decide`]).
+    pub decision: crate::decide::DecisionPrefs,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -73,6 +75,8 @@ pub struct ChatSession {
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
     /// Steering notes for the running turn, from the front end or `tern steer`.
     steering: crate::steer::Steering,
+    /// Ranks sources, hints the first tool, pre-scores claims, and orders work.
+    decider: Arc<crate::decide::Decider>,
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -175,6 +179,16 @@ pub(crate) async fn connect_model(
     Ok((provider, model, context_window))
 }
 
+/// The chat model these options pick, for one-off calls such as the
+/// reasoning-model row of `tern decide bench`.
+pub async fn connect_chat_model(
+    opts: &ChatOptions,
+    secrets: Option<&dyn SecretStore>,
+) -> Result<(Provider, String), String> {
+    let (p, m, _) = connect_model(opts, secrets).await?;
+    Ok((p, m))
+}
+
 /// Forwards each stored event to the front end as well.
 struct Tee<'a> {
     inner: &'a StoreSink,
@@ -266,8 +280,9 @@ impl ChatSession {
             };
         let search_name = search.as_ref().map(|c| c.spec().name);
         let search = search.map(Arc::new);
+        let decider = Arc::new(crate::decide::decider_from(&opts.decision, secrets));
         if let Some(c) = &search {
-            tools.register(WebSearchTool(c.clone()));
+            tools.register(WebSearchTool(c.clone(), Some(decider.clone())));
             tools.register(ReadUrlTool::default());
         }
         // A vault that cannot be opened only leaves its tools out.
@@ -297,6 +312,7 @@ impl ChatSession {
             None => crate::steer::Steering::new(),
         };
         let s = Self {
+            decider,
             checkpoints,
             steering,
             provider,
@@ -447,6 +463,30 @@ impl ChatSession {
             observer,
         };
         self.steering.clear();
+        // The decision model's hint for the first step, logged just before
+        // the turn starts (the run picks it up with the turn).
+        let mut instructions = self.search_name.map(|_| WEB_INSTRUCTIONS.to_owned());
+        let names: Vec<&str> = self.tools.names().collect();
+        let (_, question) = crate::reply::split(text);
+        let attachments = images.len() + question.matches("<attachment ").count();
+        let question: String = question
+            .split("<attachments>")
+            .next()
+            .unwrap_or(question)
+            .chars()
+            .take(2000)
+            .collect();
+        if let Some((hint, d)) =
+            crate::decide::next_tool_hint(&self.decider, &question, &names, attachments).await
+        {
+            let _ = tee.record(crate::decide::event(self.session, None, &d));
+            if let Some(h) = hint {
+                instructions = Some(match instructions {
+                    Some(i) => format!("{i}\n\n{h}"),
+                    None => h,
+                });
+            }
+        }
         let hooks = crate::engine::RunHooks {
             checkpoints: self
                 .checkpoints
@@ -466,7 +506,7 @@ impl ChatSession {
             ledger: &self.ledger,
             budget: self.budget,
             cancel,
-            instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
+            instructions: instructions.as_deref(),
             max_output_tokens: self.max_output_tokens,
             on_text,
             hooks,
@@ -548,6 +588,7 @@ impl ChatSession {
                 .as_ref()
                 .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
             steering: Some(&self.steering),
+            decider: Some(&self.decider),
         };
         self.steering.clear();
         let out = crate::deep::run_deep(deps, text, opts, approver, control).await;
@@ -634,6 +675,7 @@ impl ChatSession {
                     on_text,
                     checkpoints: sink,
                     steering: Some(&self.steering),
+                    decider: Some(&self.decider),
                 };
                 crate::deep::resume_deep(deps, ck, opts, control).await
             }
@@ -714,8 +756,14 @@ impl ChatSession {
             model: &self.provider,
             model_name: &self.model,
         });
-        let checked =
-            verify::check_answer(answer, &last.pages, &crate::web::shared_reader(), judge).await;
+        let checked = verify::check_answer_with(
+            answer,
+            &last.pages,
+            &crate::web::shared_reader(),
+            judge,
+            Some(&self.decider),
+        )
+        .await;
         // The judge's tokens stay out of the chat's ledger, which the
         // context ring reads; the report and the event carry them.
         let mut turn = last.clone();
@@ -745,6 +793,9 @@ impl ChatSession {
         });
         if let Some(e) = &checked.judge_error {
             payload["judge_error"] = json!(e);
+        }
+        if !checked.decisions.is_empty() {
+            payload["decisions"] = json!(checked.decisions);
         }
         if let Some((i, o)) = checked.judge_tokens {
             payload["judge_tokens"] = json!({"input": i, "output": o});
