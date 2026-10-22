@@ -25,6 +25,8 @@ pub enum Msg {
     Notice(String),
     /// A site's favicon on disk, or `None` when it could not be had.
     Icon(String, Option<std::path::PathBuf>),
+    /// A file, folder, or archive read for the composer, or why not.
+    Attached(Result<tern_agent::Attachment, String>),
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
@@ -53,6 +55,7 @@ impl std::fmt::Debug for Msg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connected(..) => f.write_str("Connected"),
+            Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
@@ -180,6 +183,20 @@ impl Bridge {
             let recent = tern_agent::recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Sessions(recent));
         });
+    }
+
+    /// Reads files, folders, or archives off the UI thread, one message each.
+    pub fn attach(&self, paths: Vec<std::path::PathBuf>) {
+        for path in paths {
+            let tx = self.tx.clone();
+            self.rt.spawn(async move {
+                let result =
+                    tokio::task::spawn_blocking(move || tern_agent::Attachment::load(&path))
+                        .await
+                        .unwrap_or_else(|e| Err(format!("Tern could not read that file: {e}")));
+                let _ = tx.send(Msg::Attached(result));
+            });
+        }
     }
 
     /// Runs one turn and hands the session back when it ends.
