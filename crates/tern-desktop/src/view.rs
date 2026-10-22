@@ -258,22 +258,28 @@ impl Workspace {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("Tern"),
                         )
+                        // `occlude` keeps title-bar controls out of the window's
+                        // drag region; on Windows a click there otherwise goes to
+                        // the OS as a caption drag and the button never sees it.
                         .child(
-                            Button::new("toggle-sidebar")
-                                .icon(IconName::PanelLeft)
-                                .ghost()
-                                .small()
-                                .tooltip("Show or hide chats")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.model.sidebar_open = !this.model.sidebar_open;
-                                    cx.notify();
-                                })),
+                            div().occlude().child(
+                                Button::new("toggle-sidebar")
+                                    .icon(IconName::PanelLeft)
+                                    .ghost()
+                                    .small()
+                                    .tooltip("Show or hide chats")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.model.sidebar_open = !this.model.sidebar_open;
+                                        cx.notify();
+                                    })),
+                            ),
                         ),
                 )
                 .child(
                     div()
                         .flex()
                         .gap_1()
+                        .occlude()
                         .p(px(2.))
                         .rounded_lg()
                         .border_1()
@@ -286,6 +292,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap_1()
+                        .occlude()
                         .child(
                             Button::new("toggle-theme")
                                 .icon(if self.model.dark {
