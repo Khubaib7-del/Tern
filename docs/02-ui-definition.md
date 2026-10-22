@@ -188,7 +188,7 @@ Plain-language wording is fixed, for example: "Summarising earlier work to stay 
 
 A black and white base, one accent at or under 5% of pixels (target under 1%), desaturated status tones only on verdicts. Every main text and accent pair passes WCAG 4.5:1 in both modes.
 
-| Token | A · Graphite & Bone | B · Ink & Paper | **C · Mono & Lichen (recommended)** |
+| Token | A · Graphite & Bone | B · Ink & Paper | **C · Mono & Lichen (chosen, ADR 0002)** |
 | --- | --- | --- | --- |
 | Background, dark / light | `#101010` / `#F4F2EE` | `#0E0F11` / `#F3F0E8` | `#0C0C0C` / `#F5F5F3` |
 | Surface | `#161616` / `#FAF9F6` | `#141518` / `#F9F7F2` | `#131313` / `#FBFBFA` |
@@ -214,8 +214,8 @@ Research and Study are told apart by tone and shape, not hue:
 
 | Area | Decision |
 | --- | --- |
-| UI font | IBM Plex Sans or Inter (open decision) |
-| Mono | IBM Plex Mono or Lilex, for metadata, paths, costs, and the CLI |
+| UI font | IBM Plex Sans (ADR 0002) |
+| Mono | IBM Plex Mono, for metadata, paths, costs, and the CLI |
 | Serif | Instrument Serif italic for *Study* labels and headings, matching the lockup |
 | Sizes | 12 / 13 / 15 / 20 px, editor 16px, line height 1.5 |
 | Icons | Lucide at 1.5px stroke, 16px, plus about 12 custom glyphs (tern mark, Research, Study, five verdicts, checkpoint, watcher, steer, branch-reply), a `tern-reader` glyph for Tern's own reader, and built-in logos for common research sources and search services |

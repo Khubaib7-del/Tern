@@ -17,10 +17,11 @@ mod layout;
 mod model;
 mod motion;
 mod providers;
+mod scout;
 mod theme;
 mod view;
 
-use gpui_kit::component::{Theme, ThemeMode, TitleBar};
+use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
 use bridge::Bridge;
@@ -42,7 +43,8 @@ fn main() {
         .with_assets(assets::TernAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            Theme::change(ThemeMode::Dark, None, cx);
+            assets::register_fonts(cx);
+            theme::apply_kit(true, None, cx);
             // Closing the window ends the app on every platform.
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

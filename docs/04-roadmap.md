@@ -38,7 +38,7 @@ Distribution (installers, releases, auto-update, a website) is deliberately not 
 
 | Deliverable | Exit check |
 | --- | --- |
-| Palette choice (C, A, or B) and font choice | Recorded as ADR 0002 |
+| Palette choice (C, A, or B) and font choice | Done: palette C, IBM Plex, ADR 0002 |
 | Concept screens in the chosen palette: desktop, TUI, Study, approval, budget pause | Approved by the owner |
 | SVG trace of the mark and wordmark; small-size mark | In `assets/brand/` |
 | Scout rig parts and state table | Sketch approved |

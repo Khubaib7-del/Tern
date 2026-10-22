@@ -25,6 +25,8 @@ pub enum Screen {
     Editor,
     /// The vault repository: checkpoints, branches, push, pull requests.
     Git,
+    /// The palette, type, glyphs, and Scout, for review.
+    Appearance,
 }
 
 /// One block of the transcript.
@@ -279,6 +281,24 @@ impl Model {
 
     pub fn connect_failed(&mut self, reason: String) {
         self.phase = Phase::Offline(reason);
+    }
+
+    /// Scout's mood from the run's state (`docs/02-ui-definition.md` §7).
+    pub fn scout_mood(&self) -> crate::scout::Mood {
+        use crate::scout::Mood;
+        match &self.phase {
+            Phase::Offline(_) => Mood::Blocked,
+            Phase::Approval { .. } => Mood::NeedsYou,
+            Phase::Working { activity, .. } => match activity {
+                Activity::Searching => Mood::Searching,
+                Activity::Reading => Mood::Reading,
+                Activity::NeedsYou => Mood::NeedsYou,
+                Activity::Thinking | Activity::Tool | Activity::Writing | Activity::Stopping => {
+                    Mood::Thinking
+                }
+            },
+            Phase::Connecting | Phase::Ready => Mood::Idle,
+        }
     }
 
     pub fn is_busy(&self) -> bool {
