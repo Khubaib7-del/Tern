@@ -6,6 +6,7 @@ use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::Serialize;
 use tern_core::{Redactor, SecretString};
 
+use crate::stream::{self, Assembler, SseParser};
 use crate::wire;
 use crate::{
     ChatRequest, ChatResponse, ModelInfo, ProviderError, ProviderResult, ProviderSpec, Wire,
@@ -31,6 +32,8 @@ pub struct Provider {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// A streamed reply may run long; the whole stream gets this much.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 const BODY_LIMIT: usize = 400;
 
 impl Provider {
@@ -195,6 +198,95 @@ impl Provider {
         .map_err(decode)
     }
 
+    /// One streaming chat call. `on_text` gets each piece of text as it
+    /// arrives and returns `false` to stop early (the user pressed Stop); the
+    /// reply then holds what arrived, with finish reason `cancelled`.
+    pub async fn chat_stream(
+        &self,
+        req: &ChatRequest,
+        on_text: &(dyn Fn(&str) -> bool + Send + Sync),
+    ) -> ProviderResult<ChatResponse> {
+        let what = format!("the model `{}`", req.model);
+        let (url, body) = match self.spec.wire {
+            Wire::OpenAiCompatible => {
+                let mut body = wire::openai::chat_body(req);
+                body["stream"] = serde_json::json!(true);
+                if reports_stream_usage(self.spec.id) {
+                    body["stream_options"] = serde_json::json!({"include_usage": true});
+                }
+                (self.url("chat/completions"), body)
+            }
+            Wire::Anthropic => {
+                let mut body = wire::anthropic::chat_body(req);
+                body["stream"] = serde_json::json!(true);
+                (self.url("messages"), body)
+            }
+            Wire::Gemini => {
+                let model = req.model.strip_prefix("models/").unwrap_or(&req.model);
+                (
+                    self.url(&format!("models/{model}:streamGenerateContent?alt=sse")),
+                    wire::gemini::chat_body(req),
+                )
+            }
+        };
+        let provider = self.spec.name;
+        let network = |e: reqwest::Error| ProviderError::Network {
+            provider,
+            reason: Redactor::default().redact(&without_url(&e)).into_owned(),
+        };
+        let rb = self
+            .http
+            .post(url)
+            .json(&body)
+            .header("accept", "text/event-stream")
+            .timeout(STREAM_TIMEOUT);
+        let mut resp = self
+            .with_wire_headers(self.authed(rb))
+            .send()
+            .await
+            .map_err(network)?;
+        if !resp.status().is_success() {
+            return Err(self
+                .check(resp, &what)
+                .await
+                .err()
+                .unwrap_or(ProviderError::Decode {
+                    provider,
+                    reason: "the stream failed".into(),
+                }));
+        }
+        let mut parser = SseParser::default();
+        let mut asm = Assembler::default();
+        let mut stopped = false;
+        'read: while let Some(chunk) = resp.chunk().await.map_err(network)? {
+            for e in parser.push(&chunk) {
+                let piece = stream::decode(self.spec.wire, &e);
+                if let Some(err) = piece.error {
+                    return Err(ProviderError::Network {
+                        provider,
+                        reason: format!("the stream reported an error: {}", short(&err)),
+                    });
+                }
+                asm.add(&piece);
+                if !piece.text.is_empty() && !on_text(&piece.text) {
+                    stopped = true;
+                    break 'read;
+                }
+                if piece.done {
+                    break 'read;
+                }
+            }
+        }
+        if !stopped && let Some(e) = parser.finish() {
+            let piece = stream::decode(self.spec.wire, &e);
+            asm.add(&piece);
+            if !piece.text.is_empty() {
+                on_text(&piece.text);
+            }
+        }
+        Ok(asm.finish(req, stopped))
+    }
+
     /// Checks the key and the endpoint without spending tokens: lists models.
     pub async fn probe(&self) -> ProviderResult<ProbeReport> {
         let start = Instant::now();
@@ -210,6 +302,24 @@ impl Provider {
             latency_ms: start.elapsed().as_millis(),
         })
     }
+}
+
+/// OpenAI-compatible servers known to accept `stream_options.include_usage`.
+/// Others get no option (some reject unknown fields) and usage is estimated
+/// unless they send it anyway.
+fn reports_stream_usage(id: &str) -> bool {
+    matches!(
+        id,
+        "openai"
+            | "openrouter"
+            | "groq"
+            | "deepseek"
+            | "together"
+            | "fireworks"
+            | "xai"
+            | "cerebras"
+            | "ollama"
+    )
 }
 
 fn is_loopback(u: &url::Url) -> bool {

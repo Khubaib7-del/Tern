@@ -23,6 +23,8 @@ pub enum Msg {
         kind: String,
         summary: String,
     },
+    /// Reply text streaming in: the model call's number and the new text.
+    Text(u32, String),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
     Done(Box<ChatSession>, TurnOutcome, Usage, Vec<SessionSummary>),
     /// The Providers screen's rows, the saved choices, and a keychain error.
@@ -41,6 +43,7 @@ impl std::fmt::Debug for Msg {
             Self::Connected(..) => f.write_str("Connected"),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
             Self::Event { kind, .. } => write!(f, "Event({kind})"),
+            Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),
             Self::Providers(rows, ..) => write!(f, "Providers({})", rows.len()),
@@ -120,7 +123,13 @@ impl Bridge {
                     summary: e.user_summary.clone(),
                 });
             };
-            let out = session.send(&text, &approver, cancel, &observer).await;
+            let texts = tx.clone();
+            let on_text = move |call: u32, t: &str| {
+                let _ = texts.send(Msg::Text(call, t.to_owned()));
+            };
+            let out = session
+                .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
+                .await;
             let usage = session.usage();
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));
