@@ -46,7 +46,10 @@ impl Tool for WebSearchTool {
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             if hits.is_empty() {
-                return Ok(ToolOutput::text(format!("No results for \"{q}\".")));
+                return Ok(ToolOutput {
+                    meta: json!({ "query": q, "results": 0 }),
+                    ..ToolOutput::text(format!("No results for \"{q}\"."))
+                });
             }
             let mut out = String::new();
             for (i, h) in hits.iter().enumerate() {
@@ -62,7 +65,7 @@ impl Tool for WebSearchTool {
             Ok(ToolOutput {
                 content: out,
                 evidence_refs: hits.iter().map(|h| h.url.clone()).collect(),
-                ..ToolOutput::default()
+                meta: json!({ "query": q, "results": hits.len() }),
             })
         })
     }

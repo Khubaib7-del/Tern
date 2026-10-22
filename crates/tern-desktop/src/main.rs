@@ -28,10 +28,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // The kit's Lucide icons (rail, buttons, window controls) are embedded
-    // assets; without this source every icon renders empty.
+    // The kit's Lucide icons are embedded assets; without a source every
+    // icon renders empty. `Assets` holds only the components' default set,
+    // so icons outside it (Pencil, Archive, the run panel's) need the full
+    // catalog.
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Dark, None, cx);
