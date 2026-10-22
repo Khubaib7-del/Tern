@@ -149,6 +149,38 @@ impl Bridge {
         });
     }
 
+    /// Makes a branch of chat `from` keeping its first `turns` turns, then
+    /// opens the branch.
+    pub fn branch(&self, from: SessionId, turns: usize) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let made = tokio::task::spawn_blocking(move || {
+                tern_agent::branch::branch_session(from, turns)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let id = match made {
+                Ok(id) => id,
+                Err(e) => {
+                    let _ = tx.send(Msg::Notice(format!("Tern could not branch that chat: {e}")));
+                    return;
+                }
+            };
+            let prefs = tokio::task::spawn_blocking(Preferences::load)
+                .await
+                .unwrap_or_default();
+            match ChatSession::resume(prefs.chat_options(), id).await {
+                Ok((s, turns)) => {
+                    let recent = s.recent_sessions(RECENT).unwrap_or_default();
+                    let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Notice(format!("Tern could not open the branch: {e}")));
+                }
+            }
+        });
+    }
+
     /// Saves a chat's new title, then sends the list again.
     pub fn rename(&self, id: SessionId, title: String) {
         let tx = self.tx.clone();
