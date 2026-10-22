@@ -41,6 +41,8 @@ pub struct ChatOptions {
     /// The notes vault the agent may search, read, and (with approval)
     /// write. `None` leaves the vault tools out.
     pub vault: Option<std::path::PathBuf>,
+    /// How answers' claims are checked after each turn.
+    pub check_claims: crate::verify::CheckClaims,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -64,6 +66,7 @@ pub struct ChatSession {
     search_name: Option<&'static str>,
     budget: Budget,
     max_output_tokens: u32,
+    check_claims: crate::verify::CheckClaims,
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -279,6 +282,7 @@ impl ChatSession {
             titled: resume.is_some(),
             search_name,
             budget: opts.budget,
+            check_claims: opts.check_claims,
             max_output_tokens: if opts.max_output_tokens == 0 {
                 2048
             } else {
@@ -446,6 +450,100 @@ impl ChatSession {
             self.history.push(ChatMessage::assistant(answer.clone()));
         }
         out
+    }
+}
+
+impl ChatSession {
+    /// Checks the latest turn's claims against the pages it read and
+    /// writes its run report (`runs/<chat>/turn-<n>.md|json` in the data
+    /// folder). Logs `claims.checking`, then `claims.checked` with the
+    /// verdicts and the report's paths; both reach `observer`, so a front
+    /// end's run shows them. Returns the report's files, or `None` when
+    /// the turn has no answer or checks are off.
+    pub async fn check_last_turn(
+        &self,
+        observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
+    ) -> Option<crate::report::ReportFiles> {
+        use crate::verify::{self, CheckClaims, Judge};
+        if self.check_claims == CheckClaims::Off {
+            return None;
+        }
+        let tee = Tee {
+            inner: &self.sink,
+            observer,
+        };
+        let events = self
+            .sink
+            .with_store(|s| s.replay(self.session, 0))
+            .ok()?
+            .ok()?;
+        let turns = past_turns(&events);
+        let n = turns.len();
+        let last = turns.last()?;
+        let answer = last.answer.as_deref().filter(|_| last.stop.is_none())?;
+        let claims = verify::extract_claims(answer).len();
+        if claims > 0 {
+            let _ = tee.record(EventEnvelope::new(
+                self.session,
+                "claims.checking",
+                EffectClass::Analysis,
+                format!(
+                    "Checking {claims} claim{} against their sources",
+                    if claims == 1 { "" } else { "s" }
+                ),
+                json!({"claims": claims}),
+            ));
+        }
+        let judge = (self.check_claims == CheckClaims::Model && claims > 0).then(|| Judge {
+            model: &self.provider,
+            model_name: &self.model,
+        });
+        let checked =
+            verify::check_answer(answer, &last.pages, &crate::web::shared_reader(), judge).await;
+        // The judge's tokens stay out of the chat's ledger, which the
+        // context ring reads; the report and the event carry them.
+        let mut turn = last.clone();
+        turn.run.checks = checked.checks.clone();
+        let provider = self.provider.spec().id;
+        let mut report =
+            crate::report::from_turn(self.session, n, &turn, provider, Some(self.budget));
+        if let Some((i, o)) = checked.judge_tokens {
+            report.usage.judge_tokens_in = i;
+            report.usage.judge_tokens_out = o;
+        }
+        let written = AppPaths::discover()
+            .map_err(|e| e.to_string())
+            .and_then(|p| {
+                crate::report::write(&crate::report::runs_dir(&p, self.session), &report)
+            });
+        let tally = crate::verify::Tally::of(&checked.checks);
+        let summary = if checked.checks.is_empty() {
+            "Wrote the run report; the answer makes no cited claims".to_owned()
+        } else {
+            format!("Checked {} claims: {}", checked.checks.len(), tally.line())
+        };
+        let mut payload = json!({
+            "checks": checked.checks,
+            "tally": tally,
+            "report": written.as_ref().ok(),
+        });
+        if let Some(e) = &checked.judge_error {
+            payload["judge_error"] = json!(e);
+        }
+        if let Some((i, o)) = checked.judge_tokens {
+            payload["judge_tokens"] = json!({"input": i, "output": o});
+        }
+        if let Err(e) = &written {
+            payload["report_error"] = json!(e);
+        }
+        let _ = tee.record(EventEnvelope::new(
+            self.session,
+            "claims.checked",
+            EffectClass::Analysis,
+            summary,
+            payload,
+        ));
+        written.ok()
     }
 }
 

@@ -122,6 +122,7 @@ impl Tool for ReadUrlTool {
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
             let u = args["url"].as_str().unwrap_or_default();
+            let cache = if self.0.has_cached(u) { "hit" } else { "miss" };
             let p = self
                 .0
                 .fetch(u)
@@ -138,7 +139,11 @@ impl Tool for ReadUrlTool {
             Ok(ToolOutput {
                 content: format!("{}\n{}\n\n{}", p.title, p.final_url, text),
                 evidence_refs: vec![p.final_url],
-                meta: json!({ "page": page }),
+                meta: json!({
+                    "page": page,
+                    // How Tern Crawl read it, for the run report.
+                    "crawl": {"reader": "Tern Crawl", "robots": "allowed", "cache": cache},
+                }),
             })
         })
     }

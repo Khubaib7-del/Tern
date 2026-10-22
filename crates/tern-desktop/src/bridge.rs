@@ -255,6 +255,9 @@ impl Bridge {
                 .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
                 .await;
             let usage = session.context();
+            // Check the answer's claims and write the run report; the
+            // events reach the run panel before the turn is handed back.
+            session.check_last_turn(&observer).await;
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));
         });

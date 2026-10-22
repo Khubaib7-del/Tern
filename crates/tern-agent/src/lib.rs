@@ -22,12 +22,14 @@ pub mod prefs;
 pub mod protocol;
 pub mod providers;
 pub mod reply;
+pub mod report;
 pub mod run;
 pub mod search;
 pub mod sources;
 pub mod tools;
 pub mod transcript;
 pub mod vault;
+pub mod verify;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};
@@ -42,9 +44,11 @@ pub use engine::{
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;
+pub use report::{ReportFiles, RunReport};
 pub use run::{RawFilter, Run, RunEnd, RunStep, RunSummary, StepKind};
 pub use sources::PageRef;
 pub use tern_providers::ImageInput;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 pub use transcript::{PastTurn, past_turns};
+pub use verify::{CheckClaims, ClaimCheck, Tally, Verdict};

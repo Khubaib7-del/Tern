@@ -273,6 +273,12 @@ impl Fetcher {
         self.fetch_cached(url, false).await
     }
 
+    /// Whether a read of `url` would come from the page cache (memory or
+    /// disk) rather than the network. Run reports record it per source.
+    pub fn has_cached(&self, url: &str) -> bool {
+        self.cached(&cache::key(url)).is_some()
+    }
+
     async fn fetch_cached(&self, url: &str, automated: bool) -> Result<Page, FetchError> {
         let key = cache::key(url);
         if let Some(p) = self.cached(&key) {

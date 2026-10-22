@@ -51,6 +51,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print or export a run report: the question, steps, sources read,
+    /// each claim's verdict with its evidence, and what the run used.
+    Report {
+        /// The chat: `last` (the default), its id, or the start of its id.
+        #[arg(default_value = "last")]
+        chat: String,
+        /// Which turn, 1 for the first. Defaults to the latest answered one.
+        #[arg(long, short)]
+        turn: Option<usize>,
+        /// Print the report as JSON instead of Markdown.
+        #[arg(long)]
+        json: bool,
+        /// Also write the report to this file.
+        #[arg(long, short)]
+        out: Option<std::path::PathBuf>,
+        /// List recent chats and their ids instead.
+        #[arg(long)]
+        list: bool,
+    },
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
     Provider(ProviderCmd),
@@ -178,6 +197,13 @@ fn main() -> ExitCode {
             json,
         } => block_on(run_ask(question.join(" "), chat, reads, json)),
         Command::Search(cmd) => block_on(run_search(cmd)),
+        Command::Report {
+            chat,
+            turn,
+            json,
+            out,
+            list,
+        } => block_on(run_report(chat, turn, json, out, list)),
         Command::Provider(cmd) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -277,6 +303,44 @@ async fn run_ask(question: String, chat: ChatArgs, reads: usize, json: bool) -> 
     tail.push(format!("{} · {est}{} tokens", r.model, r.usage.total()));
     tail.push(format!("{:.1} s", r.elapsed_ms as f64 / 1000.0));
     println!("{}", tail.join(" · "));
+    Ok(())
+}
+
+async fn run_report(
+    chat: String,
+    turn: Option<usize>,
+    json: bool,
+    out: Option<std::path::PathBuf>,
+    list: bool,
+) -> Result<(), String> {
+    if list {
+        let recent = tern_agent::recent_sessions(20)?;
+        if recent.is_empty() {
+            println!("There are no chats yet.");
+        }
+        for s in recent {
+            println!("{}  {}  {}", s.id, s.created_at, s.title);
+        }
+        return Ok(());
+    }
+    let (report, files) = tern_agent::report::report_for(&chat, turn).await?;
+    let text = if json {
+        report.to_json()
+    } else {
+        report.to_markdown()
+    };
+    if let Some(path) = &out {
+        std::fs::write(path, &text)
+            .map_err(|e| format!("Tern could not write {}: {e}", path.display()))?;
+        eprintln!("Wrote {}", path.display());
+    } else {
+        println!("{text}");
+    }
+    eprintln!(
+        "Saved as {} and {}",
+        files.markdown.display(),
+        files.json.display()
+    );
     Ok(())
 }
 

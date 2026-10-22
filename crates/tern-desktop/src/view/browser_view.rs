@@ -64,6 +64,14 @@ impl Workspace {
         let this = cx.entity().downgrade();
         move |url: &SharedString, _: &ClickEvent, window: &mut Window, app: &mut App| {
             let url = url.to_string();
+            // A verdict badge opens its claim in the run report.
+            if let Some((entry, claim)) = tern_agent::verify::claim_of_link(&url) {
+                let _ = this.update(app, |w, cx| {
+                    w.model.show_claim(entry, claim);
+                    cx.notify();
+                });
+                return;
+            }
             let _ = this.update(app, |w, cx| w.browse(&url, window, cx));
         }
     }

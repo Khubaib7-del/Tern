@@ -58,6 +58,12 @@ pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
             continue;
         }
         let Some((turn, started)) = open.as_mut() else {
+            // A turn's claims are checked after it ends.
+            if e.kind.starts_with("claims.")
+                && let Some(last) = out.last_mut()
+            {
+                last.run.push(e);
+            }
             continue;
         };
         turn.run.push(e);
@@ -128,6 +134,12 @@ mod tests {
                 "Answered",
                 json!({"state": "completed", "answer": "Retrieval..."}),
             ),
+            ev(
+                s,
+                "claims.checked",
+                "Checked 0 claims",
+                json!({"checks": [], "report": {"markdown": "/r/turn-1.md", "json": "/r/turn-1.json"}}),
+            ),
             ev(s, "turn.started", "Started", json!({"message": "More"})),
             ev(
                 s,
@@ -152,6 +164,11 @@ mod tests {
         assert_eq!(t[0].run.end, Some(crate::run::RunEnd::Answered));
         assert_eq!(t[0].pages.len(), 1);
         assert_eq!(t[0].pages[0].url, "https://a.org/rag");
+        assert_eq!(
+            t[0].run.report.as_ref().map(|r| r.markdown.clone()),
+            Some("/r/turn-1.md".into()),
+            "checks logged after the turn ends join it"
+        );
         assert_eq!(t[1].stop.as_deref(), Some("You stopped the run."));
         assert_eq!(t[1].exchange(), None);
         assert_eq!(
