@@ -48,7 +48,7 @@ pub enum Entry {
     /// A finished answer, with the run that led to it and how long it took.
     Assistant {
         text: String,
-        run: Run,
+        run: Box<Run>,
         took: Duration,
         /// Pages read on the way, shown as source rows.
         pages: Vec<PageRef>,
@@ -926,7 +926,7 @@ impl Model {
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
-                run,
+                run: Box::new(run),
                 took,
                 pages: std::mem::take(&mut self.turn_pages),
             }),
@@ -979,7 +979,7 @@ impl Model {
             if let Some(a) = &t.answer {
                 self.entries.push(Entry::Assistant {
                     text: a.clone(),
-                    run: t.run.clone(),
+                    run: Box::new(t.run.clone()),
                     took: t.took,
                     pages: t.pages.clone(),
                 });
@@ -1169,7 +1169,7 @@ impl Model {
                 .run_panel
                 .pinned
                 .and_then(|i| match self.entries.get(i) {
-                    Some(Entry::Assistant { run, .. }) => Some(run),
+                    Some(Entry::Assistant { run, .. }) => Some(&**run),
                     _ => None,
                 })
                 .unwrap_or(&self.last_run),
@@ -1515,7 +1515,7 @@ mod tests {
                 user("What is RAG?"),
                 Entry::Assistant {
                     text: "Retrieval [1].".into(),
-                    run: run.clone(),
+                    run: Box::new(run.clone()),
                     took: Duration::from_secs(3),
                     pages: Vec::new(),
                 },
@@ -1838,7 +1838,7 @@ mod tests {
         m.attachments.push(rubric);
         m.entries.push(Entry::Assistant {
             text: "a".into(),
-            run: Run::new(),
+            run: Box::new(Run::new()),
             took: Duration::ZERO,
             pages: vec![PageRef {
                 title: "RAG survey".into(),
@@ -1948,7 +1948,7 @@ mod tests {
         });
         m.entries.push(Entry::Assistant {
             text: "Water boils at 100 C [1].".into(),
-            run: Run::new(),
+            run: Box::new(Run::new()),
             took: Duration::ZERO,
             pages: vec![],
         });
