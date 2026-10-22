@@ -51,4 +51,21 @@ impl Palette {
             faint: rgb(0x9a9a9a).into(),
         }
     }
+
+    /// Every token part-way from `self` to `to` (0 to 1), for the theme
+    /// switch.
+    pub fn lerp(&self, to: &Self, t: f32) -> Self {
+        let l = |a, b| crate::motion::lerp_color(a, b, t);
+        Self {
+            rail: l(self.rail, to.rail),
+            sidebar: l(self.sidebar, to.sidebar),
+            canvas: l(self.canvas, to.canvas),
+            raised: l(self.raised, to.raised),
+            hover: l(self.hover, to.hover),
+            border: l(self.border, to.border),
+            text: l(self.text, to.text),
+            muted: l(self.muted, to.muted),
+            faint: l(self.faint, to.faint),
+        }
+    }
 }

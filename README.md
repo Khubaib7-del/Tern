@@ -14,7 +14,20 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. **Nothing described below is shipped.** This repository holds the plan (docs, design rules, brand assets) the core skeleton, and provider setup. The first cited answer is next.
+It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, and a first desktop app work today (see below); the deep research pipeline, claim verification, and the Study harness are still ahead.
+
+## What works today
+
+| Area | Working now |
+| --- | --- |
+| Core | Stable IDs, versioned events, turn state machine, secret redaction, append-only SQLite event log with replay, `tern doctor` |
+| Providers | 13 providers (11 remote, Ollama and LM Studio local) on Tern's own adapters; keys tested before they are saved to Windows Credential Manager; streaming replies |
+| Turn loop | Bounded by model calls, tool calls, and tokens; loop detection; cancel; policy gate with Allow, Ask, Deny and inline approvals |
+| Web answers | `tern ask` and chat search through Tavily, Brave, or SearXNG, read pages behind a network guard, and cite them with a citation check |
+| Terminal | `tern` / `tern chat`: an 80×24 ratatui chat |
+| Desktop app | Windows build on GPUI: chat with streaming answers, chat list (reopen, rename, archive), providers screen, source rows with site icons, context ring, run panel (Summary, Detailed, Raw), attachments (files, folders, nested `.zip`, long paste), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch) |
+
+Each pull request builds `tern-desktop.exe` and `tern.exe` for Windows x64 as a CI artifact. There are no releases or installers yet.
 
 ## Two harnesses, one core
 
@@ -94,7 +107,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | 0 | Repository baseline | Done |
 | 1 | Design lock: palette, fonts, concept screens, SVG mark | Planned |
 | 2 | Core skeleton, keychain, store, `tern doctor` | Done |
-| 3 | Providers and the first cited answer in the TUI | In progress |
+| 3 | Providers and the first cited answer in the TUI | Done |
 | 4 | Crawler and claim verification | Planned |
 | 5 | Deep research: plans, workers, checkpoints, steering | Planned |
 | 6 | Desktop app | In progress |
@@ -109,7 +122,7 @@ Phase detail and exit checks: [docs/04-roadmap.md](docs/04-roadmap.md).
 
 ## Getting Tern
 
-Not yet released. There are no builds, installers, or packages.
+Not yet released. There are no installers or packages; test builds come from CI (the `tern-windows-x64` artifact on each pull request).
 
 ## Repository layout
 
@@ -117,7 +130,8 @@ Not yet released. There are no builds, installers, or packages.
 .
 ├── .github/              issue forms, PR template, code owners
 ├── assets/
-│   └── brand/            mark, lockups, app icon, animated dither hero
+│   └── brand/            mark (PNG and SVG), lockups, app icon, animated dither hero
+├── crates/               the Rust workspace (11 crates, see Planned architecture)
 ├── docs/
 │   ├── 00-vision.md
 │   ├── 01-product-spec.md
@@ -135,7 +149,20 @@ Not yet released. There are no builds, installers, or packages.
 └── SECURITY.md
 ```
 
-The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `cargo test --workspace`, `cargo run -p tern-tui -- doctor`, `cargo run -p tern-tui -- provider add groq`, `cargo run -p tern-tui -- search add tavily`, `cargo run -p tern-tui -- ask "your question"` for a cited answer, and `cargo run -p tern-tui` to open the chat TUI (`-- chat --provider ollama` for a local model). Nothing is released yet.
+## Building from source
+
+| Command | Does |
+| --- | --- |
+| `cargo build` | Builds the workspace |
+| `cargo test --workspace` | Runs the tests |
+| `cargo run -p tern-desktop` | Opens the desktop app |
+| `cargo run -p tern-tui -- doctor` | Checks paths, keychain, and store |
+| `cargo run -p tern-tui -- provider add groq` | Adds a provider key (hidden prompt, tested before saving) |
+| `cargo run -p tern-tui -- search add tavily` | Adds a web search key |
+| `cargo run -p tern-tui -- ask "your question"` | A cited answer from the web |
+| `cargo run -p tern-tui` | The terminal chat (`-- chat --provider ollama` for a local model) |
+
+Set `TERN_REDUCED_MOTION=1` (or `"reduced_motion": true` in `preferences.json`) to turn motion off in the desktop app.
 
 ## Documentation
 
@@ -145,6 +172,7 @@ The Cargo workspace lives in `crates/`. Build and check it with `cargo build`, `
 | [Product spec](docs/01-product-spec.md) | Harnesses, features, chat behaviour, vault |
 | [UI definition](docs/02-ui-definition.md) | Layouts, streaming, palette, motion, Scout |
 | [Architecture](docs/03-architecture.md) | Crates, contracts, memory, platforms |
+| [Changelog](CHANGELOG.md) | Everything merged so far |
 | [Roadmap](docs/04-roadmap.md) | Phases and exit checks |
 | [Security model](docs/05-security-model.md) | Threats, controls, trust order |
 | [Contributing](CONTRIBUTING.md) · [Agent rules](AGENTS.md) · [Security policy](SECURITY.md) | How work happens here |
