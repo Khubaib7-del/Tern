@@ -11,10 +11,35 @@ pub enum Role {
     Assistant,
 }
 
+/// A picture sent to the model with a message (vision input).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageInput {
+    /// The file name, for chips and notes.
+    pub name: String,
+    /// `image/png`, `image/jpeg`, `image/gif`, or `image/webp`.
+    pub media_type: String,
+    /// The bytes, base64-encoded.
+    pub data: String,
+}
+
+impl ImageInput {
+    /// `data:image/png;base64,...`, the form OpenAI-style APIs take.
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data)
+    }
+}
+
+/// Roughly what a picture costs in prompt characters (about 1,500 tokens),
+/// for estimates when a provider reports no usage.
+pub const IMAGE_CHARS: usize = 6_000;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// Pictures that go with this message. Only user messages carry them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageInput>,
 }
 
 impl ChatMessage {
@@ -22,6 +47,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.into(),
+            images: Vec::new(),
         }
     }
 
@@ -29,7 +55,14 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            images: Vec::new(),
         }
+    }
+
+    /// The same message with pictures attached.
+    pub fn with_images(mut self, images: Vec<ImageInput>) -> Self {
+        self.images = images;
+        self
     }
 }
 
@@ -66,7 +99,11 @@ impl ChatRequest {
     /// Characters in the prompt, for usage estimates when a provider reports none.
     pub(crate) fn prompt_chars(&self) -> usize {
         self.system.as_deref().map_or(0, str::len)
-            + self.messages.iter().map(|m| m.content.len()).sum::<usize>()
+            + self
+                .messages
+                .iter()
+                .map(|m| m.content.len() + m.images.len() * IMAGE_CHARS)
+                .sum::<usize>()
     }
 }
 

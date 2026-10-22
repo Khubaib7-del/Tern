@@ -218,7 +218,7 @@ Research and Study are told apart by tone and shape, not hue:
 | Mono | IBM Plex Mono, for metadata, paths, costs, and the CLI |
 | Serif | Instrument Serif italic for *Study* labels and headings, matching the lockup |
 | Sizes | 12 / 13 / 15 / 20 px, editor 16px, line height 1.5 |
-| Icons | Lucide at 1.5px stroke, 16px, plus about 12 custom glyphs (tern mark, Research, Study, five verdicts, checkpoint, watcher, steer, branch-reply), a `tern-reader` glyph for Tern's own reader, and built-in logos for common research sources and search services |
+| Icons | Lucide at 1.5px stroke, 16px, plus about 12 custom glyphs (tern mark, Research, Study, five verdicts, checkpoint, watcher, steer, branch-reply), the **Tern Crawl** logo (`tern-crawl`) for Tern's own crawler and reader, and built-in logos for common research sources and search services |
 | Borders | 1px; no shadows except popovers |
 | Motion curve | One curve, `cubic-bezier(.32,.72,0,1)`: 200ms for UI, 700ms for the mark |
 | Motion rule | Moves only on a real event: a step starts, a source lands, a claim is verified, the run needs you. Respects reduced motion; never blocks input |

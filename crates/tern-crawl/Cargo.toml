@@ -20,6 +20,7 @@ thiserror.workspace = true
 url.workspace = true
 scraper.workspace = true
 ego-tree.workspace = true
+pdf-extract.workspace = true
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 
 [dev-dependencies]

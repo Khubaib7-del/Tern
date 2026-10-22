@@ -162,3 +162,29 @@ async fn the_disk_cache_survives_a_new_fetcher() {
     assert_eq!(again.title, "Paper");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn reads_pdfs_page_by_page() {
+    let s = MockServer::start().await;
+    let pdf = tern_crawl::pdf::sample(&[
+        "Dense Passage Retrieval for Open Domain QA",
+        "Dense retrievers beat BM25 on four of five datasets.",
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/papers/dpr.pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(pdf, "application/pdf"))
+        .mount(&s)
+        .await;
+    let p = Fetcher::allowing_private()
+        .fetch(&format!("{}/papers/dpr.pdf", s.uri()))
+        .await
+        .unwrap();
+    assert_eq!(p.title, "Dense Passage Retrieval for Open Domain QA");
+    assert_eq!(p.content_type, "application/pdf");
+    assert_eq!(p.description.as_deref(), Some("PDF, 2 pages"));
+    assert!(
+        p.text.contains("[page 2]\nDense retrievers beat BM25"),
+        "{}",
+        p.text
+    );
+}

@@ -78,6 +78,8 @@ pub enum FetchError {
     },
     #[error("{site} sent an empty page")]
     Empty { site: String },
+    #[error("{site} sent a PDF Tern could not read: {reason}")]
+    Pdf { site: String, reason: String },
     #[error("{site}'s robots.txt asks automated readers not to open this page")]
     Robots { site: String },
 }
@@ -429,12 +431,55 @@ impl Fetcher {
                 .unwrap_or_default()
                 .trim()
                 .to_ascii_lowercase();
-            if content_type == "application/pdf" {
-                return Err(FetchError::Unsupported {
-                    site,
-                    content_type,
-                    hint: " (PDF reading arrives with the reader in phase 4)",
-                });
+            if content_type == "application/pdf"
+                || (content_type == "application/octet-stream"
+                    && current.path().to_ascii_lowercase().ends_with(".pdf"))
+            {
+                let no_store = no_store(&resp);
+                let (body, truncated) =
+                    read_capped_to(resp, &site, crate::pdf::MAX_PDF_BYTES + 1).await?;
+                if truncated || body.len() > crate::pdf::MAX_PDF_BYTES {
+                    return Err(FetchError::Unsupported {
+                        site,
+                        content_type: "a PDF over 32 MB".into(),
+                        hint: "",
+                    });
+                }
+                let pdf = tokio::task::spawn_blocking(move || {
+                    let r = crate::pdf::read(&body);
+                    (r, body.len())
+                })
+                .await;
+                let (pdf, bytes) = pdf.map_err(|_| FetchError::Pdf {
+                    site: site.clone(),
+                    reason: "the reader stopped".into(),
+                })?;
+                let pdf = pdf.map_err(|e| FetchError::Pdf {
+                    site: site.clone(),
+                    reason: e.to_string(),
+                })?;
+                let text = pdf.joined();
+                let file = current
+                    .path_segments()
+                    .and_then(|mut s| s.next_back().map(str::to_owned))
+                    .filter(|s| !s.is_empty());
+                return Ok((
+                    Page {
+                        url: start.to_string(),
+                        final_url: current.to_string(),
+                        title: pdf.title.clone().or(file).unwrap_or_else(|| site.clone()),
+                        icon: SourceIcon::for_url(&current),
+                        site,
+                        description: Some(format!("PDF, {} pages", pdf.pages.len())),
+                        content_type: "application/pdf".into(),
+                        markdown: text.clone(),
+                        text,
+                        bytes,
+                        truncated: false,
+                        links: Vec::new(),
+                    },
+                    !no_store,
+                ));
             }
             let mut html = matches!(content_type.as_str(), "text/html" | "application/xhtml+xml");
             let texty = html
@@ -450,11 +495,7 @@ impl Fetcher {
                     hint: "",
                 });
             }
-            let no_store = resp
-                .headers()
-                .get(CACHE_CONTROL)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.to_ascii_lowercase().contains("no-store"));
+            let no_store = no_store(&resp);
             let (body, truncated) = read_capped(resp, &site).await?;
             let raw = String::from_utf8_lossy(&body);
             // Some servers label HTML as plain text.
@@ -542,6 +583,13 @@ async fn read_capped_to(
         body.extend_from_slice(&chunk);
     }
     Ok((body, false))
+}
+
+fn no_store(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("no-store"))
 }
 
 fn net_error(site: &str, e: &reqwest::Error) -> FetchError {

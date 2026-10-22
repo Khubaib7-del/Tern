@@ -45,7 +45,7 @@ The title bar shows the lockup: the tern mark, **TERN** in Plex Sans semibold, a
 
 ### Glyphs
 
-Twelve custom glyphs, 16 px on a 16 grid, 1.5 px stroke in `currentColor`, matching Lucide: `research` (square), `study` (round), five verdicts (`supported`, `partial`, `contested`, `unsupported`, `unverified`), `checkpoint`, `watcher`, `steer`, `branch-reply`, and `tern-reader` for Tern's own reader. Research and Study keep the square and round markers from §5.
+Twelve custom glyphs, 16 px on a 16 grid, 1.5 px stroke in `currentColor`, matching Lucide: `research` (square), `study` (round), five verdicts (`supported`, `partial`, `contested`, `unsupported`, `unverified`), `checkpoint`, `watcher`, `steer`, `branch-reply`, and `tern-crawl`, the logo of **Tern Crawl**, Tern's own crawler and reader (a snail, because it crawls: a spiral shell over a long foot with two eye stalks, no background). Tern Crawl is the one mark allowed colour: a vibrant cyan-to-blue gradient (`#5CF2FF`, `#1FA2FF`, `#1D3BFF`) with a light film grain (SVG `feTurbulence`), because it stands alone as a service logo the way other crawlers' logos do. The app shows the colour logo on "Read N pages" rows and keeps the one-colour glyph for tinted contexts. Brand files: `assets/brand/tern-crawl.svg` (colour), `tern-crawl-mono.svg`, `tern-crawl-tile.svg`. Research and Study keep the square and round markers from §5.
 
 Built-in service logos, one colour, from Simple Icons (CC0 data; each mark belongs to its owner): GitHub, arXiv, Wikipedia, DOI, Semantic Scholar, PubMed, Brave, DuckDuckGo, Google Scholar, ORCID, Zotero, ResearchGate. A source row shows the built-in logo when the site is one of these, otherwise its favicon (ADR 0005).
 

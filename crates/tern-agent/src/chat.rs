@@ -57,6 +57,8 @@ pub struct ChatSession {
     ledger: UsageLedger,
     tools: ToolRegistry,
     history: Vec<ChatMessage>,
+    /// Pictures for the next message (see [`ChatSession::attach_images`]).
+    next_images: Vec<tern_providers::ImageInput>,
     /// The chat has its sidebar title (from its first message).
     titled: bool,
     search_name: Option<&'static str>,
@@ -273,6 +275,7 @@ impl ChatSession {
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
+            next_images: Vec::new(),
             titled: resume.is_some(),
             search_name,
             budget: opts.budget,
@@ -390,6 +393,11 @@ impl ChatSession {
 
     /// [`ChatSession::send`] that streams reply text to `on_text` as it
     /// arrives (see [`crate::OnText`]).
+    /// Pictures to send with the next message, for models that can see.
+    pub fn attach_images(&mut self, images: Vec<tern_providers::ImageInput>) {
+        self.next_images = images;
+    }
+
     pub async fn send_streaming(
         &mut self,
         text: &str,
@@ -398,6 +406,7 @@ impl ChatSession {
         observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
         on_text: Option<crate::OnText<'_>>,
     ) -> TurnOutcome {
+        let images = std::mem::take(&mut self.next_images);
         let tee = Tee {
             inner: &self.sink,
             observer,
@@ -417,7 +426,10 @@ impl ChatSession {
             max_output_tokens: self.max_output_tokens,
             on_text,
         }
-        .run(self.history.clone(), text)
+        .run_message(
+            self.history.clone(),
+            ChatMessage::user(text).with_images(images.clone()),
+        )
         .await;
         if !self.titled {
             self.titled = true;
@@ -427,7 +439,10 @@ impl ChatSession {
                 .with_store(|s| s.rename_session(self.session, &title));
         }
         if let Some(answer) = &out.answer {
-            self.history.push(ChatMessage::user(text));
+            // Pictures stay in the history so follow-up questions can
+            // still see them.
+            self.history
+                .push(ChatMessage::user(text).with_images(images));
             self.history.push(ChatMessage::assistant(answer.clone()));
         }
         out

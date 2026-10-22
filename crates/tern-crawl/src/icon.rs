@@ -7,8 +7,11 @@
 use serde::Serialize;
 use url::Url;
 
-/// The built-in glyph for Tern's own reader (used for "Read 6 pages").
-pub const TERN_READER: &str = "tern-reader";
+/// The built-in logo of Tern Crawl, Tern's own crawler and reader (used
+/// for "Read 6 pages").
+pub const TERN_CRAWL: &str = "tern-crawl";
+/// The same logo under its earlier name.
+pub const TERN_READER: &str = TERN_CRAWL;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceIcon {

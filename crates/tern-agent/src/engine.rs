@@ -248,6 +248,16 @@ struct Stop {
 impl<'a> TurnLoop<'a> {
     /// Runs one turn on top of `history` (earlier messages in the session).
     pub async fn run(&mut self, history: Vec<ChatMessage>, user_message: &str) -> TurnOutcome {
+        self.run_message(history, ChatMessage::user(user_message))
+            .await
+    }
+
+    /// Runs one turn whose user message may carry pictures.
+    pub async fn run_message(
+        &mut self,
+        history: Vec<ChatMessage>,
+        message: ChatMessage,
+    ) -> TurnOutcome {
         let mut run = Run {
             turn: TurnId::new(),
             fsm: TurnStateMachine::default(),
@@ -256,7 +266,7 @@ impl<'a> TurnLoop<'a> {
             tool_calls: 0,
             cfg: self,
         };
-        let result = run.drive(history, user_message).await;
+        let result = run.drive(history, message).await;
         run.finish(result)
     }
 }
@@ -306,7 +316,7 @@ impl Run<'_, '_> {
     async fn drive(
         &mut self,
         history: Vec<ChatMessage>,
-        user_message: &str,
+        user_message: ChatMessage,
     ) -> Result<(TurnState, String), Stop> {
         self.go(TurnState::Preparing)?;
         self.record(self.event(
@@ -319,12 +329,13 @@ impl Run<'_, '_> {
                 "tools": self.cfg.tools.names().collect::<Vec<_>>(),
                 "budget": self.cfg.budget,
                 // Kept so the chat can be reopened (see `transcript`).
-                "message": user_message,
+                "message": user_message.content,
+                "images": user_message.images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
             }),
         ))?;
         let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
         let mut messages = history;
-        messages.push(ChatMessage::user(user_message));
+        messages.push(user_message);
         let mut seen: HashMap<String, u32> = HashMap::new();
 
         loop {
