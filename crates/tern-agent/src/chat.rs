@@ -38,6 +38,9 @@ pub struct ChatOptions {
     /// Search service id. `None` uses the first with a saved key, or none.
     pub search: Option<String>,
     pub search_url: Option<String>,
+    /// The notes vault the agent may search, read, and (with approval)
+    /// write. `None` leaves the vault tools out.
+    pub vault: Option<std::path::PathBuf>,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -243,6 +246,13 @@ impl ChatSession {
         if let Some(c) = search {
             tools.register(WebSearchTool(Arc::new(c)));
             tools.register(ReadUrlTool::default());
+        }
+        // A vault that cannot be opened only leaves its tools out.
+        if let Some(root) = &opts.vault {
+            let v = crate::vault::Vault::at(root);
+            if v.ensure().is_ok() {
+                crate::vault::register(&mut tools, Arc::new(v));
+            }
         }
         let session = match resume {
             Some(id) => id,

@@ -7530,6 +7530,7 @@ version = "0.0.0"
 dependencies = [
  "gpui-kit",
  "serde_json",
+ "tempfile",
  "tern-agent",
  "tern-core",
  "tokio",

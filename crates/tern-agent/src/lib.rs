@@ -25,6 +25,7 @@ pub mod search;
 pub mod sources;
 pub mod tools;
 pub mod transcript;
+pub mod vault;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};

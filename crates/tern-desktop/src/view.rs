@@ -31,6 +31,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+mod editor_view;
+
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
     Activity, Connection, ContextLevel, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon,
@@ -75,6 +77,8 @@ pub struct Workspace {
     wipe: Option<ThemeWipe>,
     reduced_motion: bool,
     _listener: Task<()>,
+    /// The Editor screen's text field.
+    note_input: Entity<TextareaState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -135,6 +139,23 @@ impl Workspace {
                 }
             },
         );
+        let note_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .soft_wrap(true)
+                .placeholder("Write in Markdown. Link notes with [[Note name]].")
+        });
+        let note_sub = cx.subscribe_in(
+            &note_input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, _, cx| match event {
+                InputEvent::Change => this.note_edited(cx),
+                InputEvent::Blur => {
+                    this.save_note(cx);
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Chat title"));
         let rename_sub = cx.subscribe_in(
             &rename_input,
@@ -155,7 +176,10 @@ impl Workspace {
             }
         });
         bridge.connect();
-        let model = Model::new();
+        let mut model = Model::new();
+        if let Ok(v) = tern_agent::vault::Vault::open_default() {
+            model.editor.attach(v);
+        }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
         Self {
             sidebar_slide: Slide::new(sidebar_open),
@@ -178,7 +202,8 @@ impl Workspace {
             scroll: ScrollHandle::new(),
             ticker: None,
             _listener: listener,
-            _subscriptions: vec![sub, key_sub, rename_sub],
+            note_input,
+            _subscriptions: vec![sub, key_sub, rename_sub, note_sub],
         }
     }
 
@@ -1118,11 +1143,20 @@ impl Workspace {
                         IconName::BookOpen,
                         "Library (coming later)",
                     ))
-                    .child(later(
-                        "rail-editor",
-                        IconName::FileText,
-                        "Editor (coming later)",
-                    )),
+                    .child(
+                        Button::new("rail-editor")
+                            .icon(IconName::FileText)
+                            .ghost()
+                            .when(self.model.screen == Screen::Editor, |b| b.selected(true))
+                            .tooltip("Editor")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.model.screen == Screen::Editor {
+                                    this.close_editor(window, cx);
+                                } else {
+                                    this.open_editor(window, cx);
+                                }
+                            })),
+                    ),
             )
             .child(
                 Button::new("rail-settings")
@@ -1439,6 +1473,21 @@ impl Workspace {
                     },
                 )),
             )
+            .when(answer, |d| {
+                let saved = self.model.saved_answer == Some(i);
+                d.child(
+                    action(
+                        "save-note",
+                        if saved {
+                            AssetIcon::Check
+                        } else {
+                            AssetIcon::NotebookPen
+                        },
+                        "Save to vault",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.save_answer(i, cx))),
+                )
+            })
             .when(answer && !busy, |d| {
                 d.child(
                     action("branch", AssetIcon::GitBranch, "Branch into a new chat")
@@ -2721,6 +2770,7 @@ impl Render for Workspace {
         let screen_id: &'static str = match self.model.screen {
             Screen::Chat => "screen-chat",
             Screen::Providers => "screen-providers",
+            Screen::Editor => "screen-editor",
         };
         div()
             .relative()
@@ -2753,6 +2803,7 @@ impl Render for Workspace {
                                     .child(self.transcript(p, cx))
                                     .child(self.composer(p, cx)),
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
+                                Screen::Editor => d.child(self.editor_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,

@@ -21,6 +21,8 @@ use crate::providers::ProvidersState;
 pub enum Screen {
     Chat,
     Providers,
+    /// The vault's notes.
+    Editor,
 }
 
 /// One block of the transcript.
@@ -100,6 +102,9 @@ pub struct WorkingLine {
     /// mark can beat in time with the work rather than a timer.
     pub beat: usize,
 }
+
+/// A question, its answer, and the answer's sources as (title, url).
+pub type AnswerNote = (String, String, Vec<(String, String)>);
 
 /// The `@` menu: what is being typed and which row is highlighted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -205,6 +210,10 @@ pub struct Model {
     pub attachments: Vec<Attachment>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The Editor screen.
+    pub editor: crate::editor::EditorState,
+    /// The answer just saved to the vault (its icon shows a check).
+    pub saved_answer: Option<usize>,
     /// The quote the next message replies to.
     pub reply_to: Option<String>,
     /// The entry whose text was just copied (its icon shows a check).
@@ -240,6 +249,8 @@ impl Model {
             icons: HashMap::new(),
             attachments: Vec::new(),
             mention: None,
+            editor: crate::editor::EditorState::default(),
+            saved_answer: None,
             reply_to: None,
             copied: None,
             attaching: 0,
@@ -323,6 +334,26 @@ impl Model {
             Entry::User { text, .. } | Entry::Assistant { text, .. } => Some(text),
             Entry::Notice(_) => None,
         }
+    }
+
+    /// The question, answer, and sources of answer `i`, to save as a note.
+    pub fn answer_for_note(&self, i: usize) -> Option<AnswerNote> {
+        let Entry::Assistant { text, pages, .. } = self.entries.get(i)? else {
+            return None;
+        };
+        let question = self.entries[..i]
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "Answer".into());
+        let sources = pages
+            .iter()
+            .map(|p| (p.label().to_owned(), p.url.clone()))
+            .collect();
+        Some((question, text.clone(), sources))
     }
 
     /// Starts a reply to a message or answer.

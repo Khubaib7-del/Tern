@@ -27,6 +27,8 @@ pub struct Preferences {
     /// sliding, and the theme switches at once. `TERN_REDUCED_MOTION=1`
     /// does the same.
     pub reduced_motion: bool,
+    /// The vault folder. `None` means `<data>/vault`.
+    pub vault: Option<String>,
 }
 
 impl Preferences {
@@ -100,6 +102,7 @@ impl Preferences {
             provider: self.provider.clone(),
             model: self.model.clone(),
             search: self.search.clone(),
+            vault: crate::vault::default_root(self).ok(),
             ..ChatOptions::default()
         }
     }
@@ -119,6 +122,7 @@ mod tests {
             model: Some("llama-3.3-70b-versatile".into()),
             search: Some("tavily".into()),
             reduced_motion: true,
+            vault: Some("D:/Notes".into()),
         };
         p.save_to(&path).unwrap();
         assert_eq!(Preferences::load_from(&path), p);
