@@ -187,8 +187,9 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_3()
+                            .child(gpui_kit::img(assets::CRAWL_LOGO).size(px(40.)).flex_none())
                             .children(assets::glyph("tern-crawl").map(|path| {
-                                svg().path(path).size(px(40.)).text_color(p.text)
+                                svg().path(path).size(px(24.)).text_color(p.muted)
                             }))
                             .child(
                                 div()

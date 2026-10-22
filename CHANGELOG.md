@@ -6,7 +6,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ### Added (PR #32)
 
-- **Tern Crawl** gets its own logo (a tern diving into lines of text): the `tern-crawl` glyph on "Read N pages" rows and on Appearance, plus `assets/brand/tern-crawl.svg` and `tern-crawl-tile.svg` for standalone use. `TERN_READER` stays as an alias of `TERN_CRAWL`.
+- **Tern Crawl** gets its own logo: a tern diving into a deep-sea disc (`#0B4F7A` to `#1FB5C4`), the one Tern mark with colour. Shown on every "Read N pages" row and on Appearance; one-colour `tern-crawl` glyph for tinted contexts; `assets/brand/tern-crawl.svg`, `tern-crawl-mono.svg`, and `tern-crawl-tile.svg` for standalone use. `TERN_READER` stays as an alias of `TERN_CRAWL`.
 - PDF text (`tern_crawl::pdf`): web PDFs and attached PDFs are read page by page with `[page N]` markers, hyphenation joined, a title guessed from page one. Password-protected, scanned, and broken PDFs give a plain reason; a parser panic never takes the app down.
 - Picture input: `ImageInput` on `ChatMessage`, sent as `image_url` parts (OpenAI-compatible), base64 image blocks (Anthropic), or `inline_data` (Gemini). Attached pictures ride the next message and stay in the chat history so follow-ups can still see them; chips show a picture icon and size.
 

@@ -9,6 +9,11 @@ use gpui_kit::{App, AssetSource, SharedString};
 /// The tern mark as one-colour SVG; the view tints and animates it.
 pub const MARK: &str = "tern/mark.svg";
 const MARK_SVG: &[u8] = include_bytes!("../assets/tern-mark.svg");
+/// The Tern Crawl logo in colour (a deep-sea disc), drawn with `img`
+/// rather than `svg` so its gradient survives. The one-colour version is
+/// the `tern-crawl` glyph.
+pub const CRAWL_LOGO: &str = "tern/brand/tern-crawl.svg";
+const CRAWL_LOGO_SVG: &[u8] = include_bytes!("../assets/brand/tern-crawl.svg");
 
 /// Tern's own glyphs, 16 px, 1.5 px stroke, drawn in `currentColor`.
 const GLYPHS: &[(&str, &[u8])] = &[
@@ -164,6 +169,9 @@ fn lookup(path: &str) -> Option<&'static [u8]> {
     if path == MARK {
         return Some(MARK_SVG);
     }
+    if path == CRAWL_LOGO {
+        return Some(CRAWL_LOGO_SVG);
+    }
     let find = |set: &'static [(&'static str, &'static [u8])], prefix: &str| {
         let name = path.strip_prefix(prefix)?.strip_suffix(".svg")?;
         set.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
@@ -184,7 +192,8 @@ impl AssetSource for TernAssets {
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut out = gpui_kit::assets::AllAssets.list(path)?;
-        let ours = std::iter::once(SharedString::from(MARK))
+        let ours = [SharedString::from(MARK), SharedString::from(CRAWL_LOGO)]
+            .into_iter()
             .chain(
                 GLYPHS
                     .iter()
@@ -211,6 +220,7 @@ mod tests {
         }
         assert!(glyph("nope").is_none());
         assert!(lookup(MARK).is_some());
+        assert!(lookup(CRAWL_LOGO).is_some());
     }
 
     #[test]

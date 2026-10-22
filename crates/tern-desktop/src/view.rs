@@ -696,6 +696,7 @@ impl Workspace {
             .text_color(p.muted)
             .cursor_pointer()
             .hover(|d| d.bg(p.hover).text_color(p.text))
+            .child(gpui_kit::img(assets::CRAWL_LOGO).size(px(14.)).flex_none())
             .child(stack)
             .child(label)
             .child(

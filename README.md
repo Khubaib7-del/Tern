@@ -47,7 +47,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | --- | --- |
 | Models | Bring your own key for many providers; local models through Ollama, LM Studio, or any OpenAI-compatible endpoint; keys kept in the OS keychain |
 | Decision model | A fast scorer beside the main model that decides fixed choices (which source first, which tool next, does a claim pass) while hard checks keep the final word |
-| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own logo: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
+| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
 | PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups |
 | Control | Editable plans before spend, live steering, a watcher you can ask what the agent is doing, checkpoints, safe pause at budget limits |
 | Memory | Stable IDs for every query, file, and source; a goal and decision ledger that survives compaction |
