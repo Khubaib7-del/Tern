@@ -27,29 +27,33 @@ fn main() {
             std::process::exit(1);
         }
     };
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
-        // Closing the window ends the app on every platform.
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
+    // The kit's Lucide icons (rail, buttons, window controls) are embedded
+    // assets; without this source every icon renders empty.
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            // Closing the window ends the app on every platform.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(720.), px(480.))),
+                ..TitleBar::window_options()
+            };
+            let opened = gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| Workspace::new(bridge, rx, window, cx))
+            });
+            if let Err(e) = opened {
+                eprintln!("Tern could not open its window: {e}");
                 cx.quit();
             }
-        })
-        .detach();
-        let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(720.), px(480.))),
-            ..TitleBar::window_options()
-        };
-        let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-            cx.new(|cx| Workspace::new(bridge, rx, window, cx))
+            cx.activate(true);
         });
-        if let Err(e) = opened {
-            eprintln!("Tern could not open its window: {e}");
-            cx.quit();
-        }
-        cx.activate(true);
-    });
 }
