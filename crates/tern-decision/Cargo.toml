@@ -1,6 +1,6 @@
 [package]
 name = "tern-decision"
-description = "Decision-model slot: scores choices (planned)."
+description = "Decision-model slot: scores fixed choices with calibrated probabilities."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,5 +13,11 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+wiremock.workspace = true

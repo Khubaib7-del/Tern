@@ -1,0 +1,1174 @@
+[
+ {
+  "id": "src-transformer",
+  "kind": "source_rank",
+  "question": "What architecture did Vaswani et al. propose in 2017 and what did it replace?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.pinterest.com/pin/transformers-art",
+    "text": "Transformers wallpaper ideas (www.pinterest.com) Robots in disguise fan art and wallpapers",
+    "prior": 1.0
+   },
+   {
+    "id": "https://towardsdatascience.example/transformers-explained",
+    "text": "Transformers explained simply (towardsdatascience.example) A friendly blog intro to attention",
+    "prior": 0.75
+   },
+   {
+    "id": "https://arxiv.org/abs/1706.03762",
+    "text": "Attention Is All You Need (arxiv.org) Vaswani et al. propose the Transformer, based solely on attention, dispensing with recurrence and convolutions",
+    "prior": 0.5
+   },
+   {
+    "id": "https://www.quora.com/What-is-a-transformer",
+    "text": "What is a transformer? (www.quora.com) Answers about electrical transformers and models",
+    "prior": 0.25
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "src-sm2",
+  "kind": "source_rank",
+  "question": "How does the SM-2 spaced repetition algorithm compute the next interval?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://super-memory.com/english/ol/sm2.htm",
+    "text": "Algorithm SM-2 (super-memory.com) Piotr Wozniak's description of SM-2: intervals I(1)=1, I(2)=6, I(n)=I(n-1)*EF, easiness factor update",
+    "prior": 1.0
+   },
+   {
+    "id": "https://www.reddit.com/r/Anki/comments/sm2",
+    "text": "Anki settings question (www.reddit.com) Users discuss their new card settings",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.youtube.com/watch?v=abc",
+    "text": "Study tips 2024 (www.youtube.com) Ten tips to study better",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-bm25",
+  "kind": "source_rank",
+  "question": "What are the k1 and b parameters in Okapi BM25?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.linkedin.com/pulse/search-ranking",
+    "text": "Search ranking for marketers (www.linkedin.com) How SEO works in 2026",
+    "prior": 1.0
+   },
+   {
+    "id": "https://en.wikipedia.org/wiki/Okapi_BM25",
+    "text": "Okapi BM25 - Wikipedia (en.wikipedia.org) BM25 ranking function; free parameters k1 and b, usually k1 in [1.2, 2.0] and b = 0.75",
+    "prior": 0.667
+   },
+   {
+    "id": "https://example-shop.com/bm25-hats",
+    "text": "BM25 hats on sale (example-shop.com) Buy now, free shipping",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "src-rfc9309",
+  "kind": "source_rank",
+  "question": "What does RFC 9309 say about how long robots.txt may be cached?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://seo-tips.example/robots",
+    "text": "Top 10 robots.txt tricks (seo-tips.example) You won't believe these SEO tricks",
+    "prior": 1.0
+   },
+   {
+    "id": "https://www.rfc-editor.org/rfc/rfc9309.html",
+    "text": "RFC 9309: Robots Exclusion Protocol (www.rfc-editor.org) Crawlers SHOULD NOT use the cached version for more than 24 hours, unless unreachable",
+    "prior": 0.667
+   },
+   {
+    "id": "https://stackoverflow.com/q/robots",
+    "text": "robots.txt not working (stackoverflow.com) My robots file is ignored by Google",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "src-insulin",
+  "kind": "source_rank",
+  "question": "Who discovered insulin and in what year?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.nobelprize.org/prizes/medicine/1923/summary/",
+    "text": "The Nobel Prize in Physiology or Medicine 1923 (www.nobelprize.org) Awarded to Frederick Banting and John Macleod for the discovery of insulin",
+    "prior": 1.0
+   },
+   {
+    "id": "https://www.facebook.com/groups/diabetes",
+    "text": "Diabetes support group (www.facebook.com) Share your story",
+    "prior": 0.667
+   },
+   {
+    "id": "https://health-blog.example/insulin-prices",
+    "text": "Insulin prices are rising (health-blog.example) Opinion on drug costs",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-rustasync",
+  "kind": "source_rank",
+  "question": "How does Rust's async/await desugar futures into state machines?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://medium.com/@dev/async-rust-hot-take",
+    "text": "Async Rust is bad, actually (medium.com) A hot take on async",
+    "prior": 1.0
+   },
+   {
+    "id": "https://rust-lang.github.io/async-book/",
+    "text": "Asynchronous Programming in Rust (rust-lang.github.io) The async book explains how async fn compiles to a state machine implementing Future",
+    "prior": 0.75
+   },
+   {
+    "id": "https://www.tiktok.com/@coder/video/1",
+    "text": "Rust in 60 seconds (www.tiktok.com) Quick tips",
+    "prior": 0.5
+   },
+   {
+    "id": "https://docs.rs/tokio",
+    "text": "tokio - docs.rs (docs.rs) A runtime for writing reliable asynchronous applications",
+    "prior": 0.25
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "src-coral",
+  "kind": "source_rank",
+  "question": "What is the main cause of coral bleaching according to recent research?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.noaa.gov/education/coral-bleaching",
+    "text": "What is coral bleaching? | NOAA (www.noaa.gov) When water is too warm, corals expel the algae living in their tissues, causing bleaching",
+    "prior": 1.0
+   },
+   {
+    "id": "https://travel.example/best-reefs",
+    "text": "Best reefs to visit this summer (travel.example) Snorkeling holiday guide",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.instagram.com/reef_photos",
+    "text": "Reef photos (www.instagram.com) Beautiful coral pictures",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-gpui",
+  "kind": "source_rank",
+  "question": "What rendering approach does the GPUI framework use?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://zed.dev/blog/videogame",
+    "text": "Leveraging Rust and the GPU to render user interfaces at 120 FPS (zed.dev) GPUI renders the UI on the GPU like a video game, with shaders for rectangles, shadows, text",
+    "prior": 1.0
+   },
+   {
+    "id": "https://www.reddit.com/r/rust/comments/gpui",
+    "text": "Thoughts on GPUI? (www.reddit.com) Discussion thread",
+    "prior": 0.667
+   },
+   {
+    "id": "https://gpu-deals.example/rtx",
+    "text": "GPU deals this week (gpu-deals.example) Graphics card discounts, sponsored",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-crispr",
+  "kind": "source_rank",
+  "question": "What enzyme does CRISPR-Cas9 use to cut DNA and how is it guided?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.answers.com/q/crispr",
+    "text": "What is CRISPR? (www.answers.com) Short community answer",
+    "prior": 1.0
+   },
+   {
+    "id": "https://biotech-news.example/stocks",
+    "text": "CRISPR stocks to watch (biotech-news.example) Investing newsletter",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4975809/",
+    "text": "CRISPR-Cas9: a review (www.ncbi.nlm.nih.gov) Cas9 nuclease is guided by a single guide RNA to a target sequence adjacent to a PAM, where it makes a double-strand break",
+    "prior": 0.333
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "src-pak-gdp",
+  "kind": "source_rank",
+  "question": "What was Pakistan's GDP growth rate in fiscal year 2024 according to official statistics?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.pbs.gov.pk/national-accounts",
+    "text": "National Accounts | Pakistan Bureau of Statistics (www.pbs.gov.pk) Provisional GDP growth estimates for fiscal year 2024 from the National Accounts Committee",
+    "prior": 1.0
+   },
+   {
+    "id": "https://forum.example/pakistan-economy",
+    "text": "Is Pakistan's economy recovering? (forum.example) Forum opinions",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.youtube.com/watch?v=pkecon",
+    "text": "Pakistan economy explained (www.youtube.com) Video essay",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-anki-apkg",
+  "kind": "source_rank",
+  "question": "What is the file format of an Anki .apkg package?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.wikihow.com/Use-Anki",
+    "text": "How to Use Anki (www.wikihow.com) Steps with pictures for beginners",
+    "prior": 1.0
+   },
+   {
+    "id": "https://docs.ankiweb.net/importing/packaged-decks.html",
+    "text": "Packaged Decks - Anki Manual (docs.ankiweb.net) An .apkg file is a packaged deck containing the cards, notes, and media, for sharing decks",
+    "prior": 0.667
+   },
+   {
+    "id": "https://github.com/ankitects/anki",
+    "text": "ankitects/anki (github.com) Anki source code repository",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "src-photosynthesis",
+  "kind": "source_rank",
+  "question": "Which wavelengths of light does chlorophyll a absorb most strongly?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://kids-science.example/plants",
+    "text": "Plants are green! (kids-science.example) Fun facts for kids",
+    "prior": 1.0
+   },
+   {
+    "id": "https://www.britannica.com/science/chlorophyll",
+    "text": "Chlorophyll | Britannica (www.britannica.com) Chlorophyll a absorbs most strongly in the blue-violet and red parts of the spectrum, around 430 and 662 nm",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.pinterest.com/leaf-art",
+    "text": "Leaf art (www.pinterest.com) Craft ideas",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "src-tls13",
+  "kind": "source_rank",
+  "question": "How many round trips does a full TLS 1.3 handshake take?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.rfc-editor.org/rfc/rfc8446",
+    "text": "RFC 8446: The Transport Layer Security (TLS) Protocol Version 1.3 (www.rfc-editor.org) TLS 1.3 completes a full handshake in one round trip (1-RTT), with optional 0-RTT data",
+    "prior": 1.0
+   },
+   {
+    "id": "https://vpn-review.example/best",
+    "text": "Best VPNs 2026 (vpn-review.example) Top 10 VPN deals, buy now",
+    "prior": 0.667
+   },
+   {
+    "id": "https://x.com/netsec/status/1",
+    "text": "TLS thread (x.com) A thread about TLS",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "src-viva",
+  "kind": "source_rank",
+  "question": "How should a final-year project viva be prepared for?",
+  "context": "",
+  "choices": [
+   {
+    "id": "https://www.ox.ac.uk/students/academic/exams/viva",
+    "text": "Preparing for your viva | University of Oxford (www.ox.ac.uk) Re-read your thesis, anticipate questions about methods and limitations, practise explaining contributions",
+    "prior": 1.0
+   },
+   {
+    "id": "https://essay-mill.example/buy-thesis",
+    "text": "Buy a thesis today (essay-mill.example) Custom writing service, sponsored",
+    "prior": 0.667
+   },
+   {
+    "id": "https://www.quora.com/viva-tips",
+    "text": "Viva tips? (www.quora.com) Assorted answers",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-eiffel-height",
+  "kind": "claim_check",
+  "question": "The Eiffel Tower is 330 metres tall.",
+  "context": "The tower was completed in 1889 as the entrance arch for the World's Fair. It is 330 metres (1,083 ft) tall, about the same height as an 81-storey building.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-eiffel-wrong-num",
+  "kind": "claim_check",
+  "question": "The Eiffel Tower is 300 metres tall.",
+  "context": "The tower was completed in 1889 as the entrance arch for the World's Fair. It is 330 metres (1,083 ft) tall, about the same height as an 81-storey building.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "claim-eiffel-unrelated",
+  "kind": "claim_check",
+  "question": "The Eiffel Tower was designed to be dismantled after one year.",
+  "context": "The tower was completed in 1889 as the entrance arch for the World's Fair. It is 330 metres (1,083 ft) tall.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "claim-transformer",
+  "kind": "claim_check",
+  "question": "The Transformer relies entirely on attention, without recurrence or convolutions.",
+  "context": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-transformer-neg",
+  "kind": "claim_check",
+  "question": "The Transformer does not use attention mechanisms.",
+  "context": "We propose a new simple network architecture, the Transformer, based solely on attention mechanisms, dispensing with recurrence and convolutions entirely.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "claim-sm2-interval",
+  "kind": "claim_check",
+  "question": "In SM-2 the second interval is 6 days.",
+  "context": "I(1):=1, I(2):=6, for n>2: I(n):=I(n-1)*EF, where I(n) is the inter-repetition interval after the n-th repetition in days.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-sm2-ease",
+  "kind": "claim_check",
+  "question": "SM-2 starts every item with an easiness factor of 2.5 and never lets it fall below 1.3.",
+  "context": "Set the E-Factor of each item to 2.5 at the start. If EF is less than 1.3 then let EF be 1.3.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-insulin-year",
+  "kind": "claim_check",
+  "question": "Banting and Macleod received the Nobel Prize for insulin in 1923.",
+  "context": "The Nobel Prize in Physiology or Medicine 1923 was awarded jointly to Frederick Grant Banting and John James Rickard Macleod for the discovery of insulin.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-insulin-partial",
+  "kind": "claim_check",
+  "question": "Banting and Best received the Nobel Prize for insulin in 1923.",
+  "context": "The Nobel Prize in Physiology or Medicine 1923 was awarded jointly to Frederick Grant Banting and John James Rickard Macleod for the discovery of insulin. Banting shared his prize money with Charles Best.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "claim-coral-cause",
+  "kind": "claim_check",
+  "question": "Coral bleaching is mainly caused by warm water that makes corals expel their algae.",
+  "context": "When water is too warm, corals will expel the algae (zooxanthellae) living in their tissues, causing the coral to turn completely white. This is called coral bleaching.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-coral-pollution",
+  "kind": "claim_check",
+  "question": "Plastic pollution is the main cause of coral bleaching.",
+  "context": "When water is too warm, corals will expel the algae living in their tissues, causing the coral to turn completely white. This is called coral bleaching.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "claim-robots-24h",
+  "kind": "claim_check",
+  "question": "RFC 9309 says crawlers should not use a cached robots.txt for more than 24 hours.",
+  "context": "Crawlers SHOULD NOT use the cached version for more than 24 hours, unless the robots.txt file is unreachable.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-robots-week",
+  "kind": "claim_check",
+  "question": "RFC 9309 lets crawlers cache robots.txt for up to a week.",
+  "context": "Crawlers SHOULD NOT use the cached version for more than 24 hours, unless the robots.txt file is unreachable.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "claim-tls-1rtt",
+  "kind": "claim_check",
+  "question": "A full TLS 1.3 handshake needs one round trip.",
+  "context": "TLS 1.3 removes a round trip from the handshake: a full handshake completes in 1-RTT, and resumed connections may send 0-RTT early data.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "claim-chloro-partial",
+  "kind": "claim_check",
+  "question": "Chlorophyll a absorbs green light most strongly.",
+  "context": "Chlorophyll a absorbs most strongly in the blue-violet and red parts of the spectrum and reflects green light, which is why leaves look green.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "claim-gdp-vague",
+  "kind": "claim_check",
+  "question": "Pakistan's economy grew in fiscal year 2024.",
+  "context": "The National Accounts Committee estimated provisional GDP growth of 2.38 percent for fiscal year 2024, after a contraction the year before.",
+  "choices": [
+   {
+    "id": "supported",
+    "text": "Supported"
+   },
+   {
+    "id": "partly",
+    "text": "Partly supported"
+   },
+   {
+    "id": "not_supported",
+    "text": "Not supported"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tool-latest-rust",
+  "kind": "next_tool",
+  "question": "What changed in the latest stable Rust release?",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tool-url",
+  "kind": "next_tool",
+  "question": "Summarise https://blog.rust-lang.org/2026/09/18/Rust-1.95.0.html for me",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "tool-notes",
+  "kind": "next_tool",
+  "question": "What did I write in my notes about the SM-2 ease factor?",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "tool-thanks",
+  "kind": "next_tool",
+  "question": "thanks, that helps",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 3
+ },
+ {
+  "id": "tool-attached",
+  "kind": "next_tool",
+  "question": "Summarize this pdf in five bullet points",
+  "context": "attachments: 1",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 3
+ },
+ {
+  "id": "tool-news",
+  "kind": "next_tool",
+  "question": "Any news today about the Pakistan budget?",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tool-unread",
+  "kind": "next_tool",
+  "question": "Which of these studies found the largest effect?",
+  "context": "attachments: 0; unread results: 6; pages read: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "tool-arith",
+  "kind": "next_tool",
+  "question": "12 * 7 + 3",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 3
+ },
+ {
+  "id": "tool-fact",
+  "kind": "next_tool",
+  "question": "Who was the first woman to win a Nobel Prize?",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tool-vault2",
+  "kind": "next_tool",
+  "question": "Find the meeting notes I took in my vault last week about the viva",
+  "context": "attachments: 0",
+  "choices": [
+   {
+    "id": "web_search",
+    "text": "Search the web for pages about it"
+   },
+   {
+    "id": "read_url",
+    "text": "Read one web page by its link"
+   },
+   {
+    "id": "vault_search",
+    "text": "Search the user's own notes in the vault"
+   },
+   {
+    "id": "answer",
+    "text": "Answer now without a tool"
+   }
+  ],
+  "gold": 2
+ },
+ {
+  "id": "tri-battery",
+  "kind": "triage",
+  "question": "How do solid-state batteries compare with lithium-ion on energy density and cost?",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "History of the battery industry since 1800 (background, optional)",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Energy density of solid-state versus lithium-ion cells in Wh/kg",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Celebrity electric car owners",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "tri-viva",
+  "kind": "triage",
+  "question": "Prepare for my final-year project viva next week",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Rehearse explaining the project's contribution and limitations before the viva deadline",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Redesign the project logo (nice to have)",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Read unrelated papers for future work",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-rag",
+  "kind": "triage",
+  "question": "Does reranking improve retrieval-augmented generation accuracy?",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Benchmarks of reranking in retrieval-augmented generation pipelines",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "The history of search engines in the 1990s (tangent)",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "How vector databases are priced",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-coral",
+  "kind": "triage",
+  "question": "What is causing the 2024 global coral bleaching event?",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Fish species found on reefs (side note)",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Ocean temperature anomalies behind the 2024 coral bleaching event",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Diving equipment reviews",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "tri-crawl",
+  "kind": "triage",
+  "question": "Make Tern's crawler respect robots.txt",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Parse robots.txt rules and match user-agent groups first, it is blocking",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Add a dark mode to the crawler logs eventually",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Write a blog post about crawling (low priority)",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-watch-overdue",
+  "kind": "triage",
+  "question": "Which watched question should run first?",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Watch: weekly arXiv digest on decision models, overdue by 9 days",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Watch: daily price of a book, due in 3 hours",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Watch: monthly university news, due in 20 days",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-study",
+  "kind": "triage",
+  "question": "Study for tomorrow's exam on spaced repetition",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Review the cards that are due today before the exam",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Explore FSRS research for later",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Organise the deck colours someday",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-thesis",
+  "kind": "triage",
+  "question": "Write the literature review chapter of my thesis on calibrated decision models",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Collect papers on calibration of decision models and probability scoring",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Format the bibliography style (if time)",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Look into unrelated GPU benchmarks",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ },
+ {
+  "id": "tri-ssd",
+  "kind": "triage",
+  "question": "Why do SSDs slow down when nearly full?",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Popular SSD brands and their logos",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "How garbage collection and write amplification slow nearly full SSDs",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "A history of floppy disks (optional)",
+    "prior": 0.333
+   }
+  ],
+  "gold": 1
+ },
+ {
+  "id": "tri-bug",
+  "kind": "triage",
+  "question": "Fix the crash when a deep research worker times out",
+  "context": "",
+  "choices": [
+   {
+    "id": "1",
+    "text": "Reproduce the crash when a worker times out, the blocking bug",
+    "prior": 1.0
+   },
+   {
+    "id": "2",
+    "text": "Rename variables in the worker module later",
+    "prior": 0.667
+   },
+   {
+    "id": "3",
+    "text": "Add confetti to the report screen someday",
+    "prior": 0.333
+   }
+  ],
+  "gold": 0
+ }
+]
