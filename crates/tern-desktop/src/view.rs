@@ -1172,11 +1172,24 @@ impl Workspace {
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         match e {
-            Entry::User { text, chips } => div()
+            Entry::User { text, chips, quote } => div()
                 .flex()
                 .flex_col()
                 .items_end()
                 .gap_1()
+                .when_some(quote.clone(), |d, q| {
+                    d.child(
+                        div()
+                            .max_w(px(COLUMN_MAX_W * 0.8))
+                            .pl_2()
+                            .border_l_2()
+                            .border_color(p.border)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .line_clamp(2)
+                            .child(SharedString::from(q)),
+                    )
+                })
                 .when(!chips.is_empty(), |d| {
                     d.child(
                         div()
@@ -1197,6 +1210,7 @@ impl Workspace {
                         .bg(p.raised)
                         .child(SharedString::from(text.clone())),
                 )
+                .child(self.message_actions(i, false, p, cx))
                 .into_any_element(),
             Entry::Assistant {
                 text,
@@ -1243,7 +1257,15 @@ impl Workspace {
                     .when(!pages.is_empty(), |d| {
                         d.child(self.sources(i, pages, p, cx))
                     })
-                    .child(meta)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(meta)
+                            .child(self.message_actions(i, true, p, cx)),
+                    )
                     .into_any_element()
             }
             Entry::Notice(t) => div()
@@ -1252,6 +1274,131 @@ impl Workspace {
                 .child(SharedString::from(t.clone()))
                 .into_any_element(),
         }
+    }
+
+    /// Copy, Reply, and (on answers) Branch, as small quiet icons.
+    fn message_actions(
+        &self,
+        i: usize,
+        answer: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let copied = self.model.copied == Some(i);
+        let busy = self.model.is_busy();
+        let action = move |id: &'static str, icon: AssetIcon, tip: &'static str| {
+            div()
+                .id((id, i))
+                .p(px(3.))
+                .rounded_md()
+                .cursor_pointer()
+                .text_color(p.faint)
+                .hover(move |d| d.text_color(p.text).bg(p.hover))
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+                })
+                .child(gpui_kit::component::Icon::new(icon).xsmall())
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                action(
+                    "copy",
+                    if copied {
+                        AssetIcon::Check
+                    } else {
+                        AssetIcon::Copy
+                    },
+                    "Copy",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(t) = this.model.entry_text(i) {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t.to_owned()));
+                        this.model.copied = Some(i);
+                        cx.notify();
+                    }
+                })),
+            )
+            .child(
+                action("reply", AssetIcon::Reply, "Reply").on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.model.reply_to_entry(i);
+                        this.composer.update(cx, |c, cx| c.focus(window, cx));
+                        cx.notify();
+                    },
+                )),
+            )
+            .when(answer && !busy, |d| {
+                d.child(
+                    action("branch", AssetIcon::GitBranch, "Branch into a new chat")
+                        .on_click(cx.listener(move |this, _, _, cx| this.branch_from(i, cx))),
+                )
+            })
+    }
+
+    /// Opens a new chat that starts with this chat's turns up to entry `i`.
+    fn branch_from(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.model.is_busy() {
+            return;
+        }
+        let Some(from) = self.current else {
+            return;
+        };
+        let turns = self.model.turns_through(i);
+        self.session = None;
+        self.current = None;
+        self.open_sources.clear();
+        self.model.new_chat();
+        self.model.phase = Phase::Connecting;
+        self.model.screen = Screen::Chat;
+        self.bridge.branch(from, turns);
+        cx.notify();
+    }
+
+    /// The quote the next message replies to, over the composer.
+    fn reply_bar(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let q = self.model.reply_to.clone()?;
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_lg()
+                .bg(p.canvas)
+                .child(
+                    div()
+                        .text_color(p.muted)
+                        .child(gpui_kit::component::Icon::new(AssetIcon::Reply).xsmall()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl_2()
+                        .border_l_2()
+                        .border_color(p.border)
+                        .text_xs()
+                        .text_color(p.muted)
+                        .truncate()
+                        .child(SharedString::from(q)),
+                )
+                .child(
+                    Button::new("cancel-reply")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Cancel reply")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.reply_to = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     fn approval_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1455,6 +1602,7 @@ impl Workspace {
                     this.mention_keys(e, window, cx);
                 }))
                 .children(self.mention_menu(p, cx))
+                .children(self.reply_bar(p, cx))
                 .when(
                     !self.model.attachments.is_empty() || self.model.attaching > 0,
                     |d| d.child(self.attachment_chips(p, cx)),

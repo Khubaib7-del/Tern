@@ -10,6 +10,7 @@
 
 pub mod ask;
 pub mod attach;
+pub mod branch;
 pub mod chat;
 pub mod doctor;
 pub mod engine;
@@ -18,6 +19,7 @@ pub mod policy;
 pub mod prefs;
 pub mod protocol;
 pub mod providers;
+pub mod reply;
 pub mod run;
 pub mod search;
 pub mod sources;

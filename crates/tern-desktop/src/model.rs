@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tern_agent::attach::{self, Attachment, Chip, Role};
-use tern_agent::mention;
 use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
     ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, Run, SessionSummary,
     TurnOutcome,
 };
+use tern_agent::{mention, reply};
 use tern_core::{EventEnvelope, TurnState};
 
 use crate::providers::ProvidersState;
@@ -27,7 +27,12 @@ pub enum Screen {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
     /// What the user sent, with chips for what they attached.
-    User { text: String, chips: Vec<Chip> },
+    User {
+        text: String,
+        chips: Vec<Chip>,
+        /// The part of an earlier message this one replies to.
+        quote: Option<String>,
+    },
     /// A finished answer, with the run that led to it and how long it took.
     Assistant {
         text: String,
@@ -200,6 +205,10 @@ pub struct Model {
     pub attachments: Vec<Attachment>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The quote the next message replies to.
+    pub reply_to: Option<String>,
+    /// The entry whose text was just copied (its icon shows a check).
+    pub copied: Option<usize>,
     /// Attachments still being read from disk.
     pub attaching: usize,
 }
@@ -231,6 +240,8 @@ impl Model {
             icons: HashMap::new(),
             attachments: Vec::new(),
             mention: None,
+            reply_to: None,
+            copied: None,
             attaching: 0,
         }
     }
@@ -285,10 +296,12 @@ impl Model {
                 role: a.role,
             })
             .collect();
-        let message = attach::compose(text, &attachments);
+        let quote = self.reply_to.take();
+        let message = attach::compose(&reply::compose(quote.as_deref(), text), &attachments);
         self.entries.push(Entry::User {
             text: text.to_owned(),
             chips,
+            quote,
         });
         self.turn_pages.clear();
         self.run_panel.pinned = None;
@@ -302,6 +315,31 @@ impl Model {
         };
         self.stopping = false;
         Some(message)
+    }
+
+    /// The text of a message or answer, for Copy.
+    pub fn entry_text(&self, i: usize) -> Option<&str> {
+        match self.entries.get(i)? {
+            Entry::User { text, .. } | Entry::Assistant { text, .. } => Some(text),
+            Entry::Notice(_) => None,
+        }
+    }
+
+    /// Starts a reply to a message or answer.
+    pub fn reply_to_entry(&mut self, i: usize) {
+        if let Some(t) = self.entry_text(i) {
+            self.reply_to = Some(reply::excerpt(t));
+        }
+    }
+
+    /// How many turns a branch from entry `i` keeps: every turn up to and
+    /// including the one `i` belongs to.
+    pub fn turns_through(&self, i: usize) -> usize {
+        self.entries
+            .iter()
+            .take(i + 1)
+            .filter(|e| matches!(e, Entry::User { .. }))
+            .count()
     }
 
     /// The composer changed: opens, updates, or closes the `@` menu.
@@ -618,9 +656,11 @@ impl Model {
             match &t.message {
                 Some(m) => {
                     let (text, chips) = attach::split(m);
+                    let (quote, text) = reply::split(text);
                     self.entries.push(Entry::User {
                         text: text.to_owned(),
                         chips,
+                        quote: quote.map(str::to_owned),
                     });
                 }
                 None => missing += 1,
@@ -691,6 +731,8 @@ impl Model {
             return;
         }
         self.entries.clear();
+        self.reply_to = None;
+        self.copied = None;
         self.context = ContextUse {
             window: self.context.window,
             ..ContextUse::default()
@@ -950,6 +992,7 @@ mod tests {
         Entry::User {
             text: text.into(),
             chips: Vec::new(),
+            quote: None,
         }
     }
 
@@ -1310,6 +1353,40 @@ mod tests {
     }
 
     #[test]
+    fn reply_copy_and_branch_from_a_message() {
+        let mut m = ready();
+        m.start_turn("What is RAG?").unwrap();
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("Retrieval-augmented generation."),
+                None,
+            ),
+            ctx(1, 1),
+        );
+        assert_eq!(m.entry_text(1), Some("Retrieval-augmented generation."));
+        assert_eq!(m.turns_through(1), 1);
+        m.reply_to_entry(1);
+        let msg = m.start_turn("Who coined it?").unwrap();
+        assert!(msg.starts_with("<in_reply_to>\nRetrieval-augmented generation.\n</in_reply_to>"));
+        assert!(m.reply_to.is_none());
+        assert!(matches!(
+            &m.entries[2],
+            Entry::User { text, quote: Some(q), .. } if text == "Who coined it?" && q.starts_with("Retrieval")
+        ));
+        assert_eq!(m.turns_through(2), 2);
+
+        m.restore(&[PastTurn {
+            message: Some(msg),
+            ..PastTurn::default()
+        }]);
+        assert!(matches!(
+            &m.entries[0],
+            Entry::User { text, quote: Some(_), .. } if text == "Who coined it?"
+        ));
+    }
+
+    #[test]
     fn the_at_menu_picks_attachments_sources_and_files() {
         let mut m = ready();
         let mut rubric = Attachment::paste("Grade on clarity.");
@@ -1412,6 +1489,7 @@ mod tests {
                     name: "Pasted text".into(),
                     role: Role::Context
                 }],
+                quote: None,
             }
         );
     }
