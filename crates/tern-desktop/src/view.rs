@@ -38,6 +38,9 @@ pub struct Workspace {
     composer: Entity<TextareaState>,
     /// The one key field; only one row edits at a time.
     key_input: Entity<InputState>,
+    /// The title field of the chat being renamed in the list.
+    rename_input: Entity<InputState>,
+    renaming: Option<SessionId>,
     cancel: CancelFlag,
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     scroll: ScrollHandle,
@@ -90,6 +93,15 @@ impl Workspace {
                 }
             },
         );
+        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Chat title"));
+        let rename_sub = cx.subscribe_in(
+            &rename_input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => this.finish_rename(window, cx),
+                _ => {}
+            },
+        );
         let listener = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.recv().await {
                 if this
@@ -108,12 +120,14 @@ impl Workspace {
             current: None,
             composer,
             key_input,
+            rename_input,
+            renaming: None,
             cancel: CancelFlag::default(),
             pending: None,
             scroll: ScrollHandle::new(),
             ticker: None,
             _listener: listener,
-            _subscriptions: vec![sub, key_sub],
+            _subscriptions: vec![sub, key_sub, rename_sub],
         }
     }
 
@@ -278,6 +292,52 @@ impl Workspace {
         self.model.phase = Phase::Connecting;
         self.model.screen = Screen::Chat;
         self.bridge.resume(id);
+        cx.notify();
+    }
+
+    /// Turns a chat's row into a title field.
+    fn start_rename(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(title) = self
+            .model
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone())
+        else {
+            return;
+        };
+        self.renaming = Some(id);
+        self.rename_input.update(cx, |i, cx| {
+            i.set_value(title, window, cx);
+            i.select_all(window, cx);
+            i.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Saves the typed title. A blank or unchanged title keeps the old one.
+    fn finish_rename(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.renaming.take() else {
+            return;
+        };
+        let typed = self.rename_input.read(cx).value().to_string();
+        let old = self
+            .model
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone());
+        if let Some(title) = tern_agent::clean_title(&typed)
+            && Some(&title) != old.as_ref()
+        {
+            self.model.rename(id, &title);
+            self.bridge.rename(id, title);
+        }
+        cx.notify();
+    }
+
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.renaming = None;
         cx.notify();
     }
 
@@ -614,6 +674,20 @@ impl Workspace {
             .map(|(ix, s)| {
                 let current = Some(s.id) == self.current;
                 let id = s.id;
+                if self.renaming == Some(id) {
+                    return div()
+                        .id(("chat", ix))
+                        .px_1()
+                        .py(px(2.))
+                        .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                            if e.keystroke.key == "escape" {
+                                cx.stop_propagation();
+                                this.cancel_rename(cx);
+                            }
+                        }))
+                        .child(Input::new(&self.rename_input).small())
+                        .into_any_element();
+                }
                 div()
                     .id(("chat", ix))
                     .group("chat-row")
@@ -631,7 +705,15 @@ impl Workspace {
                         d.cursor_pointer()
                             .hover(|d| d.bg(p.hover).text_color(p.text))
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| this.open_chat(id, cx)))
+                    .on_click(
+                        cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| {
+                            if e.click_count() >= 2 {
+                                this.start_rename(id, window, cx);
+                            } else {
+                                this.open_chat(id, cx);
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -642,8 +724,20 @@ impl Workspace {
                     )
                     .child(
                         div()
+                            .flex()
                             .opacity(0.)
                             .group_hover("chat-row", |d| d.opacity(1.))
+                            .child(
+                                Button::new(("rename", ix))
+                                    .icon(gpui_kit::assets::IconName::Pencil)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Rename chat")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.start_rename(id, window, cx);
+                                    })),
+                            )
                             .child(
                                 Button::new(("archive", ix))
                                     .icon(gpui_kit::assets::IconName::Archive)
@@ -656,6 +750,7 @@ impl Workspace {
                                     })),
                             ),
                     )
+                    .into_any_element()
             })
             .collect();
         div()

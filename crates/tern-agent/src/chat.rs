@@ -86,6 +86,26 @@ pub fn recent_sessions(limit: usize) -> Result<Vec<SessionSummary>, String> {
     store.recent_sessions(limit).map_err(|e| e.to_string())
 }
 
+/// Renames a chat without opening a provider. Blank titles are refused.
+pub fn rename_session(id: SessionId, title: &str) -> Result<String, String> {
+    let title = clean_title(title).ok_or("A chat needs a title.")?;
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
+    store
+        .rename_session(id, &title)
+        .map_err(|e| e.to_string())?;
+    Ok(title)
+}
+
+/// A typed title on one line, at most 120 characters, or `None` if blank.
+pub fn clean_title(text: &str) -> Option<String> {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.chars().take(120).collect())
+}
+
 /// Hides a chat from the list without opening a provider. Its log stays.
 pub fn archive_session(id: SessionId) -> Result<(), String> {
     let paths = AppPaths::discover().map_err(|e| e.to_string())?;

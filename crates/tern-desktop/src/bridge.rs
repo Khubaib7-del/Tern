@@ -140,6 +140,18 @@ impl Bridge {
         });
     }
 
+    /// Saves a chat's new title, then sends the list again.
+    pub fn rename(&self, id: SessionId, title: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = tern_agent::rename_session(id, &title) {
+                let _ = tx.send(Msg::Notice(format!("Tern could not rename that chat: {e}")));
+            }
+            let recent = tern_agent::recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Sessions(recent));
+        });
+    }
+
     /// Hides a chat from the list, then sends the list again.
     pub fn archive(&self, id: SessionId) {
         let tx = self.tx.clone();

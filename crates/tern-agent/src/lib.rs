@@ -22,7 +22,10 @@ pub mod transcript;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};
-pub use chat::{ChatOptions, ChatSession, Usage, archive_session, recent_sessions, title_from};
+pub use chat::{
+    ChatOptions, ChatSession, Usage, archive_session, clean_title, recent_sessions, rename_session,
+    title_from,
+};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,
     StoreSink, TurnLoop, TurnOutcome,

@@ -299,6 +299,13 @@ impl Model {
         }
     }
 
+    /// Shows a new title in the list at once; the bridge saves it.
+    pub fn rename(&mut self, id: tern_core::SessionId, title: &str) {
+        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
+            s.title = title.to_owned();
+        }
+    }
+
     /// Clears the transcript for a new chat. The caller opens a new session.
     pub fn new_chat(&mut self) {
         if self.is_busy() {
@@ -445,6 +452,23 @@ mod tests {
         assert_eq!(m.draft(), Some("Let me check."));
         assert_eq!(draft_visible("Answer\n```tool\n{}"), Some("Answer"));
         assert_eq!(draft_visible("   "), None);
+    }
+
+    #[test]
+    fn rename_updates_the_list_row() {
+        let mut m = ready();
+        let id = tern_core::SessionId::new();
+        m.sessions.push(SessionSummary {
+            id,
+            title: "Chat".into(),
+            harness: Harness::Research,
+            created_at: String::new(),
+            events: 3,
+        });
+        m.rename(id, "Attention paper");
+        assert_eq!(m.sessions[0].title, "Attention paper");
+        m.rename(tern_core::SessionId::new(), "Other");
+        assert_eq!(m.sessions[0].title, "Attention paper");
     }
 
     #[test]
