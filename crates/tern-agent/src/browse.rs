@@ -66,7 +66,11 @@ pub fn normalize(input: &str) -> Option<String> {
 
 /// Opens one page through the reader.
 pub async fn open_with(fetcher: &Fetcher, url: &str) -> Result<BrowsedPage, String> {
-    let p = fetcher.fetch(url).await.map_err(|e| e.to_string())?;
+    // The user opened this page: a person reading, not a crawl.
+    let p = fetcher
+        .fetch_for_user(url)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(BrowsedPage {
         page: PageRef {
             title: p.title,
@@ -83,7 +87,7 @@ pub async fn open_with(fetcher: &Fetcher, url: &str) -> Result<BrowsedPage, Stri
 
 /// Opens one page with the standard network guard.
 pub async fn open(url: &str) -> Result<BrowsedPage, String> {
-    open_with(&Fetcher::new(), url).await
+    open_with(&crate::web::shared_reader(), url).await
 }
 
 /// Back and forward through visited addresses.

@@ -1,14 +1,32 @@
 //! The reader: fetches one URL through the guard and returns readable text.
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use reqwest::header::{CONTENT_TYPE, LOCATION};
+use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION};
 use serde::Serialize;
 use url::Url;
 
+use crate::cache;
 use crate::extract::{extract_html, tidy};
 use crate::guard::{self, GuardError};
 use crate::icon::{SourceIcon, site_of};
+use crate::robots::Robots;
+
+/// The product token Tern's automated reads match in robots.txt.
+pub const ROBOTS_AGENT: &str = "Tern";
+/// The gap between two automated reads of one host when its robots.txt
+/// names no Crawl-delay.
+pub const DEFAULT_PACE: Duration = Duration::from_millis(500);
+/// The longest Crawl-delay Tern honours; a longer one is capped here.
+pub const MAX_CRAWL_DELAY: Duration = Duration::from_secs(10);
+/// How many pages are read at once across all hosts.
+pub const MAX_PARALLEL: usize = 8;
+const ROBOTS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const ROBOTS_FAIL_TTL: Duration = Duration::from_secs(10 * 60);
+const MAX_ROBOTS_BYTES: usize = 512 * 1024;
 
 /// Pages larger than this are cut off and marked truncated.
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -60,6 +78,29 @@ pub enum FetchError {
     },
     #[error("{site} sent an empty page")]
     Empty { site: String },
+    #[error("{site}'s robots.txt asks automated readers not to open this page")]
+    Robots { site: String },
+}
+
+/// What every clone of a [`Fetcher`] shares: robots files, pacing, the
+/// page cache, and the parallel-read limit.
+#[derive(Debug)]
+struct Shared {
+    robots: Mutex<HashMap<String, (Instant, Arc<Robots>)>>,
+    next_slot: Mutex<HashMap<String, Instant>>,
+    memory: Mutex<cache::Memory>,
+    permits: tokio::sync::Semaphore,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            robots: Mutex::default(),
+            next_slot: Mutex::default(),
+            memory: Mutex::default(),
+            permits: tokio::sync::Semaphore::new(MAX_PARALLEL),
+        }
+    }
 }
 
 /// Reads web pages. Cheap to clone.
@@ -67,6 +108,9 @@ pub enum FetchError {
 pub struct Fetcher {
     http: reqwest::Client,
     allow_private: bool,
+    shared: Arc<Shared>,
+    pace: Duration,
+    cache_dir: Option<Arc<PathBuf>>,
 }
 
 impl Fetcher {
@@ -95,7 +139,178 @@ impl Fetcher {
         Self {
             http: b.build().expect("http client"),
             allow_private,
+            shared: Arc::default(),
+            // Local services are the user's own; tests run fast.
+            pace: if allow_private {
+                Duration::ZERO
+            } else {
+                DEFAULT_PACE
+            },
+            cache_dir: None,
         }
+    }
+
+    /// Keeps read pages in `dir` for a day, across restarts.
+    pub fn with_cache_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cache_dir = Some(Arc::new(dir.into()));
+        self
+    }
+
+    /// The gap between automated reads of one host when robots.txt names
+    /// none.
+    pub fn with_pace(mut self, pace: Duration) -> Self {
+        self.pace = pace;
+        self
+    }
+
+    /// Waits for this host's next slot: its Crawl-delay or the default
+    /// pace after the previous read.
+    async fn pace_host(&self, host: &str, delay: Option<f32>) {
+        let gap = delay
+            .map(|d| Duration::from_secs_f32(d).min(MAX_CRAWL_DELAY))
+            .unwrap_or(self.pace);
+        if gap.is_zero() {
+            return;
+        }
+        let wait = {
+            let mut slots = self.shared.next_slot.lock().expect("pace lock");
+            let now = Instant::now();
+            let at = slots.get(host).copied().unwrap_or(now).max(now);
+            slots.insert(host.to_owned(), at + gap);
+            at - now
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+    }
+
+    /// The robots.txt rules for `url`'s origin, read once a day.
+    pub async fn robots_for(&self, url: &Url) -> Arc<Robots> {
+        let origin = url.origin().ascii_serialization();
+        if let Some((until, r)) = self.shared.robots.lock().expect("robots lock").get(&origin) {
+            if Instant::now() < *until {
+                return r.clone();
+            }
+        }
+        let (robots, ttl) = self.read_robots(url).await;
+        let robots = Arc::new(robots);
+        self.shared
+            .robots
+            .lock()
+            .expect("robots lock")
+            .insert(origin, (Instant::now() + ttl, robots.clone()));
+        robots
+    }
+
+    async fn read_robots(&self, url: &Url) -> (Robots, Duration) {
+        let Ok(mut at) = url.join("/robots.txt") else {
+            return (Robots::allow_all(), ROBOTS_TTL);
+        };
+        for _ in 0..=MAX_REDIRECTS {
+            if guard::check_resolved(&at, self.allow_private)
+                .await
+                .is_err()
+            {
+                return (Robots::allow_all(), ROBOTS_TTL);
+            }
+            let resp = match self
+                .http
+                .get(at.clone())
+                .header("Accept", "text/plain")
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                // Unreachable: RFC 9309 says assume a full disallow, but
+                // only briefly, so a flaky network does not lock a site out.
+                Err(_) => return (Robots::unreachable(), ROBOTS_FAIL_TTL),
+            };
+            let status = resp.status();
+            if status.is_redirection() {
+                match resp
+                    .headers()
+                    .get(LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|l| at.join(l).ok())
+                {
+                    Some(next) => {
+                        at = next;
+                        continue;
+                    }
+                    None => return (Robots::allow_all(), ROBOTS_TTL),
+                }
+            }
+            if status.as_u16() == 429 || status.is_server_error() {
+                return (Robots::unreachable(), ROBOTS_FAIL_TTL);
+            }
+            if !status.is_success() {
+                return (Robots::allow_all(), ROBOTS_TTL);
+            }
+            let site = site_of(&at);
+            let Ok((body, _)) = read_capped_to(resp, &site, MAX_ROBOTS_BYTES).await else {
+                return (Robots::unreachable(), ROBOTS_FAIL_TTL);
+            };
+            return (
+                Robots::parse(&String::from_utf8_lossy(&body), ROBOTS_AGENT),
+                ROBOTS_TTL,
+            );
+        }
+        (Robots::allow_all(), ROBOTS_TTL)
+    }
+
+    /// Reads a page for an agent run: keeps to robots.txt, paced per host,
+    /// cached.
+    pub async fn fetch(&self, url: &str) -> Result<Page, FetchError> {
+        self.fetch_cached(url, true).await
+    }
+
+    /// Reads a page the user opened themselves (the built-in browser): a
+    /// person reading, not a crawl, so robots.txt and pacing do not apply.
+    /// Still guarded and cached.
+    pub async fn fetch_for_user(&self, url: &str) -> Result<Page, FetchError> {
+        self.fetch_cached(url, false).await
+    }
+
+    async fn fetch_cached(&self, url: &str, automated: bool) -> Result<Page, FetchError> {
+        let key = cache::key(url);
+        if let Some(p) = self.cached(&key) {
+            return Ok(p);
+        }
+        let _permit = self.shared.permits.acquire().await.expect("semaphore open");
+        // Another read may have filled it while this one waited.
+        if let Some(p) = self.cached(&key) {
+            return Ok(p);
+        }
+        let (page, store) = self.fetch_live(url, automated).await?;
+        if store {
+            let now = Instant::now();
+            let mut mem = self.shared.memory.lock().expect("cache lock");
+            mem.put(key.clone(), page.clone(), now);
+            let final_key = cache::key(&page.final_url);
+            if final_key != key {
+                mem.put(final_key, page.clone(), now);
+            }
+            drop(mem);
+            if let Some(dir) = &self.cache_dir {
+                cache::disk_put(dir, &key, &page);
+            }
+        }
+        Ok(page)
+    }
+
+    fn cached(&self, key: &str) -> Option<Page> {
+        let now = Instant::now();
+        if let Some(p) = self.shared.memory.lock().expect("cache lock").get(key, now) {
+            return Some(p);
+        }
+        let dir = self.cache_dir.as_ref()?;
+        let p = cache::disk_get(dir, key)?;
+        self.shared
+            .memory
+            .lock()
+            .expect("cache lock")
+            .put(key.to_owned(), p.clone(), now);
+        Some(p)
     }
 
     /// Downloads a site icon through the same network guard as pages.
@@ -158,12 +373,25 @@ impl Fetcher {
         })
     }
 
-    pub async fn fetch(&self, url: &str) -> Result<Page, FetchError> {
+    /// One live read. Returns the page and whether it may be cached.
+    async fn fetch_live(&self, url: &str, automated: bool) -> Result<(Page, bool), FetchError> {
         let start = Url::parse(url.trim()).map_err(|_| FetchError::BadUrl(url.to_owned()))?;
         let mut current = start.clone();
         for _ in 0..=MAX_REDIRECTS {
             guard::check_resolved(&current, self.allow_private).await?;
             let site = site_of(&current);
+            if automated {
+                let robots = self.robots_for(&current).await;
+                let path = match current.query() {
+                    Some(q) => format!("{}?{q}", current.path()),
+                    None => current.path().to_owned(),
+                };
+                if !robots.allows(&path) {
+                    return Err(FetchError::Robots { site });
+                }
+                self.pace_host(current.host_str().unwrap_or_default(), robots.crawl_delay)
+                    .await;
+            }
             let resp = self
                 .http
                 .get(current.clone())
@@ -222,6 +450,11 @@ impl Fetcher {
                     hint: "",
                 });
             }
+            let no_store = resp
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.to_ascii_lowercase().contains("no-store"));
             let (body, truncated) = read_capped(resp, &site).await?;
             let raw = String::from_utf8_lossy(&body);
             // Some servers label HTML as plain text.
@@ -248,20 +481,23 @@ impl Fetcher {
             if text.trim().is_empty() {
                 return Err(FetchError::Empty { site });
             }
-            return Ok(Page {
-                url: start.to_string(),
-                final_url: current.to_string(),
-                title: title.unwrap_or_else(|| site.clone()),
-                site,
-                description,
-                icon,
-                content_type,
-                text,
-                bytes: body.len(),
-                truncated,
-                markdown,
-                links,
-            });
+            return Ok((
+                Page {
+                    url: start.to_string(),
+                    final_url: current.to_string(),
+                    title: title.unwrap_or_else(|| site.clone()),
+                    site,
+                    description,
+                    icon,
+                    content_type,
+                    text,
+                    bytes: body.len(),
+                    truncated,
+                    markdown,
+                    links,
+                },
+                !no_store,
+            ));
         }
         Err(FetchError::TooManyRedirects {
             site: site_of(&current),
@@ -287,13 +523,18 @@ pub fn looks_like_image(b: &[u8]) -> bool {
         || (head.trim_start().starts_with("<?xml") && head.contains("<svg"))
 }
 
-async fn read_capped(
+async fn read_capped(resp: reqwest::Response, site: &str) -> Result<(Vec<u8>, bool), FetchError> {
+    read_capped_to(resp, site, MAX_BYTES).await
+}
+
+async fn read_capped_to(
     mut resp: reqwest::Response,
     site: &str,
+    max: usize,
 ) -> Result<(Vec<u8>, bool), FetchError> {
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| net_error(site, &e))? {
-        let room = MAX_BYTES - body.len();
+        let room = max - body.len();
         if chunk.len() >= room {
             body.extend_from_slice(&chunk[..room]);
             return Ok((body, true));
