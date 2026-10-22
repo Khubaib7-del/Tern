@@ -11,6 +11,7 @@
 pub mod ask;
 pub mod attach;
 pub mod branch;
+pub mod browse;
 pub mod chat;
 pub mod doctor;
 pub mod engine;

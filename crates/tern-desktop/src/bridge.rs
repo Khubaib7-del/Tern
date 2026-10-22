@@ -27,6 +27,8 @@ pub enum Msg {
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
     Attached(Result<tern_agent::Attachment, String>),
+    /// A page for the built-in browser: the load's number and the page.
+    Browsed(u64, Result<tern_agent::browse::BrowsedPage, String>),
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
@@ -58,6 +60,7 @@ impl std::fmt::Debug for Msg {
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Browsed(r, p) => write!(f, "Browsed({r}, ok: {})", p.is_ok()),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
             Self::Event(e) => write!(f, "Event({})", e.kind),
@@ -279,6 +282,15 @@ impl Bridge {
     }
 
     /// Reads the catalog with key status and the saved choices.
+    /// Reads a page for the built-in browser.
+    pub fn browse(&self, request: u64, url: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let page = tern_agent::browse::open(&url).await;
+            let _ = tx.send(Msg::Browsed(request, page));
+        });
+    }
+
     pub fn load_providers(&self) {
         let tx = self.tx.clone();
         self.rt.spawn_blocking(move || {

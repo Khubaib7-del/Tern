@@ -32,6 +32,10 @@ pub struct Page {
     pub text: String,
     pub bytes: usize,
     pub truncated: bool,
+    /// The text as Markdown with links (HTML pages; plain text otherwise).
+    pub markdown: String,
+    /// Links in the main text (HTML pages only).
+    pub links: Vec<crate::extract::Anchor>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -231,14 +235,15 @@ impl Fetcher {
                 html |= head.starts_with("<!doctype html") || head.starts_with("<html");
             }
             let mut icon = SourceIcon::for_url(&current);
-            let (title, description, text) = if html {
+            let (title, description, text, markdown, links) = if html {
                 let e = extract_html(&raw, &current);
                 if let Some(i) = e.icon {
                     icon.favicon = Some(i);
                 }
-                (e.title, e.description, e.text)
+                (e.title, e.description, e.text, e.markdown, e.links)
             } else {
-                (None, None, tidy(&raw))
+                let t = tidy(&raw);
+                (None, None, t.clone(), t, Vec::new())
             };
             if text.trim().is_empty() {
                 return Err(FetchError::Empty { site });
@@ -254,6 +259,8 @@ impl Fetcher {
                 text,
                 bytes: body.len(),
                 truncated,
+                markdown,
+                links,
             });
         }
         Err(FetchError::TooManyRedirects {

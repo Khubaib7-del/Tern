@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+mod browser_view;
 mod editor_view;
 
 use crate::layout::{Layout, Tab, Tabs};
@@ -77,6 +78,8 @@ pub struct Workspace {
     wipe: Option<ThemeWipe>,
     reduced_motion: bool,
     _listener: Task<()>,
+    /// The built-in browser's address bar.
+    address_input: Entity<InputState>,
     /// The Editor screen's text field.
     note_input: Entity<TextareaState>,
     _subscriptions: Vec<Subscription>,
@@ -156,6 +159,18 @@ impl Workspace {
                 _ => {}
             },
         );
+        let address_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Address, like arxiv.org"));
+        let address_sub = cx.subscribe_in(
+            &address_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let typed = input.read(cx).value().to_string();
+                    this.browse(&typed, window, cx);
+                }
+            },
+        );
         let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("Chat title"));
         let rename_sub = cx.subscribe_in(
             &rename_input,
@@ -203,7 +218,8 @@ impl Workspace {
             ticker: None,
             _listener: listener,
             note_input,
-            _subscriptions: vec![sub, key_sub, rename_sub, note_sub],
+            address_input,
+            _subscriptions: vec![sub, key_sub, rename_sub, note_sub, address_sub],
         }
     }
 
@@ -267,6 +283,14 @@ impl Workspace {
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
+            Msg::Browsed(request, page) => {
+                if self.model.browser.loaded(request, page) {
+                    let address = self.model.browser.address();
+                    self.address_input
+                        .update(cx, |i, cx| i.set_value(address, window, cx));
+                    self.request_icons();
+                }
+            }
             Msg::Text(call, text) => {
                 self.model.on_text(call, &text);
                 self.scroll.scroll_to_bottom();
@@ -669,7 +693,7 @@ impl Workspace {
                         .text_color(p.faint)
                         .child(SharedString::from(pg.site.clone())),
                 )
-                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                .on_click(cx.listener(move |this, _, window, cx| this.browse(&url, window, cx)))
         });
         div()
             .flex()
@@ -1088,7 +1112,12 @@ impl Workspace {
                                 .small()
                                 .tooltip("Show or hide the run panel")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.model.run_panel_open = !this.model.run_panel_open;
+                                    if this.model.browser.visible && this.model.run_panel_open {
+                                        this.model.browser.visible = false;
+                                    } else {
+                                        this.model.browser.visible = false;
+                                        this.model.run_panel_open = !this.model.run_panel_open;
+                                    }
                                     cx.notify();
                                 })),
                         ),
@@ -1156,6 +1185,19 @@ impl Workspace {
                                     this.open_editor(window, cx);
                                 }
                             })),
+                    )
+                    .child(
+                        Button::new("rail-browser")
+                            .icon(IconName::Globe)
+                            .ghost()
+                            .when(
+                                self.model.browser.visible && self.model.run_panel_open,
+                                |b| b.selected(true),
+                            )
+                            .tooltip("Browser")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)),
+                            ),
                     ),
             )
             .child(
@@ -1394,6 +1436,7 @@ impl Workspace {
                     .gap_1()
                     .child(
                         TextView::markdown(("answer", i), text.clone())
+                            .on_link_click(self.link_opener(cx))
                             .selectable(true)
                             .motion(stream_motion()),
                     )
@@ -2590,7 +2633,7 @@ impl Workspace {
                         .text_sm()
                         .child(SharedString::from(pg.label().to_owned())),
                 )
-                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+                .on_click(cx.listener(move |this, _, window, cx| this.browse(&url, window, cx)))
         });
         let problems: Vec<_> = run
             .problems()
@@ -2767,6 +2810,20 @@ impl Render for Workspace {
                 .rounded_full()
                 .bg(p.text.opacity(strength * 0.25))
         });
+        // The right pane: the browser when it is showing, else the run panel.
+        let side_w = if self.model.browser.visible {
+            browser_view::BROWSER_W
+        } else {
+            RUN_PANEL_W
+        };
+        let side_pane = |this: &Self, cx: &mut Context<Self>| {
+            if this.model.browser.visible {
+                this.browser_pane(p, cx)
+            } else {
+                this.run_panel(p, cx).into_any_element()
+            }
+        };
+        let mut side = panel.map(|_| side_pane(self, cx));
         let screen_id: &'static str = match self.model.screen {
             Screen::Chat => "screen-chat",
             Screen::Providers => "screen-providers",
@@ -2813,7 +2870,7 @@ impl Render for Workspace {
                             ),
                     )
                     .when_some(panel.filter(|_| layout.panel_beside), |d, f| {
-                        d.child(sliding(self.run_panel(p, cx), RUN_PANEL_W, f, true))
+                        d.children(side.take().map(|e| sliding(e, side_w, f, true)))
                     })
                     // Too narrow to sit beside the chat: the panels float over it.
                     .when_some(sidebar.filter(|_| !layout.sidebar_beside), |d, f| {
@@ -2835,7 +2892,7 @@ impl Render for Workspace {
                                 .bottom_0()
                                 .right_0()
                                 .shadow_lg()
-                                .child(sliding(self.run_panel(p, cx), RUN_PANEL_W, f, true)),
+                                .children(side.take().map(|e| sliding(e, side_w, f, true))),
                         )
                     }),
             )

@@ -210,6 +210,8 @@ pub struct Model {
     pub attachments: Vec<Attachment>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The built-in browser pane.
+    pub browser: crate::browser::BrowserState,
     /// The Editor screen.
     pub editor: crate::editor::EditorState,
     /// The answer just saved to the vault (its icon shows a check).
@@ -249,6 +251,7 @@ impl Model {
             icons: HashMap::new(),
             attachments: Vec::new(),
             mention: None,
+            browser: crate::browser::BrowserState::default(),
             editor: crate::editor::EditorState::default(),
             saved_answer: None,
             reply_to: None,
@@ -734,7 +737,8 @@ impl Model {
             Entry::Assistant { pages, .. } => pages.as_slice(),
             _ => &[],
         });
-        for p in pages.chain(self.turn_pages.iter()) {
+        let browsed = self.browser.page.iter().map(|b| &b.page);
+        for p in pages.chain(self.turn_pages.iter()).chain(browsed) {
             if self.icons.contains_key(&p.site) {
                 continue;
             }
