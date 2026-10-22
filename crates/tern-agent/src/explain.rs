@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use tern_providers::ChatMessage;
 
 pub use tern_study::explain3d::{
-    Drawing, Face, FaceKind, Fit, GRID, Link, Part, Scene, Shape, Step, SvgStyle, View, hit,
+    Drawing, Edge, Face, FaceKind, Fit, GRID, Link, Part, Scene, Shape, Step, SvgStyle, View, hit,
     ink_amount, mix, project, to_svg,
 };
 use tern_study::material::{Anchor, Source};

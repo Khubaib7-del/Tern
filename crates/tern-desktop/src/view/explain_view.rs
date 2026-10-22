@@ -19,7 +19,7 @@ use gpui_kit::{
     AnyElement, App, Bounds, Context, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
     PathBuilder, Pixels, SharedString, Window, canvas, div, point, px,
 };
-use tern_agent::explain::{Drawing, FaceKind, ink_amount};
+use tern_agent::explain::{Drawing, Edge, FaceKind, ink_amount};
 
 use super::Workspace;
 use super::study_view::serif;
@@ -87,6 +87,26 @@ fn fill(
     pb.build().ok()
 }
 
+/// One hairline: in the accent when its part is lit or hovered.
+fn paint_edge(
+    e: &Edge,
+    pt: &Paint,
+    f: &tern_agent::explain::Fit,
+    o: (f32, f32),
+    window: &mut Window,
+) {
+    let lit = e.part.and_then(|i| pt.lit.get(i).copied()).unwrap_or(0.0);
+    let hovered = e.part.is_some() && e.part == pt.hover;
+    let (c, wid) = if lit > 0.5 || hovered {
+        (pt.accent, 1.4)
+    } else {
+        (pt.ink.opacity(0.85), 0.9)
+    };
+    if let Some(p) = stroke(&e.pts, f, o, wid, e.closed, None) {
+        window.paint_path(p, c);
+    }
+}
+
 fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
     let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
     let o = (f32::from(b.origin.x), f32::from(b.origin.y));
@@ -97,8 +117,11 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             window.paint_path(p, pt.faint.opacity(0.35));
         }
     }
-    // The solid machine, back to front.
-    for face in &pt.drawing.faces {
+    // The solid machine, back to front, with the Hairline overlay: each
+    // part's edges go down right after its last face, so nearer parts hide
+    // the lines behind them.
+    let after = pt.drawing.edges_after_faces();
+    for (i, face) in pt.drawing.faces.iter().enumerate() {
         let mut c = lerp_color(pt.canvas, pt.ink, ink_amount(face.tone, pt.dark));
         let lit = pt.lit.get(face.part).copied().unwrap_or(0.0);
         if lit > 0.0 {
@@ -116,19 +139,12 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
         if let Some(p) = stroke(&face.pts, &f, o, 0.6, true, None) {
             window.paint_path(p, c);
         }
-    }
-    // The Hairline overlay: every edge.
-    for e in &pt.drawing.edges {
-        let lit = e.part.and_then(|i| pt.lit.get(i).copied()).unwrap_or(0.0);
-        let hovered = e.part.is_some() && e.part == pt.hover;
-        let (c, wid) = if lit > 0.5 || hovered {
-            (pt.accent, 1.4)
-        } else {
-            (pt.ink.opacity(0.85), 0.9)
-        };
-        if let Some(p) = stroke(&e.pts, &f, o, wid, e.closed, None) {
-            window.paint_path(p, c);
+        for &ei in &after[i] {
+            paint_edge(&pt.drawing.edges[ei], pt, &f, o, window);
         }
+    }
+    for &ei in &after[pt.drawing.faces.len()] {
+        paint_edge(&pt.drawing.edges[ei], pt, &f, o, window);
     }
     // Links: dashed, with a head.
     for l in &pt.drawing.links {

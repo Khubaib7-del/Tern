@@ -737,7 +737,17 @@ fn parse_card(item: &Value, now: i64) -> Option<Card> {
 pub fn reason(sentence: &str) -> Option<String> {
     for cue in [" because ", " since ", " so that ", " in order to "] {
         if let Some((head, _)) = sentence.split_once(cue) {
-            let head = head.trim().trim_end_matches(',');
+            let mut head = head.trim().trim_end_matches(',');
+            // "When a page is missing, the CPU raises a fault because …":
+            // ask about the main clause, not the condition before it.
+            let first = head.split_whitespace().next().unwrap_or("");
+            if matches!(
+                first,
+                "When" | "If" | "Once" | "After" | "Before" | "While" | "As" | "Whenever"
+            ) && let Some((_, main)) = head.split_once(", ")
+            {
+                head = main.trim();
+            }
             if head.split_whitespace().count() >= 2 {
                 return Some(head.to_owned());
             }
@@ -1171,6 +1181,11 @@ mod tests {
         assert_eq!(
             reason("The cache is small, so misses are common in large loops.").as_deref(),
             Some("misses are common in large loops")
+        );
+        assert_eq!(
+            reason("When a page is missing, the CPU raises a fault because the frame is gone.")
+                .as_deref(),
+            Some("the CPU raises a fault")
         );
         assert!(reason("Plain fact here.").is_none());
         let c = Card::new(CardKind::Cloze, "A {{c1::b}} c", "extra", "you", 0);

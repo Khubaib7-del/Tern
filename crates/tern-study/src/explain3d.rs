@@ -704,6 +704,24 @@ pub struct Drawing {
     pub bounds: (f32, f32, f32, f32),
 }
 
+impl Drawing {
+    /// Which edges to draw after each face, so a part's hairlines go down
+    /// with its own faces and a part in front hides the lines behind it.
+    /// Entry `i` follows face `i`; the extra last entry holds edges whose
+    /// part has no face (drawn on top).
+    pub fn edges_after_faces(&self) -> Vec<Vec<usize>> {
+        let mut out = vec![Vec::new(); self.faces.len() + 1];
+        for (ei, e) in self.edges.iter().enumerate() {
+            let slot = e
+                .part
+                .and_then(|p| self.faces.iter().rposition(|f| f.part == p))
+                .unwrap_or(self.faces.len());
+            out[slot].push(ei);
+        }
+        out
+    }
+}
+
 struct Cam {
     ca: f32,
     sa: f32,
@@ -1179,8 +1197,20 @@ pub fn to_svg(scene: &Scene, step: Option<usize>, style: SvgStyle, w: u32, h: u3
     for e in &d.grid {
         s.push_str(&format!("<path d=\"{}\"/>\n", path(&e.pts, &fit, false)));
     }
-    s.push_str("</g>\n<g stroke=\"none\">\n");
-    for f in &d.faces {
+    s.push_str("</g>\n<g stroke-linejoin=\"round\">\n");
+    // Faces back to front, each part's hairlines right after its last face,
+    // so nearer parts hide the lines behind them.
+    let after = d.edges_after_faces();
+    let edge = |s: &mut String, e: &Edge| {
+        let on = e.part.is_some_and(|p| lit.contains(&p));
+        s.push_str(&format!(
+            "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
+            path(&e.pts, &fit, e.closed),
+            hex(if on { style.accent } else { style.ink }),
+            if on { "1.4" } else { "0.8" }
+        ));
+    };
+    for (i, f) in d.faces.iter().enumerate() {
         let mut c = mix(style.background, style.ink, ink_amount(f.tone, style.dark));
         if lit.contains(&f.part) {
             c = mix(
@@ -1195,22 +1225,12 @@ pub fn to_svg(scene: &Scene, step: Option<usize>, style: SvgStyle, w: u32, h: u3
             path(&f.pts, &fit, true),
             hex(c)
         ));
+        for &ei in &after[i] {
+            edge(&mut s, &d.edges[ei]);
+        }
     }
-    s.push_str(&format!(
-        "</g>\n<g fill=\"none\" stroke=\"{}\" stroke-width=\"0.8\" stroke-linejoin=\"round\">\n",
-        hex(style.ink)
-    ));
-    for e in &d.edges {
-        let on = e.part.is_some_and(|p| lit.contains(&p));
-        s.push_str(&format!(
-            "<path d=\"{}\"{}/>\n",
-            path(&e.pts, &fit, e.closed),
-            if on {
-                format!(" stroke=\"{}\" stroke-width=\"1.4\"", hex(style.accent))
-            } else {
-                String::new()
-            }
-        ));
+    for &ei in &after[d.faces.len()] {
+        edge(&mut s, &d.edges[ei]);
     }
     s.push_str("</g>\n");
     s.push_str(&format!(
@@ -1468,6 +1488,18 @@ mod tests {
             },
         );
         assert_ne!(t.faces, d.faces);
+        // Each part's hairlines follow its own last face, so a nearer part
+        // covers them; every edge is placed exactly once.
+        let after = d.edges_after_faces();
+        assert_eq!(after.len(), d.faces.len() + 1);
+        assert_eq!(after.iter().map(Vec::len).sum::<usize>(), d.edges.len());
+        for (i, slot) in after.iter().enumerate().take(d.faces.len()) {
+            for &ei in slot {
+                let p = d.edges[ei].part.unwrap();
+                assert_eq!(d.faces[i].part, p);
+                assert!(d.faces[i + 1..].iter().all(|f| f.part != p));
+            }
+        }
         // A cylinder outlines its rim and silhouette, not every facet.
         let rim = d.edges.iter().filter(|e| e.part == Some(1)).count();
         assert!(rim < 20, "{rim}");
