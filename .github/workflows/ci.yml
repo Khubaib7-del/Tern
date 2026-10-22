@@ -21,7 +21,7 @@ jobs:
     name: Windows (fmt, clippy, test)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -42,7 +42,7 @@ jobs:
     name: Windows desktop build (download to test)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -50,7 +50,7 @@ jobs:
       - name: Build tern-desktop and tern (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tern-windows-x64
           path: |
