@@ -23,6 +23,8 @@ pub enum Screen {
     Providers,
     /// The vault's notes.
     Editor,
+    /// The vault repository: checkpoints, branches, push, pull requests.
+    Git,
 }
 
 /// One block of the transcript.
@@ -212,6 +214,10 @@ pub struct Model {
     pub mention: Option<MentionMenu>,
     /// The built-in browser pane.
     pub browser: crate::browser::BrowserState,
+    /// The Git screen.
+    pub git: crate::git::GitState,
+    /// "Credit Tern as co-author" on the Git screen, before it is saved.
+    pub git_credit: bool,
     /// The Editor screen.
     pub editor: crate::editor::EditorState,
     /// The answer just saved to the vault (its icon shows a check).
@@ -252,6 +258,8 @@ impl Model {
             attachments: Vec::new(),
             mention: None,
             browser: crate::browser::BrowserState::default(),
+            git: crate::git::GitState::default(),
+            git_credit: false,
             editor: crate::editor::EditorState::default(),
             saved_answer: None,
             reply_to: None,

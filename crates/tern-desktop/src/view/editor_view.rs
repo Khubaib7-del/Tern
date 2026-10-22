@@ -35,6 +35,9 @@ impl Workspace {
 
     pub(super) fn close_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_note(cx);
+        if self.model.git.status().is_some() {
+            self.git_op(crate::git::GitOp::Refresh, cx);
+        }
         self.model.screen = Screen::Chat;
         self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();

@@ -29,6 +29,9 @@ pub enum Msg {
     Attached(Result<tern_agent::Attachment, String>),
     /// A page for the built-in browser: the load's number and the page.
     Browsed(u64, Result<tern_agent::browse::BrowsedPage, String>),
+    /// A git operation finished: the repository as it now is, and what
+    /// to tell the user.
+    Git(crate::git::GitSnapshot, Result<Option<String>, String>),
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
@@ -60,6 +63,7 @@ impl std::fmt::Debug for Msg {
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
             Self::Browsed(r, p) => write!(f, "Browsed({r}, ok: {})", p.is_ok()),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
@@ -282,6 +286,30 @@ impl Bridge {
     }
 
     /// Reads the catalog with key status and the saved choices.
+    /// Runs a git operation in `dir`, then reads the repository again.
+    pub fn git(&self, dir: std::path::PathBuf, op: crate::git::GitOp) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let repo = tern_agent::git::Repo::at(dir);
+            let prefs = Preferences::load();
+            let owner = prefs.git_name.clone().unwrap_or_default();
+            let year = tern_agent::git::this_year();
+            let result = crate::git::run(&repo, &op, &prefs.git_identity(), &owner, year);
+            let snapshot = crate::git::GitSnapshot::read(&repo);
+            let _ = tx.send(Msg::Git(snapshot, result));
+        });
+    }
+
+    /// Saves the choices without reconnecting the chat.
+    pub fn save_prefs(&self, prefs: Preferences) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = prefs.save() {
+                let _ = tx.send(Msg::PrefsFailed(e));
+            }
+        });
+    }
+
     /// Reads a page for the built-in browser.
     pub fn browse(&self, request: u64, url: String) {
         let tx = self.tx.clone();
