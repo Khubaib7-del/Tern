@@ -50,6 +50,14 @@ async fn setup(answer: &str) -> MockServer {
 }
 
 async fn ask(s: &MockServer, sink: &MemorySink) -> Result<tern_agent::AskReport, String> {
+    ask_deciding(s, sink, None).await
+}
+
+async fn ask_deciding(
+    s: &MockServer,
+    sink: &MemorySink,
+    decider: Option<&tern_agent::Decider>,
+) -> Result<tern_agent::AskReport, String> {
     let search = SearchClient::new(find_search("searxng").unwrap(), None, Some(&s.uri())).unwrap();
     let provider =
         providers::connect_by_id("ollama", None, Some(&format!("{}/v1", s.uri()))).unwrap();
@@ -63,7 +71,7 @@ async fn ask(s: &MockServer, sink: &MemorySink) -> Result<tern_agent::AskReport,
         fetcher: &fetcher,
         sink,
         ledger: &ledger,
-        decider: None,
+        decider,
     };
     let lines = std::sync::Mutex::new(Vec::<String>::new());
     let progress = |l: &str| lines.lock().unwrap().push(l.to_owned());
@@ -118,6 +126,22 @@ async fn searches_reads_answers_and_checks_citations() {
         .to_owned();
     assert!(prompt.contains("[1] Attention Is All You Need"));
     assert!(prompt.contains("[2] A blog"));
+}
+
+#[tokio::test]
+async fn the_decision_model_ranks_results_before_reading() {
+    let s = setup("The Transformer [1].").await;
+    let sink = MemorySink::default();
+    let d = tern_agent::Decider::local();
+    ask_deciding(&s, &sink, Some(&d)).await.unwrap();
+    let events = sink.events();
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert_eq!(&kinds[..3], ["ask.started", "search.done", "decision.made"]);
+    let made = &events[2].payload;
+    assert_eq!(made["kind"], "source_rank");
+    assert_eq!(made["model"], tern_agent::decide::LOCAL_MODEL);
+    assert_eq!(made["choices"].as_array().unwrap().len(), 3);
+    assert_eq!(d.log().len(), 1);
 }
 
 #[tokio::test]

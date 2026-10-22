@@ -14,7 +14,7 @@
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Mostly built (PR #34: plans and parallel workers; PR #35: checkpoints, steering, the in-app watcher, ledgers); budget pause and an OS scheduler remain |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
 | 7 | Study harness | Tutor, flashcards, quizzes, viva practice | In progress (PR #36: materials, topics, mastery, tutor, quizzes, viva); flashcards with Anki export and Explain in 3D next |
-| 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Planned |
+| 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Mostly built (PR #38: local scorer, Jev, SubQ Snap, and Voyage adapters, wiring, `tern decide bench`); the reasoning-model and remote benchmark rows need keys |
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Planned |
 | 10 | Extensibility | MCP client, ACP server, skills, project rules | Planned |
 | 11 | Evaluation | Benchmarks for citation accuracy, cost, and reliability | Planned |
@@ -119,9 +119,9 @@ Built in PR #36: study materials (files, folders, PDFs with page anchors, vault 
 
 | Deliverable | Exit check |
 | --- | --- |
-| `tern-decision` interface and a local reranker fallback | Works offline |
-| First remote decision-model integration, after verifying its API and pricing | Behind BYOK like any provider |
-| Wired into source ranking, next-tool choice, claim pass or fail, now-or-later | Measured against the reasoning-model-only baseline |
+| `tern-decision` interface and a local reranker fallback | Works offline (built, PR #38: `local-lexical-1`, BM25 and per-kind rules, deterministic, no download; a local cross-encoder remains) |
+| First remote decision-model integration, after verifying its API and pricing | Behind BYOK like any provider (built, PR #38: TypeSafe Jev and Subquadratic SubQ Snap on one System One adapter, Voyage rerank for ranking; keys tested before saving; API and prices checked on 23 October 2026, ADR 0007. Not yet run against the live services from CI) |
+| Wired into source ranking, next-tool choice, claim pass or fail, now-or-later | Measured against the reasoning-model-only baseline (built, PR #38: ranking in quick asks, chat search, and deep workers; a first-tool hint; a claim pre-score under hard checks with the model judge keeping the final word; deep worker and watch order. `tern decide bench` on 50 bundled fixtures: fixed order 52%, local scorer 86%, in-sample. The reasoning-model row (`--reasoning`) and the remote row (`--remote`) need keys and have not been run) |
 
 ### Phase 9 · Continuity and library
 

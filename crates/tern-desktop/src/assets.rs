@@ -60,6 +60,13 @@ const GLYPHS: &[(&str, &[u8])] = &[
 const SERVICES: &[(&str, &[u8])] = &[
     ("arxiv", include_bytes!("../assets/services/arxiv.svg")),
     ("brave", include_bytes!("../assets/services/brave.svg")),
+    // Decision-model providers, traced from their own marks in one colour.
+    ("subq", include_bytes!("../assets/services/subq.svg")),
+    (
+        "typesafe",
+        include_bytes!("../assets/services/typesafe.svg"),
+    ),
+    ("voyage", include_bytes!("../assets/services/voyage.svg")),
     ("doi", include_bytes!("../assets/services/doi.svg")),
     (
         "duckduckgo",

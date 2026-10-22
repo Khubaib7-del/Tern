@@ -46,14 +46,16 @@ impl DecisionKind {
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        Some(match s.trim().to_lowercase().replace(['-', ' '], "_").as_str() {
-            "source_rank" | "sources" | "source" => Self::SourceRank,
-            "next_tool" | "tool" => Self::NextTool,
-            "claim_check" | "claim" | "claims" => Self::ClaimCheck,
-            "triage" | "now_or_later" => Self::Triage,
-            "general" | "question" => Self::General,
-            _ => return None,
-        })
+        Some(
+            match s.trim().to_lowercase().replace(['-', ' '], "_").as_str() {
+                "source_rank" | "sources" | "source" => Self::SourceRank,
+                "next_tool" | "tool" => Self::NextTool,
+                "claim_check" | "claim" | "claims" => Self::ClaimCheck,
+                "triage" | "now_or_later" => Self::Triage,
+                "general" | "question" => Self::General,
+                _ => return None,
+            },
+        )
     }
 }
 
@@ -253,7 +255,10 @@ impl std::fmt::Display for DecisionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(e) => write!(f, "The decision could not be asked: {e}."),
-            Self::MissingKey(name) => write!(f, "{name} needs a key. Add one in Decision model settings or with `tern decide key add`."),
+            Self::MissingKey(name) => write!(
+                f,
+                "{name} needs a key. Add one in Decision model settings or with `tern decide key add`."
+            ),
             Self::Unsupported(e) => write!(f, "{e}"),
             Self::Network(e) => write!(f, "The decision model could not be reached: {e}."),
             Self::Http { status, body } => {
@@ -285,8 +290,10 @@ pub trait DecisionModel: Send + Sync {
     }
     /// Scores the choices. The decision's probabilities are in request
     /// order; `chosen`, `confidence`, and the cost are filled in.
-    fn score<'a>(&'a self, req: &'a DecisionRequest)
-    -> BoxFuture<'a, Result<Decision, DecisionError>>;
+    fn score<'a>(
+        &'a self,
+        req: &'a DecisionRequest,
+    ) -> BoxFuture<'a, Result<Decision, DecisionError>>;
 }
 
 /// Cuts `s` to `n` characters with an ellipsis.
@@ -329,7 +336,10 @@ mod tests {
             vec![Choice::plain("a"), Choice::plain("b")],
         );
         assert!(r.validate().is_err());
-        assert_eq!(DecisionKind::parse("now-or-later"), Some(DecisionKind::Triage));
+        assert_eq!(
+            DecisionKind::parse("now-or-later"),
+            Some(DecisionKind::Triage)
+        );
         assert_eq!(clip("a  b c", 3), "a …");
     }
 }

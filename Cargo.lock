@@ -7596,6 +7596,7 @@ dependencies = [
  "tempfile",
  "tern-core",
  "tern-crawl",
+ "tern-decision",
  "tern-platform",
  "tern-providers",
  "tern-research",

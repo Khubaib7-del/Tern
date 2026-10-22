@@ -32,7 +32,7 @@ pub mod text;
 pub use engine::{DEFAULT_TIMEOUT, Decider, Mode, Rule, apply_rules};
 pub use local::{LOCAL_MODEL, LocalModel};
 pub use model::{
-    BoxFuture, Choice, Cost, Decision, DecisionError, DecisionKind, DecisionModel,
-    DecisionRequest, Override,
+    BoxFuture, Choice, Cost, Decision, DecisionError, DecisionKind, DecisionModel, DecisionRequest,
+    Override,
 };
 pub use remote::{DECISION_CATALOG, RemoteModel, RemoteSpec, Wire, find_remote, price_of};

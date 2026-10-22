@@ -70,7 +70,9 @@ async fn subq_uses_its_model_and_the_same_wire() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
-        .and(body_partial_json(serde_json::json!({"model": "subq-snap-1.1"})))
+        .and(body_partial_json(
+            serde_json::json!({"model": "subq-snap-1.1"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "model": "subq-snap-1.1",
             "answers": {"decision": {"type": "choice", "choice": "c2", "confidence": 0.5,
@@ -89,7 +91,9 @@ async fn voyage_rerank_scores_become_probabilities() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/rerank"))
-        .and(body_partial_json(serde_json::json!({"model": "rerank-2.5-lite"})))
+        .and(body_partial_json(
+            serde_json::json!({"model": "rerank-2.5-lite"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "object": "list",
             "data": [{"index": 1, "relevance_score": 0.81}, {"index": 0, "relevance_score": 0.12}],
@@ -111,8 +115,7 @@ async fn refused_key_falls_back_to_local_without_leaking_it() {
     Mock::given(method("POST"))
         .and(path("/v1/systemone"))
         .respond_with(
-            ResponseTemplate::new(401)
-                .set_body_string(format!("{{\"detail\":\"bad key {KEY}\"}}")),
+            ResponseTemplate::new(401).set_body_string(format!("{{\"detail\":\"bad key {KEY}\"}}")),
         )
         .mount(&server)
         .await;

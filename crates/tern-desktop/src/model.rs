@@ -31,6 +31,8 @@ pub enum Screen {
     Watches,
     /// The Study harness: materials, topics, tutor, quizzes, viva.
     Study,
+    /// Decision model settings: off, local, or a remote provider.
+    Decision,
 }
 
 /// One block of the transcript.
@@ -173,6 +175,8 @@ pub enum RunView {
     Workers,
     /// The source and budget ledgers.
     Ledger,
+    /// What the decision model decided, and why.
+    Decisions,
 }
 
 impl RunView {
@@ -183,6 +187,9 @@ impl RunView {
             v.push(Self::Workers);
         }
         v.extend([Self::Detailed, Self::Raw, Self::Report, Self::Ledger]);
+        if !run.decisions.is_empty() {
+            v.push(Self::Decisions);
+        }
         v
     }
 
@@ -194,6 +201,7 @@ impl RunView {
             Self::Raw => "Raw",
             Self::Report => "Report",
             Self::Ledger => "Ledger",
+            Self::Decisions => "Decisions",
         }
     }
 }
@@ -240,6 +248,8 @@ pub struct Model {
     pub stopping: bool,
     pub screen: Screen,
     pub providers: ProvidersState,
+    /// The Decision model settings page.
+    pub decision: crate::decision::DecisionPage,
     /// Pages read so far in the running turn.
     pub turn_pages: Vec<PageRef>,
     pub icons: HashMap<String, SiteIcon>,
@@ -325,6 +335,7 @@ impl Model {
             stopping: false,
             screen: Screen::Chat,
             providers: ProvidersState::default(),
+            decision: Default::default(),
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),

@@ -68,11 +68,30 @@ pub enum Msg {
     Watches(Vec<tern_agent::watch::Watch>, Option<String>, usize),
     /// The Study harness: see [`StudyMsg`].
     Study(Box<StudyMsg>),
+    /// The Decision model page.
+    Decision(Box<DecisionMsg>),
+}
+
+/// What the Decision model page's background work tells the window.
+#[derive(Debug)]
+pub enum DecisionMsg {
+    /// The remote catalog with key status, the saved choices, a keychain error.
+    Loaded(
+        Vec<tern_agent::decide::DecisionRow>,
+        tern_agent::decide::DecisionPrefs,
+        Option<String>,
+    ),
+    /// A key was tested (and saved, when it worked).
+    Checked(&'static str, Result<String, String>),
+    Removed(&'static str, Result<bool, String>),
+    /// The page's Test button: a sample decision with the choices shown.
+    Tested(Result<String, String>),
 }
 
 /// What the Study harness's background work tells the window. Each is
 /// sent once and boxed in [`Msg`], so the variants' sizes do not matter.
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub enum StudyMsg {
     /// The library as saved, a line to tell the user, and who the
     /// passages go to (`None` when studying offline).
@@ -658,6 +677,82 @@ impl Bridge {
                     Kind::Search => search::remove(id, store.as_ref()),
                 });
             let _ = tx.send(Msg::Removed(kind, id, result));
+        });
+    }
+
+    pub fn decision_load(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let keychain = setup::keychain();
+            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let rows = tern_agent::decide::list(secrets);
+            let prefs = Preferences::load().decision;
+            let _ = tx.send(Msg::Decision(Box::new(DecisionMsg::Loaded(
+                rows,
+                prefs,
+                keychain.err(),
+            ))));
+        });
+    }
+
+    /// Tests a decision-model key with one small decision; saves it if it works.
+    pub fn decision_add_key(&self, id: &'static str, key: SecretString) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result = match setup::keychain() {
+                Err(e) => Err(format!("The keychain is not available: {e}")),
+                Ok(store) => tern_agent::decide::add(id, key, store.as_ref(), None, None)
+                    .await
+                    .map(|d| format!("Key works and is saved. {}", crate::decision::test_line(&d))),
+            };
+            let _ = tx.send(Msg::Decision(Box::new(DecisionMsg::Checked(id, result))));
+        });
+    }
+
+    pub fn decision_test_key(&self, id: &'static str) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result = match setup::keychain() {
+                Err(e) => Err(format!("The keychain is not available: {e}")),
+                Ok(store) => tern_agent::decide::test_saved(id, store.as_ref(), None, None)
+                    .await
+                    .map(|d| format!("Works. {}", crate::decision::test_line(&d))),
+            };
+            let _ = tx.send(Msg::Decision(Box::new(DecisionMsg::Checked(id, result))));
+        });
+    }
+
+    pub fn decision_remove(&self, id: &'static str) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let result = setup::keychain()
+                .map_err(|e| format!("The keychain is not available: {e}"))
+                .and_then(|store| tern_agent::decide::remove(id, store.as_ref()));
+            let _ = tx.send(Msg::Decision(Box::new(DecisionMsg::Removed(id, result))));
+        });
+    }
+
+    /// One sample decision with the choices on the page.
+    pub fn decision_test(&self, prefs: tern_agent::decide::DecisionPrefs) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let keychain = setup::keychain();
+            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let decider = tern_agent::decide::decider_from(&prefs, secrets);
+            let result = tern_agent::decide::ask(
+                &decider,
+                tern_agent::decide::DecisionKind::SourceRank,
+                "Which page should be read first to learn what the Transformer architecture replaced?",
+                &[
+                    "arxiv.org: Attention Is All You Need, the Transformer, based solely on attention, dispensing with recurrence".into(),
+                    "pinterest.com: Transformers wallpaper ideas".into(),
+                    "a cooking blog: weekend bread recipes".into(),
+                ],
+                "",
+            )
+            .await
+            .map(|d| crate::decision::test_line(&d));
+            let _ = tx.send(Msg::Decision(Box::new(DecisionMsg::Tested(result))));
         });
     }
 

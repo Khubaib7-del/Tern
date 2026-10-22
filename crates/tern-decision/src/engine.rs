@@ -64,8 +64,9 @@ pub enum Rule {
 pub fn apply_rules(probs: &[f32], rules: &[Rule]) -> (Vec<f32>, Vec<Override>) {
     let mut out = probs.to_vec();
     let mut overrides = Vec::new();
-    if let Some(Rule::Force { choice, reason }) =
-        rules.iter().find(|r| matches!(r, Rule::Force { choice, .. } if *choice < probs.len()))
+    if let Some(Rule::Force { choice, reason }) = rules
+        .iter()
+        .find(|r| matches!(r, Rule::Force { choice, .. } if *choice < probs.len()))
     {
         for (i, p) in out.iter_mut().enumerate() {
             *p = if i == *choice { 1.0 } else { 0.0 };
@@ -454,7 +455,11 @@ mod tests {
                 },
             ],
         );
-        assert_eq!((p, o.len()), (vec![0.5, 0.5], 2), "all ruled out keeps scores");
+        assert_eq!(
+            (p, o.len()),
+            (vec![0.5, 0.5], 2),
+            "all ruled out keeps scores"
+        );
         let (p, _) = apply_rules(
             &[1.0, 0.0, 0.0],
             &[Rule::RuleOut {

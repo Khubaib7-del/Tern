@@ -208,7 +208,10 @@ impl RemoteModel {
     }
 
     fn context_of(&self, req: &DecisionRequest) -> String {
-        req.context.chars().take(self.spec.max_context_chars).collect()
+        req.context
+            .chars()
+            .take(self.spec.max_context_chars)
+            .collect()
     }
 
     fn finish(

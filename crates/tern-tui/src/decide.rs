@@ -190,7 +190,11 @@ async fn run_cmd(cmd: DecideCmd) -> Result<(), String> {
                     r.id,
                     r.name,
                     r.product,
-                    if r.key_saved { "key saved" } else { "no key   " },
+                    if r.key_saved {
+                        "key saved"
+                    } else {
+                        "no key   "
+                    },
                     r.price
                 );
             }
@@ -223,7 +227,9 @@ async fn run_cmd(cmd: DecideCmd) -> Result<(), String> {
                 prefs.decision.timeout_ms = timeout_ms;
             }
             if m == Mode::Remote && prefs.decision.spec().is_none() {
-                return Err("Choose a remote provider with --provider typesafe, subq, or voyage.".into());
+                return Err(
+                    "Choose a remote provider with --provider typesafe, subq, or voyage.".into(),
+                );
             }
             prefs.save()?;
             println!("Decision model: {}", prefs.decision.label());
@@ -245,7 +251,10 @@ async fn run_cmd(cmd: DecideCmd) -> Result<(), String> {
                 "Saved. {} answered in {} ms ({} input tokens, ${:.6}).",
                 d.model, d.latency_ms, d.cost.input_tokens, d.cost.usd
             );
-            println!("Use it with `tern decide mode remote --provider {}`.", spec.id);
+            println!(
+                "Use it with `tern decide mode remote --provider {}`.",
+                spec.id
+            );
             Ok(())
         }
         DecideCmd::Key(KeyCmd::Test {

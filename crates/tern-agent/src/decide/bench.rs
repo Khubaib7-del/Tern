@@ -12,7 +12,9 @@ use std::time::Instant;
 
 use tern_decision::bench::{BenchReport, Fixture, fixtures, run_model};
 use tern_decision::calibrate::softmax;
-use tern_decision::{BoxFuture, Cost, Decision, DecisionError, DecisionKind, DecisionModel, DecisionRequest};
+use tern_decision::{
+    BoxFuture, Cost, Decision, DecisionError, DecisionKind, DecisionModel, DecisionRequest,
+};
 use tern_providers::{ChatMessage, ChatRequest};
 use tern_research::verdict::{SourceText, lexical_verdict, passages};
 
@@ -23,7 +25,11 @@ use crate::engine::Model;
 pub struct FixedOrder;
 
 fn one_hot(n: usize, at: usize, p: f32) -> Vec<f32> {
-    let rest = if n > 1 { (1.0 - p) / (n - 1) as f32 } else { 0.0 };
+    let rest = if n > 1 {
+        (1.0 - p) / (n - 1) as f32
+    } else {
+        0.0
+    };
     (0..n).map(|i| if i == at { p } else { rest }).collect()
 }
 

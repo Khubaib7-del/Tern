@@ -217,7 +217,13 @@ fn source_rank(req: &DecisionRequest) -> Scored {
         let prior = c.prior.unwrap_or(0.0);
         let low_value = has_any(
             &c.text,
-            &[" top 10 ", " top ten ", " you won't believe ", " sponsored ", " buy now "],
+            &[
+                " top 10 ",
+                " top ten ",
+                " you won't believe ",
+                " sponsored ",
+                " buy now ",
+            ],
         );
         logits.push(
             2.0 * rel[i] + 1.5 * cov[i] + 0.6 * auth + 0.8 * prior
@@ -249,8 +255,13 @@ enum Label {
 }
 
 fn label_of(c: &Choice) -> Option<Label> {
-    let t = format!(" {} {} ", c.id, c.text).to_lowercase().replace('_', " ");
-    if has_any(&t, &[" not ", " no ", " unsupported", " false", " contradict"]) {
+    let t = format!(" {} {} ", c.id, c.text)
+        .to_lowercase()
+        .replace('_', " ");
+    if has_any(
+        &t,
+        &[" not ", " no ", " unsupported", " false", " contradict"],
+    ) {
         Some(Label::Not)
     } else if has_any(&t, &[" partly", " partial", " somewhat", " in part"]) {
         Some(Label::Partly)
@@ -294,10 +305,11 @@ fn claim_check(req: &DecisionRequest) -> Option<Scored> {
     for l in &labels {
         let (logit, why) = match l {
             Label::Supported => (
-                9.0 * (cov - 0.72)
-                    - if nums { 0.0 } else { 4.0 }
-                    - if pol { 0.0 } else { 4.0 },
-                format!("The best passage has {:.0}% of the claim's words", cov * 100.0),
+                9.0 * (cov - 0.72) - if nums { 0.0 } else { 4.0 } - if pol { 0.0 } else { 4.0 },
+                format!(
+                    "The best passage has {:.0}% of the claim's words",
+                    cov * 100.0
+                ),
             ),
             Label::Partly => (
                 2.5 - 12.0 * (cov - 0.55).abs()
@@ -371,21 +383,49 @@ fn next_tool(req: &DecisionRequest) -> Scored {
     let recency = has_any(
         &q,
         &[
-            " latest", " today", " current", " recent", " news", " this week", " this year",
-            " now ", " price", " release", " update", " 2025", " 2026", " yesterday",
-            " announced", " version",
+            " latest",
+            " today",
+            " current",
+            " recent",
+            " news",
+            " this week",
+            " this year",
+            " now ",
+            " price",
+            " release",
+            " update",
+            " 2025",
+            " 2026",
+            " yesterday",
+            " announced",
+            " version",
         ],
     );
     let notes = has_any(
         &q,
-        &[" my notes", " vault", " i wrote", " my files", " in my note", " my note "],
+        &[
+            " my notes",
+            " vault",
+            " i wrote",
+            " my files",
+            " in my note",
+            " my note ",
+        ],
     );
     let attached = count_in(&req.context, "attachments") > 0
         && has_any(
             &q,
             &[
-                " attached", " this pdf", " this file", " the file", " the document",
-                " this document", " uploaded", " the attachment", " this paper", " summarize this",
+                " attached",
+                " this pdf",
+                " this file",
+                " the file",
+                " the document",
+                " this document",
+                " uploaded",
+                " the attachment",
+                " this paper",
+                " summarize this",
                 " summarise this",
             ],
         );
@@ -393,7 +433,14 @@ fn next_tool(req: &DecisionRequest) -> Scored {
     let chit = words <= 5
         && has_any(
             &q,
-            &[" hi ", " hello", " thanks", " thank you", " hey ", " good morning"],
+            &[
+                " hi ",
+                " hello",
+                " thanks",
+                " thank you",
+                " hey ",
+                " good morning",
+            ],
         );
     let arithmetic = q
         .chars()
@@ -434,8 +481,7 @@ fn next_tool(req: &DecisionRequest) -> Scored {
                 "The question is about the user's own notes",
             ),
             Tool::Answer => (
-                if chit || arithmetic { 3.0 } else { 0.0 }
-                    + if attached { 3.0 } else { 0.0 }
+                if chit || arithmetic { 3.0 } else { 0.0 } + if attached { 3.0 } else { 0.0 }
                     - if recency { 1.0 } else { 0.0 },
                 if attached {
                     "The attachments already hold the material"
@@ -464,20 +510,43 @@ fn triage(req: &DecisionRequest) -> Scored {
         let later = has_any(
             &c.text,
             &[
-                " optional", " later", " nice to have", " future work", " tangent", " side note",
-                " if time", " eventually", " someday", " low priority",
+                " optional",
+                " later",
+                " nice to have",
+                " future work",
+                " tangent",
+                " side note",
+                " if time",
+                " eventually",
+                " someday",
+                " low priority",
             ],
         );
         let urgent = has_any(
             &c.text,
             &[
-                " deadline", " due ", " today", " urgent", " blocking", " blocker", " first",
-                " before ", " asap", " overdue",
+                " deadline",
+                " due ",
+                " today",
+                " urgent",
+                " blocking",
+                " blocker",
+                " first",
+                " before ",
+                " asap",
+                " overdue",
             ],
         );
         let basic = has_any(
             &c.text,
-            &[" define", " definition", " what is", " overview", " background", " basics"],
+            &[
+                " define",
+                " definition",
+                " what is",
+                " overview",
+                " background",
+                " basics",
+            ],
         );
         let prior = c.prior.unwrap_or(0.0);
         logits.push(
@@ -585,7 +654,10 @@ mod tests {
         };
         assert_eq!(pick("What is the latest Rust release?", ""), "web_search");
         assert_eq!(pick("Summarise https://example.com/post", ""), "read_url");
-        assert_eq!(pick("What did I write in my notes about SM-2?", ""), "vault_search");
+        assert_eq!(
+            pick("What did I write in my notes about SM-2?", ""),
+            "vault_search"
+        );
         assert_eq!(pick("thanks!", ""), "answer");
         assert_eq!(
             pick("Summarize this pdf for me", "attachments: 1"),
@@ -601,7 +673,10 @@ mod tests {
             "",
             &[
                 ("1", "History of the battery industry (optional, later)"),
-                ("2", "Energy density of solid-state batteries versus lithium-ion"),
+                (
+                    "2",
+                    "Energy density of solid-state batteries versus lithium-ion",
+                ),
             ],
         ));
         assert_eq!(d.chosen, 1);

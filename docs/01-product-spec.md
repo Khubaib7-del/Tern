@@ -150,5 +150,5 @@ Obsidian-compatible: plain `.md` files, `[[wikilinks]]`, backlinks, outline, loc
 | --- | --- |
 | 1 | Palette: Mono and Lichen (recommended), Graphite and Brass, or Ink and Paper |
 | 2 | UI font: IBM Plex Sans or Inter, with Plex Mono |
-| 3 | Which decision-model provider to integrate first, after verifying its API and pricing |
+| 3 | Which decision-model provider to integrate first, after verifying its API and pricing. Settled by [ADR 0007](decisions/0007-decision-model.md): TypeSafe Jev and Subquadratic SubQ Snap (one shared API), plus Voyage rerank for ranking |
 | 4 | Vector store: `sqlite-vec` or LanceDB |

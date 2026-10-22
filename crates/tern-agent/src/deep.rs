@@ -814,9 +814,8 @@ impl Deep<'_> {
                 let mut old: Vec<Option<Job>> = pending.drain(..).map(Some).collect();
                 pending = order.iter().filter_map(|&i| old[i].take()).collect();
                 pending.extend(old.into_iter().flatten());
-                let _ = self.record_event(
-                    crate::decide::event(self.session, Some(self.turn), &dec),
-                );
+                let _ =
+                    self.record_event(crate::decide::event(self.session, Some(self.turn), &dec));
             }
         }
         let mut running = FuturesUnordered::new();
@@ -1607,13 +1606,11 @@ impl Deep<'_> {
                 let hits = match self.decider {
                     Some(d) if hits.len() > 1 => {
                         let seen = &st.seen;
-                        let (ranked, dec) = crate::decide::rank_hits(
-                            d,
-                            &sub.question,
-                            &hits,
-                            &|u: &str| seen.contains(u),
-                        )
-                        .await;
+                        let (ranked, dec) =
+                            crate::decide::rank_hits(d, &sub.question, &hits, &|u: &str| {
+                                seen.contains(u)
+                            })
+                            .await;
                         if let Some(dec) = dec {
                             let mut e = crate::decide::event(self.session, Some(self.turn), &dec);
                             e.payload["worker"] = json!(n);

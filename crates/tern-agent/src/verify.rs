@@ -128,9 +128,18 @@ pub async fn prescore(
             DecisionKind::ClaimCheck,
             check.text.clone(),
             vec![
-                Choice::new(PRESCORE_CHOICES[0], "Supported: the passage states the claim"),
-                Choice::new(PRESCORE_CHOICES[1], "Partly supported: the passage states some of it"),
-                Choice::new(PRESCORE_CHOICES[2], "Not supported: the passage does not state it"),
+                Choice::new(
+                    PRESCORE_CHOICES[0],
+                    "Supported: the passage states the claim",
+                ),
+                Choice::new(
+                    PRESCORE_CHOICES[1],
+                    "Partly supported: the passage states some of it",
+                ),
+                Choice::new(
+                    PRESCORE_CHOICES[2],
+                    "Not supported: the passage does not state it",
+                ),
             ],
         )
         .with_context(context);

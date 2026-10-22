@@ -95,7 +95,11 @@ impl DecisionPage {
     }
 
     pub fn note(&self, id: &str) -> Option<&RowNote> {
-        self.notes.iter().rev().find(|(i, _)| *i == id).map(|(_, n)| n)
+        self.notes
+            .iter()
+            .rev()
+            .find(|(i, _)| *i == id)
+            .map(|(_, n)| n)
     }
 
     pub fn set_note(&mut self, id: &'static str, note: RowNote) {
@@ -178,7 +182,11 @@ mod tests {
 
     fn page() -> DecisionPage {
         let mut p = DecisionPage::default();
-        p.load(tern_agent::decide::list(None), DecisionPrefs::default(), None);
+        p.load(
+            tern_agent::decide::list(None),
+            DecisionPrefs::default(),
+            None,
+        );
         p
     }
 

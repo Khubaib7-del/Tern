@@ -153,14 +153,8 @@ fn connect_remote(
         .model
         .as_deref()
         .filter(|_| prefs.provider.as_deref() == Some(spec.id));
-    RemoteModel::new(
-        spec,
-        key,
-        prefs.base_url.as_deref(),
-        model,
-        prefs.timeout(),
-    )
-    .map_err(|e| e.to_string())
+    RemoteModel::new(spec, key, prefs.base_url.as_deref(), model, prefs.timeout())
+        .map_err(|e| e.to_string())
 }
 
 /// The decider for these choices. Remote without a provider or a key
@@ -391,7 +385,9 @@ pub async fn order_sub_questions(
     let choices = subs
         .iter()
         .enumerate()
-        .map(|(i, s)| Choice::new((i + 1).to_string(), s.clone()).with_prior(1.0 - i as f32 / n as f32))
+        .map(|(i, s)| {
+            Choice::new((i + 1).to_string(), s.clone()).with_prior(1.0 - i as f32 / n as f32)
+        })
         .collect();
     let req = DecisionRequest::new(
         DecisionKind::Triage,
@@ -495,9 +491,15 @@ mod tests {
             ..DecisionPrefs::default()
         };
         let d = decider_from(&prefs, Some(&secrets));
-        let out = ask(&d, DecisionKind::General, "Which is a fruit?", &["apple fruit".into(), "car".into()], "")
-            .await
-            .unwrap();
+        let out = ask(
+            &d,
+            DecisionKind::General,
+            "Which is a fruit?",
+            &["apple fruit".into(), "car".into()],
+            "",
+        )
+        .await
+        .unwrap();
         assert_eq!(out.provider, "local");
         assert!(out.fallback.unwrap().contains("needs a key"));
         assert!(!list(Some(&secrets))[1].key_saved);
@@ -508,7 +510,17 @@ mod tests {
             },
             None,
         );
-        assert!(ask(&off, DecisionKind::General, "q", &["a".into(), "b".into()], "").await.is_err());
+        assert!(
+            ask(
+                &off,
+                DecisionKind::General,
+                "q",
+                &["a".into(), "b".into()],
+                ""
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -516,10 +528,22 @@ mod tests {
         let d = Decider::local();
         let hits = vec![
             hit("https://www.pinterest.com/x", "Transformer toys"),
-            hit("https://arxiv.org/abs/1706.03762", "Attention Is All You Need transformer"),
-            hit("https://en.wikipedia.org/wiki/Transformer_(deep_learning)", "Transformer (deep learning) attention"),
+            hit(
+                "https://arxiv.org/abs/1706.03762",
+                "Attention Is All You Need transformer",
+            ),
+            hit(
+                "https://en.wikipedia.org/wiki/Transformer_(deep_learning)",
+                "Transformer (deep learning) attention",
+            ),
         ];
-        let (ranked, dec) = rank_hits(&d, "What is the transformer attention architecture?", &hits, &|u| u.contains("arxiv")).await;
+        let (ranked, dec) = rank_hits(
+            &d,
+            "What is the transformer attention architecture?",
+            &hits,
+            &|u| u.contains("arxiv"),
+        )
+        .await;
         assert_eq!(ranked.len(), 3);
         assert!(ranked[0].url.contains("wikipedia"));
         assert!(ranked[2].url.contains("arxiv"), "already read goes last");
@@ -532,23 +556,37 @@ mod tests {
     #[tokio::test]
     async fn hints_and_orders() {
         let d = Decider::local();
-        let (hint, dec) = next_tool_hint(&d, "What is the latest Rust release?", &["web_search", "read_url"], 0)
-            .await
-            .unwrap();
+        let (hint, dec) = next_tool_hint(
+            &d,
+            "What is the latest Rust release?",
+            &["web_search", "read_url"],
+            0,
+        )
+        .await
+        .unwrap();
         assert_eq!(dec.chosen_id(), "web_search");
         assert!(hint.unwrap().contains("web_search"));
         assert!(next_tool_hint(&d, "hi", &["vault_read"], 0).await.is_none());
         let (order, _) = order_sub_questions(
             &d,
             "How do solid-state batteries compare on energy density?",
-            &["History of batteries (optional, later)".into(), "Energy density of solid-state batteries".into()],
+            &[
+                "History of batteries (optional, later)".into(),
+                "Energy density of solid-state batteries".into(),
+            ],
         )
         .await
         .unwrap();
         assert_eq!(order, [1, 0]);
-        let (order, _) = order_watches(&d, &[("monthly news".into(), 1.0), ("weekly digest".into(), 200.0)])
-            .await
-            .unwrap();
+        let (order, _) = order_watches(
+            &d,
+            &[
+                ("monthly news".into(), 1.0),
+                ("weekly digest".into(), 200.0),
+            ],
+        )
+        .await
+        .unwrap();
         assert_eq!(order[0], 1);
     }
 

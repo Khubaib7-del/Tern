@@ -241,7 +241,8 @@ pub async fn run_ask(
     // 2. The decision model ranks what to read first; then read in parallel.
     let hits = match deps.decider {
         Some(d) => {
-            let (ranked, decision) = crate::decide::rank_hits(d, question, &hits, &|_: &str| false).await;
+            let (ranked, decision) =
+                crate::decide::rank_hits(d, question, &hits, &|_: &str| false).await;
             if let Some(dec) = &decision {
                 record(deps.sink, crate::decide::event(sid, None, dec))?;
             }
@@ -449,8 +450,7 @@ pub async fn ask_with(
     // Results are read from the open web, so the guard stays on even when
     // the search service itself runs on this machine.
     let fetcher = crate::web::shared_reader();
-    let decider =
-        crate::decide::decider_from(&crate::Preferences::load().decision, secrets);
+    let decider = crate::decide::decider_from(&crate::Preferences::load().decision, secrets);
     let deps = AskDeps {
         decider: Some(&decider),
         session,

@@ -146,7 +146,10 @@ mod tests {
 
     #[test]
     fn terms_drop_stop_words_and_stem() {
-        assert_eq!(terms("The towers were built in 1889"), ["tower", "built", "1889"]);
+        assert_eq!(
+            terms("The towers were built in 1889"),
+            ["tower", "built", "1889"]
+        );
         assert!(numbers("1,200 people and 3.5%").contains("1200"));
         assert!(negated("It isn't so"));
         assert!(!negated("It is so"));
