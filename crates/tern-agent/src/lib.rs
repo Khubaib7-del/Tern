@@ -13,6 +13,7 @@ pub mod attach;
 pub mod chat;
 pub mod doctor;
 pub mod engine;
+pub mod mention;
 pub mod policy;
 pub mod prefs;
 pub mod protocol;
