@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
     Activity, Connection, ContextLevel, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon,
     WorkingLine,
@@ -52,6 +53,10 @@ pub struct Workspace {
     bridge: Bridge,
     session: Option<Box<ChatSession>>,
     current: Option<SessionId>,
+    /// The open chats.
+    tabs: Tabs,
+    /// The layout at the last frame, to notice the window narrowing.
+    last_layout: Option<Layout>,
     composer: Entity<TextareaState>,
     /// The one key field; only one row edits at a time.
     key_input: Entity<InputState>,
@@ -161,6 +166,8 @@ impl Workspace {
             bridge,
             session: None,
             current: None,
+            tabs: Tabs::default(),
+            last_layout: None,
             composer,
             key_input,
             rename_input,
@@ -186,6 +193,7 @@ impl Workspace {
                 });
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
+                self.tabs.set_active(s.session_id(), "New chat");
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
@@ -200,6 +208,12 @@ impl Workspace {
                 self.model.context = s.context();
                 self.open_sources.clear();
                 self.request_icons();
+                let title = recent
+                    .iter()
+                    .find(|r| r.id == s.session_id())
+                    .map(|r| r.title.clone())
+                    .unwrap_or_else(|| "Chat".into());
+                self.tabs.set_active(s.session_id(), &title);
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
                 self.session = Some(s);
@@ -215,7 +229,12 @@ impl Workspace {
                     self.bridge.connect();
                 }
             }
-            Msg::Sessions(recent) => self.model.sessions = recent,
+            Msg::Sessions(recent) => {
+                for r in &recent {
+                    self.tabs.retitle(r.id, &r.title);
+                }
+                self.model.sessions = recent;
+            }
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
             Msg::Event(e) => {
                 self.model.on_event(&e);
@@ -654,6 +673,79 @@ impl Workspace {
         if self.model.is_busy() || self.current == Some(id) {
             return;
         }
+        let title = self
+            .model
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "Chat".into());
+        if self.tabs.open(id, &title) {
+            self.load_chat(id, cx);
+        }
+    }
+
+    /// Opens a chat from the list in a new tab.
+    fn open_in_tab(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.is_busy() {
+            return;
+        }
+        if self.tabs.list.iter().any(|t| t.id == Some(id)) {
+            self.open_chat(id, cx);
+            return;
+        }
+        self.tabs.add();
+        self.tabs.reset_active();
+        self.current = None;
+        self.open_chat(id, cx);
+        let _ = window;
+    }
+
+    /// Adds a tab with a fresh chat.
+    fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.is_busy() {
+            return;
+        }
+        self.tabs.add();
+        self.show_tab(self.tabs.active_tab().clone(), window, cx);
+    }
+
+    fn focus_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.is_busy() {
+            return;
+        }
+        if let Some(tab) = self.tabs.focus(i).cloned() {
+            self.show_tab(tab, window, cx);
+        }
+    }
+
+    fn close_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.is_busy() && i == self.tabs.active {
+            return;
+        }
+        if let Some(tab) = self.tabs.close(i).cloned() {
+            self.show_tab(tab, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows a tab's chat: reopens it, or starts a fresh one.
+    fn show_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        match tab.id {
+            Some(id) if self.current != Some(id) => self.load_chat(id, cx),
+            Some(_) => {}
+            None => {
+                self.current = None;
+                self.session = None;
+                self.model.entries.clear();
+                self.new_chat(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Loads a past chat into the window.
+    fn load_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
         self.session = None;
         self.current = Some(id);
         self.open_sources.clear();
@@ -720,6 +812,11 @@ impl Workspace {
             self.model.entries.clear();
             self.new_chat(window, cx);
         }
+        if let Some(tab) = self.tabs.forget(id).cloned()
+            && tab.id.is_some()
+        {
+            self.show_tab(tab, window, cx);
+        }
         self.model.sessions.retain(|s| s.id != id);
         self.bridge.archive(id);
         cx.notify();
@@ -734,6 +831,7 @@ impl Workspace {
         self.open_sources.clear();
         if had_messages || self.session.is_none() {
             // A fresh session row, so the old chat keeps its own history.
+            self.tabs.reset_active();
             self.session = None;
             self.model.phase = Phase::Connecting;
             self.bridge.connect();
@@ -1117,6 +1215,17 @@ impl Workspace {
                                     })),
                             )
                             .child(
+                                Button::new(("open-tab", ix))
+                                    .icon(gpui_kit::assets::IconName::SquarePlus)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Open in new tab")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_in_tab(id, window, cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new(("archive", ix))
                                     .icon(gpui_kit::assets::IconName::Archive)
                                     .ghost()
@@ -1338,6 +1447,78 @@ impl Workspace {
             })
     }
 
+    /// The open chats as tabs, shown once there is more than one.
+    fn tab_strip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.tabs.list.len() < 2 {
+            return None;
+        }
+        let busy = self.model.is_busy();
+        let active = self.tabs.active;
+        Some(
+            div()
+                .id("tabs")
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_1()
+                .border_b_1()
+                .border_color(p.border)
+                .overflow_x_scroll()
+                .children(self.tabs.list.iter().enumerate().map(|(i, t)| {
+                    let on = i == active;
+                    div()
+                        .id(("tab", i))
+                        .group("tab")
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1()
+                        .max_w(px(200.))
+                        .pl_2()
+                        .pr_1()
+                        .py(px(3.))
+                        .rounded_md()
+                        .text_sm()
+                        .cursor_pointer()
+                        .text_color(if on { p.text } else { p.muted })
+                        .when(on, |d| d.bg(p.raised).border_1().border_color(p.border))
+                        .when(!on, |d| d.hover(move |d| d.bg(p.hover)))
+                        .when(busy && !on, |d| d.opacity(0.5))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(t.title.clone())),
+                        )
+                        .child(
+                            Button::new(("close-tab", i))
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Close tab")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx);
+                                })),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.focus_tab(i, window, cx);
+                        }))
+                }))
+                .child(
+                    Button::new("add-tab")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .disabled(busy)
+                        .tooltip("New tab")
+                        .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Opens a new chat that starts with this chat's turns up to entry `i`.
     fn branch_from(&mut self, i: usize, cx: &mut Context<Self>) {
         if self.model.is_busy() {
@@ -1347,6 +1528,7 @@ impl Workspace {
             return;
         };
         let turns = self.model.turns_through(i);
+        self.tabs.add();
         self.session = None;
         self.current = None;
         self.open_sources.clear();
@@ -2498,6 +2680,14 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
+        let layout = Layout::for_width(f32::from(window.viewport_size().width));
+        if Layout::sidebar_squeezed(self.last_layout, layout) {
+            self.model.sidebar_open = false;
+        }
+        if self.last_layout.is_some_and(|l| l.panel_beside) && !layout.panel_beside {
+            self.model.run_panel_open = false;
+        }
+        self.last_layout = Some(layout);
         let reduced = self.reduced_motion;
         if self.wipe.is_some_and(|w| w.done(now)) {
             self.wipe = None;
@@ -2544,10 +2734,11 @@ impl Render for Workspace {
                 div()
                     .flex()
                     .flex_row()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .child(self.rail(p, cx))
-                    .when_some(sidebar, |d, f| {
+                    .when_some(sidebar.filter(|_| layout.sidebar_beside), |d, f| {
                         d.child(sliding(self.sidebar(p, cx), SIDEBAR_W, f, false))
                     })
                     .child(
@@ -2557,9 +2748,10 @@ impl Render for Workspace {
                             .flex_1()
                             .min_w_0()
                             .map(|d| match self.model.screen {
-                                Screen::Chat => {
-                                    d.child(self.transcript(p, cx)).child(self.composer(p, cx))
-                                }
+                                Screen::Chat => d
+                                    .children(self.tab_strip(p, cx))
+                                    .child(self.transcript(p, cx))
+                                    .child(self.composer(p, cx)),
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
                             })
                             .with_animation(
@@ -2569,8 +2761,31 @@ impl Render for Workspace {
                                 |d, t| d.opacity(t),
                             ),
                     )
-                    .when_some(panel, |d, f| {
+                    .when_some(panel.filter(|_| layout.panel_beside), |d, f| {
                         d.child(sliding(self.run_panel(p, cx), RUN_PANEL_W, f, true))
+                    })
+                    // Too narrow to sit beside the chat: the panels float over it.
+                    .when_some(sidebar.filter(|_| !layout.sidebar_beside), |d, f| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px(RAIL_W))
+                                .shadow_lg()
+                                .child(sliding(self.sidebar(p, cx), SIDEBAR_W, f, false)),
+                        )
+                    })
+                    .when_some(panel.filter(|_| !layout.panel_beside), |d, f| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .shadow_lg()
+                                .child(sliding(self.run_panel(p, cx), RUN_PANEL_W, f, true)),
+                        )
                     }),
             )
             .children(ripple)
