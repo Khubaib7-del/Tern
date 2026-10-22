@@ -52,6 +52,10 @@ async fn opens_picks_a_chat_model_and_keeps_history() {
     assert_eq!(chat.usage().total(), 17);
     let kinds = seen.lock().unwrap().clone();
     assert_eq!(kinds, ["turn.started", "model.replied", "turn.finished"]);
+    let recent = chat.recent_sessions(5).unwrap();
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].title, "hi", "the first message names the chat");
+    assert_eq!(recent[0].id, chat.session_id());
 
     chat.send("again", &DenyAll, CancelFlag::default(), &observer)
         .await;

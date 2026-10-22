@@ -10,7 +10,7 @@ use serde_json::json;
 use tern_core::{EffectClass, EventEnvelope, SessionId};
 use tern_platform::AppPaths;
 use tern_providers::{ChatMessage, ModelKind, Provider, UsageLedger};
-use tern_store::{Harness, Store};
+use tern_store::{Harness, SessionSummary, Store};
 
 pub use tern_providers::Usage;
 
@@ -56,6 +56,31 @@ pub struct ChatSession {
     search_name: Option<&'static str>,
     budget: Budget,
     max_output_tokens: u32,
+}
+
+/// A sidebar title from the first message: one line, about 60 characters.
+pub fn title_from(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() <= 60 {
+        return line;
+    }
+    let cut: String = line.chars().take(60).collect();
+    let cut = cut
+        .rsplit_once(' ')
+        .map(|(a, _)| a.to_owned())
+        .unwrap_or(cut);
+    format!("{cut}…")
+}
+
+/// Recent chats for a sidebar, newest first, without opening a provider.
+pub fn recent_sessions(limit: usize) -> Result<Vec<SessionSummary>, String> {
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let db = paths.database();
+    if !db.exists() {
+        return Ok(Vec::new());
+    }
+    let store = Store::open(&db).map_err(|e| e.to_string())?;
+    store.recent_sessions(limit).map_err(|e| e.to_string())
 }
 
 /// Forwards each stored event to the front end as well.
@@ -192,6 +217,13 @@ impl ChatSession {
     }
 
     /// Tools for later turns (web search arrives with `tern ask`).
+    /// Recent chats from this session's database, newest first.
+    pub fn recent_sessions(&self, limit: usize) -> Result<Vec<SessionSummary>, String> {
+        self.sink
+            .with_store(|s| s.recent_sessions(limit))?
+            .map_err(|e| e.to_string())
+    }
+
     pub fn tools_mut(&mut self) -> &mut ToolRegistry {
         &mut self.tools
     }
@@ -224,10 +256,30 @@ impl ChatSession {
         }
         .run(self.history.clone(), text)
         .await;
+        if self.history.is_empty() {
+            let title = title_from(text);
+            let _ = self
+                .sink
+                .with_store(|s| s.rename_session(self.session, &title));
+        }
         if let Some(answer) = &out.answer {
             self.history.push(ChatMessage::user(text));
             self.history.push(ChatMessage::assistant(answer.clone()));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::title_from;
+
+    #[test]
+    fn titles_are_one_short_line() {
+        assert_eq!(title_from("  What is\nattention?  "), "What is attention?");
+        let long = "Compare the evaluation methods used in retrieval augmented generation papers from 2023 and 2024";
+        let t = title_from(long);
+        assert!(t.ends_with('…'));
+        assert!(t.chars().count() <= 61);
     }
 }

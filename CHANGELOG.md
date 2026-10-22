@@ -4,6 +4,12 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (phase 6, started early)
+
+- `tern-desktop`: first GPUI window on `gpui-kit` 0.8 (ADR 0006). Title bar with the Research or Study switch, icon rail, chat list, transcript with Markdown answers, working line, inline approvals, composer (Enter sends, Shift+Enter new line, stop), tokens used of the context window, and a run panel. Neutral greys until ADR 0002.
+- CI uploads `tern-desktop.exe` and `tern.exe` (release, Windows x64) on every PR as the `tern-windows-x64` artifact.
+- `tern-store`: `recent_sessions` and `rename_session`; a chat takes its title from the first message.
+
 ### Added (phase 3, in progress)
 
 - `tern-providers`: catalog of 13 providers (11 remote, Ollama and LM Studio local), own adapters for OpenAI-compatible, Anthropic, and Gemini APIs (ADR 0003), model listing with kinds and context windows, a no-token probe, non-streaming chat, and a usage ledger that marks estimates.

@@ -107,6 +107,15 @@ impl StoreSink {
         Self(Mutex::new(store))
     }
 
+    /// Runs `f` with the store (for small reads and renames between turns).
+    pub fn with_store<T>(&self, f: impl FnOnce(&Store) -> T) -> Result<T, String> {
+        let guard = self
+            .0
+            .lock()
+            .map_err(|_| "the store lock was poisoned".to_owned())?;
+        Ok(f(&guard))
+    }
+
     pub fn into_inner(self) -> Store {
         self.0.into_inner().expect("store lock")
     }

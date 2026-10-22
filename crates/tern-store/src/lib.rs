@@ -33,7 +33,8 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Which harness a session belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Harness {
     Research,
     Study,
@@ -46,6 +47,17 @@ impl Harness {
             Self::Study => "study",
         }
     }
+}
+
+/// One row of the session list.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SessionSummary {
+    pub id: SessionId,
+    pub title: String,
+    pub harness: Harness,
+    pub created_at: String,
+    /// Events recorded so far.
+    pub events: u64,
 }
 
 /// The Tern database.
@@ -149,6 +161,50 @@ impl Store {
         Ok(id)
     }
 
+    /// Renames a session (the chat title in the sidebar).
+    pub fn rename_session(&self, id: SessionId, title: &str) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE sessions SET title = ?1 WHERE id = ?2",
+            params![title, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The newest sessions first. Sessions with no events are left out.
+    pub fn recent_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.title, s.harness, s.created_at, COUNT(e.seq) AS n
+             FROM sessions s JOIN events e ON e.session_id = s.id
+             GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, title, harness, created_at, n) = row?;
+            let Ok(id) = id.parse() else { continue };
+            out.push(SessionSummary {
+                id,
+                title,
+                harness: if harness == "study" {
+                    Harness::Study
+                } else {
+                    Harness::Research
+                },
+                created_at,
+                events: n as u64,
+            });
+        }
+        Ok(out)
+    }
+
     /// Appends an event. The store redacts it, assigns the next `seq` for its
     /// session, and returns the stored copy.
     pub fn append(&mut self, event: &EventEnvelope) -> StoreResult<EventEnvelope> {
@@ -236,6 +292,24 @@ mod tests {
 
     fn ev(ses: SessionId, kind: &str) -> EventEnvelope {
         EventEnvelope::new(ses, kind, EffectClass::Analysis, kind, json!({"k": kind}))
+    }
+
+    #[test]
+    fn recent_sessions_skip_empty_ones_and_rename_works() {
+        let (mut s, ses) = setup();
+        let p = s.ensure_project("FYP").unwrap();
+        let empty = s.create_session(p, Harness::Study, "Nothing yet").unwrap();
+        assert!(s.recent_sessions(10).unwrap().is_empty());
+        s.append(&ev(ses, "turn.started")).unwrap();
+        s.append(&ev(ses, "turn.finished")).unwrap();
+        s.rename_session(ses, "Attention paper").unwrap();
+        let rows = s.recent_sessions(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, ses);
+        assert_eq!(rows[0].title, "Attention paper");
+        assert_eq!(rows[0].events, 2);
+        assert_eq!(rows[0].harness, Harness::Research);
+        assert_ne!(rows[0].id, empty);
     }
 
     #[test]

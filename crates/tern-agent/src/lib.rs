@@ -20,10 +20,11 @@ pub mod tools;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};
-pub use chat::{ChatOptions, ChatSession, Usage};
+pub use chat::{ChatOptions, ChatSession, Usage, recent_sessions, title_from};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model,
     StoreSink, TurnLoop, TurnOutcome,
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
+pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
