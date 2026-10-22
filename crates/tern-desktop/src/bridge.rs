@@ -91,7 +91,6 @@ pub enum DecisionMsg {
 /// What the Study harness's background work tells the window. Each is
 /// sent once and boxed in [`Msg`], so the variants' sizes do not matter.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
 pub enum StudyMsg {
     /// The library as saved, a line to tell the user, and who the
     /// passages go to (`None` when studying offline).
