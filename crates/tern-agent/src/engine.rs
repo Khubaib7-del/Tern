@@ -560,7 +560,7 @@ impl Run<'_, '_> {
                         "tool.executed",
                         tool.effect(),
                         format!("Ran `{name}`"),
-                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": shown.len() < o.content.len()}),
+                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": shown.len() < o.content.len(), "meta": o.meta}),
                     )
                     .with_evidence(o.evidence_refs.clone()),
                 )?;

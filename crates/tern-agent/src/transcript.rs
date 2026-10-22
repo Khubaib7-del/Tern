@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use tern_core::EventEnvelope;
 
+use crate::sources::{PageRef, page_of, push_unique};
+
 /// One past turn.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PastTurn {
@@ -17,6 +19,8 @@ pub struct PastTurn {
     /// The turn's events after it started, as `(kind, summary)`, for a front
     /// end to rebuild its step list the same way it does live.
     pub events: Vec<(String, String)>,
+    /// Pages the turn read, in order, without repeats.
+    pub pages: Vec<PageRef>,
     pub took: Duration,
 }
 
@@ -69,6 +73,9 @@ pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
             out.push(std::mem::take(turn));
             open = None;
         } else {
+            if let Some(p) = page_of(&e.kind, &e.payload) {
+                push_unique(&mut turn.pages, p);
+            }
             turn.events.push((e.kind.clone(), e.user_summary.clone()));
         }
     }
@@ -110,6 +117,12 @@ mod tests {
             ev(s, "tool.executed", "Searched the web", json!({})),
             ev(
                 s,
+                "tool.executed",
+                "Ran `read_url`",
+                json!({"meta": {"page": {"title": "RAG", "url": "https://a.org/rag", "site": "a.org"}}}),
+            ),
+            ev(
+                s,
                 "turn.finished",
                 "Answered",
                 json!({"state": "completed", "answer": "Retrieval..."}),
@@ -134,9 +147,11 @@ mod tests {
         assert_eq!(t.len(), 4);
         assert_eq!(t[0].exchange(), Some(("What is RAG?", "Retrieval...")));
         assert_eq!(
-            t[0].events,
-            [("tool.executed".to_owned(), "Searched the web".to_owned())]
+            t[0].events[0],
+            ("tool.executed".to_owned(), "Searched the web".to_owned())
         );
+        assert_eq!(t[0].pages.len(), 1);
+        assert_eq!(t[0].pages[0].url, "https://a.org/rag");
         assert_eq!(t[1].stop.as_deref(), Some("You stopped the run."));
         assert_eq!(t[1].exchange(), None);
         assert_eq!(

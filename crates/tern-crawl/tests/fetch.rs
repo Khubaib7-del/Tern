@@ -136,3 +136,48 @@ async fn the_open_web_reader_refuses_local_addresses_and_redirects_to_them() {
         .unwrap_err();
     assert!(matches!(e, FetchError::Blocked(GuardError::Scheme(_))));
 }
+
+#[tokio::test]
+async fn fetches_icons_and_refuses_non_images() {
+    let s = MockServer::start().await;
+    let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+    Mock::given(method("GET"))
+        .and(path("/favicon.ico"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(png.clone()))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/old.ico"))
+        .respond_with(ResponseTemplate::new(301).insert_header("location", "/favicon.ico"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/page.ico"))
+        .respond_with(html("<html>not an icon</html>"))
+        .mount(&s)
+        .await;
+    let f = Fetcher::allowing_private();
+    assert_eq!(
+        f.fetch_icon(&format!("{}/old.ico", s.uri())).await.unwrap(),
+        png
+    );
+    assert!(matches!(
+        f.fetch_icon(&format!("{}/page.ico", s.uri())).await,
+        Err(FetchError::Unsupported { .. })
+    ));
+    assert!(matches!(
+        Fetcher::new()
+            .fetch_icon(&format!("{}/favicon.ico", s.uri()))
+            .await,
+        Err(FetchError::Blocked(_))
+    ));
+}
+
+#[test]
+fn image_magic_bytes() {
+    use tern_crawl::fetch::looks_like_image;
+    assert!(looks_like_image(&[0, 0, 1, 0, 1]));
+    assert!(looks_like_image(b"  <svg xmlns='x'></svg>"));
+    assert!(looks_like_image(b"<?xml version='1.0'?><svg/>"));
+    assert!(!looks_like_image(b"<!doctype html>"));
+}

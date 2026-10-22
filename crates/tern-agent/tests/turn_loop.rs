@@ -88,6 +88,7 @@ impl Tool for Search {
             Ok(ToolOutput {
                 content: format!("[S1] result for {}", args["query"].as_str().unwrap_or("")),
                 evidence_refs: vec!["S1".into()],
+                ..ToolOutput::default()
             })
         })
     }

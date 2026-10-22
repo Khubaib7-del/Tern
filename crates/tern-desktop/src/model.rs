@@ -1,9 +1,12 @@
 //! What the desktop window shows, kept apart from GPUI so it can be tested
 //! without a display. The view reads this; the bridge feeds it.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tern_agent::{ApprovalRequest, Harness, PastTurn, SessionSummary, TurnOutcome, Usage};
+use tern_agent::sources::push_unique;
+use tern_agent::{ApprovalRequest, Harness, PageRef, PastTurn, SessionSummary, TurnOutcome, Usage};
 use tern_core::TurnState;
 
 use crate::providers::ProvidersState;
@@ -24,9 +27,20 @@ pub enum Entry {
         text: String,
         steps: Vec<String>,
         took: Duration,
+        /// Pages read on the way, shown as source rows.
+        pages: Vec<PageRef>,
     },
     /// A plain note from Tern (a stop reason, a phase that is not built yet).
     Notice(String),
+}
+
+/// A site's favicon, by site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SiteIcon {
+    Loading,
+    Ready(PathBuf),
+    /// No usable icon; the row shows the site's initial.
+    Missing,
 }
 
 /// Whether the window can take a message.
@@ -75,6 +89,9 @@ pub struct Model {
     pub stopping: bool,
     pub screen: Screen,
     pub providers: ProvidersState,
+    /// Pages read so far in the running turn.
+    pub turn_pages: Vec<PageRef>,
+    pub icons: HashMap<String, SiteIcon>,
 }
 
 impl Default for Model {
@@ -98,6 +115,8 @@ impl Model {
             stopping: false,
             screen: Screen::Chat,
             providers: ProvidersState::default(),
+            turn_pages: Vec::new(),
+            icons: HashMap::new(),
         }
     }
 
@@ -126,6 +145,7 @@ impl Model {
             return None;
         }
         self.entries.push(Entry::User(text.to_owned()));
+        self.turn_pages.clear();
         self.phase = Phase::Working {
             since: Instant::now(),
             label: "Thinking".into(),
@@ -138,7 +158,12 @@ impl Model {
     }
 
     /// An event from the run, by type and its one-line summary.
-    pub fn on_event(&mut self, kind: &str, summary: &str) {
+    pub fn on_event(&mut self, kind: &str, summary: &str, page: Option<PageRef>) {
+        if let Some(p) = page
+            && self.is_busy()
+        {
+            push_unique(&mut self.turn_pages, p);
+        }
         let label = match kind {
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected" => Some("Thinking"),
             "model.replied" => Some("Reading the reply"),
@@ -241,6 +266,7 @@ impl Model {
                 text: a.clone(),
                 steps,
                 took,
+                pages: std::mem::take(&mut self.turn_pages),
             }),
             _ => {}
         }
@@ -283,6 +309,7 @@ impl Model {
                     text: a.clone(),
                     steps,
                     took: t.took,
+                    pages: t.pages.clone(),
                 });
             }
             if let Some(why) = &t.stop {
@@ -304,6 +331,37 @@ impl Model {
         if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
             s.title = title.to_owned();
         }
+    }
+
+    /// Sites whose favicon is needed and not asked for yet, as
+    /// `(site, favicon url)`. Marks them loading; sites with no favicon url
+    /// are marked missing.
+    pub fn wanted_icons(&mut self) -> Vec<(String, String)> {
+        let mut want = Vec::new();
+        let pages = self.entries.iter().flat_map(|e| match e {
+            Entry::Assistant { pages, .. } => pages.as_slice(),
+            _ => &[],
+        });
+        for p in pages.chain(self.turn_pages.iter()) {
+            if self.icons.contains_key(&p.site) {
+                continue;
+            }
+            match &p.favicon {
+                Some(url) => {
+                    self.icons.insert(p.site.clone(), SiteIcon::Loading);
+                    want.push((p.site.clone(), url.clone()));
+                }
+                None => {
+                    self.icons.insert(p.site.clone(), SiteIcon::Missing);
+                }
+            }
+        }
+        want
+    }
+
+    pub fn icon_loaded(&mut self, site: String, path: Option<PathBuf>) {
+        let state = path.map_or(SiteIcon::Missing, SiteIcon::Ready);
+        self.icons.insert(site, state);
     }
 
     /// Clears the transcript for a new chat. The caller opens a new session.
@@ -454,6 +512,47 @@ mod tests {
         assert_eq!(draft_visible("   "), None);
     }
 
+    fn page(site: &str, favicon: bool) -> PageRef {
+        PageRef {
+            title: format!("{site} page"),
+            url: format!("https://{site}/p"),
+            site: site.into(),
+            builtin: None,
+            favicon: favicon.then(|| format!("https://{site}/favicon.ico")),
+        }
+    }
+
+    #[test]
+    fn pages_follow_the_turn_and_icons_are_asked_once() {
+        let mut m = ready();
+        m.start_turn("q");
+        m.on_event("tool.executed", "Ran `read_url`", Some(page("a.org", true)));
+        m.on_event("tool.executed", "Ran `read_url`", Some(page("a.org", true)));
+        m.on_event(
+            "tool.executed",
+            "Ran `read_url`",
+            Some(page("b.org", false)),
+        );
+        assert_eq!(m.turn_pages.len(), 2);
+        assert_eq!(
+            m.wanted_icons(),
+            [("a.org".to_owned(), "https://a.org/favicon.ico".to_owned())]
+        );
+        assert_eq!(m.icons["b.org"], SiteIcon::Missing);
+        assert!(m.wanted_icons().is_empty(), "asked once");
+        m.icon_loaded("a.org".into(), Some(PathBuf::from("/c/a.org")));
+        assert_eq!(m.icons["a.org"], SiteIcon::Ready(PathBuf::from("/c/a.org")));
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("A"), None),
+            Usage::measured(1, 1),
+        );
+        assert!(m.turn_pages.is_empty());
+        match m.entries.last() {
+            Some(Entry::Assistant { pages, .. }) => assert_eq!(pages.len(), 2),
+            other => panic!("expected an answer, got {other:?}"),
+        }
+    }
+
     #[test]
     fn rename_updates_the_list_row() {
         let mut m = ready();
@@ -505,6 +604,7 @@ mod tests {
                     text: "Retrieval [1].".into(),
                     steps: vec!["Searched the web".into()],
                     took: Duration::from_secs(3),
+                    pages: Vec::new(),
                 },
                 Entry::User("More".into()),
                 Entry::Notice("You stopped the run.".into()),
@@ -540,9 +640,9 @@ mod tests {
     fn steps_follow_the_run_and_stay_with_the_answer() {
         let mut m = ready();
         m.start_turn("What is RAG?");
-        m.on_event("turn.started", "Turn started");
-        m.on_event("tool.executed", "web_search: 5 results");
-        m.on_event("policy.decided", "read_url allowed");
+        m.on_event("turn.started", "Turn started", None);
+        m.on_event("tool.executed", "web_search: 5 results", None);
+        m.on_event("policy.decided", "read_url allowed", None);
         assert_eq!(m.run_steps(), ["web_search: 5 results"]);
         assert!(
             m.working_line()
@@ -570,7 +670,7 @@ mod tests {
     fn approvals_pause_and_resume_the_same_run() {
         let mut m = ready();
         m.start_turn("q");
-        m.on_event("tool.executed", "one");
+        m.on_event("tool.executed", "one", None);
         m.ask_approval(ApprovalRequest {
             tool: "read_url".into(),
             summary: "Read example.com".into(),

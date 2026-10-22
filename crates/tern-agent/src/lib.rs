@@ -17,6 +17,7 @@ pub mod prefs;
 pub mod protocol;
 pub mod providers;
 pub mod search;
+pub mod sources;
 pub mod tools;
 pub mod transcript;
 pub mod web;
@@ -32,6 +33,7 @@ pub use engine::{
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;
+pub use sources::PageRef;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 pub use transcript::{PastTurn, past_turns};
