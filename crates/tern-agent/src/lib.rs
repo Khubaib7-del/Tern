@@ -13,6 +13,7 @@ pub mod chat;
 pub mod doctor;
 pub mod engine;
 pub mod policy;
+pub mod prefs;
 pub mod protocol;
 pub mod providers;
 pub mod search;
@@ -26,5 +27,6 @@ pub use engine::{
     StoreSink, TurnLoop, TurnOutcome,
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
+pub use prefs::Preferences;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};

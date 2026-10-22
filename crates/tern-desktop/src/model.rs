@@ -6,6 +6,15 @@ use std::time::{Duration, Instant};
 use tern_agent::{ApprovalRequest, Harness, SessionSummary, TurnOutcome, Usage};
 use tern_core::TurnState;
 
+use crate::providers::ProvidersState;
+
+/// What the centre of the window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    Chat,
+    Providers,
+}
+
 /// One block of the transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
@@ -61,6 +70,8 @@ pub struct Model {
     pub run_panel_open: bool,
     pub dark: bool,
     pub stopping: bool,
+    pub screen: Screen,
+    pub providers: ProvidersState,
 }
 
 impl Default for Model {
@@ -82,6 +93,8 @@ impl Model {
             run_panel_open: false,
             dark: true,
             stopping: false,
+            screen: Screen::Chat,
+            providers: ProvidersState::default(),
         }
     }
 

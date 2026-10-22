@@ -127,7 +127,17 @@ impl ChatSession {
         let provider = providers::connect_by_id(&id, secrets, opts.base_url.as_deref())
             .map_err(|e: SetupError| e.to_string())?;
         let (model, context_window) = match opts.model {
-            Some(m) => (m, None),
+            Some(m) => {
+                // Look the window up when the listing has it; a failed
+                // listing is not fatal, since the model id may still work.
+                let window = provider
+                    .list_models()
+                    .await
+                    .ok()
+                    .and_then(|ms| ms.into_iter().find(|x| x.id == m))
+                    .and_then(|x| x.context_window);
+                (m, window)
+            }
             None => {
                 let models = provider.list_models().await.map_err(|e| e.to_string())?;
                 let m = models
