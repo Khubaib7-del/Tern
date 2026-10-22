@@ -162,25 +162,7 @@ impl Bridge {
     pub fn favicon(&self, site: String, url: String) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let path = icon_path(&site);
-            let found = match &path {
-                Some(p) if p.exists() => Some(p.clone()),
-                Some(p) => match tern_crawl::Fetcher::new().fetch_icon(&url).await {
-                    Ok(bytes) => {
-                        let p = p.clone();
-                        tokio::task::spawn_blocking(move || {
-                            std::fs::create_dir_all(p.parent()?).ok()?;
-                            std::fs::write(&p, bytes).ok()?;
-                            Some(p)
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                    }
-                    Err(_) => None,
-                },
-                None => None,
-            };
+            let found = tern_agent::sources::cached_favicon(&site, &url).await;
             let _ = tx.send(Msg::Icon(site, found));
         });
     }
@@ -328,29 +310,6 @@ impl Bridge {
 }
 
 /// "Works, 12 chat models, 180 ms".
-/// Where a site's favicon is cached: `<data>/cache/icons/<site>`. The site
-/// is reduced to safe filename characters.
-fn icon_path(site: &str) -> Option<std::path::PathBuf> {
-    let name = icon_file_name(site)?;
-    let paths = tern_platform::AppPaths::discover().ok()?;
-    Some(paths.data_dir.join("cache").join("icons").join(name))
-}
-
-fn icon_file_name(site: &str) -> Option<String> {
-    let name: String = site
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let name = name.trim_matches('.').to_owned();
-    (!name.is_empty()).then_some(name)
-}
-
 fn model_report(chat: usize, all: usize, ms: u128) -> String {
     let n = if chat > 0 { chat } else { all };
     let what = if chat > 0 { "chat model" } else { "model" };
@@ -362,15 +321,7 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{icon_file_name, model_report};
-
-    #[test]
-    fn icon_names_are_safe() {
-        assert_eq!(icon_file_name("ArXiv.org").as_deref(), Some("arxiv.org"));
-        assert_eq!(icon_file_name("../etc").as_deref(), Some("_etc"));
-        assert_eq!(icon_file_name("a:b/c").as_deref(), Some("a_b_c"));
-        assert_eq!(icon_file_name(".."), None);
-    }
+    use super::model_report;
 
     #[test]
     fn reports_read_plainly() {
