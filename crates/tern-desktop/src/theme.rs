@@ -23,6 +23,8 @@ pub struct Palette {
     pub faint: Hsla,
     /// Lichen. Only for selection, focus, and the one live thing.
     pub accent: Hsla,
+    /// The Study harness's warmer paper, behind its screens.
+    pub warm: Hsla,
 }
 
 /// The hex values, kept for the contrast tests and the docs.
@@ -38,6 +40,9 @@ const DARK: [u32; 10] = [
     0x707070, // faint
     0xA3AE8E, // accent
 ];
+/// Study's warmer surface (dark, light): a touch of paper over the
+/// canvas, so the harness reads by tone, never by hue.
+const WARM: [u32; 2] = [0x16140F, 0xF8F5EE];
 const LIGHT: [u32; 10] = [
     0xEFEFEC, 0xF5F5F3, 0xFBFBFA, 0xEFEFEC, 0xE7E7E3, 0xDCDCD8, 0x141414, 0x5A5A57, 0x8C8C87,
     0x56603F,
@@ -48,7 +53,7 @@ impl Palette {
         if dark { Self::dark() } else { Self::light() }
     }
 
-    fn from_hex(h: [u32; 10]) -> Self {
+    fn from_hex(h: [u32; 10], warm: u32) -> Self {
         let c = |i: usize| -> Hsla { rgb(h[i]).into() };
         Self {
             rail: c(0),
@@ -61,15 +66,16 @@ impl Palette {
             muted: c(7),
             faint: c(8),
             accent: c(9),
+            warm: rgb(warm).into(),
         }
     }
 
     pub fn dark() -> Self {
-        Self::from_hex(DARK)
+        Self::from_hex(DARK, WARM[0])
     }
 
     pub fn light() -> Self {
-        Self::from_hex(LIGHT)
+        Self::from_hex(LIGHT, WARM[1])
     }
 
     /// Every token part-way from `self` to `to` (0 to 1), for the theme
@@ -87,6 +93,7 @@ impl Palette {
             muted: l(self.muted, to.muted),
             faint: l(self.faint, to.faint),
             accent: l(self.accent, to.accent),
+            warm: l(self.warm, to.warm),
         }
     }
 }
@@ -147,6 +154,16 @@ mod tests {
             // Faint is for hints and timestamps: readable, never the only
             // carrier of meaning.
             assert!(contrast(p[8], p[2]) >= 3.0, "{name} faint");
+        }
+    }
+
+    #[test]
+    fn text_reads_on_the_study_surface() {
+        for (p, warm) in [(DARK, WARM[0]), (LIGHT, WARM[1])] {
+            assert!(contrast(p[6], warm) >= 7.0);
+            assert!(contrast(p[7], warm) >= 4.5);
+            assert!(contrast(p[9], warm) >= 4.5);
+            assert!(contrast(p[8], warm) >= 3.0);
         }
     }
 

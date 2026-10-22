@@ -36,6 +36,15 @@ pub struct Preferences {
     pub git_credit_tern: bool,
     /// Deep research workers that run at once. `None` means 3.
     pub deep_workers: Option<usize>,
+    /// Study without a model: the tutor quotes passages, quizzes are
+    /// written from sentences, and the viva uses its own questions.
+    pub study_offline: bool,
+    /// Questions in a new quiz. `None` means 5.
+    pub study_quiz_count: Option<usize>,
+    /// `easy`, `medium`, or `hard`. `None` means medium.
+    pub study_difficulty: Option<String>,
+    /// Questions in a viva. `None` means 6.
+    pub study_viva_questions: Option<usize>,
 }
 
 impl Preferences {
@@ -112,6 +121,25 @@ impl Preferences {
         }
     }
 
+    /// A quiz spec from the Study choices.
+    pub fn quiz_spec(&self, topic: Option<String>) -> crate::study::QuizSpec {
+        crate::study::QuizSpec {
+            topic,
+            count: self.study_quiz_count.unwrap_or(5).clamp(1, 30),
+            difficulty: self
+                .study_difficulty
+                .as_deref()
+                .and_then(crate::study::Difficulty::parse)
+                .unwrap_or_default(),
+            kinds: Vec::new(),
+        }
+    }
+
+    /// Questions in a viva, 2 to 15.
+    pub fn viva_questions(&self) -> usize {
+        self.study_viva_questions.unwrap_or(6).clamp(2, 15)
+    }
+
     /// How deep research runs: workers at once from these choices, 1 to
     /// [`crate::deep::MAX_WORKERS`].
     pub fn deep_options(&self) -> crate::deep::DeepOptions {
@@ -153,7 +181,14 @@ mod tests {
             git_email: None,
             git_credit_tern: true,
             deep_workers: Some(4),
+            study_offline: true,
+            study_quiz_count: Some(10),
+            study_difficulty: Some("hard".into()),
+            study_viva_questions: Some(40),
         };
+        assert_eq!(p.quiz_spec(None).count, 10);
+        assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);
+        assert_eq!(p.viva_questions(), 15, "capped");
         p.save_to(&path).unwrap();
         assert_eq!(Preferences::load_from(&path), p);
         std::fs::write(&path, "{not json").unwrap();

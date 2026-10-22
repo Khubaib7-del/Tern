@@ -6,6 +6,10 @@
 use tern_agent::deep::{DeepControl, PlanAnswer, PlanApprover};
 use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
+use tern_agent::study::{
+    self as st, Grade, Question, Quiz, QuizAttempt, QuizSummary, StudyEngine, StudyLibrary,
+    StudyStore, TutorMode, TutorReply, TutorTurn, Viva, VivaReport,
+};
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
     ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, ContextUse, PastTurn,
@@ -60,6 +64,50 @@ pub enum Msg {
     /// The watch list, and a line to tell the user (a run's result or an
     /// error), if any. `finished` counts watch runs that just ended.
     Watches(Vec<tern_agent::watch::Watch>, Option<String>, usize),
+    /// The Study harness: see [`StudyMsg`].
+    Study(Box<StudyMsg>),
+}
+
+/// What the Study harness's background work tells the window. Each is
+/// sent once and boxed in [`Msg`], so the variants' sizes do not matter.
+#[allow(clippy::large_enum_variant)]
+pub enum StudyMsg {
+    /// The library as saved, a line to tell the user, and who the
+    /// passages go to (`None` when studying offline).
+    Library(Result<StudyLibrary, String>, Option<String>, Option<String>),
+    /// Tutor reply text streaming in.
+    TutorText(String),
+    /// The tutor's reply, and the library after it (the topic was seen).
+    Tutor(Result<TutorReply, String>, Option<StudyLibrary>),
+    /// A quiz to take, with a note when it was written without the model.
+    Quiz(Result<(Quiz, Option<String>), String>),
+    /// Question `n` graded: what was given and the grade.
+    Graded(usize, String, Grade),
+    /// The attempt saved: its summary and the library with new mastery.
+    QuizDone(Result<QuizSummary, String>, Option<StudyLibrary>),
+    /// The viva with its next question waiting, and a note.
+    Viva(Result<Viva, String>, Option<String>),
+    /// The viva ended: its report and where it was saved.
+    VivaReport(
+        Result<(Viva, VivaReport, Option<std::path::PathBuf>), String>,
+        Option<String>,
+        Option<StudyLibrary>,
+    ),
+}
+
+impl std::fmt::Debug for StudyMsg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Library(r, ..) => write!(f, "Library(ok: {})", r.is_ok()),
+            Self::TutorText(t) => write!(f, "TutorText({} chars)", t.len()),
+            Self::Tutor(r, _) => write!(f, "Tutor(ok: {})", r.is_ok()),
+            Self::Quiz(r) => write!(f, "Quiz(ok: {})", r.is_ok()),
+            Self::Graded(n, ..) => write!(f, "Graded({n})"),
+            Self::QuizDone(r, _) => write!(f, "QuizDone(ok: {})", r.is_ok()),
+            Self::Viva(r, _) => write!(f, "Viva(ok: {})", r.is_ok()),
+            Self::VivaReport(r, ..) => write!(f, "VivaReport(ok: {})", r.is_ok()),
+        }
+    }
 }
 
 impl std::fmt::Debug for Msg {
@@ -84,6 +132,7 @@ impl std::fmt::Debug for Msg {
             Self::Removed(k, id, r) => write!(f, "Removed({k:?}, {id}, {})", r.is_ok()),
             Self::Models(id, r) => write!(f, "Models({id}, {})", r.is_ok()),
             Self::PrefsFailed(e) => write!(f, "PrefsFailed({e})"),
+            Self::Study(m) => write!(f, "Study({m:?})"),
             Self::Watches(w, note, n) => {
                 write!(
                     f,
@@ -136,6 +185,8 @@ impl PlanApprover for UiPlanApprover {
 pub struct Bridge {
     rt: tokio::runtime::Runtime,
     tx: mpsc::UnboundedSender<Msg>,
+    /// The model study calls go to, opened on first use.
+    study_engine: std::sync::Arc<std::sync::Mutex<Option<StudyEngine>>>,
 }
 
 impl Bridge {
@@ -146,7 +197,14 @@ impl Bridge {
             .thread_name("tern-desktop-rt")
             .build()?;
         let (tx, rx) = mpsc::unbounded_channel();
-        Ok((Self { rt, tx }, rx))
+        Ok((
+            Self {
+                rt,
+                tx,
+                study_engine: Default::default(),
+            },
+            rx,
+        ))
     }
 
     /// Opens a new chat session with the user's saved choices.
@@ -600,6 +658,302 @@ impl Bridge {
             let _ = tx.send(Msg::Models(id, result));
         });
     }
+
+    // ---- Study ----
+
+    fn study_send(tx: &mpsc::UnboundedSender<Msg>, m: StudyMsg) {
+        let _ = tx.send(Msg::Study(Box::new(m)));
+    }
+
+    /// Loads the library (building topics if the materials changed) and
+    /// connects the study model, forgetting any connected before.
+    pub fn study_load(&self) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        if let Ok(mut c) = cache.lock() {
+            *c = None;
+        }
+        self.rt.spawn(async move {
+            let lib = tokio::task::spawn_blocking(|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                st::ensure_topics(&store, &mut lib)?;
+                Ok::<_, String>(lib)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            let engine = study_engine(&cache).await;
+            let who = engine
+                .as_ref()
+                .map(|e| format!("{} · {}", e.provider_name(), e.model_name()));
+            Self::study_send(&tx, StudyMsg::Library(lib, None, who));
+        });
+    }
+
+    /// Adds files, folders, or archives as materials.
+    pub fn study_add(&self, paths: Vec<std::path::PathBuf>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let mut added = 0;
+                let mut errors = Vec::new();
+                for p in &paths {
+                    match st::add_path(&store, &mut lib, p) {
+                        Ok(ms) => added += ms.len(),
+                        Err(e) => errors.push(e),
+                    }
+                }
+                st::ensure_topics(&store, &mut lib)?;
+                let note = if errors.is_empty() {
+                    Some(format!(
+                        "Added {added} material{}. Topics are grouped by headings; Rebuild topics asks the model.",
+                        if added == 1 { "" } else { "s" }
+                    ))
+                } else {
+                    Some(errors.join(" "))
+                };
+                Ok::<_, String>((lib, note))
+            })();
+            let m = match r {
+                Ok((lib, note)) => StudyMsg::Library(Ok(lib), note, None),
+                Err(e) => StudyMsg::Library(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Adds the latest research report of `chat` (`last` for the newest).
+    pub fn study_add_report(&self, chat: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let m = st::add_report(&store, &mut lib, &chat)?;
+                st::ensure_topics(&store, &mut lib)?;
+                Ok::<_, String>((lib, format!("Added the report \"{}\".", m.name)))
+            })();
+            let m = match r {
+                Ok((lib, note)) => StudyMsg::Library(Ok(lib), Some(note), None),
+                Err(e) => StudyMsg::Library(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    pub fn study_remove(&self, id: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let m = st::remove(&store, &mut lib, &id)?;
+                st::ensure_topics(&store, &mut lib)?;
+                Ok::<_, String>((lib, format!("Removed {}.", m.name)))
+            })();
+            let m = match r {
+                Ok((lib, note)) => StudyMsg::Library(Ok(lib), Some(note), None),
+                Err(e) => StudyMsg::Library(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Regroups the materials into topics with the model.
+    pub fn study_rebuild_topics(&self) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let (by, note) = st::build_topics(&store, &mut lib, engine.as_ref()).await?;
+                let note = note.or_else(|| {
+                    Some(if by == "model" {
+                        format!("{} topics, grouped by the model.", lib.topics.len())
+                    } else {
+                        format!(
+                            "{} topics, grouped by headings (no model).",
+                            lib.topics.len()
+                        )
+                    })
+                });
+                Ok::<_, String>((lib, note))
+            }
+            .await;
+            let m = match r {
+                Ok((lib, note)) => StudyMsg::Library(Ok(lib), note, None),
+                Err(e) => StudyMsg::Library(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// One tutor turn; the reply streams back as [`StudyMsg::TutorText`].
+    pub fn study_tutor(&self, topic: String, mode: TutorMode, history: Vec<TutorTurn>) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let stream_tx = tx.clone();
+            let on_text = move |t: &str| {
+                Self::study_send(&stream_tx, StudyMsg::TutorText(t.to_owned()));
+                true
+            };
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let reply = st::tutor_reply(
+                    &store,
+                    &mut lib,
+                    engine.as_ref(),
+                    &topic,
+                    mode,
+                    &history,
+                    Some(&on_text),
+                )
+                .await?;
+                Ok::<_, String>((reply, lib))
+            }
+            .await;
+            let m = match r {
+                Ok((reply, lib)) => StudyMsg::Tutor(Ok(reply), Some(lib)),
+                Err(e) => StudyMsg::Tutor(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Writes a quiz.
+    pub fn study_quiz(&self, spec: st::QuizSpec) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                st::make_quiz(&store, &mut lib, engine.as_ref(), &spec).await
+            }
+            .await;
+            Self::study_send(&tx, StudyMsg::Quiz(r));
+        });
+    }
+
+    /// Grades one answer.
+    pub fn study_grade(&self, q: Question, given: String) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            // Keyed questions never need the model.
+            let g = match st::grade_exact(&q, &given) {
+                Some(g) => g,
+                None => {
+                    let engine = study_engine(&cache).await;
+                    st::grade(engine.as_ref(), &q, &given).await
+                }
+            };
+            Self::study_send(&tx, StudyMsg::Graded(q.n, given, g));
+        });
+    }
+
+    /// Saves a finished attempt and applies it to mastery.
+    pub fn study_finish_quiz(&self, quiz: Quiz, attempt: QuizAttempt) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = (|| {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let s = st::finish_quiz(&store, &mut lib, &quiz, attempt)?;
+                Ok::<_, String>((s, lib))
+            })();
+            let m = match r {
+                Ok((s, lib)) => StudyMsg::QuizDone(Ok(s), Some(lib)),
+                Err(e) => StudyMsg::QuizDone(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Starts a viva and asks its first question.
+    pub fn study_viva_start(&self, title: Option<String>, planned: usize) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let mut v = st::start_viva(&store, &mut lib, title.as_deref(), planned)?;
+                let note = st::viva_question(&store, &lib, engine.as_ref(), &mut v).await?;
+                Ok::<_, String>((v, note))
+            }
+            .await;
+            let m = match r {
+                Ok((v, note)) => StudyMsg::Viva(Ok(v), note),
+                Err(e) => StudyMsg::Viva(Err(e), None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
+    /// Records an answer, then asks the next question, or ends the viva
+    /// when every question has been asked (or `end` is set).
+    pub fn study_viva_answer(&self, mut viva: Viva, answer: String, seconds: u32, end: bool) {
+        let tx = self.tx.clone();
+        let cache = self.study_engine.clone();
+        self.rt.spawn(async move {
+            let engine = study_engine(&cache).await;
+            if !answer.trim().is_empty() {
+                viva.answer(&answer, seconds);
+            }
+            let r = async move {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                if end || viva.is_done() {
+                    let (report, path, note) =
+                        st::finish_viva(&store, &mut lib, engine.as_ref(), &mut viva).await?;
+                    return Ok::<_, String>((viva, Some((report, path, lib)), note));
+                }
+                let note = st::viva_question(&store, &lib, engine.as_ref(), &mut viva).await?;
+                Ok((viva, None, note))
+            }
+            .await;
+            let m = match r {
+                Ok((v, Some((report, path, lib)), note)) => {
+                    StudyMsg::VivaReport(Ok((v, report, path)), note, Some(lib))
+                }
+                Ok((v, None, note)) => StudyMsg::Viva(Ok(v), note),
+                Err(e) => StudyMsg::VivaReport(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+}
+
+/// The study model: the cached one, or the chat's provider and model
+/// from the saved choices; `None` when Study is set to offline or no
+/// model connects (Study then uses its own fallbacks).
+async fn study_engine(
+    cache: &std::sync::Arc<std::sync::Mutex<Option<StudyEngine>>>,
+) -> Option<StudyEngine> {
+    if let Some(e) = cache.lock().ok().and_then(|c| c.clone()) {
+        return Some(e);
+    }
+    let prefs = tokio::task::spawn_blocking(Preferences::load)
+        .await
+        .unwrap_or_default();
+    if prefs.study_offline {
+        return None;
+    }
+    let e = StudyEngine::open(prefs.chat_options()).await.ok()?;
+    if let Ok(mut c) = cache.lock() {
+        *c = Some(e.clone());
+    }
+    Some(e)
 }
 
 /// "Works, 12 chat models, 180 ms".

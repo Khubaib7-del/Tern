@@ -19,6 +19,7 @@ tern-providers.workspace = true
 base64.workspace = true
 tern-crawl.workspace = true
 tern-research.workspace = true
+tern-study.workspace = true
 regex.workspace = true
 url.workspace = true
 futures.workspace = true

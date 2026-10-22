@@ -10,7 +10,7 @@ use tern_core::EventEnvelope;
 
 use crate::ChatArgs;
 
-fn options(chat: ChatArgs) -> (ChatOptions, Preferences) {
+pub(crate) fn options(chat: ChatArgs) -> (ChatOptions, Preferences) {
     let prefs = Preferences::load();
     let saved = prefs.chat_options();
     let opts = ChatOptions {

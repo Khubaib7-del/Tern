@@ -18,6 +18,7 @@ mod model;
 mod motion;
 mod providers;
 mod scout;
+mod study;
 mod theme;
 mod view;
 

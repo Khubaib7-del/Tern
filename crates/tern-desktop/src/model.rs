@@ -29,6 +29,8 @@ pub enum Screen {
     Appearance,
     /// Questions on watch and what changed since their last run.
     Watches,
+    /// The Study harness: materials, topics, tutor, quizzes, viva.
+    Study,
 }
 
 /// One block of the transcript.
@@ -277,6 +279,8 @@ pub struct Model {
     pub watch_selected: Option<String>,
     /// Watches running in the background now.
     pub watches_running: usize,
+    /// The Study harness's screen state.
+    pub study: crate::study::StudyState,
 }
 
 /// A stopped run the chat can pick up again.
@@ -340,6 +344,7 @@ impl Model {
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
+            study: crate::study::StudyState::new(),
         }
     }
 
@@ -917,15 +922,20 @@ impl Model {
         }
     }
 
-    /// Switching harness. Study is not built yet, so the switch explains that
-    /// and leaves the chat in Research.
+    /// Switching harness. Study opens the Study screen (materials, topics,
+    /// tutor, quizzes, viva); Research goes back to the chat.
     pub fn choose_harness(&mut self, harness: Harness) {
+        self.harness = harness;
         match harness {
-            Harness::Research => self.harness = Harness::Research,
-            Harness::Study => self.entries.push(Entry::Notice(
-                "The Study harness (tutor, flashcards, quizzes, viva practice) arrives in phase 7. This chat stays in Research."
-                    .into(),
-            )),
+            Harness::Research => {
+                if self.screen == Screen::Study {
+                    self.screen = Screen::Chat;
+                }
+            }
+            Harness::Study => {
+                self.screen = Screen::Study;
+                self.deep_mode = false;
+            }
         }
     }
 
@@ -1704,11 +1714,13 @@ mod tests {
     }
 
     #[test]
-    fn study_explains_itself_and_new_chat_clears() {
+    fn study_opens_its_screen_and_research_returns_to_chat() {
         let mut m = ready();
         m.choose_harness(Harness::Study);
-        assert_eq!(m.harness, Harness::Research);
-        assert!(matches!(m.entries.last(), Some(Entry::Notice(t)) if t.contains("phase 7")));
+        assert_eq!(m.harness, Harness::Study);
+        assert_eq!(m.screen, Screen::Study);
+        m.choose_harness(Harness::Research);
+        assert_eq!(m.screen, Screen::Chat);
         m.new_chat();
         assert!(m.entries.is_empty());
         assert!(m.can_send());

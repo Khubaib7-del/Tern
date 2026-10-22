@@ -11,9 +11,9 @@
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Done |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | In progress |
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Mostly built (PRs #31 to #33); scholarly sources and reports in the vault remain |
-| 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | In progress (PR #34: plans and parallel workers); checkpoints, steering, and the watcher remain |
+| 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Mostly built (PR #34: plans and parallel workers; PR #35: checkpoints, steering, the in-app watcher, ledgers); budget pause and an OS scheduler remain |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
-| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Planned |
+| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | In progress (PR #36: materials, topics, mastery, tutor, quizzes, viva); flashcards with Anki export and Explain in 3D next |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Planned |
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Planned |
 | 10 | Extensibility | MCP client, ACP server, skills, project rules | Planned |
@@ -112,6 +112,8 @@ Started early (ADR 0006): the first slice is the window shell on the phase 3 cha
 | Flashcards with spaced repetition and Anki export | Deck imports into Anki |
 | Quizzes graded with the verdict vocabulary | Deterministic grading where an answer key exists |
 | Viva practice on the user's own report | Follow-up questions reference report sections |
+
+Built in PR #36: study materials (files, folders, PDFs with page anchors, vault notes, research reports, links) split into topics with learning objectives and an explainable mastery model (an Elo-style rating and a Leitner box per topic); the tutor (Explain, Socratic, Explain like I'm new) citing material anchors and flagging anything beyond them; quizzes (multiple choice, true or false, fill in the blank, short answer) graded exactly against the key, or by the model judge with a word-overlap fallback, in the verdict glyphs; and viva practice with levelled questions, follow-ups, and a rubric report. Flashcards with spaced repetition and Anki export, and Explain in 3D, are next.
 
 ### Phase 8 · Decision model
 
