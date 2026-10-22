@@ -1,6 +1,7 @@
 //! The main window: title bar with the harness switch, icon rail, chat list,
 //! transcript, composer, and the run panel.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -15,12 +16,12 @@ use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, ScrollHandle, SharedString, Subscription, Task,
     Window, div, px,
 };
-use tern_agent::{ApprovalAnswer, CancelFlag, ChatSession, Harness};
+use tern_agent::{ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef};
 use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bridge::{Bridge, Msg};
-use crate::model::{Connection, Entry, Model, Phase, Screen};
+use crate::model::{Connection, Entry, Model, Phase, Screen, SiteIcon};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
@@ -42,6 +43,8 @@ pub struct Workspace {
     rename_input: Entity<InputState>,
     renaming: Option<SessionId>,
     cancel: CancelFlag,
+    /// Answers whose source list is expanded, by transcript index.
+    open_sources: HashSet<usize>,
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     scroll: ScrollHandle,
     ticker: Option<Task<()>>,
@@ -123,6 +126,7 @@ impl Workspace {
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
+            open_sources: HashSet::new(),
             pending: None,
             scroll: ScrollHandle::new(),
             ticker: None,
@@ -153,6 +157,8 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.open_sources.clear();
+                self.request_icons();
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
                 self.session = Some(s);
@@ -170,7 +176,15 @@ impl Workspace {
             }
             Msg::Sessions(recent) => self.model.sessions = recent,
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
-            Msg::Event { kind, summary } => self.model.on_event(&kind, &summary),
+            Msg::Event {
+                kind,
+                summary,
+                page,
+            } => {
+                self.model.on_event(&kind, &summary, page);
+                self.request_icons();
+            }
+            Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Text(call, text) => {
                 self.model.on_text(call, &text);
                 self.scroll.scroll_to_bottom();
@@ -281,6 +295,156 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Asks the bridge for favicons the transcript needs and lacks.
+    fn request_icons(&mut self) {
+        for (site, url) in self.model.wanted_icons() {
+            self.bridge.favicon(site, url);
+        }
+    }
+
+    /// A source's icon: its cached favicon, else the site's initial.
+    fn site_icon(&self, page: &PageRef, size: f32, p: Palette) -> AnyElement {
+        let initial: String = page
+            .site
+            .trim_start_matches("www.")
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().collect())
+            .unwrap_or_else(|| "·".into());
+        let monogram = move || {
+            div()
+                .size(px(size))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .bg(p.hover)
+                .text_color(p.muted)
+                .text_size(px(size * 0.62))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(SharedString::from(initial.clone()))
+                .into_any_element()
+        };
+        match self.model.icons.get(&page.site) {
+            Some(SiteIcon::Ready(path)) => gpui_kit::img(path.clone())
+                .size(px(size))
+                .flex_none()
+                .rounded_sm()
+                .with_fallback(monogram)
+                .into_any_element(),
+            _ => monogram(),
+        }
+    }
+
+    /// "Read N pages" with the first icons stacked; opens into one row per page.
+    fn sources(
+        &self,
+        i: usize,
+        pages: &[PageRef],
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = self.open_sources.contains(&i);
+        let label = if pages.len() == 1 {
+            "Read 1 page".to_owned()
+        } else {
+            format!("Read {} pages", pages.len())
+        };
+        let stack = div()
+            .flex()
+            .items_center()
+            .children(pages.iter().take(3).enumerate().map(|(k, pg)| {
+                div()
+                    .when(k > 0, |d| d.ml(px(-4.)))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.canvas)
+                    .child(self.site_icon(pg, 14., p))
+            }));
+        let header = div()
+            .id(("sources", i))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(p.border)
+            .text_xs()
+            .text_color(p.muted)
+            .cursor_pointer()
+            .hover(|d| d.bg(p.hover).text_color(p.text))
+            .child(stack)
+            .child(label)
+            .child(
+                gpui_kit::component::Icon::new(if open {
+                    IconName::ChevronUp
+                } else {
+                    IconName::ChevronDown
+                })
+                .xsmall(),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.open_sources.remove(&i) {
+                    this.open_sources.insert(i);
+                }
+                cx.notify();
+            }));
+        let rows = pages.iter().enumerate().map(|(k, pg)| {
+            let url = pg.url.clone();
+            div()
+                .id(SharedString::from(format!("source-{i}-{k}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py(px(5.))
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|d| d.bg(p.hover))
+                .child(self.site_icon(pg, 16., p))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(p.text)
+                        .child(SharedString::from(pg.label().to_owned())),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(pg.site.clone())),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url)))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap_1()
+            .child(header)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .p_1()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(p.border)
+                        .children(rows),
+                )
+            })
+            .into_any_element()
+    }
+
     /// Reopens a chat from the list. Ignored mid-turn or for the open chat.
     fn open_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
         if self.model.is_busy() || self.current == Some(id) {
@@ -288,6 +452,7 @@ impl Workspace {
         }
         self.session = None;
         self.current = Some(id);
+        self.open_sources.clear();
         self.model.new_chat();
         self.model.phase = Phase::Connecting;
         self.model.screen = Screen::Chat;
@@ -362,6 +527,7 @@ impl Workspace {
         }
         let had_messages = !self.model.entries.is_empty();
         self.model.new_chat();
+        self.open_sources.clear();
         if had_messages || self.session.is_none() {
             // A fresh session row, so the old chat keeps its own history.
             self.session = None;
@@ -792,7 +958,7 @@ impl Workspace {
             )
     }
 
-    fn entry(&self, i: usize, e: &Entry, p: Palette) -> AnyElement {
+    fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         match e {
             Entry::User(t) => div()
                 .flex()
@@ -807,7 +973,12 @@ impl Workspace {
                         .child(SharedString::from(t.clone())),
                 )
                 .into_any_element(),
-            Entry::Assistant { text, steps, took } => {
+            Entry::Assistant {
+                text,
+                steps,
+                took,
+                pages,
+            } => {
                 let mut meta = format!("Worked for {}s", took.as_secs().max(1));
                 if !steps.is_empty() {
                     meta.push_str(&format!(
@@ -825,6 +996,9 @@ impl Workspace {
                             .selectable(true)
                             .motion(stream_motion()),
                     )
+                    .when(!pages.is_empty(), |d| {
+                        d.child(self.sources(i, pages, p, cx))
+                    })
                     .child(div().text_xs().text_color(p.faint).child(meta))
                     .into_any_element()
             }
@@ -955,7 +1129,7 @@ impl Workspace {
             column = column.child(self.empty_state(p, cx));
         }
         for (i, e) in self.model.entries.iter().enumerate() {
-            column = column.child(self.entry(i, e, p));
+            column = column.child(self.entry(i, e, p, cx));
         }
         if let Some(draft) = self.model.draft() {
             // Same id the finished answer gets, so the text does not redraw

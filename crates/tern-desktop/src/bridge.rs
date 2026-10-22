@@ -7,8 +7,8 @@ use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
-    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, PastTurn, Preferences,
-    SessionSummary, TurnOutcome, Usage,
+    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, PageRef, PastTurn,
+    Preferences, SessionSummary, TurnOutcome, Usage,
 };
 use tern_core::SecretString;
 use tern_core::SessionId;
@@ -23,12 +23,16 @@ pub enum Msg {
     Resumed(Box<ChatSession>, Vec<PastTurn>, Vec<SessionSummary>),
     /// A plain note for the transcript (a chat that would not reopen).
     Notice(String),
+    /// A site's favicon on disk, or `None` when it could not be had.
+    Icon(String, Option<std::path::PathBuf>),
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
     ConnectFailed(String),
     Event {
         kind: String,
         summary: String,
+        /// The page a `read_url` returned, for the answer's source rows.
+        page: Option<PageRef>,
     },
     /// Reply text streaming in: the model call's number and the new text.
     Text(u32, String),
@@ -53,6 +57,7 @@ impl std::fmt::Debug for Msg {
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
             Self::ConnectFailed(e) => write!(f, "ConnectFailed({e})"),
             Self::Event { kind, .. } => write!(f, "Event({kind})"),
+            Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),
@@ -152,6 +157,34 @@ impl Bridge {
         });
     }
 
+    /// Fetches a site's favicon into the icon cache (once per site), through
+    /// the same network guard as page reads.
+    pub fn favicon(&self, site: String, url: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let path = icon_path(&site);
+            let found = match &path {
+                Some(p) if p.exists() => Some(p.clone()),
+                Some(p) => match tern_crawl::Fetcher::new().fetch_icon(&url).await {
+                    Ok(bytes) => {
+                        let p = p.clone();
+                        tokio::task::spawn_blocking(move || {
+                            std::fs::create_dir_all(p.parent()?).ok()?;
+                            std::fs::write(&p, bytes).ok()?;
+                            Some(p)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    }
+                    Err(_) => None,
+                },
+                None => None,
+            };
+            let _ = tx.send(Msg::Icon(site, found));
+        });
+    }
+
     /// Hides a chat from the list, then sends the list again.
     pub fn archive(&self, id: SessionId) {
         let tx = self.tx.clone();
@@ -176,6 +209,7 @@ impl Bridge {
                 let _ = events.send(Msg::Event {
                     kind: e.kind.clone(),
                     summary: e.user_summary.clone(),
+                    page: tern_agent::sources::page_of(&e.kind, &e.payload),
                 });
             };
             let texts = tx.clone();
@@ -294,6 +328,29 @@ impl Bridge {
 }
 
 /// "Works, 12 chat models, 180 ms".
+/// Where a site's favicon is cached: `<data>/cache/icons/<site>`. The site
+/// is reduced to safe filename characters.
+fn icon_path(site: &str) -> Option<std::path::PathBuf> {
+    let name = icon_file_name(site)?;
+    let paths = tern_platform::AppPaths::discover().ok()?;
+    Some(paths.data_dir.join("cache").join("icons").join(name))
+}
+
+fn icon_file_name(site: &str) -> Option<String> {
+    let name: String = site
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = name.trim_matches('.').to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
 fn model_report(chat: usize, all: usize, ms: u128) -> String {
     let n = if chat > 0 { chat } else { all };
     let what = if chat > 0 { "chat model" } else { "model" };
@@ -305,7 +362,15 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::model_report;
+    use super::{icon_file_name, model_report};
+
+    #[test]
+    fn icon_names_are_safe() {
+        assert_eq!(icon_file_name("ArXiv.org").as_deref(), Some("arxiv.org"));
+        assert_eq!(icon_file_name("../etc").as_deref(), Some("_etc"));
+        assert_eq!(icon_file_name("a:b/c").as_deref(), Some("a_b_c"));
+        assert_eq!(icon_file_name(".."), None);
+    }
 
     #[test]
     fn reports_read_plainly() {

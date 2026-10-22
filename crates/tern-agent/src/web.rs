@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use tern_core::EffectClass;
 use tern_crawl::{Fetcher, SearchClient};
 
+use crate::sources::PageRef;
 use crate::tools::{BoxFuture, Tool, ToolError, ToolOutput};
 
 /// Characters of a page handed to the model per read.
@@ -61,6 +62,7 @@ impl Tool for WebSearchTool {
             Ok(ToolOutput {
                 content: out,
                 evidence_refs: hits.iter().map(|h| h.url.clone()).collect(),
+                ..ToolOutput::default()
             })
         })
     }
@@ -104,9 +106,17 @@ impl Tool for ReadUrlTool {
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
             let text: String = p.text.chars().take(READ_CHARS).collect();
+            let page = PageRef {
+                title: p.title.clone(),
+                url: p.final_url.clone(),
+                site: p.site.clone(),
+                builtin: p.icon.builtin.map(str::to_owned),
+                favicon: p.icon.favicon.clone(),
+            };
             Ok(ToolOutput {
                 content: format!("{}\n{}\n\n{}", p.title, p.final_url, text),
                 evidence_refs: vec![p.final_url],
+                meta: json!({ "page": page }),
             })
         })
     }

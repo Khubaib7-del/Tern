@@ -13,6 +13,8 @@ use crate::icon::{SourceIcon, site_of};
 /// Pages larger than this are cut off and marked truncated.
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
+/// Favicons larger than this are skipped.
+pub const MAX_ICON_BYTES: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// One page as Tern read it.
@@ -90,6 +92,66 @@ impl Fetcher {
             http: b.build().expect("http client"),
             allow_private,
         }
+    }
+
+    /// Downloads a site icon through the same network guard as pages.
+    /// Returns the raw bytes when they look like an image (PNG, ICO, GIF,
+    /// JPEG, WebP or SVG) and fit in [`MAX_ICON_BYTES`].
+    pub async fn fetch_icon(&self, url: &str) -> Result<Vec<u8>, FetchError> {
+        let mut current = Url::parse(url.trim()).map_err(|_| FetchError::BadUrl(url.to_owned()))?;
+        for _ in 0..=MAX_REDIRECTS {
+            guard::check_resolved(&current, self.allow_private).await?;
+            let site = site_of(&current);
+            let resp = self
+                .http
+                .get(current.clone())
+                .header("Accept", "image/*")
+                .send()
+                .await
+                .map_err(|e| net_error(&site, &e))?;
+            let status = resp.status();
+            if status.is_redirection() {
+                current = resp
+                    .headers()
+                    .get(LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|l| current.join(l).ok())
+                    .ok_or(FetchError::Status {
+                        site: site.clone(),
+                        status: status.as_u16(),
+                    })?;
+                continue;
+            }
+            if !status.is_success() {
+                return Err(FetchError::Status {
+                    site,
+                    status: status.as_u16(),
+                });
+            }
+            let mut resp = resp;
+            let mut body = Vec::new();
+            while let Some(chunk) = resp.chunk().await.map_err(|e| net_error(&site, &e))? {
+                body.extend_from_slice(&chunk);
+                if body.len() > MAX_ICON_BYTES {
+                    return Err(FetchError::Unsupported {
+                        site,
+                        content_type: "an icon over 256 KB".into(),
+                        hint: "",
+                    });
+                }
+            }
+            if !looks_like_image(&body) {
+                return Err(FetchError::Unsupported {
+                    site,
+                    content_type: "an icon that is not an image".into(),
+                    hint: "",
+                });
+            }
+            return Ok(body);
+        }
+        Err(FetchError::TooManyRedirects {
+            site: site_of(&current),
+        })
     }
 
     pub async fn fetch(&self, url: &str) -> Result<Page, FetchError> {
@@ -204,6 +266,18 @@ impl Default for Fetcher {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Magic bytes of the image formats the desktop app can draw.
+pub fn looks_like_image(b: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&b[..b.len().min(256)]).to_ascii_lowercase();
+    b.starts_with(b"\x89PNG")
+        || b.starts_with(&[0, 0, 1, 0])
+        || b.starts_with(b"GIF8")
+        || b.starts_with(&[0xFF, 0xD8, 0xFF])
+        || (b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP")
+        || head.trim_start().starts_with("<svg")
+        || (head.trim_start().starts_with("<?xml") && head.contains("<svg"))
 }
 
 async fn read_capped(

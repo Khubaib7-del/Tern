@@ -18,12 +18,16 @@ use tern_core::EffectClass;
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// What a tool returns to the model.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ToolOutput {
     /// Text the model reads next.
     pub content: String,
     /// IDs of sources, spans, or artifacts this result rests on.
     pub evidence_refs: Vec<String>,
+    /// Structured facts for front ends (the page a read returned), logged
+    /// with `tool.executed`. The model never sees it.
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    pub meta: serde_json::Value,
 }
 
 impl ToolOutput {
@@ -31,6 +35,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             evidence_refs: Vec::new(),
+            meta: serde_json::Value::Null,
         }
     }
 }
