@@ -127,6 +127,54 @@ pub fn archive_session(id: SessionId) -> Result<(), String> {
     store.archive_session(id).map_err(|e| e.to_string())
 }
 
+/// The provider and model `opts` names, or the defaults: the first
+/// provider with a saved key and its first chat model. Also gives the
+/// model's context window when the listing has it.
+pub(crate) async fn connect_model(
+    opts: &ChatOptions,
+    secrets: Option<&dyn SecretStore>,
+) -> Result<(Provider, String, Option<u64>), String> {
+    let id = match opts.provider.clone() {
+            Some(id) => id,
+            None => providers::list(secrets)
+                .into_iter()
+                .find(|r| r.key_saved)
+                .map(|r| r.id.to_owned())
+                .ok_or_else(|| {
+                    "No provider has a key yet. Add one with `tern provider add <id>` (Groq and Google AI Studio have free keys), or pick a local server with `--provider ollama`.".to_owned()
+                })?,
+        };
+    let provider = providers::connect_by_id(&id, secrets, opts.base_url.as_deref())
+        .map_err(|e: SetupError| e.to_string())?;
+    let (model, context_window) = match opts.model.clone() {
+        Some(m) => {
+            // Look the window up when the listing has it; a failed
+            // listing is not fatal, since the model id may still work.
+            let window = provider
+                .list_models()
+                .await
+                .ok()
+                .and_then(|ms| ms.into_iter().find(|x| x.id == m))
+                .and_then(|x| x.context_window);
+            (m, window)
+        }
+        None => {
+            let models = provider.list_models().await.map_err(|e| e.to_string())?;
+            let m = models
+                .into_iter()
+                .find(|m| m.kind == ModelKind::Chat)
+                .ok_or_else(|| {
+                    format!(
+                        "{} lists no chat models. Pick one with `--model`.",
+                        provider.spec().name
+                    )
+                })?;
+            (m.id, m.context_window)
+        }
+    };
+    Ok((provider, model, context_window))
+}
+
 /// Forwards each stored event to the front end as well.
 struct Tee<'a> {
     inner: &'a StoreSink,
@@ -208,44 +256,7 @@ impl ChatSession {
         store: Store,
         resume: Option<SessionId>,
     ) -> Result<Self, String> {
-        let id = match opts.provider {
-            Some(id) => id,
-            None => providers::list(secrets)
-                .into_iter()
-                .find(|r| r.key_saved)
-                .map(|r| r.id.to_owned())
-                .ok_or_else(|| {
-                    "No provider has a key yet. Add one with `tern provider add <id>` (Groq and Google AI Studio have free keys), or pick a local server with `--provider ollama`.".to_owned()
-                })?,
-        };
-        let provider = providers::connect_by_id(&id, secrets, opts.base_url.as_deref())
-            .map_err(|e: SetupError| e.to_string())?;
-        let (model, context_window) = match opts.model {
-            Some(m) => {
-                // Look the window up when the listing has it; a failed
-                // listing is not fatal, since the model id may still work.
-                let window = provider
-                    .list_models()
-                    .await
-                    .ok()
-                    .and_then(|ms| ms.into_iter().find(|x| x.id == m))
-                    .and_then(|x| x.context_window);
-                (m, window)
-            }
-            None => {
-                let models = provider.list_models().await.map_err(|e| e.to_string())?;
-                let m = models
-                    .into_iter()
-                    .find(|m| m.kind == ModelKind::Chat)
-                    .ok_or_else(|| {
-                        format!(
-                            "{} lists no chat models. Pick one with `--model`.",
-                            provider.spec().name
-                        )
-                    })?;
-                (m.id, m.context_window)
-            }
-        };
+        let (provider, model, context_window) = connect_model(&opts, secrets).await?;
         let mut tools = ToolRegistry::new();
         let search =
             match search::connect(opts.search.as_deref(), secrets, opts.search_url.as_deref()) {

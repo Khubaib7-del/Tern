@@ -7,6 +7,7 @@
 
 mod research;
 mod runs;
+mod study;
 mod tui;
 
 use std::io::{BufRead, IsTerminal};
@@ -136,6 +137,60 @@ enum Command {
         turn: Option<usize>,
         #[arg(long)]
         json: bool,
+    },
+    /// Study materials: add files, notes, reports, and links; list topics
+    /// and mastery; see past quizzes and vivas.
+    #[command(subcommand)]
+    Study(study::StudyCmd),
+    /// A tutor for one topic of your materials (the weakest when none is
+    /// named), citing pages as it teaches.
+    Tutor {
+        /// A topic: its number, id, or title.
+        topic: Option<String>,
+        /// explain, socratic, or new (explain like I'm new).
+        #[arg(long, default_value = "explain")]
+        mode: String,
+        /// No model: quote passages from your materials instead.
+        #[arg(long)]
+        offline: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
+    },
+    /// A quiz on one topic, or on all your materials, graded as you go.
+    Quiz {
+        /// A topic: its number, id, or title. Leave out for all materials.
+        topic: Option<String>,
+        /// How many questions (1 to 30). Defaults to your choice, or 5.
+        #[arg(long, short)]
+        n: Option<usize>,
+        /// easy, medium, or hard.
+        #[arg(long, short)]
+        difficulty: Option<String>,
+        /// Question types to mix, comma-separated: mcq, short, tf, blank.
+        #[arg(long, short)]
+        kinds: Option<String>,
+        /// No model: questions written from your materials' sentences.
+        #[arg(long)]
+        offline: bool,
+        /// Print the quiz and its key as JSON instead of taking it.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
+    },
+    /// Viva practice: an examiner asks progressively harder questions on
+    /// your project or materials, then scores you on a rubric.
+    Viva {
+        /// What is being examined. Defaults to your research report or first material.
+        #[arg(long, short)]
+        title: Option<String>,
+        /// How many questions (2 to 15). Defaults to your choice, or 6.
+        #[arg(long, short)]
+        n: Option<usize>,
+        #[arg(long)]
+        offline: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
     },
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
@@ -294,6 +349,30 @@ fn main() -> ExitCode {
             }
         },
         Command::Watch(cmd) => block_on(runs::watch(cmd)),
+        Command::Study(cmd) => block_on(study::study(cmd)),
+        Command::Tutor {
+            topic,
+            mode,
+            offline,
+            chat,
+        } => block_on(study::tutor(topic, mode, offline, chat)),
+        Command::Quiz {
+            topic,
+            n,
+            difficulty,
+            kinds,
+            offline,
+            json,
+            chat,
+        } => block_on(study::quiz(
+            topic, n, difficulty, kinds, offline, json, chat,
+        )),
+        Command::Viva {
+            title,
+            n,
+            offline,
+            chat,
+        } => block_on(study::viva(title, n, offline, chat)),
         Command::Ledger { chat, turn, json } => block_on(runs::ledger(chat, turn, json)),
         Command::Report {
             chat,

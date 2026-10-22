@@ -7,7 +7,9 @@
 //! ([`deep`]) runs an approved plan's workers in parallel. Research runs
 //! save checkpoints ([`checkpoint`]) and can be resumed, take steering notes
 //! while they run ([`steer`]), keep source and budget ledgers ([`ledger`]),
-//! and saved questions can be watched ([`watch`]).
+//! and saved questions can be watched ([`watch`]). The Study harness
+//! ([`study`]) keeps the user's materials, topics, and mastery, and runs
+//! the tutor, quizzes, and viva practice.
 
 #![forbid(unsafe_code)]
 
@@ -33,6 +35,7 @@ pub mod run;
 pub mod search;
 pub mod sources;
 pub mod steer;
+pub mod study;
 pub mod tools;
 pub mod transcript;
 pub mod vault;

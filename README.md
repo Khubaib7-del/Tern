@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, and a first desktop app work today (see below); the deep research pipeline, claim verification, and the Study harness are still ahead.
+It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, the desktop app, Tern Crawl, claim checks with run reports, deep research with parallel workers, and the Study harness (tutor, quizzes, viva) work today (see below); flashcards, the decision model, the library, MCP, evaluation, and the Linux and macOS ports are still ahead.
 
 ## What works today
 
@@ -24,6 +24,8 @@ It is being built as the research tool for its author's final-year project. It i
 | Providers | 13 providers (11 remote, Ollama and LM Studio local) on Tern's own adapters; keys tested before they are saved to Windows Credential Manager; streaming replies |
 | Turn loop | Bounded by model calls, tool calls, and tokens; loop detection; cancel; policy gate with Allow, Ask, Deny and inline approvals |
 | Web answers | `tern ask` and chat search through Tavily, Brave, or SearXNG, read pages behind a network guard, and cite them with a citation check |
+| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
+| PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups |
 | Claim checks | Every cited sentence of an answer is checked against the text Tern Crawl read for its source: Supported, Partly supported, Not supported, or No source, with the quoted passage and a link to it. The chat's model judges; a word-overlap check works offline and fills gaps |
 | Deep research | A plan first: the model splits the question into sub-questions (searches, expected source types, budget share) and you run, edit, skip, or cancel it before anything is searched. Workers then research the parts in parallel (3 at once by default), each with its own slice of tokens, pages, and time, reading through Tern Crawl; one answer is written from their notes with one set of citations, then checked and reported like any answer. `tern research --deep "question"` in the terminal; the composer's **Deep research** mode on desktop |
 | Run reports | Each answer writes a Markdown and JSON report (question, steps, sources with robots and cache status, claim verdicts, budget and tokens, errors, and a section per worker for deep research); `tern report` prints or exports one |
@@ -31,8 +33,9 @@ It is being built as the research tool for its author's final-year project. It i
 | Steering | Send a note while a run goes: "focus on 2024 sources" guides the rest of the run, "drop sub-question 3", "add: cost comparison", and "redirect 2: …" change a deep run's workers. Notes land at the next safe point and the log says what each did. Type during `tern research`, use `tern steer <chat> "…"` from another terminal, or press Enter in the desktop composer while a run goes |
 | Watcher | Put a question on watch (daily, weekly, or any interval). The desktop app re-runs due watches while it is open, and `tern watch run` does from the terminal; each run is diffed against the last report: new sources, changed verdicts, new and dropped claims. There is no operating-system scheduler, so nothing runs while Tern is closed. `tern watch add\|list\|rm\|run` |
 | Ledgers | Each run keeps a source ledger (every URL considered, read live or from the cache, or skipped for robots.txt, the budget, a duplicate, or the policy gate) and a budget ledger (tokens, pages, searches, and time per step and per worker), in the run report, `tern ledger`, and the desktop run panel's **Ledger** view |
+| Study | Add your materials (PDFs read page by page, notes, folders, vault notes, a research report, links) and Tern splits them into topics with learning objectives and page anchors, and keeps a mastery score per topic (a rating moved by each graded answer, a Leitner box for when it is due, both explained in words). **Tutor**: Explain, Socratic, or Explain like I'm new, citing the pages it teaches from and flagging anything beyond your materials. **Quizzes**: multiple choice, true or false, fill in the blank, and short answer, with an answer key and source page per question; keyed answers are graded exactly, short answers by the model with a word-overlap fallback, in the verdict glyphs; results move mastery and are kept in a history. **Viva practice**: an examiner asks harder questions level by level, follows up on thin answers, and ends with a rubric report (clarity, correctness, depth, use of sources) saved as Markdown. Everything works offline from your materials when no model is set. `tern study add\|list\|rm\|topics\|history`, `tern tutor`, `tern quiz`, `tern viva`; the **Study** harness on desktop |
 | Terminal | `tern` / `tern chat`: an 80×24 ratatui chat |
-| Desktop app | Windows build on GPUI: chat with streaming answers, chat list (reopen, rename, archive), providers screen, source rows with site icons, context ring, run panel (Summary, Detailed, Raw, Report, Ledger, and Workers for deep research), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments and sources, `@prompt:` / `@context:`), message actions (copy, reply with a quote, branch into a new chat), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs and built-in service logos, an Appearance screen) and Scout, a live mascot rig in the sidebar that reacts to the run, Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser (pages as readable Markdown beside the chat, citations and sources open there, Ask about this page), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch) |
+| Desktop app | Windows build on GPUI: chat with streaming answers, chat list (reopen, rename, archive), providers screen, source rows with site icons, context ring, run panel (Summary, Detailed, Raw, Report, Ledger, and Workers for deep research), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments and sources, `@prompt:` / `@context:`), message actions (copy, reply with a quote, branch into a new chat), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs and built-in service logos, an Appearance screen) and Scout, a live mascot rig in the sidebar that reacts to the run, Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser (pages as readable Markdown beside the chat, citations and sources open there, Ask about this page), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch), and the Study harness (a Study home with materials and their icons, topics with mastery rings, Tutor, Quiz, and Viva; a tutor chat with mode chips; a quiz card with instant feedback and a score summary; a viva screen with a timer and the rubric report; Study settings) |
 
 Each pull request builds `tern-desktop.exe` and `tern.exe` for Windows x64 as a CI artifact. There are no releases or installers yet.
 
@@ -52,16 +55,17 @@ Both share the same projects, library, vault, memory, providers, and permissions
 
 | Area | Planned |
 | --- | --- |
-| Models | Bring your own key for many providers; local models through Ollama, LM Studio, or any OpenAI-compatible endpoint; keys kept in the OS keychain |
+| Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
 | Decision model | A fast scorer beside the main model that decides fixed choices (which source first, which tool next, does a claim pass) while hard checks keep the final word |
-| Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers |
-| PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups |
-| Control | Safe pause at budget limits, loop and drift detection, and a scheduler that runs watches while Tern is closed (steering, run checkpoints, and the in-app watcher are built) |
+| Control | Safe pause at budget limits, drift detection, and a scheduler that runs watches while Tern is closed (loop detection, steering, run checkpoints, and the in-app watcher are built) |
 | Memory | Stable IDs for every query, file, and source; a goal and decision ledger that survives compaction |
-| Surfaces | A terminal UI and a desktop app over the same core; MCP client and ACP server |
-| Workspace | A built-in browser for reading sources, and Explain in 3D for interactive concept models |
-| Git | Project vaults as git repositories: commit, branch, push, and open pull requests from the app |
-| Vault | Plain Markdown, Obsidian-compatible, with agent edits as diffs |
+| Surfaces | MCP client and ACP server (the terminal UI and desktop app are built) |
+| Workspace | Explain in 3D for interactive concept models (the built-in browser is built) |
+| Vault | Agent edits shown as diffs (plain Markdown notes, `[[links]]`, backlinks, and Git for the vault are built) |
+| Study | Flashcards with Anki export, Explain in 3D, and study plans |
+| Library | Chat ranges, sub-sessions, handoffs, a library, bulk delete, highlights and side chats |
+| Evaluation | Benchmarks for citation accuracy, cost, and reliability |
+| Platforms | Linux and macOS builds |
 
 Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
 
@@ -78,7 +82,7 @@ Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
 | 7 | **The user steers.** Plans first; pause, redirect, and resume at any point. |
 | 8 | **One core, many surfaces.** The core owns state and security; UIs only render its events. |
 
-## Planned architecture
+## Architecture
 
 A single Rust workspace. The headless core owns execution and security; the TUI and desktop app subscribe to its events.
 
@@ -91,7 +95,7 @@ A single Rust workspace. The headless core owns execution and security; the TUI 
 | `tern-crawl` | Fetch, extract, and chunk web pages and PDFs, behind an SSRF and DNS-rebinding guard |
 | `tern-store` | SQLite, full-text and vector indexes, append-only event log, artifacts, the Markdown vault |
 | `tern-research` | Research pipeline, scholarly sources, claim verification, citations, run reports |
-| `tern-study` | Tutor, flashcards, quizzes, viva practice, study plans |
+| `tern-study` | Materials and anchors, topics, mastery, tutor, quizzes and grading, viva practice; flashcards and study plans next |
 | `tern-tui` | The `tern` CLI and ratatui terminal UI |
 | `tern-desktop` | The GPUI desktop app |
 | `tern-platform` | Keychain, paths, and OS integration behind traits |
@@ -113,13 +117,13 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | Phase | Focus | Status |
 | --- | --- | --- |
 | 0 | Repository baseline | Done |
-| 1 | Design lock: palette, fonts, concept screens, SVG mark | Planned |
+| 1 | Design lock: palette, fonts, concept screens, SVG mark | Done |
 | 2 | Core skeleton, keychain, store, `tern doctor` | Done |
 | 3 | Providers and the first cited answer in the TUI | Done |
-| 4 | Crawler and claim verification | Planned |
-| 5 | Deep research: plans, workers, checkpoints, steering | Planned |
+| 4 | Crawler and claim verification | Mostly done |
+| 5 | Deep research: plans, workers, checkpoints, steering | Mostly done |
 | 6 | Desktop app | In progress |
-| 7 | Study harness | Planned |
+| 7 | Study harness | In progress |
 | 8 | Decision model | Planned |
 | 9 | Continuity and library | Planned |
 | 10 | Extensibility: MCP, ACP, skills | Planned |
@@ -168,6 +172,11 @@ Not yet released. There are no installers or packages; test builds come from CI 
 | `cargo run -p tern-tui -- provider add groq` | Adds a provider key (hidden prompt, tested before saving) |
 | `cargo run -p tern-tui -- search add tavily` | Adds a web search key |
 | `cargo run -p tern-tui -- ask "your question"` | A cited answer from the web |
+| `cargo run -p tern-tui -- research --deep "your question"` | Deep research: a plan to approve, then parallel workers |
+| `cargo run -p tern-tui -- report` | Prints the last run report (`--json`, `--out FILE`, `--list`) |
+| `cargo run -p tern-tui -- resume <chat>` | Resumes a stopped research run |
+| `cargo run -p tern-tui -- watch add "question" --every weekly` | Puts a question on watch (`watch list\|rm\|run`) |
+| `cargo run -p tern-tui -- study add notes.pdf` | Adds study materials (`study topics`, `tutor`, `quiz`, `viva`) |
 | `cargo run -p tern-tui` | The terminal chat (`-- chat --provider ollama` for a local model) |
 
 Set `TERN_REDUCED_MOTION=1` (or `"reduced_motion": true` in `preferences.json`) to turn motion off in the desktop app.

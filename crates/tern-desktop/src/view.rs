@@ -36,6 +36,7 @@ mod editor_view;
 mod git_view;
 mod runs_view;
 mod scout_view;
+mod study_view;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -104,6 +105,10 @@ pub struct Workspace {
     note_input: Entity<TextareaState>,
     /// Runs due watches in the background while the window is open.
     _watch_timer: Task<()>,
+    /// The Study screen's text fields.
+    study_inputs: study_view::StudyInputs,
+    /// Ticks the viva clock.
+    study_ticker: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -235,6 +240,8 @@ impl Workspace {
             }
         });
         let mut model = Model::new();
+        model.study = crate::study::StudyState::from_prefs(&tern_agent::Preferences::load());
+        let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         if let Ok(v) = tern_agent::vault::Vault::open_default() {
             let root = v.root().to_path_buf();
             model.editor.attach(v);
@@ -275,10 +282,16 @@ impl Workspace {
             ticker: None,
             _listener: listener,
             _watch_timer: watch_timer,
+            study_inputs,
+            study_ticker: None,
             note_input,
             address_input,
             git_inputs,
-            _subscriptions: vec![sub, key_sub, rename_sub, note_sub, address_sub],
+            _subscriptions: {
+                let mut subs = vec![sub, key_sub, rename_sub, note_sub, address_sub];
+                subs.extend(study_subs);
+                subs
+            },
         }
     }
 
@@ -414,6 +427,7 @@ impl Workspace {
             Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
                 "Tern could not save your choice: {e}"
             ))),
+            Msg::Study(m) => self.on_study(*m, window, cx),
             Msg::Watches(list, note, finished) => {
                 self.model.watches_loaded(list);
                 self.model.watches_running = self.model.watches_running.saturating_sub(finished);
@@ -1165,10 +1179,7 @@ impl Workspace {
                     )
                 })
                 .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.model.choose_harness(h);
-                    cx.notify();
-                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.choose_harness(h, cx)))
         };
         TitleBar::new().child(
             div()
@@ -3254,6 +3265,7 @@ impl Render for Workspace {
             Screen::Git => "screen-git",
             Screen::Appearance => "screen-appearance",
             Screen::Watches => "screen-watches",
+            Screen::Study => "screen-study",
         };
         div()
             .relative()
@@ -3290,6 +3302,7 @@ impl Render for Workspace {
                                 Screen::Git => d.child(self.git_screen(p, cx)),
                                 Screen::Appearance => d.child(self.appearance_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
+                                Screen::Study => d.child(self.study_screen(p, window, cx)),
                             })
                             .with_animation(
                                 screen_id,
