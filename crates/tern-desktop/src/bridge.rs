@@ -7,8 +7,8 @@ use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
-    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, PageRef, PastTurn,
-    Preferences, SessionSummary, TurnOutcome, Usage,
+    ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, ContextUse, PageRef,
+    PastTurn, Preferences, SessionSummary, TurnOutcome,
 };
 use tern_core::SecretString;
 use tern_core::SessionId;
@@ -37,7 +37,12 @@ pub enum Msg {
     /// Reply text streaming in: the model call's number and the new text.
     Text(u32, String),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
-    Done(Box<ChatSession>, TurnOutcome, Usage, Vec<SessionSummary>),
+    Done(
+        Box<ChatSession>,
+        TurnOutcome,
+        ContextUse,
+        Vec<SessionSummary>,
+    ),
     /// The Providers screen's rows, the saved choices, and a keychain error.
     Providers(Vec<ServiceRow>, Preferences, Option<String>),
     /// A key (new or saved) was tried against its service.
@@ -201,7 +206,7 @@ impl Bridge {
             let out = session
                 .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
                 .await;
-            let usage = session.usage();
+            let usage = session.context();
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));
         });

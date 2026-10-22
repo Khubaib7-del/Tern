@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tern_core::{EffectClass, EventEnvelope, SessionId};
+use tern_core::{EffectClass, EventEnvelope, Measure, SessionId};
 use tern_platform::AppPaths;
 use tern_providers::{ChatMessage, ModelKind, Provider, UsageLedger};
 use tern_store::{Harness, SessionSummary, Store};
@@ -316,6 +316,39 @@ impl ChatSession {
         self.session
     }
 
+    /// How full the model's context window is: the latest call's prompt and
+    /// reply as the provider counted them, or, before any call in this
+    /// window (a fresh or reopened chat), an estimate of the history the
+    /// next call will carry.
+    pub fn context(&self) -> ContextUse {
+        let session = self.ledger.total();
+        let base = ContextUse {
+            window: self.context_window,
+            session_tokens: session.total(),
+            calls: self.ledger.calls(),
+            ..ContextUse::default()
+        };
+        match self.ledger.last() {
+            Some(u) => ContextUse {
+                prompt: u.input_tokens,
+                reply: u.output_tokens,
+                estimated: u.measure == Measure::Estimated,
+                ..base
+            },
+            None => {
+                let mut chars: usize = self.history.iter().map(|m| m.content.len()).sum();
+                if self.search_name.is_some() {
+                    chars += WEB_INSTRUCTIONS.len();
+                }
+                ContextUse {
+                    prompt: Usage::estimated(chars, 0).input_tokens,
+                    estimated: true,
+                    ..base
+                }
+            }
+        }
+    }
+
     /// Tokens used by every turn so far.
     pub fn usage(&self) -> Usage {
         self.ledger.total()
@@ -388,6 +421,66 @@ impl ChatSession {
             self.history.push(ChatMessage::assistant(answer.clone()));
         }
         out
+    }
+}
+
+/// How full a chat's context window is (see [`ChatSession::context`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextUse {
+    /// Tokens the model read on its latest call.
+    pub prompt: u64,
+    /// Tokens it wrote on that call.
+    pub reply: u64,
+    /// The model's window, when the catalog knows it.
+    pub window: Option<u64>,
+    /// Counted at four characters a token rather than by the provider.
+    pub estimated: bool,
+    /// Every call in this window summed, which is what providers bill.
+    pub session_tokens: u64,
+    pub calls: usize,
+}
+
+impl ContextUse {
+    /// Tokens in the context: the latest prompt plus its reply.
+    pub fn used(&self) -> u64 {
+        self.prompt + self.reply
+    }
+
+    /// From 0.0 to 1.0, when the window is known.
+    pub fn fraction(&self) -> Option<f32> {
+        let w = self.window.filter(|w| *w > 0)?;
+        Some((self.used() as f32 / w as f32).clamp(0.0, 1.0))
+    }
+
+    /// Tokens still free, when the window is known.
+    pub fn left(&self) -> Option<u64> {
+        self.window.map(|w| w.saturating_sub(self.used()))
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::ContextUse;
+
+    #[test]
+    fn context_fraction_and_room() {
+        let c = ContextUse {
+            prompt: 90_000,
+            reply: 6_000,
+            window: Some(128_000),
+            ..ContextUse::default()
+        };
+        assert_eq!(c.used(), 96_000);
+        assert_eq!(c.left(), Some(32_000));
+        assert!((c.fraction().unwrap() - 0.75).abs() < 1e-6);
+        let over = ContextUse {
+            prompt: 200,
+            window: Some(100),
+            ..ContextUse::default()
+        };
+        assert_eq!(over.fraction(), Some(1.0));
+        assert_eq!(over.left(), Some(0));
+        assert_eq!(ContextUse::default().fraction(), None);
     }
 }
 

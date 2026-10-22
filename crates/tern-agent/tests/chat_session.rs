@@ -50,6 +50,8 @@ async fn opens_picks_a_chat_model_and_keeps_history() {
     assert_eq!(out.state, TurnState::Completed);
     assert_eq!(out.answer.as_deref(), Some("Hello from the mock."));
     assert_eq!(chat.usage().total(), 17);
+    let ctx = chat.context();
+    assert_eq!((ctx.used(), ctx.calls, ctx.estimated), (17, 1, false));
     let kinds = seen.lock().unwrap().clone();
     assert_eq!(kinds, ["turn.started", "model.replied", "turn.finished"]);
     let recent = chat.recent_sessions(5).unwrap();
@@ -122,6 +124,9 @@ async fn reopened_chat_brings_back_turns_and_history() {
         .unwrap();
     assert_eq!(again.session_id(), id);
     assert_eq!(turns.len(), 1);
+    let ctx = again.context();
+    assert!(ctx.estimated, "no call yet in the reopened window");
+    assert_eq!((ctx.prompt, ctx.calls), (8, 0), "32 chars of history");
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))

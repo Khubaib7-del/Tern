@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewMotion};
 use gpui_kit::component::{
@@ -21,7 +23,7 @@ use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bridge::{Bridge, Msg};
-use crate::model::{Connection, Entry, Model, Phase, Screen, SiteIcon};
+use crate::model::{Connection, ContextLevel, Entry, Model, Phase, Screen, SiteIcon};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
@@ -157,6 +159,7 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.model.context = s.context();
                 self.open_sources.clear();
                 self.request_icons();
                 self.model.sessions = recent;
@@ -1183,10 +1186,6 @@ impl Workspace {
                 _ => "Connecting…".into(),
             },
         };
-        let context = match self.model.context_fraction() {
-            Some(f) => format!("{} · {:.0}%", self.model.context_label(), f * 100.0),
-            None => self.model.context_label(),
-        };
         let action = if busy {
             Button::new("stop")
                 .icon(IconName::Square)
@@ -1244,11 +1243,69 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(div().text_xs().text_color(p.faint).child(context))
+                                .child(self.context_ring(p))
                                 .child(action),
                         ),
                 ),
         )
+    }
+
+    /// The composer's context ring: fills as the window does, turns amber
+    /// past 70% and red past 90%. Hover for exact numbers.
+    fn context_ring(&self, p: Palette) -> impl IntoElement {
+        let fraction = self.model.context_fraction();
+        let color = match self.model.context_level() {
+            ContextLevel::Fine => p.muted,
+            ContextLevel::Filling => gpui_kit::hsla(38. / 360., 0.85, 0.55, 1.),
+            ContextLevel::Full => gpui_kit::hsla(0., 0.75, 0.58, 1.),
+        };
+        let label = self.model.context_label();
+        let details = self.model.context_details();
+        let trigger = div()
+            .id("context-ring")
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded_md()
+            .text_xs()
+            .text_color(p.faint)
+            .hover(|d| d.bg(p.hover).text_color(p.text))
+            .child(
+                ProgressCircle::new("context-ring-arc")
+                    .value(fraction.unwrap_or(0.) * 100.)
+                    .color(color)
+                    .accessibility_label(label.clone())
+                    .size(px(14.)),
+            )
+            .child(match fraction {
+                Some(f) => format!("{:.0}%", f * 100.),
+                None => label.clone(),
+            });
+        HoverCard::new("context-card")
+            .anchor(gpui_kit::Anchor::BottomRight)
+            .open_delay(Duration::from_millis(150))
+            .trigger(trigger)
+            .content(move |_, _, _| {
+                div()
+                    .w(px(260.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .text_xs()
+                    .children(details.iter().map(|(k, v)| {
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_3()
+                            .child(div().text_color(p.muted).child(*k))
+                            .child(
+                                div()
+                                    .text_color(p.text)
+                                    .child(SharedString::from(v.clone())),
+                            )
+                    }))
+            })
     }
 
     fn providers_screen(
