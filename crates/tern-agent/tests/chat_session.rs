@@ -151,3 +151,14 @@ async fn reopened_chat_brings_back_turns_and_history() {
     drop(again);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn typed_titles_are_cleaned() {
+    use tern_agent::clean_title;
+    assert_eq!(
+        clean_title("  Attention \n paper  ").as_deref(),
+        Some("Attention paper")
+    );
+    assert_eq!(clean_title(" \t\n"), None);
+    assert_eq!(clean_title(&"a".repeat(300)).unwrap().chars().count(), 120);
+}
