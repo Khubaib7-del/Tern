@@ -11,6 +11,8 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - `tern-store`: `recent_sessions` and `rename_session`; a chat takes its title from the first message.
 - Run panel views: **Summary** (rollup line, pages read, problems), **Detailed** (each step verb first with its target, note, and time), and **Raw** (every logged event with seq, type, time, and its JSON payload on click; filters All, Tools, Approvals, Search). All three read one `tern_agent::run::Run`, built live or from the log on reopen. "N steps" under an answer opens that answer's run.
 - `web_search` results carry `query` and `results` in their event meta.
+- Attachments: paperclip button (files and folders), drag and drop onto the composer, and long paste. Text over 4,000 characters becomes a **Pasted text** chip. Chips show name, lines or files and characters, and a **Context** or **Prompt** role (click to switch); Prompt attachments are sent first as the user's instructions, Context is marked as material with no instructions to follow. `tern_agent::attach` reads text files, folders (README first, then path order; hidden folders, `.git`, `node_modules`, `target` skipped; symlinks not followed), and `.zip` archives in memory (zips inside zips up to 3 deep). Limits: 8 MB per file, 200k characters per file, 400k per attachment, 500 files. PDFs, images, and Office files are listed as not read yet. Sent messages show their chips, also after reopening a chat.
+- The mic button is shown locked until a transcription model is set up.
 
 ### Fixed (desktop)
 

@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use gpui_kit::ExternalPaths;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::hover_card::HoverCard;
@@ -19,6 +20,8 @@ use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, ScrollHandle, SharedString, Subscription, Task,
     Window, div, px,
 };
+use tern_agent::Role;
+use tern_agent::attach::Source as AttachSource;
 use tern_agent::{
     ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef, RawFilter, Run, RunEnd, RunStep,
     StepKind,
@@ -84,10 +87,10 @@ impl Workspace {
         let sub = cx.subscribe_in(
             &composer,
             window,
-            |this: &mut Self, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = event {
-                    this.submit(window, cx);
-                }
+            |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { shift: false, .. } => this.submit(window, cx),
+                InputEvent::Change => this.check_long_text(window, cx),
+                _ => {}
             },
         );
         let key_input = cx.new(|cx| {
@@ -190,6 +193,7 @@ impl Workspace {
                 self.request_icons();
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
+            Msg::Attached(result) => self.model.attached(result),
             Msg::Text(call, text) => {
                 self.model.on_text(call, &text);
                 self.scroll.scroll_to_bottom();
@@ -261,6 +265,42 @@ impl Workspace {
             .update(cx, |c, cx| c.set_value("", window, cx));
         self.scroll.scroll_to_bottom();
         self.start_ticker(cx);
+        cx.notify();
+    }
+
+    /// Moves text over the long-paste limit out of the composer and into a
+    /// `Pasted text` chip.
+    fn check_long_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().to_string();
+        if self.model.take_long_text(&text) {
+            self.composer
+                .update(cx, |c, cx| c.set_value("", window, cx));
+            cx.notify();
+        }
+    }
+
+    /// Opens the system picker for files and folders (zips are files).
+    fn pick_attachments(&mut self, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = picked.await {
+                let _ = this.update(cx, |this, cx| this.attach_paths(paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.model.attaching += paths.len();
+        self.bridge.attach(paths);
         cx.notify();
     }
 
@@ -965,9 +1005,22 @@ impl Workspace {
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         match e {
-            Entry::User(t) => div()
+            Entry::User { text, chips } => div()
                 .flex()
-                .justify_end()
+                .flex_col()
+                .items_end()
+                .gap_1()
+                .when(!chips.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .justify_end()
+                            .gap_1()
+                            .max_w(px(COLUMN_MAX_W * 0.8))
+                            .children(chips.iter().map(|c| sent_chip(c, p))),
+                    )
+                })
                 .child(
                     div()
                         .max_w(px(COLUMN_MAX_W * 0.8))
@@ -975,7 +1028,7 @@ impl Workspace {
                         .py_2()
                         .rounded_xl()
                         .bg(p.raised)
-                        .child(SharedString::from(t.clone())),
+                        .child(SharedString::from(text.clone())),
                 )
                 .into_any_element(),
             Entry::Assistant {
@@ -1223,6 +1276,7 @@ impl Workspace {
         };
         div().w_full().flex().justify_center().px_4().pb_4().child(
             div()
+                .id("composer-box")
                 .w_full()
                 .max_w(px(COLUMN_MAX_W))
                 .flex()
@@ -1233,10 +1287,20 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .bg(p.raised)
+                .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                    style.border_color(p.muted).bg(p.hover)
+                })
+                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                    this.attach_paths(paths.paths().to_vec(), cx);
+                }))
+                .when(
+                    !self.model.attachments.is_empty() || self.model.attaching > 0,
+                    |d| d.child(self.attachment_chips(p, cx)),
+                )
                 .child(
                     Textarea::new(&self.composer)
                         .appearance(false)
-                        .disabled(!self.model.can_send() && !busy),
+                        .disabled(!self.model.is_ready() && !busy),
                 )
                 .child(
                     div()
@@ -1245,6 +1309,24 @@ impl Workspace {
                         .justify_between()
                         .gap_2()
                         .px_1()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .min_w_0()
+                                .child(
+                                    Button::new("attach")
+                                        .icon(AssetIcon::Paperclip)
+                                        .ghost()
+                                        .small()
+                                        .tooltip("Attach files, folders, or .zip")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.pick_attachments(cx)),
+                                        ),
+                                )
+                                .child(self.mic_button(p)),
+                        )
                         .child(
                             div()
                                 .id("composer-model")
@@ -1269,6 +1351,124 @@ impl Workspace {
                         ),
                 ),
         )
+    }
+
+    /// Waiting attachments as chips: icon, name, detail, role, remove.
+    fn attachment_chips(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let loading = (self.model.attaching > 0).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .text_xs()
+                .text_color(p.muted)
+                .child(Spinner::new().xsmall())
+                .child(if self.model.attaching == 1 {
+                    "Reading 1 item".to_owned()
+                } else {
+                    format!("Reading {} items", self.model.attaching)
+                })
+        });
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_1()
+            .children(self.model.attachments.iter().enumerate().map(|(i, a)| {
+                let icon = match a.source {
+                    AttachSource::File => AssetIcon::FileText,
+                    AttachSource::Folder => AssetIcon::Folder,
+                    AttachSource::Archive => AssetIcon::FileArchive,
+                    AttachSource::Paste => AssetIcon::ClipboardPaste,
+                };
+                let prompt = a.role == Role::Prompt;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pl_2()
+                    .pr_1()
+                    .py_1()
+                    .max_w(px(280.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(if prompt { p.muted } else { p.border })
+                    .bg(p.canvas)
+                    .child(
+                        div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(icon).small()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(p.text)
+                                    .child(SharedString::from(a.name.clone())),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(p.faint)
+                                    .child(SharedString::from(a.detail())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("attach-role", i))
+                            .flex_none()
+                            .px_1()
+                            .rounded_sm()
+                            .text_xs()
+                            .cursor_pointer()
+                            .when(prompt, |d| d.bg(p.hover))
+                            .text_color(if prompt { p.text } else { p.faint })
+                            .hover(|d| d.text_color(p.text))
+                            .child(a.role.label())
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(
+                                    "Context is material to read. Prompt is your instructions. Click to switch.",
+                                )
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.model.toggle_role(i);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new(("attach-remove", i))
+                            .icon(IconName::Close)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.model.remove_attachment(i);
+                                cx.notify();
+                            })),
+                    )
+            }))
+            .children(loading)
+    }
+
+    /// Voice input stays locked until a transcription model is set up.
+    fn mic_button(&self, _p: Palette) -> impl IntoElement {
+        Button::new("mic")
+            .icon(AssetIcon::MicOff)
+            .ghost()
+            .small()
+            .disabled(true)
+            .tooltip("Voice input needs a transcription model. Set one in Settings › Voice.")
     }
 
     /// The composer's context ring: fills as the window does, turns amber
@@ -2133,4 +2333,25 @@ fn step_line(s: &RunStep, p: Palette, with_time: bool) -> AnyElement {
 /// "+3.2s" from the turn's start.
 fn offset(s: &RunStep) -> SharedString {
     format!("+{:.1}s", s.at.as_secs_f32()).into()
+}
+
+/// An attachment on a sent message.
+fn sent_chip(c: &tern_agent::Chip, p: Palette) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py(px(2.))
+        .rounded_md()
+        .border_1()
+        .border_color(p.border)
+        .text_xs()
+        .text_color(p.muted)
+        .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).xsmall())
+        .child(SharedString::from(c.name.clone()))
+        .when(c.role == Role::Prompt, |d| {
+            d.child(div().text_color(p.text).child("· Prompt"))
+        })
+        .into_any_element()
 }

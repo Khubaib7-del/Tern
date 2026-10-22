@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use tern_agent::attach::{self, Attachment, Chip};
 use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
     ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, Run, SessionSummary,
@@ -24,7 +25,8 @@ pub enum Screen {
 /// One block of the transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
-    User(String),
+    /// What the user sent, with chips for what they attached.
+    User { text: String, chips: Vec<Chip> },
     /// A finished answer, with the run that led to it and how long it took.
     Assistant {
         text: String,
@@ -132,6 +134,10 @@ pub struct Model {
     /// Pages read so far in the running turn.
     pub turn_pages: Vec<PageRef>,
     pub icons: HashMap<String, SiteIcon>,
+    /// Attachments waiting in the composer, sent with the next message.
+    pub attachments: Vec<Attachment>,
+    /// Attachments still being read from disk.
+    pub attaching: usize,
 }
 
 impl Default for Model {
@@ -159,6 +165,8 @@ impl Model {
             providers: ProvidersState::default(),
             turn_pages: Vec::new(),
             icons: HashMap::new(),
+            attachments: Vec::new(),
+            attaching: 0,
         }
     }
 
@@ -179,18 +187,42 @@ impl Model {
         matches!(self.phase, Phase::Working { .. } | Phase::Approval { .. })
     }
 
-    pub fn can_send(&self) -> bool {
+    /// Whether the composer takes typing (a chat is connected and idle).
+    pub fn is_ready(&self) -> bool {
         matches!(self.phase, Phase::Ready)
     }
 
-    /// Starts a turn. Returns the trimmed text to send, or `None` when the
-    /// window cannot send now or the text is empty.
+    pub fn can_send(&self) -> bool {
+        matches!(self.phase, Phase::Ready) && self.attaching == 0
+    }
+
+    /// Starts a turn. Returns the message to send (the text plus any
+    /// attachments), or `None` when the window cannot send now or there is
+    /// nothing to send.
     pub fn start_turn(&mut self, text: &str) -> Option<String> {
-        let text = text.trim();
-        if text.is_empty() || !self.can_send() {
+        let mut text = text.trim();
+        if !self.can_send() {
             return None;
         }
-        self.entries.push(Entry::User(text.to_owned()));
+        if text.is_empty() {
+            if self.attachments.is_empty() {
+                return None;
+            }
+            text = "Read the attached files.";
+        }
+        let attachments = std::mem::take(&mut self.attachments);
+        let chips = attachments
+            .iter()
+            .map(|a| Chip {
+                name: a.name.clone(),
+                role: a.role,
+            })
+            .collect();
+        let message = attach::compose(text, &attachments);
+        self.entries.push(Entry::User {
+            text: text.to_owned(),
+            chips,
+        });
         self.turn_pages.clear();
         self.run_panel.pinned = None;
         self.run_panel.open.clear();
@@ -202,7 +234,48 @@ impl Model {
             draft_call: 0,
         };
         self.stopping = false;
-        Some(text.to_owned())
+        Some(message)
+    }
+
+    /// Text over the long-paste limit becomes a `Pasted text` attachment.
+    /// Returns true when it did, so the composer can be cleared.
+    pub fn take_long_text(&mut self, text: &str) -> bool {
+        if text.chars().count() <= attach::LONG_PASTE_CHARS {
+            return false;
+        }
+        let mut a = Attachment::paste(text);
+        let n = self
+            .attachments
+            .iter()
+            .filter(|x| x.name.starts_with("Pasted text"))
+            .count();
+        if n > 0 {
+            a.name = format!("Pasted text {}", n + 1);
+        }
+        self.attachments.push(a);
+        true
+    }
+
+    /// A file, folder, or archive finished reading.
+    pub fn attached(&mut self, result: Result<Attachment, String>) {
+        self.attaching = self.attaching.saturating_sub(1);
+        match result {
+            Ok(a) => self.attachments.push(a),
+            Err(e) => self.entries.push(Entry::Notice(e)),
+        }
+    }
+
+    pub fn remove_attachment(&mut self, i: usize) {
+        if i < self.attachments.len() {
+            self.attachments.remove(i);
+        }
+    }
+
+    /// Switches an attachment between Context and Prompt.
+    pub fn toggle_role(&mut self, i: usize) {
+        if let Some(a) = self.attachments.get_mut(i) {
+            a.role = a.role.toggled();
+        }
     }
 
     /// An event from the running turn.
@@ -339,7 +412,13 @@ impl Model {
         let mut missing = 0;
         for t in turns {
             match &t.message {
-                Some(m) => self.entries.push(Entry::User(m.clone())),
+                Some(m) => {
+                    let (text, chips) = attach::split(m);
+                    self.entries.push(Entry::User {
+                        text: text.to_owned(),
+                        chips,
+                    });
+                }
                 None => missing += 1,
             }
             if let Some(a) = &t.answer {
@@ -618,6 +697,7 @@ fn trim(v: f64, unit: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tern_agent::Role;
     use tern_core::{EffectClass, SessionId, TurnId};
 
     fn ev(kind: &str, summary: &str, payload: serde_json::Value) -> EventEnvelope {
@@ -628,6 +708,13 @@ mod tests {
             summary,
             payload,
         )
+    }
+
+    fn user(text: &str) -> Entry {
+        Entry::User {
+            text: text.into(),
+            chips: Vec::new(),
+        }
     }
 
     fn read(p: PageRef) -> EventEnvelope {
@@ -762,14 +849,14 @@ mod tests {
                 Entry::Notice(
                     "1 earlier turn is from before Tern kept chat text, so it is not shown.".into()
                 ),
-                Entry::User("What is RAG?".into()),
+                user("What is RAG?"),
                 Entry::Assistant {
                     text: "Retrieval [1].".into(),
                     run: run.clone(),
                     took: Duration::from_secs(3),
                     pages: Vec::new(),
                 },
-                Entry::User("More".into()),
+                user("More"),
                 Entry::Notice("You stopped the run.".into()),
             ]
         );
@@ -965,5 +1052,54 @@ mod tests {
         assert!(m.run_panel.open.is_empty());
         m.set_run_view(RunView::Raw);
         assert_eq!(m.run_panel.view, RunView::Raw);
+    }
+
+    #[test]
+    fn attachments_ride_with_the_next_message() {
+        let mut m = ready();
+        assert!(!m.take_long_text("short"));
+        let long = "word ".repeat(1_000);
+        assert!(m.take_long_text(&long));
+        assert!(m.take_long_text(&long));
+        assert_eq!(m.attachments[1].name, "Pasted text 2");
+        m.toggle_role(1);
+        assert_eq!(m.attachments[1].role, Role::Prompt);
+        m.remove_attachment(0);
+        m.attaching = 1;
+        assert_eq!(m.start_turn("hi"), None, "waits for files still reading");
+        m.attached(Err("Tern cannot read x.pdf yet.".into()));
+        assert_eq!(m.attaching, 0);
+        let msg = m.start_turn("").unwrap();
+        assert!(msg.starts_with("Read the attached files."));
+        assert!(msg.contains("role=\"prompt\""));
+        assert!(m.attachments.is_empty());
+        assert!(matches!(
+            &m.entries[1],
+            Entry::User { chips, .. } if chips.len() == 1 && chips[0].role == Role::Prompt
+        ));
+        assert_eq!(
+            m.entries[0],
+            Entry::Notice("Tern cannot read x.pdf yet.".into())
+        );
+    }
+
+    #[test]
+    fn reopened_messages_show_chips_not_the_block() {
+        let mut m = ready();
+        let msg = attach::compose("Summarise", &[Attachment::paste("notes")]);
+        m.restore(&[PastTurn {
+            message: Some(msg),
+            ..PastTurn::default()
+        }]);
+        assert_eq!(
+            m.entries[0],
+            Entry::User {
+                text: "Summarise".into(),
+                chips: vec![Chip {
+                    name: "Pasted text".into(),
+                    role: Role::Context
+                }],
+            }
+        );
     }
 }

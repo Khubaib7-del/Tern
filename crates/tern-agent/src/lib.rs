@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ask;
+pub mod attach;
 pub mod chat;
 pub mod doctor;
 pub mod engine;
@@ -24,6 +25,7 @@ pub mod transcript;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};
+pub use attach::{Attachment, Chip, Role};
 pub use chat::{
     ChatOptions, ChatSession, ContextUse, Usage, archive_session, clean_title, recent_sessions,
     rename_session, title_from,
