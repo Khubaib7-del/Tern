@@ -4,21 +4,24 @@
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{Disableable as _, IconName, Sizable as _, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{
+    Disableable as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar,
+};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, ScrollHandle, SharedString, Subscription, Task,
     Window, div, px,
 };
 use tern_agent::{ApprovalAnswer, CancelFlag, ChatSession, Harness};
-use tern_core::SessionId;
+use tern_core::{SecretString, SessionId};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::bridge::{Bridge, Msg};
-use crate::model::{Connection, Entry, Model, Phase};
+use crate::model::{Connection, Entry, Model, Phase, Screen};
+use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
 const RAIL_W: f32 = 52.;
@@ -33,6 +36,8 @@ pub struct Workspace {
     session: Option<Box<ChatSession>>,
     current: Option<SessionId>,
     composer: Entity<TextareaState>,
+    /// The one key field; only one row edits at a time.
+    key_input: Entity<InputState>,
     cancel: CancelFlag,
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     scroll: ScrollHandle,
@@ -71,6 +76,20 @@ impl Workspace {
                 }
             },
         );
+        let key_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Paste the API key")
+        });
+        let key_sub = cx.subscribe_in(
+            &key_input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.save_key(window, cx);
+                }
+            },
+        );
         let listener = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.recv().await {
                 if this
@@ -88,12 +107,13 @@ impl Workspace {
             session: None,
             current: None,
             composer,
+            key_input,
             cancel: CancelFlag::default(),
             pending: None,
             scroll: ScrollHandle::new(),
             ticker: None,
             _listener: listener,
-            _subscriptions: vec![sub],
+            _subscriptions: vec![sub, key_sub],
         }
     }
 
@@ -128,6 +148,37 @@ impl Workspace {
                 self.ticker = None;
                 self.scroll.scroll_to_bottom();
             }
+            Msg::Providers(rows, prefs, keychain) => {
+                self.model.providers.load(rows, prefs, keychain);
+                self.refresh_models();
+            }
+            Msg::Checked(kind, id, result) => {
+                let ok = result.is_ok();
+                self.model.providers.checked(kind, id, result);
+                if ok {
+                    self.key_input
+                        .update(cx, |k, cx| k.set_value("", window, cx));
+                    // A first key becomes the default on its own, so the chat
+                    // can open without another click.
+                    if kind == Kind::Model && self.session.is_none() && !self.model.is_busy() {
+                        self.apply_choice(kind, id);
+                    } else if kind == Kind::Model {
+                        self.refresh_models();
+                    }
+                }
+            }
+            Msg::Removed(kind, id, result) => {
+                let was_default = self.model.providers.default_id(kind) == Some(id);
+                self.model.providers.removed(kind, id, result);
+                if was_default && !self.model.is_busy() {
+                    self.reconnect();
+                }
+                self.refresh_models();
+            }
+            Msg::Models(id, result) => self.model.providers.models_loaded(id, result),
+            Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
+                "Tern could not save your choice: {e}"
+            ))),
         }
         cx.notify();
     }
@@ -215,6 +266,109 @@ impl Workspace {
             ThemeMode::Light
         };
         Theme::change(mode, Some(window), cx);
+        cx.notify();
+    }
+
+    // ----- providers -----
+
+    fn open_providers(&mut self, cx: &mut Context<Self>) {
+        self.model.screen = Screen::Providers;
+        if !self.model.providers.loaded {
+            self.bridge.load_providers();
+        } else {
+            self.refresh_models();
+        }
+        cx.notify();
+    }
+
+    fn close_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.screen = Screen::Chat;
+        self.model.providers.cancel_edit();
+        self.composer.update(cx, |c, cx| c.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Loads the model list of the default provider when it is not loaded.
+    fn refresh_models(&mut self) {
+        let Some(id) = self.model.providers.default_id(Kind::Model) else {
+            self.model.providers.models = None;
+            return;
+        };
+        if self
+            .model
+            .providers
+            .models
+            .as_ref()
+            .is_some_and(|m| m.provider() == id && !matches!(m, Models::Failed(..)))
+        {
+            return;
+        }
+        self.model.providers.models_loading(id);
+        self.bridge.models(id);
+    }
+
+    /// Opens a fresh chat with the current choices, saving them first.
+    fn reconnect(&mut self) {
+        if self.model.is_busy() {
+            return;
+        }
+        self.session = None;
+        self.model.connection = None;
+        self.model.new_chat();
+        self.model.phase = Phase::Connecting;
+        self.bridge
+            .save_and_connect(self.model.providers.prefs.clone());
+    }
+
+    fn apply_choice(&mut self, kind: Kind, id: &'static str) {
+        if self.model.providers.choose(kind, id) {
+            if kind == Kind::Model {
+                self.refresh_models();
+            }
+            self.reconnect();
+        }
+    }
+
+    fn pick_model(&mut self, model: String, cx: &mut Context<Self>) {
+        if self.model.is_busy() {
+            return;
+        }
+        self.model.providers.choose_model(&model);
+        self.reconnect();
+        cx.notify();
+    }
+
+    fn edit_key(
+        &mut self,
+        kind: Kind,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.model.providers.start_edit(kind, id);
+        self.key_input.update(cx, |k, cx| {
+            k.set_value("", window, cx);
+            k.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn save_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((kind, id)) = self.model.providers.editing else {
+            return;
+        };
+        if self.model.providers.is_working(kind, id) {
+            return;
+        }
+        let key = self.key_input.read(cx).value().trim().to_owned();
+        if key.is_empty() {
+            return;
+        }
+        self.model.providers.begin(kind, id, "Testing the key…");
+        self.bridge.add_key(kind, id, SecretString::new(key));
+        // The field keeps no copy while the test runs.
+        self.key_input
+            .update(cx, |k, cx| k.set_value("", window, cx));
         cx.notify();
     }
 
@@ -377,11 +531,20 @@ impl Workspace {
                         "Editor (coming later)",
                     )),
             )
-            .child(later(
-                "rail-settings",
-                IconName::Settings,
-                "Settings and providers (next slice). For now: tern provider add",
-            ))
+            .child(
+                Button::new("rail-settings")
+                    .icon(IconName::Settings)
+                    .ghost()
+                    .when(self.model.screen == Screen::Providers, |b| b.selected(true))
+                    .tooltip("Providers and keys")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Providers {
+                            this.close_providers(window, cx);
+                        } else {
+                            this.open_providers(cx);
+                        }
+                    })),
+            )
     }
 
     fn sidebar(&self, p: Palette) -> impl IntoElement {
@@ -533,10 +696,16 @@ impl Workspace {
         )
     }
 
-    fn empty_state(&self, p: Palette) -> AnyElement {
+    fn empty_state(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let offline = matches!(self.model.phase, Phase::Offline(_));
         let (headline, detail): (&str, String) = match &self.model.phase {
             Phase::Connecting => ("Connecting…", "Opening your default model.".into()),
-            Phase::Offline(reason) => ("Tern needs a model first", reason.clone()),
+            Phase::Offline(reason) if reason.starts_with("No provider has a key yet") => (
+                "Tern needs a model first",
+                "Add a key for any provider, or point Tern at Ollama or LM Studio on this computer. Groq and Google AI Studio have free keys."
+                    .into(),
+            ),
+            Phase::Offline(reason) => ("Tern could not open a model", reason.clone()),
             _ => (
                 "What are we researching?",
                 "Ask a question. Tern searches, reads, and cites when a search service is set up."
@@ -563,6 +732,16 @@ impl Workspace {
                     .text_center()
                     .child(detail),
             )
+            .when(offline, |d| {
+                d.child(
+                    div().pt_2().child(
+                        Button::new("open-providers")
+                            .label("Set up a provider")
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
+                    ),
+                )
+            })
             .into_any_element()
     }
 
@@ -576,7 +755,7 @@ impl Workspace {
             .py_6()
             .px_4();
         if self.model.entries.is_empty() && !self.model.is_busy() {
-            column = column.child(self.empty_state(p));
+            column = column.child(self.empty_state(p, cx));
         }
         for (i, e) in self.model.entries.iter().enumerate() {
             column = column.child(self.entry(i, e, p));
@@ -665,7 +844,20 @@ impl Workspace {
                         .justify_between()
                         .gap_2()
                         .px_1()
-                        .child(div().text_xs().text_color(p.faint).truncate().child(status))
+                        .child(
+                            div()
+                                .id("composer-model")
+                                .min_w_0()
+                                .px_1()
+                                .rounded_md()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .truncate()
+                                .cursor_pointer()
+                                .hover(|d| d.text_color(p.text).bg(p.hover))
+                                .child(status)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
+                        )
                         .child(
                             div()
                                 .flex()
@@ -676,6 +868,375 @@ impl Workspace {
                         ),
                 ),
         )
+    }
+
+    fn providers_screen(
+        &self,
+        p: Palette,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let st = &self.model.providers;
+        let mut column = div()
+            .w_full()
+            .max_w(px(COLUMN_MAX_W))
+            .flex()
+            .flex_col()
+            .gap_4()
+            .py_6()
+            .px_4()
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Providers"),
+                            )
+                            .child(div().text_sm().text_color(p.muted).child(
+                                "Bring your own keys. Tern tests a key before saving it, and keeps it only in Windows Credential Manager. Changing the default opens a new chat.",
+                            )),
+                    )
+                    .child(
+                        Button::new("providers-done")
+                            .label("Back to chat")
+                            .ghost()
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_providers(window, cx)),
+                            ),
+                    ),
+            );
+        if let Some(e) = &st.keychain_error {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(format!("The keychain cannot be read on this computer: {e}")),
+            );
+        }
+        if !st.loaded {
+            column = column.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(Spinner::new().small().color(p.muted))
+                    .child("Reading the keychain…"),
+            );
+        } else {
+            column = column
+                .child(self.section(Kind::Model, "Models", p, cx))
+                .child(self.section(Kind::Search, "Web search", p, cx));
+        }
+        div()
+            .id("providers")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(column)
+    }
+
+    fn section(
+        &self,
+        kind: Kind,
+        title: &'static str,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let rows: Vec<AnyElement> = self
+            .model
+            .providers
+            .section(kind)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|r| self.service_row(r, p, cx))
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_xs().text_color(p.faint).child(title))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(p.border)
+                    .children(rows),
+            )
+    }
+
+    fn service_row(&self, r: ServiceRow, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let st = &self.model.providers;
+        let busy_turn = self.model.is_busy();
+        let working = st.is_working(r.kind, r.id);
+        let is_default = st.is_default(&r);
+        let editing = st.is_editing(r.kind, r.id);
+        let (kind, id) = (r.kind, r.id);
+        let key_url = r.key_url;
+        let bid = |what: &'static str| SharedString::from(format!("{}-{:?}-{}", what, kind, id));
+
+        let note = st.note(kind, id).cloned();
+        let mut info = div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .flex_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(r.name),
+                    )
+                    .when(is_default, |d| {
+                        d.child(
+                            div()
+                                .px_1p5()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(p.border)
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child("Default"),
+                        )
+                    }),
+            )
+            .child(div().text_xs().text_color(p.faint).child(r.status()));
+        if let Some(n) = note {
+            let text = match n {
+                Note::Working(t) | Note::Ok(t) => t,
+                Note::Failed(t) => format!("Failed: {t}"),
+            };
+            info = info.child(
+                div()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(SharedString::from(text)),
+            );
+        }
+
+        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        if working {
+            actions = actions.child(Spinner::new().small().color(p.muted));
+        } else if r.needs_key() && !r.key_saved {
+            if !editing {
+                actions = actions.child(Button::new(bid("add")).label("Add").small().on_click(
+                    cx.listener(move |this, _, window, cx| this.edit_key(kind, id, window, cx)),
+                ));
+            }
+        } else {
+            if !is_default {
+                actions = actions.child(
+                    Button::new(bid("use"))
+                        .label("Use")
+                        .small()
+                        .disabled(busy_turn)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.apply_choice(kind, id);
+                            cx.notify();
+                        })),
+                );
+            }
+            actions = actions.child(
+                Button::new(bid("test"))
+                    .label("Test")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.providers.begin(kind, id, "Checking…");
+                        this.bridge.test(kind, id);
+                        cx.notify();
+                    })),
+            );
+            if r.key_saved {
+                actions = actions.child(
+                    Button::new(bid("remove"))
+                        .label("Remove")
+                        .ghost()
+                        .small()
+                        .disabled(busy_turn && is_default)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.providers.begin(kind, id, "Removing…");
+                            this.bridge.remove(kind, id);
+                            cx.notify();
+                        })),
+                );
+            }
+        }
+
+        let mut row = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_3()
+            .py_2p5()
+            .border_b_1()
+            .border_color(p.border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(logo_tile(&r, p))
+                    .child(info)
+                    .child(actions),
+            );
+
+        if editing {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pl(px(40.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.key_input).mask_toggle()),
+                    )
+                    .child(
+                        Button::new(bid("save"))
+                            .label("Save")
+                            .small()
+                            .disabled(working)
+                            .on_click(cx.listener(|this, _, window, cx| this.save_key(window, cx))),
+                    )
+                    .when(!key_url.is_empty(), |d| {
+                        d.child(
+                            Button::new(bid("get"))
+                                .label("Get a key")
+                                .ghost()
+                                .small()
+                                .on_click(move |_, _, cx| cx.open_url(key_url)),
+                        )
+                    })
+                    .child(
+                        Button::new(bid("cancel"))
+                            .label("Cancel")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model.providers.cancel_edit();
+                                cx.notify();
+                            })),
+                    ),
+            );
+        }
+
+        if kind == Kind::Model && is_default {
+            row = row.child(self.model_picker(p, cx));
+        }
+        row.into_any_element()
+    }
+
+    fn model_picker(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let st = &self.model.providers;
+        let chosen = st
+            .chosen_model()
+            .map(str::to_owned)
+            .or_else(|| self.model.connection.as_ref().map(|c| c.model.clone()));
+        let body: AnyElement = match &st.models {
+            None | Some(Models::Loading(_)) => div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .text_xs()
+                .text_color(p.muted)
+                .child(Spinner::new().small().color(p.muted))
+                .child("Listing models…")
+                .into_any_element(),
+            Some(Models::Failed(_, e)) => div()
+                .text_xs()
+                .text_color(p.muted)
+                .child(SharedString::from(format!("Could not list models: {e}")))
+                .into_any_element(),
+            Some(Models::Loaded(_, list)) if list.is_empty() => div()
+                .text_xs()
+                .text_color(p.muted)
+                .child("This provider lists no chat models.")
+                .into_any_element(),
+            Some(Models::Loaded(_, list)) => {
+                let busy = self.model.is_busy();
+                div()
+                    .id("model-list")
+                    .max_h(px(240.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(list.iter().enumerate().map(|(i, m)| {
+                        let selected = chosen.as_deref() == Some(m.id.as_str());
+                        let id = m.id.clone();
+                        div()
+                            .id(("model", i))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_sm()
+                            .cursor_pointer()
+                            .text_color(if selected { p.text } else { p.muted })
+                            .when(selected, |d| d.bg(p.hover))
+                            .hover(|d| d.bg(p.hover).text_color(p.text))
+                            .child(div().truncate().child(SharedString::from(m.id.clone())))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .text_xs()
+                                    .text_color(p.faint)
+                                    .when_some(m.context_window, |d, w| {
+                                        d.child(format!("{} context", crate::model::compact(w)))
+                                    })
+                                    .when(selected, |d| {
+                                        d.child(
+                                            gpui_kit::component::Icon::new(IconName::Check).small(),
+                                        )
+                                    }),
+                            )
+                            .when(!busy && !selected, |d| {
+                                d.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.pick_model(id.clone(), cx)
+                                }))
+                            })
+                    }))
+                    .into_any_element()
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pl(px(40.))
+            .child(div().text_xs().text_color(p.faint).child("Model"))
+            .child(body)
+            .into_any_element()
     }
 
     fn run_panel(&self, p: Palette) -> impl IntoElement {
@@ -716,7 +1277,7 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::get(self.model.dark);
         div()
             .size_full()
@@ -733,16 +1294,34 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(self.rail(p, cx))
                     .when(self.model.sidebar_open, |d| d.child(self.sidebar(p)))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.transcript(p, cx))
-                            .child(self.composer(p, cx)),
-                    )
+                    .child(div().flex().flex_col().flex_1().min_w_0().map(|d| {
+                        match self.model.screen {
+                            Screen::Chat => {
+                                d.child(self.transcript(p, cx)).child(self.composer(p, cx))
+                            }
+                            Screen::Providers => d.child(self.providers_screen(p, window, cx)),
+                        }
+                    }))
                     .when(self.model.run_panel_open, |d| d.child(self.run_panel(p))),
             )
     }
+}
+
+/// The logo square at the start of a row. Until the service glyph set is
+/// approved, known services show their initial on a neutral tile.
+fn logo_tile(r: &ServiceRow, p: Palette) -> impl IntoElement {
+    div()
+        .size(px(28.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_lg()
+        .border_1()
+        .border_color(p.border)
+        .bg(p.raised)
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(p.muted)
+        .child(r.monogram())
 }

@@ -42,3 +42,20 @@ GPUI has no stable release and ships no text input, buttons, or Markdown view. W
 ## Revisit when
 
 GPUI publishes a stable release, or `gpui-kit` stops tracking it.
+
+## Addendum: Providers screen (PR #14)
+
+- The rail's Settings button, the model label under the composer, and the
+  "Set up a provider" button on the empty state open the Providers screen.
+- Two sections, Models and Web search, one row per catalog entry. Each row
+  starts with a logo tile. Until the service glyph set is approved, the tile
+  shows the service's initial on a neutral square.
+- Add opens a masked key field. The bridge tests the key against the
+  service and saves it to the OS keychain only when it works; the field is
+  cleared as soon as the test starts. "Get a key" opens the provider's key page.
+- Saved and local rows offer Use (make default), Test, and Remove. The first
+  working key becomes the default on its own so the chat can open.
+- The default provider's row lists its chat models; picking one saves it.
+- Choices (provider, model, search service) live in `preferences.json` in
+  the app data directory (`tern_agent::Preferences`). Keys never go there.
+  Changing a choice opens a new chat with it.

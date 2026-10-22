@@ -10,6 +10,7 @@
 
 mod bridge;
 mod model;
+mod providers;
 mod theme;
 mod view;
 
