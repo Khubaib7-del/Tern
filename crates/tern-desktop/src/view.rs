@@ -31,6 +31,7 @@ use crate::assets;
 use crate::bridge::{Bridge, Msg};
 mod appearance_view;
 mod browser_view;
+mod deep_view;
 mod editor_view;
 mod git_view;
 mod scout_view;
@@ -71,6 +72,14 @@ pub struct Workspace {
     /// Answers whose source list is expanded, by transcript index.
     open_sources: HashSet<usize>,
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
+    /// The waiting deep research plan's answer channel.
+    plan_reply: Option<oneshot::Sender<tern_agent::PlanAnswer>>,
+    /// The plan card's text fields, one per sub-question.
+    plan_inputs: Vec<Entity<InputState>>,
+    /// Sub-questions dropped in the plan card's edit mode, by position.
+    plan_dropped: HashSet<usize>,
+    /// Stops one deep research worker, or the whole run.
+    deep_control: tern_agent::DeepControl,
     scroll: ScrollHandle,
     ticker: Option<Task<()>>,
     /// Motion state: the side panels' slides and a theme switch in flight.
@@ -235,6 +244,10 @@ impl Workspace {
             cancel: CancelFlag::default(),
             open_sources: HashSet::new(),
             pending: None,
+            plan_reply: None,
+            plan_inputs: Vec::new(),
+            plan_dropped: HashSet::new(),
+            deep_control: tern_agent::DeepControl::default(),
             scroll: ScrollHandle::new(),
             ticker: None,
             _listener: listener,
@@ -334,6 +347,7 @@ impl Workspace {
                     self.model.ask_approval(req);
                 }
             }
+            Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
             Msg::Done(s, out, usage, recent) => {
                 self.model.finish_turn(&out, usage);
                 self.model.sessions = recent;
@@ -390,7 +404,12 @@ impl Workspace {
         let mut session = session;
         session.attach_images(std::mem::take(&mut self.model.outgoing_images));
         self.cancel = CancelFlag::default();
-        self.bridge.send(session, text, self.cancel.clone());
+        if self.model.deep_mode {
+            self.deep_control = tern_agent::DeepControl::new(self.cancel.clone());
+            self.bridge.deep(session, text, self.deep_control.clone());
+        } else {
+            self.bridge.send(session, text, self.cancel.clone());
+        }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
         self.scroll.scroll_to_bottom();
@@ -588,6 +607,9 @@ impl Workspace {
         if let Some(p) = self.pending.take() {
             let _ = p.send(ApprovalAnswer::Deny);
             self.model.approval_answered();
+        }
+        if self.plan_reply.is_some() {
+            self.answer_plan(tern_agent::PlanAnswer::Cancel, cx);
         }
         cx.notify();
     }
@@ -1922,6 +1944,9 @@ impl Workspace {
         if let Some(card) = self.approval_card(p, cx) {
             column = column.child(card);
         }
+        if let Some(card) = self.plan_card(p, cx) {
+            column = column.child(card);
+        }
         if let Some(line) = self.model.working_line() {
             column = column.child(working_line(&line, p, self.reduced_motion, "transcript"));
         }
@@ -2022,7 +2047,8 @@ impl Workspace {
                                             cx.listener(|this, _, _, cx| this.pick_attachments(cx)),
                                         ),
                                 )
-                                .child(self.mic_button(p)),
+                                .child(self.mic_button(p))
+                                .children(self.deep_toggle(cx)),
                         )
                         .child(
                             div()
@@ -2601,28 +2627,29 @@ impl Workspace {
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
-        let tabs = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .children(RunView::ALL.map(|v| {
-                let selected = v == view;
-                div()
-                    .id(SharedString::from(format!("run-view-{}", v.label())))
-                    .px_2()
-                    .py(px(2.))
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .text_color(if selected { p.text } else { p.muted })
-                    .when(selected, |d| d.bg(p.hover))
-                    .hover(|d| d.text_color(p.text))
-                    .child(v.label())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.model.set_run_view(v);
-                        cx.notify();
-                    }))
-            }));
+        let tabs =
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .children(RunView::for_run(run).into_iter().map(|v| {
+                    let selected = v == view;
+                    div()
+                        .id(SharedString::from(format!("run-view-{}", v.label())))
+                        .px_2()
+                        .py(px(2.))
+                        .rounded_md()
+                        .text_xs()
+                        .cursor_pointer()
+                        .text_color(if selected { p.text } else { p.muted })
+                        .when(selected, |d| d.bg(p.hover))
+                        .hover(|d| d.text_color(p.text))
+                        .child(v.label())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.set_run_view(v);
+                            cx.notify();
+                        }))
+                }));
         let header = div()
             .flex()
             .items_center()
@@ -2691,6 +2718,7 @@ impl Workspace {
                 RunView::Detailed => self.run_detailed(run, p),
                 RunView::Raw => self.run_raw(run, p, cx),
                 RunView::Report => self.run_report(run, p, cx),
+                RunView::Workers => self.run_workers(run, p, cx),
             }
         };
         div()
@@ -3258,6 +3286,8 @@ fn step_line(s: &RunStep, p: Palette, with_time: bool) -> AnyElement {
         StepKind::Policy => AssetIcon::ShieldCheck,
         StepKind::Approval => AssetIcon::UserCheck,
         StepKind::Problem => AssetIcon::TriangleAlert,
+        StepKind::Plan => AssetIcon::ListChecks,
+        StepKind::Worker => AssetIcon::Workflow,
     };
     div()
         .flex()

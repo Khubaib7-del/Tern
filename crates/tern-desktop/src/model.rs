@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use tern_agent::attach::{self, Attachment, Chip, Role};
 use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
-    ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, Run, SessionSummary,
-    TurnOutcome,
+    ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, ResearchPlan, Run,
+    SessionSummary, TurnOutcome,
 };
 use tern_agent::{mention, reply};
 use tern_core::{EventEnvelope, TurnState};
@@ -79,6 +79,14 @@ pub enum Phase {
         since: Instant,
         run: Run,
         request: ApprovalRequest,
+    },
+    /// A deep research plan waits for the user: run, edit, skip, or cancel.
+    Plan {
+        since: Instant,
+        run: Run,
+        plan: ResearchPlan,
+        /// The plan card shows text fields for its sub-questions.
+        editing: bool,
     },
 }
 
@@ -157,13 +165,24 @@ pub enum RunView {
     Raw,
     /// The run report: claim verdicts with their evidence, and the files.
     Report,
+    /// Deep research: one row per worker.
+    Workers,
 }
 
 impl RunView {
-    pub const ALL: [RunView; 4] = [Self::Summary, Self::Detailed, Self::Raw, Self::Report];
+    /// The views a run offers: Workers too for a deep research run.
+    pub fn for_run(run: &Run) -> Vec<RunView> {
+        let mut v = vec![Self::Summary];
+        if run.deep.is_some() {
+            v.push(Self::Workers);
+        }
+        v.extend([Self::Detailed, Self::Raw, Self::Report]);
+        v
+    }
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Workers => "Workers",
             Self::Summary => "Summary",
             Self::Detailed => "Detailed",
             Self::Raw => "Raw",
@@ -240,6 +259,9 @@ pub struct Model {
     pub copied: Option<usize>,
     /// Attachments still being read from disk.
     pub attaching: usize,
+    /// The composer's Deep research mode: the next message is planned
+    /// and researched by parallel workers.
+    pub deep_mode: bool,
 }
 
 impl Default for Model {
@@ -278,6 +300,7 @@ impl Model {
             reply_to: None,
             copied: None,
             attaching: 0,
+            deep_mode: false,
         }
     }
 
@@ -299,7 +322,7 @@ impl Model {
         use crate::scout::Mood;
         match &self.phase {
             Phase::Offline(_) => Mood::Blocked,
-            Phase::Approval { .. } => Mood::NeedsYou,
+            Phase::Approval { .. } | Phase::Plan { .. } => Mood::NeedsYou,
             Phase::Working { activity, .. } => match activity {
                 Activity::Searching => Mood::Searching,
                 Activity::Reading | Activity::Checking => Mood::Reading,
@@ -313,7 +336,10 @@ impl Model {
     }
 
     pub fn is_busy(&self) -> bool {
-        matches!(self.phase, Phase::Working { .. } | Phase::Approval { .. })
+        matches!(
+            self.phase,
+            Phase::Working { .. } | Phase::Approval { .. } | Phase::Plan { .. }
+        )
     }
 
     /// Whether the composer takes typing (a chat is connected and idle).
@@ -360,6 +386,11 @@ impl Model {
         self.turn_pages.clear();
         self.run_panel.pinned = None;
         self.run_panel.open.clear();
+        if self.deep_mode {
+            self.run_panel.view = RunView::Workers;
+        } else if self.run_panel.view == RunView::Workers {
+            self.run_panel.view = RunView::Summary;
+        }
         self.phase = Phase::Working {
             since: Instant::now(),
             activity: Activity::Thinking,
@@ -603,6 +634,8 @@ impl Model {
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
             | "model.replied" | "approval.answered" => Some(Activity::Thinking),
             "claims.checking" => Some(Activity::Checking),
+            "worker.started" => Some(Activity::Searching),
+            "worker.finished" | "plan.answered" => Some(Activity::Thinking),
             "tool.started" => Some(match e.payload["tool"].as_str() {
                 Some("web_search") => Activity::Searching,
                 Some("read_url") => Activity::Reading,
@@ -612,12 +645,19 @@ impl Model {
         };
         match &mut self.phase {
             Phase::Working { activity, run, .. } => {
+                let next = match (e.kind.as_str(), e.payload.get("worker")) {
+                    ("tool.executed", Some(_)) if e.payload["tool"] == "read_url" => {
+                        Some(Activity::Reading)
+                    }
+                    ("tool.executed", Some(_)) => Some(Activity::Searching),
+                    _ => next,
+                };
                 if let Some(next) = next {
                     *activity = next;
                 }
                 run.push(e);
             }
-            Phase::Approval { run, .. } => run.push(e),
+            Phase::Approval { run, .. } | Phase::Plan { run, .. } => run.push(e),
             _ => {}
         }
     }
@@ -663,6 +703,53 @@ impl Model {
         };
     }
 
+    /// A drafted plan to put in front of the user. The run panel opens on
+    /// the workers view.
+    pub fn ask_plan(&mut self, plan: ResearchPlan) {
+        let (since, run) = match std::mem::replace(&mut self.phase, Phase::Ready) {
+            Phase::Working { since, run, .. }
+            | Phase::Approval { since, run, .. }
+            | Phase::Plan { since, run, .. } => (since, run),
+            _ => (Instant::now(), Run::new()),
+        };
+        self.phase = Phase::Plan {
+            since,
+            run,
+            plan,
+            editing: false,
+        };
+        self.run_panel.view = RunView::Workers;
+        self.run_panel_open = true;
+    }
+
+    /// The plan card's Edit and Discard edits.
+    pub fn set_plan_editing(&mut self, on: bool) {
+        if let Phase::Plan { editing, .. } = &mut self.phase {
+            *editing = on;
+        }
+    }
+
+    /// The plan waiting for the user, if any.
+    pub fn pending_plan(&self) -> Option<(&ResearchPlan, bool)> {
+        match &self.phase {
+            Phase::Plan { plan, editing, .. } => Some((plan, *editing)),
+            _ => None,
+        }
+    }
+
+    /// The plan was answered; the run goes on (or stops, if cancelled).
+    pub fn plan_answered(&mut self) {
+        if let Phase::Plan { since, run, .. } = std::mem::replace(&mut self.phase, Phase::Ready) {
+            self.phase = Phase::Working {
+                since,
+                activity: Activity::Thinking,
+                run,
+                draft: String::new(),
+                draft_call: 0,
+            };
+        }
+    }
+
     pub fn approval_answered(&mut self) {
         if let Phase::Approval { since, run, .. } = std::mem::replace(&mut self.phase, Phase::Ready)
         {
@@ -684,9 +771,9 @@ impl Model {
 
     pub fn finish_turn(&mut self, out: &TurnOutcome, context: ContextUse) {
         let (took, run) = match std::mem::replace(&mut self.phase, Phase::Ready) {
-            Phase::Working { since, run, .. } | Phase::Approval { since, run, .. } => {
-                (since.elapsed(), run)
-            }
+            Phase::Working { since, run, .. }
+            | Phase::Approval { since, run, .. }
+            | Phase::Plan { since, run, .. } => (since.elapsed(), run),
             _ => (Duration::ZERO, Run::new()),
         };
         self.last_run = run.clone();
@@ -831,7 +918,9 @@ impl Model {
                 draft,
                 ..
             } => (since, run, *activity, draft.len()),
-            Phase::Approval { since, run, .. } => (since, run, Activity::NeedsYou, 0),
+            Phase::Approval { since, run, .. } | Phase::Plan { since, run, .. } => {
+                (since, run, Activity::NeedsYou, 0)
+            }
             _ => return None,
         };
         let activity = if self.stopping {
@@ -867,8 +956,25 @@ impl Model {
                     n => format!("Checking {n} claims"),
                 }
             }
+            Activity::NeedsYou if matches!(self.phase, Phase::Plan { .. }) => {
+                "Review the research plan".to_owned()
+            }
             Activity::NeedsYou => "Needs your approval".to_owned(),
             Activity::Stopping => "Stopping".to_owned(),
+        };
+        // A deep run's workers say how far along they are.
+        let phrase = match (&run.deep, activity) {
+            (Some(d), Activity::Thinking | Activity::Searching | Activity::Reading)
+                if !d.workers.is_empty() && d.finished() < d.workers.len() =>
+            {
+                format!(
+                    "Researching · {} running · {} of {} done",
+                    d.running(),
+                    d.finished(),
+                    d.workers.len()
+                )
+            }
+            _ => phrase,
         };
         Some(WorkingLine {
             activity,
@@ -883,7 +989,9 @@ impl Model {
     /// else the latest turn's.
     pub fn panel_run(&self) -> &Run {
         match &self.phase {
-            Phase::Working { run, .. } | Phase::Approval { run, .. } => run,
+            Phase::Working { run, .. } | Phase::Approval { run, .. } | Phase::Plan { run, .. } => {
+                run
+            }
             _ => self
                 .run_panel
                 .pinned
@@ -1372,6 +1480,64 @@ mod tests {
         m.approval_answered();
         assert!(matches!(m.phase, Phase::Working { .. }));
         assert_eq!(m.panel_run().step_count(), 1);
+    }
+
+    #[test]
+    fn deep_research_waits_for_the_plan_then_shows_workers() {
+        use tern_agent::deep::{PlanBudget, fallback_plan};
+        let mut m = ready();
+        m.deep_mode = true;
+        m.start_turn("Compare Rust vs Go");
+        assert_eq!(m.run_panel.view, RunView::Workers);
+        m.on_event(&ev(
+            "turn.started",
+            "Started a deep research turn",
+            json!({"mode": "deep", "workers": 2}),
+        ));
+        let plan = fallback_plan("Compare Rust vs Go", PlanBudget::default(), 5);
+        m.on_event(&ev("plan.drafted", "Planned", json!({"plan": plan})));
+        m.ask_plan(plan.clone());
+        assert!(m.is_busy() && m.run_panel_open);
+        assert_eq!(m.working_line().unwrap().phrase, "Review the research plan");
+        assert_eq!(
+            m.pending_plan().map(|(p, e)| (p.sub_questions.len(), e)),
+            Some((3, false))
+        );
+        m.set_plan_editing(true);
+        assert!(m.pending_plan().unwrap().1);
+        m.on_event(&ev(
+            "plan.answered",
+            "You approved the plan",
+            json!({"answer": "run", "plan": plan}),
+        ));
+        m.plan_answered();
+        assert!(matches!(m.phase, Phase::Working { .. }));
+        m.on_event(&ev(
+            "worker.started",
+            "Worker 1 started",
+            json!({"worker": 1}),
+        ));
+        let line = m.working_line().unwrap();
+        assert_eq!(line.phrase, "Researching · 1 running · 0 of 3 done");
+        m.on_event(&ev(
+            "tool.executed",
+            "Worker 1 read",
+            json!({"tool": "read_url", "worker": 1, "meta": {"worker": 1, "page": {"title": "Go", "url": "https://go.dev", "site": "go.dev"}}}),
+        ));
+        assert_eq!(m.working_line().unwrap().activity, Activity::Reading);
+        assert_eq!(m.turn_pages.len(), 1);
+        let run = m.panel_run();
+        assert_eq!(RunView::for_run(run)[1], RunView::Workers);
+        assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 4);
+        // A normal turn after a deep one goes back to the summary.
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("A [1]."), None),
+            ctx(0, 0),
+        );
+        m.deep_mode = false;
+        m.start_turn("q");
+        assert_eq!(m.run_panel.view, RunView::Summary);
     }
 
     #[test]

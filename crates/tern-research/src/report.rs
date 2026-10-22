@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deep::WorkerStatus;
+use crate::plan::WorkerBudget;
 use crate::verdict::{ClaimCheck, Tally, Verdict};
 
 /// The report format's version, bumped when a field changes meaning.
@@ -31,6 +33,9 @@ pub struct RunReport {
     pub plan: Vec<String>,
     pub steps: Vec<ReportStep>,
     pub sources: Vec<ReportSource>,
+    /// Deep research: one entry per worker. Empty for a quick turn.
+    #[serde(default)]
+    pub workers: Vec<ReportWorker>,
     pub claims: Vec<ClaimCheck>,
     pub usage: ReportUsage,
     pub errors: Vec<String>,
@@ -46,6 +51,30 @@ pub struct ReportStep {
     #[serde(default)]
     pub note: String,
     pub ok: bool,
+}
+
+/// One deep-research worker: its sub-question, how it ended, and what it
+/// used of its slice of the budget.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportWorker {
+    /// The sub-question's number in the plan.
+    pub n: usize,
+    pub question: String,
+    pub status: WorkerStatus,
+    /// Why it ended early, when it did.
+    #[serde(default)]
+    pub note: String,
+    pub searches: u64,
+    pub pages: u64,
+    /// URLs it read, in order.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub took_ms: u64,
+    /// Its slice of the run's budget.
+    #[serde(default)]
+    pub budget: Option<WorkerBudget>,
 }
 
 /// One page the run read (or tried to).
@@ -149,6 +178,42 @@ impl RunReport {
                     cell(&s.target),
                     cell(&s.note)
                 ));
+            }
+        }
+
+        if !self.workers.is_empty() {
+            md.push_str("\n## Workers\n\n");
+            md.push_str("| # | Sub-question | Status | Searches | Pages | Tokens | Time |\n| --- | --- | --- | --- | --- | --- | --- |\n");
+            for w in &self.workers {
+                let tokens = w.tokens_in + w.tokens_out;
+                let tokens = match w.budget {
+                    Some(b) if b.tokens > 0 => format!("{tokens} of {}", b.tokens),
+                    _ => tokens.to_string(),
+                };
+                let pages = match w.budget {
+                    Some(b) if b.pages > 0 => format!("{} of {}", w.pages, b.pages),
+                    _ => w.pages.to_string(),
+                };
+                let mut status = w.status.label().to_owned();
+                if !w.note.is_empty() {
+                    status.push_str(&format!(": {}", w.note));
+                }
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {:.1}s |\n",
+                    w.n,
+                    cell(&w.question),
+                    cell(&status),
+                    w.searches,
+                    pages,
+                    tokens,
+                    w.took_ms as f64 / 1000.0
+                ));
+            }
+            for w in self.workers.iter().filter(|w| !w.urls.is_empty()) {
+                md.push_str(&format!("\nWorker {} read:\n", w.n));
+                for u in &w.urls {
+                    md.push_str(&format!("- {u}\n"));
+                }
             }
         }
 
@@ -355,6 +420,23 @@ mod tests {
                     error: Some("robots.txt asks not to".into()),
                 },
             ],
+            workers: vec![ReportWorker {
+                n: 1,
+                question: "When was it built?".into(),
+                status: WorkerStatus::TimedOut,
+                note: "its 60 s ran out".into(),
+                searches: 2,
+                pages: 1,
+                urls: vec!["https://e.test/a".into()],
+                tokens_in: 1500,
+                tokens_out: 200,
+                took_ms: 60_000,
+                budget: Some(WorkerBudget {
+                    tokens: 40_000,
+                    pages: 4,
+                    seconds: 60,
+                }),
+            }],
             claims: vec![ClaimCheck {
                 claim: 1,
                 text: "In 1889.".into(),
@@ -404,6 +486,8 @@ mod tests {
             "| 1 | [Eiffel](https://e.test/a) (e.test) | Tern Crawl | allowed | miss | yes |",
             "not read: robots.txt asks not to",
             "1 supported.",
+            "| 1 | When was it built? | Timed out: its 60 s ran out | 2 | 1 of 4 | 1700 of 40000 | 60.0s |",
+            "Worker 1 read:\n- https://e.test/a",
             "1. **✓ Supported** In 1889. [1]",
             "   > completed in 1889",
             "| 2 of 8 | 1 of 12 | 0 | 1 | 900 | 100 | 4.2s |",

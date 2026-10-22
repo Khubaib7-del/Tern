@@ -19,6 +19,8 @@ use time::OffsetDateTime;
 use crate::report::ReportFiles;
 use crate::sources::{PageRef, page_of, push_unique};
 use crate::verify::{ClaimCheck, Tally};
+use tern_research::deep::WorkerStatus;
+use tern_research::plan::{ResearchPlan, WorkerBudget};
 
 /// What a step was, for its icon and for the Raw view's filters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,6 +41,10 @@ pub enum StepKind {
     Approval,
     /// A tool failed or was rejected, a loop was caught, the budget ran out.
     Problem,
+    /// A deep research plan drafted.
+    Plan,
+    /// A deep research worker started or finished.
+    Worker,
 }
 
 /// The Raw view's filter chips.
@@ -68,9 +74,15 @@ impl RawFilter {
             Self::All => true,
             Self::Tools => matches!(
                 kind,
-                StepKind::Tool | StepKind::Read | StepKind::Search | StepKind::Problem
+                StepKind::Tool
+                    | StepKind::Read
+                    | StepKind::Search
+                    | StepKind::Problem
+                    | StepKind::Worker
             ),
-            Self::Approvals => matches!(kind, StepKind::Approval | StepKind::Policy),
+            Self::Approvals => {
+                matches!(kind, StepKind::Approval | StepKind::Policy | StepKind::Plan)
+            }
             Self::Search => matches!(kind, StepKind::Search | StepKind::Read),
         }
     }
@@ -176,6 +188,146 @@ pub enum RunEnd {
     Stopped(String),
 }
 
+/// Where a deep run's plan stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanState {
+    /// Drafted and waiting for the user.
+    Waiting,
+    Approved,
+    Edited,
+    /// Run without a plan: one worker on the whole question.
+    Skipped,
+    Cancelled,
+}
+
+/// One deep-research worker, as a front end's workers view shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkerRow {
+    /// The sub-question's number in the plan.
+    pub n: usize,
+    pub question: String,
+    pub status: WorkerStatus,
+    /// Pages read, in order.
+    pub pages: Vec<PageRef>,
+    pub searches: usize,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    /// Why it ended early, when it did.
+    pub note: String,
+    pub budget: Option<WorkerBudget>,
+    pub took: Duration,
+}
+
+/// A deep run's plan and workers, rebuilt from its events.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeepRun {
+    pub plan: Option<ResearchPlan>,
+    /// The preflight token range shown with the plan.
+    pub estimate: Option<(u64, u64)>,
+    /// Why Tern drafted the plan itself, when it did.
+    pub plan_note: Option<String>,
+    pub plan_answer: Option<PlanState>,
+    /// Workers allowed at once.
+    pub concurrency: usize,
+    pub workers: Vec<WorkerRow>,
+}
+
+impl DeepRun {
+    fn worker(&mut self, n: usize) -> Option<&mut WorkerRow> {
+        self.workers.iter_mut().find(|w| w.n == n)
+    }
+
+    /// How many workers are running.
+    pub fn running(&self) -> usize {
+        self.workers
+            .iter()
+            .filter(|w| w.status == WorkerStatus::Running)
+            .count()
+    }
+
+    /// Finished workers, of all.
+    pub fn finished(&self) -> usize {
+        self.workers
+            .iter()
+            .filter(|w| w.status.is_finished())
+            .count()
+    }
+
+    fn push(&mut self, e: &EventEnvelope, at: Duration) {
+        let p = &e.payload;
+        let worker = p["worker"]
+            .as_u64()
+            .or_else(|| p["meta"]["worker"].as_u64())
+            .map(|n| n as usize);
+        match e.kind.as_str() {
+            "plan.drafted" => {
+                self.plan = serde_json::from_value(p["plan"].clone()).ok();
+                self.estimate = p["estimate"]["low"]
+                    .as_u64()
+                    .zip(p["estimate"]["high"].as_u64());
+                self.plan_note = str_at(p, "note").map(str::to_owned);
+                self.plan_answer = Some(PlanState::Waiting);
+            }
+            "plan.answered" => {
+                self.plan_answer = Some(match str_at(p, "answer").unwrap_or_default() {
+                    "cancel" => PlanState::Cancelled,
+                    "skip" => PlanState::Skipped,
+                    _ if p["edited"] == true => PlanState::Edited,
+                    _ => PlanState::Approved,
+                });
+                if let Ok(plan) = serde_json::from_value::<ResearchPlan>(p["plan"].clone()) {
+                    self.workers = plan
+                        .sub_questions
+                        .iter()
+                        .map(|s| WorkerRow {
+                            n: s.n,
+                            question: s.question.clone(),
+                            ..WorkerRow::default()
+                        })
+                        .collect();
+                    self.plan = Some(plan);
+                }
+            }
+            "worker.started" => {
+                if let Some(w) = worker.and_then(|n| self.worker(n)) {
+                    w.status = WorkerStatus::Running;
+                    w.budget = serde_json::from_value(p["budget"].clone()).ok();
+                    w.took = at;
+                }
+            }
+            "worker.finished" => {
+                if let Some(w) = worker.and_then(|n| self.worker(n)) {
+                    w.status = serde_json::from_value(p["status"].clone()).unwrap_or_default();
+                    w.note = str_at(p, "note").unwrap_or_default().to_owned();
+                    w.took = Duration::from_millis(p["took_ms"].as_u64().unwrap_or_default());
+                    if w.budget.is_none() {
+                        w.budget = serde_json::from_value(p["budget"].clone()).ok();
+                    }
+                }
+            }
+            "tool.executed" => {
+                let page = page_of(&e.kind, p);
+                if let Some(w) = worker.and_then(|n| self.worker(n)) {
+                    match (str_at(p, "tool"), page) {
+                        (Some("web_search"), _) => w.searches += 1,
+                        (_, Some(pg)) => push_unique(&mut w.pages, pg),
+                        _ => {}
+                    }
+                }
+            }
+            "model.replied" => {
+                if let (Some(w), Some(u)) =
+                    (worker.and_then(|n| self.worker(n)), e.usage_delta.as_ref())
+                {
+                    w.tokens_in += u.input_tokens;
+                    w.tokens_out += u.output_tokens;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// One turn's steps, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Run {
@@ -186,6 +338,8 @@ pub struct Run {
     pub checks: Vec<ClaimCheck>,
     /// Where the run's report was written.
     pub report: Option<ReportFiles>,
+    /// The plan and workers, for a deep research turn.
+    pub deep: Option<Box<DeepRun>>,
 }
 
 impl Run {
@@ -208,6 +362,15 @@ impl Run {
             } else {
                 RunEnd::Stopped(e.user_summary.clone())
             });
+        }
+        if e.kind == "turn.started" && str_at(&e.payload, "mode") == Some("deep") {
+            self.deep = Some(Box::new(DeepRun {
+                concurrency: e.payload["workers"].as_u64().unwrap_or(1) as usize,
+                ..DeepRun::default()
+            }));
+        }
+        if let Some(deep) = self.deep.as_mut() {
+            deep.push(e, at);
         }
         if e.kind == "claims.checked" {
             self.checks = serde_json::from_value(e.payload["checks"].clone()).unwrap_or_default();
@@ -349,6 +512,73 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             if let Some((i, o)) = step.tokens {
                 step.note = format!("{} in · {} out", compact(i), compact(o));
             }
+            match (str_at(p, "purpose"), p["worker"].as_u64()) {
+                (_, Some(n)) => step.note = with_worker(&step.note, n),
+                (Some("plan"), _) => step.note = format!("plan · {}", step.note),
+                (Some("synthesis"), _) => step.note = format!("answer · {}", step.note),
+                _ => {}
+            }
+        }
+        "plan.drafted" => {
+            step.kind = StepKind::Plan;
+            step.verb = "Planned";
+            let n = p["plan"]["sub_questions"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default();
+            step.target = plural(n, "sub-question");
+            step.note = match str_at(&p["plan"], "source") {
+                Some("fallback") => "Tern's own split".to_owned(),
+                _ => "drafted by the model".to_owned(),
+            };
+        }
+        "plan.answered" => {
+            step.kind = StepKind::Approval;
+            step.target = "the plan".into();
+            step.verb = match str_at(p, "answer").unwrap_or_default() {
+                "cancel" => {
+                    step.ok = false;
+                    "You cancelled"
+                }
+                "skip" => {
+                    step.note = "one worker on the whole question".into();
+                    "You skipped"
+                }
+                _ if p["edited"] == true => "You edited and approved",
+                _ => "You approved",
+            };
+        }
+        "worker.started" => {
+            step.kind = StepKind::Worker;
+            step.verb = "Started worker";
+            step.target = str_at(p, "question").unwrap_or_default().to_owned();
+            step.note = format!("worker {}", p["worker"].as_u64().unwrap_or_default());
+        }
+        "worker.finished" => {
+            let status: WorkerStatus =
+                serde_json::from_value(p["status"].clone()).unwrap_or_default();
+            step.kind = if status.is_ok() {
+                StepKind::Worker
+            } else {
+                StepKind::Problem
+            };
+            step.ok = status.is_ok();
+            step.verb = if status.is_ok() {
+                "Worker done"
+            } else {
+                "Worker stopped"
+            };
+            step.target = str_at(p, "question").unwrap_or_default().to_owned();
+            let pages = p["pages"].as_array().map(Vec::len).unwrap_or_default();
+            let mut note = format!(
+                "worker {} · {}",
+                p["worker"].as_u64().unwrap_or_default(),
+                plural(pages, "page")
+            );
+            if let Some(why) = str_at(p, "note").filter(|w| !w.is_empty()) {
+                note.push_str(&format!(" · {why}"));
+            }
+            step.note = note;
         }
         "policy.decided" => {
             step.kind = StepKind::Policy;
@@ -414,6 +644,9 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                     if let Some(n) = p["meta"]["results"].as_u64() {
                         step.note = plural(n as usize, "result");
                     }
+                    if let Some(w) = p["worker"].as_u64() {
+                        step.note = with_worker(&step.note, w);
+                    }
                 }
                 "read_url" => {
                     step.kind = StepKind::Read;
@@ -425,6 +658,9 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                         .unwrap_or_default();
                     if let Some(pg) = &page {
                         step.note = pg.label().to_owned();
+                    }
+                    if let Some(w) = p["worker"].as_u64() {
+                        step.note = with_worker(&step.note, w);
                     }
                 }
                 _ => {
@@ -470,6 +706,14 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
 
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
+}
+
+fn with_worker(note: &str, n: u64) -> String {
+    if note.is_empty() {
+        format!("worker {n}")
+    } else {
+        format!("{note} · worker {n}")
+    }
 }
 
 fn plural(n: usize, word: &str) -> String {

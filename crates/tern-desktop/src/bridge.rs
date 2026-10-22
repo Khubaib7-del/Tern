@@ -3,12 +3,13 @@
 //! The window never calls a provider or the store itself: it hands a
 //! [`ChatSession`] to the bridge, which gives it back with the outcome.
 
+use tern_agent::deep::{DeepControl, PlanAnswer, PlanApprover};
 use tern_agent::providers::{self as setup, ModelInfo, SecretStore};
 use tern_agent::search;
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
     ApprovalAnswer, ApprovalRequest, Approver, CancelFlag, ChatSession, ContextUse, PastTurn,
-    Preferences, SessionSummary, TurnOutcome,
+    Preferences, ResearchPlan, SessionSummary, TurnOutcome,
 };
 use tern_core::SecretString;
 use tern_core::SessionId;
@@ -40,6 +41,8 @@ pub enum Msg {
     /// Reply text streaming in: the model call's number and the new text.
     Text(u32, String),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
+    /// A deep research plan for the user to run, edit, skip, or cancel.
+    Plan(ResearchPlan, oneshot::Sender<PlanAnswer>),
     Done(
         Box<ChatSession>,
         TurnOutcome,
@@ -71,6 +74,7 @@ impl std::fmt::Debug for Msg {
             Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
+            Self::Plan(p, _) => write!(f, "Plan({} parts)", p.sub_questions.len()),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),
             Self::Providers(rows, ..) => write!(f, "Providers({})", rows.len()),
             Self::Checked(k, id, r) => write!(f, "Checked({k:?}, {id}, {})", r.is_ok()),
@@ -96,6 +100,22 @@ impl Approver for UiApprover {
             }
             // A closed window counts as a refusal.
             rx.await.unwrap_or(ApprovalAnswer::Deny)
+        })
+    }
+}
+
+/// Sends a drafted plan to the window and waits for the user's choice.
+struct UiPlanApprover(mpsc::UnboundedSender<Msg>);
+
+impl PlanApprover for UiPlanApprover {
+    fn review<'a>(&'a self, plan: &'a ResearchPlan) -> BoxFuture<'a, PlanAnswer> {
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            if self.0.send(Msg::Plan(plan.clone(), tx)).is_err() {
+                return PlanAnswer::Cancel;
+            }
+            // A closed window cancels the plan.
+            rx.await.unwrap_or(PlanAnswer::Cancel)
         })
     }
 }
@@ -257,6 +277,34 @@ impl Bridge {
             let usage = session.context();
             // Check the answer's claims and write the run report; the
             // events reach the run panel before the turn is handed back.
+            session.check_last_turn(&observer).await;
+            let recent = session.recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Done(session, out, usage, recent));
+        });
+    }
+
+    /// Runs one deep research turn (plan, approval, parallel workers,
+    /// synthesis) and hands the session back when it ends. `control`
+    /// stops one worker or the whole run.
+    pub fn deep(&self, mut session: Box<ChatSession>, text: String, control: DeepControl) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let opts = tokio::task::spawn_blocking(|| Preferences::load().deep_options())
+                .await
+                .unwrap_or_default();
+            let approver = UiPlanApprover(tx.clone());
+            let events = tx.clone();
+            let observer = move |e: &tern_core::EventEnvelope| {
+                let _ = events.send(Msg::Event(Box::new(e.clone())));
+            };
+            let texts = tx.clone();
+            let on_text = move |call: u32, t: &str| {
+                let _ = texts.send(Msg::Text(call, t.to_owned()));
+            };
+            let out = session
+                .deep_research(&text, &opts, &approver, &control, &observer, Some(&on_text))
+                .await;
+            let usage = session.context();
             session.check_last_turn(&observer).await;
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));

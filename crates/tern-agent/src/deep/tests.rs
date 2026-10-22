@@ -1,0 +1,720 @@
+//! Deep research with a mock model, search, and reader: plan approval,
+//! the concurrency cap, budgets, and cancelling one worker or the run.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tern_core::Measure;
+use tern_crawl::SourceIcon;
+use tern_providers::{ChatResponse, ProviderResult};
+
+use super::*;
+use crate::engine::MemorySink;
+use crate::policy::{Mode, PolicyConfig};
+use crate::run::Run;
+
+const PLAN: &str = r#"{"sub_questions": [
+ {"question": "alpha part", "queries": ["alpha"], "sources": ["papers"], "share": 40},
+ {"question": "beta part", "queries": ["beta"], "sources": ["news"], "share": 30},
+ {"question": "gamma part", "queries": ["gamma"], "sources": ["docs"], "share": 30}
+]}"#;
+
+struct Mock {
+    plan: String,
+    /// Tokens a notes call reports using (input).
+    notes_tokens: u64,
+    /// Worker whose notes ask for one more search.
+    again: Option<&'static str>,
+}
+
+impl Default for Mock {
+    fn default() -> Self {
+        Self {
+            plan: PLAN.into(),
+            notes_tokens: 1_000,
+            again: None,
+        }
+    }
+}
+
+fn reply(text: String, input: u64) -> ProviderResult<ChatResponse> {
+    Ok(ChatResponse {
+        text,
+        usage: Usage {
+            input_tokens: input,
+            output_tokens: 100,
+            measure: Measure::Measured,
+        },
+        finish_reason: None,
+        model: Some("mock".into()),
+    })
+}
+
+impl Model for Mock {
+    fn provider_id(&self) -> &str {
+        "mock"
+    }
+    fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(async move {
+            let system = req.system.clone().unwrap_or_default();
+            let message = req.messages[0].content.clone();
+            if system.contains("You plan research") {
+                return reply(self.plan.clone(), 300);
+            }
+            if system.contains("research workers") {
+                let sub = message
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Your sub-question: "))
+                    .unwrap_or_default()
+                    .to_owned();
+                let sources = message.lines().filter(|l| l.starts_with('[')).count();
+                let mut text = format!("{sub} fact one [1].");
+                if sources > 1 {
+                    text.push_str(&format!(" {sub} fact two [2]."));
+                }
+                if self.again.is_some_and(|a| sub.starts_with(a))
+                    && system.contains(NEXT_SEARCH_LINE)
+                {
+                    text.push_str(&format!("\nNEXT SEARCH: more {sub}"));
+                }
+                return reply(text, self.notes_tokens);
+            }
+            // The synthesis: cite the last source first, then the first,
+            // then one that does not exist.
+            let n = message
+                .lines()
+                .skip_while(|l| *l != "Sources:")
+                .filter(|l| l.starts_with('['))
+                .count();
+            reply(format!("Overall [{n}]. Also [1]. Wrong [42]."), 2_000)
+        })
+    }
+}
+
+const NEXT_SEARCH_LINE: &str = tern_research::deep::NEXT_SEARCH;
+
+struct MockSearch;
+
+impl Searcher for MockSearch {
+    fn id(&self) -> &str {
+        "mock-search"
+    }
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        _limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        Box::pin(async move {
+            if query.contains("nothing") {
+                return Ok(Vec::new());
+            }
+            let slug: String = query.chars().filter(char::is_ascii_alphanumeric).collect();
+            Ok(["a", "b", "c", "d"]
+                .iter()
+                .map(|s| {
+                    let site = format!("{slug}-{s}.test");
+                    SearchHit {
+                        title: format!("{site} page"),
+                        url: format!("https://{site}/page"),
+                        snippet: String::new(),
+                        site,
+                        icon: SourceIcon {
+                            builtin: None,
+                            favicon: None,
+                        },
+                    }
+                })
+                .collect())
+        })
+    }
+}
+
+#[derive(Default)]
+struct MockReader {
+    delay_ms: u64,
+    reads: AtomicUsize,
+    /// Cancel this worker when a URL containing the text is read.
+    cancel_on: Option<(&'static str, usize, DeepControl)>,
+    /// Cancel the whole run when a URL containing the text is read.
+    cancel_all_on: Option<(&'static str, DeepControl)>,
+}
+
+impl Reader for MockReader {
+    fn read<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<ReadPage, String>> {
+        Box::pin(async move {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if let Some((needle, n, c)) = &self.cancel_on
+                && url.contains(needle)
+            {
+                c.cancel_worker(*n);
+            }
+            if let Some((needle, c)) = &self.cancel_all_on
+                && url.contains(needle)
+            {
+                c.cancel_all();
+            }
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            if url.contains("gamma-c.test") {
+                return Err(
+                    "gamma-c.test's robots.txt asks automated readers not to open this page".into(),
+                );
+            }
+            let site = url
+                .trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            Ok(ReadPage {
+                page: PageRef {
+                    title: format!("{site} page"),
+                    url: url.to_owned(),
+                    site,
+                    builtin: None,
+                    favicon: None,
+                },
+                text: format!("Page text for {url}."),
+            })
+        })
+    }
+}
+
+/// Answers the plan with a function of it.
+struct Answer(Box<dyn Fn(&ResearchPlan) -> PlanAnswer + Send + Sync>);
+
+impl PlanApprover for Answer {
+    fn review<'a>(&'a self, plan: &'a ResearchPlan) -> BoxFuture<'a, PlanAnswer> {
+        let a = (self.0)(plan);
+        Box::pin(async move { a })
+    }
+}
+
+struct Fixture {
+    sink: MemorySink,
+    ledger: UsageLedger,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        Self {
+            sink: MemorySink::default(),
+            ledger: UsageLedger::default(),
+        }
+    }
+
+    async fn run(
+        &self,
+        model: &Mock,
+        reader: &MockReader,
+        opts: DeepOptions,
+        approver: &dyn PlanApprover,
+        control: &DeepControl,
+        gate: Option<&mut PolicyGate>,
+    ) -> TurnOutcome {
+        let deps = DeepDeps {
+            session: SessionId::new(),
+            model,
+            model_name: "mock",
+            search: &MockSearch,
+            reader,
+            sink: &self.sink,
+            ledger: &self.ledger,
+            gate,
+            on_text: None,
+        };
+        run_deep(
+            deps,
+            "How do alpha, beta, and gamma relate?",
+            &opts,
+            approver,
+            control,
+        )
+        .await
+    }
+
+    fn kinds(&self) -> Vec<String> {
+        self.sink.events().into_iter().map(|e| e.kind).collect()
+    }
+
+    fn finished(&self) -> Vec<Value> {
+        self.sink
+            .events()
+            .into_iter()
+            .filter(|e| e.kind == "worker.finished")
+            .map(|e| e.payload)
+            .collect()
+    }
+
+    fn status_of(&self, n: usize) -> String {
+        self.finished()
+            .iter()
+            .find(|p| p["worker"] == n)
+            .map(|p| p["status"].as_str().unwrap_or_default().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Most workers running at once, from the order of their events.
+    fn peak(&self) -> usize {
+        let (mut now, mut peak) = (0usize, 0usize);
+        for e in self.sink.events() {
+            match e.kind.as_str() {
+                "worker.started" => {
+                    now += 1;
+                    peak = peak.max(now);
+                }
+                "worker.finished" => now = now.saturating_sub(1),
+                _ => {}
+            }
+        }
+        peak
+    }
+
+    fn run_view(&self) -> Run {
+        let mut run = Run::new();
+        for e in self.sink.events() {
+            run.push(&e);
+        }
+        run
+    }
+}
+
+fn opts(workers: usize) -> DeepOptions {
+    DeepOptions {
+        workers,
+        ..DeepOptions::default()
+    }
+}
+
+#[tokio::test]
+async fn a_plan_runs_workers_and_one_cited_answer() {
+    let f = Fixture::new();
+    let reader = MockReader {
+        delay_ms: 20,
+        ..MockReader::default()
+    };
+    let out = f
+        .run(
+            &Mock::default(),
+            &reader,
+            opts(2),
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let answer = out.answer.unwrap();
+    // The synthesis cited the last merged page first, then the first; the
+    // made-up [42] is gone and the list follows the new numbers.
+    assert!(
+        answer.starts_with("Overall [1]. Also [2]. Wrong."),
+        "{answer}"
+    );
+    let list = tern_research::claims::link_list(&answer);
+    assert_eq!(list.len(), 2);
+    assert_eq!(list[1].1, "https://alpha-a.test/page");
+    let kinds = f.kinds();
+    for k in [
+        "turn.started",
+        "plan.drafted",
+        "plan.answered",
+        "worker.started",
+        "worker.finished",
+        "turn.finished",
+    ] {
+        assert!(kinds.iter().any(|x| x == k), "no {k} in {kinds:?}");
+    }
+    let first_read = kinds.iter().position(|k| k == "tool.executed").unwrap();
+    let answered = kinds.iter().position(|k| k == "plan.answered").unwrap();
+    assert!(answered < first_read, "nothing is searched before approval");
+    assert_eq!(f.finished().len(), 3);
+    assert!((1..=3).all(|n| f.status_of(n) == "done"));
+    assert_eq!(f.peak(), 2);
+    // Each worker read three pages, except one robots.txt refused.
+    let run = f.run_view();
+    let deep = run.deep.clone().expect("a deep run");
+    assert_eq!(deep.plan.as_ref().unwrap().sub_questions.len(), 3);
+    assert_eq!(deep.workers.len(), 3);
+    assert!(deep.workers.iter().all(|w| w.status == WorkerStatus::Done));
+    let pages: Vec<usize> = deep.workers.iter().map(|w| w.pages.len()).collect();
+    assert_eq!(pages, [3, 3, 2]);
+    assert!(
+        deep.workers
+            .iter()
+            .all(|w| w.tokens_in > 0 && w.searches == 1)
+    );
+    assert_eq!(deep.plan_answer, Some(crate::run::PlanState::Approved));
+    assert_eq!(out.model_calls, 1 + 3 + 1);
+    // The report gets the plan and a section per worker.
+    let past = crate::transcript::past_turns(&f.sink.events());
+    let report = crate::report::from_turn(SessionId::new(), 1, &past[0], "mock", None);
+    assert_eq!(report.plan.len(), 3);
+    assert_eq!(report.workers.len(), 3);
+    assert_eq!(report.workers[0].pages, 3);
+    assert_eq!(
+        report.usage.budget.unwrap().max_tokens,
+        PlanBudget::default().tokens
+    );
+    assert!(report.to_markdown().contains("## Workers"));
+    assert!(report.sources.iter().any(|s| s.robots == "blocked"));
+}
+
+#[tokio::test]
+async fn never_more_workers_at_once_than_the_cap() {
+    let plan = r#"["one?", "two?", "three?", "four?", "five?"]"#;
+    for cap in [1, 3] {
+        let f = Fixture::new();
+        let model = Mock {
+            plan: plan.into(),
+            ..Mock::default()
+        };
+        let reader = MockReader {
+            delay_ms: 15,
+            ..MockReader::default()
+        };
+        let o = DeepOptions {
+            max_sub_questions: 5,
+            ..opts(cap)
+        };
+        let out = f
+            .run(
+                &model,
+                &reader,
+                o,
+                &RunAsDrafted,
+                &DeepControl::default(),
+                None,
+            )
+            .await;
+        assert_eq!(out.state, TurnState::Completed);
+        assert_eq!(f.finished().len(), 5);
+        assert_eq!(f.peak(), cap, "cap {cap}");
+    }
+}
+
+#[tokio::test]
+async fn one_worker_can_be_cancelled_while_the_rest_finish() {
+    let f = Fixture::new();
+    let control = DeepControl::default();
+    let reader = MockReader {
+        delay_ms: 300,
+        cancel_on: Some(("beta", 2, control.clone())),
+        ..MockReader::default()
+    };
+    let out = f
+        .run(
+            &Mock::default(),
+            &reader,
+            opts(3),
+            &RunAsDrafted,
+            &control,
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(f.status_of(2), "cancelled");
+    assert_eq!(f.status_of(1), "done");
+    assert_eq!(f.status_of(3), "done");
+    let answer = out.answer.unwrap();
+    assert!(
+        !answer.contains("beta-"),
+        "a cancelled worker's pages are not cited"
+    );
+    let run = f.run_view();
+    let w2 = &run.deep.unwrap().workers[1];
+    assert_eq!(
+        (w2.status, w2.note.as_str()),
+        (WorkerStatus::Cancelled, "you stopped it")
+    );
+}
+
+#[tokio::test]
+async fn cancelling_the_run_stops_every_worker() {
+    let f = Fixture::new();
+    let control = DeepControl::default();
+    let reader = MockReader {
+        delay_ms: 300,
+        cancel_all_on: Some(("gamma", control.clone())),
+        ..MockReader::default()
+    };
+    let out = f
+        .run(
+            &Mock::default(),
+            &reader,
+            opts(3),
+            &RunAsDrafted,
+            &control,
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Cancelled);
+    assert!(out.answer.is_none());
+    assert!((1..=3).all(|n| f.status_of(n) == "cancelled"));
+    assert_eq!(f.kinds().last().unwrap(), "run.cancelled");
+}
+
+#[tokio::test]
+async fn the_plan_can_be_cancelled_skipped_or_edited() {
+    // Cancel: nothing is searched or read.
+    let f = Fixture::new();
+    let reader = MockReader::default();
+    let cancel = Answer(Box::new(|_| PlanAnswer::Cancel));
+    let out = f
+        .run(
+            &Mock::default(),
+            &reader,
+            opts(3),
+            &cancel,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Cancelled);
+    assert!(
+        !f.kinds()
+            .iter()
+            .any(|k| k == "tool.executed" || k == "worker.started")
+    );
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 0);
+
+    // Skip: one worker on the whole question.
+    let f = Fixture::new();
+    let skip = Answer(Box::new(|_| PlanAnswer::Skip));
+    let out = f
+        .run(
+            &Mock::default(),
+            &MockReader::default(),
+            opts(3),
+            &skip,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    assert_eq!(f.finished().len(), 1);
+    assert_eq!(
+        f.run_view().deep.unwrap().plan_answer,
+        Some(crate::run::PlanState::Skipped)
+    );
+
+    // Edit: drop a sub-question and reword another.
+    let f = Fixture::new();
+    let edit = Answer(Box::new(|p| {
+        let mut p = p.clone();
+        p.sub_questions.remove(1);
+        p.sub_questions[0].question = "alpha, reworded".into();
+        PlanAnswer::Run(p)
+    }));
+    let out = f
+        .run(
+            &Mock::default(),
+            &MockReader::default(),
+            opts(3),
+            &edit,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let answered = f
+        .sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "plan.answered")
+        .unwrap();
+    assert_eq!(answered.payload["edited"], true);
+    let finished = f.finished();
+    assert_eq!(finished.len(), 2);
+    assert_eq!(
+        finished.iter().find(|p| p["worker"] == 1).unwrap()["question"],
+        "alpha, reworded"
+    );
+    assert_eq!(
+        f.run_view().deep.unwrap().plan_answer,
+        Some(crate::run::PlanState::Edited)
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_plan_falls_back_to_tern_s_split() {
+    let f = Fixture::new();
+    let model = Mock {
+        plan: "Sure! I will look into it.".into(),
+        ..Mock::default()
+    };
+    let out = f
+        .run(
+            &model,
+            &MockReader::default(),
+            opts(3),
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let drafted = f
+        .sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "plan.drafted")
+        .unwrap();
+    assert_eq!(drafted.payload["plan"]["source"], "fallback");
+    assert!(
+        drafted.payload["note"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read")
+    );
+}
+
+#[tokio::test]
+async fn workers_keep_to_their_slices() {
+    // Tokens: each notes call reports more than a worker's slice.
+    let f = Fixture::new();
+    let model = Mock {
+        notes_tokens: 9_600,
+        ..Mock::default()
+    };
+    let o = DeepOptions {
+        budget: PlanBudget {
+            tokens: 30_000,
+            pages: 6,
+            seconds: 60,
+        },
+        ..opts(3)
+    };
+    let out = f
+        .run(
+            &model,
+            &MockReader::default(),
+            o,
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert!(
+        (1..=3).all(|n| f.status_of(n) == "over_budget"),
+        "{:?}",
+        f.finished()
+    );
+    // Notes written before the slice ran out still reach the answer.
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    // Pages: a worker never reads more than its slice (6 pages, 2 each).
+    let run = f.run_view();
+    let pages: Vec<usize> = run
+        .deep
+        .unwrap()
+        .workers
+        .iter()
+        .map(|w| w.pages.len())
+        .collect();
+    assert!(
+        pages.iter().zip([2, 2, 2]).all(|(p, max)| *p <= max),
+        "{pages:?}"
+    );
+
+    // Time: a one-second slice against slow reads.
+    let f = Fixture::new();
+    let reader = MockReader {
+        delay_ms: 1_500,
+        ..MockReader::default()
+    };
+    let o = DeepOptions {
+        budget: PlanBudget {
+            tokens: 100_000,
+            pages: 9,
+            seconds: 1,
+        },
+        ..opts(3)
+    };
+    let out = f
+        .run(
+            &Mock::default(),
+            &reader,
+            o,
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert!((1..=3).all(|n| f.status_of(n) == "timed_out"));
+    assert_eq!(out.state, TurnState::Failed);
+    assert!(out.reason.unwrap().contains("No worker found a page"));
+}
+
+#[tokio::test]
+async fn a_worker_may_search_once_more_when_it_asks() {
+    let f = Fixture::new();
+    let model = Mock {
+        again: Some("alpha"),
+        ..Mock::default()
+    };
+    let out = f
+        .run(
+            &model,
+            &MockReader::default(),
+            opts(3),
+            &RunAsDrafted,
+            &DeepControl::default(),
+            None,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let run = f.run_view();
+    let workers = run.deep.unwrap().workers;
+    assert_eq!(workers[0].searches, 2);
+    assert_eq!(workers[0].pages.len(), 6);
+    assert_eq!(workers[1].searches, 1);
+}
+
+#[tokio::test]
+async fn the_policy_gate_still_rules_network_calls() {
+    let f = Fixture::new();
+    let mut gate =
+        PolicyGate::new(PolicyConfig::default().with_mode(EffectClass::Network, Mode::Deny));
+    let out = f
+        .run(
+            &Mock::default(),
+            &MockReader::default(),
+            opts(3),
+            &RunAsDrafted,
+            &DeepControl::default(),
+            Some(&mut gate),
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Failed);
+    assert!((1..=3).all(|n| f.status_of(n) == "failed"));
+    assert!(!f.kinds().iter().any(|k| k == "tool.executed"));
+}
+
+#[test]
+fn controls_and_picks() {
+    let c = DeepControl::default();
+    c.cancel_worker(2);
+    assert!(c.worker_cancelled(2) && !c.worker_cancelled(1) && !c.is_cancelled());
+    c.cancel_all();
+    assert!(c.worker_cancelled(1));
+    let hit = |url: &str, site: &str| SearchHit {
+        title: String::new(),
+        url: url.into(),
+        snippet: String::new(),
+        site: site.into(),
+        icon: SourceIcon {
+            builtin: None,
+            favicon: None,
+        },
+    };
+    let hits = [
+        hit("a1", "a"),
+        hit("a2", "a"),
+        hit("b1", "b"),
+        hit("a1", "a"),
+    ];
+    let seen: HashSet<String> = ["b1".to_owned()].into();
+    let urls: Vec<String> = pick(&hits, 3, &seen).into_iter().map(|h| h.url).collect();
+    assert_eq!(urls, ["a1", "a2"]);
+    assert_eq!(question_of("  What is\nRAG? "), "What is RAG?");
+    let plan = fallback_plan("Why?", PlanBudget::default(), 5);
+    assert_eq!(turn_budget(&plan).max_model_calls, 2 + 3 * ROUNDS as u32);
+}

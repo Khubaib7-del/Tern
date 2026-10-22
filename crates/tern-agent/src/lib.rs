@@ -3,8 +3,9 @@
 //! The bounded turn loop ([`engine`]), the policy gate ([`policy`]), and the
 //! typed tool registry ([`tools`]), plus the health checks behind
 //! `tern doctor` and provider setup. Front ends reach providers, the
-//! platform, and the store only through this crate. Workers and live
-//! steering follow in roadmap phase 5.
+//! platform, and the store only through this crate. Deep research
+//! ([`deep`]) runs an approved plan's workers in parallel; live steering
+//! follows in roadmap phase 5.
 
 #![forbid(unsafe_code)]
 
@@ -13,6 +14,7 @@ pub mod attach;
 pub mod branch;
 pub mod browse;
 pub mod chat;
+pub mod deep;
 pub mod doctor;
 pub mod engine;
 pub mod git;
@@ -38,6 +40,7 @@ pub use chat::{
     ChatOptions, ChatSession, ContextUse, Usage, archive_session, clean_title, recent_sessions,
     rename_session, title_from,
 };
+pub use deep::{DeepControl, DeepOptions, PlanAnswer, PlanApprover, ResearchPlan, RunAsDrafted};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,
     StoreSink, TurnLoop, TurnOutcome,
@@ -45,9 +48,12 @@ pub use engine::{
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;
 pub use report::{ReportFiles, RunReport};
-pub use run::{RawFilter, Run, RunEnd, RunStep, RunSummary, StepKind};
+pub use run::{
+    DeepRun, PlanState, RawFilter, Run, RunEnd, RunStep, RunSummary, StepKind, WorkerRow,
+};
 pub use sources::PageRef;
 pub use tern_providers::ImageInput;
+pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 pub use transcript::{PastTurn, past_turns};
