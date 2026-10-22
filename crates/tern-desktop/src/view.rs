@@ -6,7 +6,7 @@ use std::time::Duration;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewMotion};
 use gpui_kit::component::{
     Disableable as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar,
 };
@@ -133,6 +133,10 @@ impl Workspace {
             }
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
             Msg::Event { kind, summary } => self.model.on_event(&kind, &summary),
+            Msg::Text(call, text) => {
+                self.model.on_text(call, &text);
+                self.scroll.scroll_to_bottom();
+            }
             Msg::Approval(req, reply) => {
                 if self.cancel.is_cancelled() {
                     let _ = reply.send(ApprovalAnswer::Deny);
@@ -627,7 +631,11 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(TextView::markdown(("answer", i), text.clone()).selectable(true))
+                    .child(
+                        TextView::markdown(("answer", i), text.clone())
+                            .selectable(true)
+                            .motion(stream_motion()),
+                    )
                     .child(div().text_xs().text_color(p.faint).child(meta))
                     .into_any_element()
             }
@@ -759,6 +767,16 @@ impl Workspace {
         }
         for (i, e) in self.model.entries.iter().enumerate() {
             column = column.child(self.entry(i, e, p));
+        }
+        if let Some(draft) = self.model.draft() {
+            // Same id the finished answer gets, so the text does not redraw
+            // when the stream ends.
+            let i = self.model.entries.len();
+            column = column.child(
+                TextView::markdown(("answer", i), draft.to_owned())
+                    .selectable(true)
+                    .motion(stream_motion()),
+            );
         }
         if let Some(card) = self.approval_card(p, cx) {
             column = column.child(card);
@@ -1324,4 +1342,11 @@ fn logo_tile(r: &ServiceRow, p: Palette) -> impl IntoElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(p.muted)
         .child(r.monogram())
+}
+
+/// New words fade in as they stream, a few milliseconds apart.
+fn stream_motion() -> TextViewMotion {
+    TextViewMotion::default()
+        .with_stream_fade(Duration::from_millis(240))
+        .with_stream_fade_stagger(Duration::from_millis(16))
 }

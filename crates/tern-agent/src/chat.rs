@@ -246,6 +246,20 @@ impl ChatSession {
         cancel: CancelFlag,
         observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
     ) -> TurnOutcome {
+        self.send_streaming(text, approver, cancel, observer, None)
+            .await
+    }
+
+    /// [`ChatSession::send`] that streams reply text to `on_text` as it
+    /// arrives (see [`crate::OnText`]).
+    pub async fn send_streaming(
+        &mut self,
+        text: &str,
+        approver: &dyn Approver,
+        cancel: CancelFlag,
+        observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
+        on_text: Option<crate::OnText<'_>>,
+    ) -> TurnOutcome {
         let tee = Tee {
             inner: &self.sink,
             observer,
@@ -263,6 +277,7 @@ impl ChatSession {
             cancel,
             instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
             max_output_tokens: self.max_output_tokens,
+            on_text,
         }
         .run(self.history.clone(), text)
         .await;

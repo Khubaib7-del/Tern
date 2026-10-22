@@ -40,6 +40,9 @@ pub enum Phase {
         since: Instant,
         label: String,
         steps: Vec<String>,
+        /// Reply text streaming in, and which model call of the turn it is.
+        draft: String,
+        draft_call: u32,
     },
     Approval {
         since: Instant,
@@ -127,6 +130,8 @@ impl Model {
             since: Instant::now(),
             label: "Thinking".into(),
             steps: Vec::new(),
+            draft: String::new(),
+            draft_call: 0,
         };
         self.stopping = false;
         Some(text.to_owned())
@@ -166,6 +171,35 @@ impl Model {
         }
     }
 
+    /// Reply text from the stream. A new call number starts the draft over,
+    /// since the previous reply was a tool request, not the answer.
+    pub fn on_text(&mut self, call: u32, text: &str) {
+        if let Phase::Working {
+            draft,
+            draft_call,
+            label,
+            ..
+        } = &mut self.phase
+        {
+            if *draft_call != call {
+                draft.clear();
+                *draft_call = call;
+            }
+            draft.push_str(text);
+            if draft_visible(draft).is_some() {
+                "Writing".clone_into(label);
+            }
+        }
+    }
+
+    /// The streaming answer to show, without any tool request it turns into.
+    pub fn draft(&self) -> Option<&str> {
+        match &self.phase {
+            Phase::Working { draft, .. } => draft_visible(draft),
+            _ => None,
+        }
+    }
+
     pub fn ask_approval(&mut self, request: ApprovalRequest) {
         let (since, steps) = match std::mem::replace(&mut self.phase, Phase::Ready) {
             Phase::Working { since, steps, .. } | Phase::Approval { since, steps, .. } => {
@@ -188,6 +222,8 @@ impl Model {
                 since,
                 label: "Working".into(),
                 steps,
+                draft: String::new(),
+                draft_call: 0,
             };
         }
     }
@@ -297,6 +333,24 @@ impl Model {
     }
 }
 
+/// The part of a streaming reply worth showing: everything before a tool
+/// fence, minus a fence that is still arriving. `None` when nothing is left.
+pub fn draft_visible(draft: &str) -> Option<&str> {
+    const FENCE: &str = "```tool";
+    let mut text = match draft.find(FENCE) {
+        Some(i) => &draft[..i],
+        None => draft,
+    };
+    for k in (1..FENCE.len()).rev() {
+        if let Some(cut) = text.strip_suffix(&FENCE[..k]) {
+            text = cut;
+            break;
+        }
+    }
+    let text = text.trim_end();
+    (!text.trim_start().is_empty()).then_some(text)
+}
+
 /// 950 → "950", 1_234 → "1.2k", 128_000 → "128k", 1_000_000 → "1M".
 pub fn compact(n: u64) -> String {
     match n {
@@ -331,6 +385,29 @@ mod tests {
             model_calls: 1,
             tool_calls: 0,
         }
+    }
+
+    #[test]
+    fn drafts_hide_tool_requests_and_restart_per_call() {
+        let mut m = ready();
+        m.start_turn("hi").unwrap();
+        assert_eq!(m.draft(), None);
+        m.on_text(1, "```to");
+        assert_eq!(
+            m.draft(),
+            None,
+            "a fence that is still arriving stays hidden"
+        );
+        m.on_text(1, "ol\n{\"name\":\"web_search\"}");
+        assert_eq!(m.draft(), None);
+        m.on_text(2, "Paris is the ");
+        m.on_text(2, "capital.");
+        assert_eq!(m.draft(), Some("Paris is the capital."));
+        assert_eq!(m.working_line().unwrap().split('…').next(), Some("Writing"));
+        m.on_text(3, "Let me check. `");
+        assert_eq!(m.draft(), Some("Let me check."));
+        assert_eq!(draft_visible("Answer\n```tool\n{}"), Some("Answer"));
+        assert_eq!(draft_visible("   "), None);
     }
 
     fn ready() -> Model {

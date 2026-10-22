@@ -38,6 +38,22 @@ pub trait Model: Send + Sync {
     /// The catalog id, for the usage ledger (`openai`, `ollama`).
     fn provider_id(&self) -> &str;
     fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>>;
+
+    /// A streamed call. `on_text` gets text as it arrives and returns
+    /// `false` to stop. Models that cannot stream answer in one piece.
+    fn complete_stream<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on_text: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(async move {
+            let reply = self.complete(req).await?;
+            if !reply.text.is_empty() {
+                on_text(&reply.text);
+            }
+            Ok(reply)
+        })
+    }
 }
 
 impl Model for Provider {
@@ -47,7 +63,19 @@ impl Model for Provider {
     fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
         Box::pin(self.chat(req))
     }
+    fn complete_stream<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on_text: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(self.chat_stream(req, on_text))
+    }
 }
+
+/// Receives reply text as it streams: the model call's number in the turn
+/// (from 1) and the new text. A new number means a new reply, so a front end
+/// starts its draft over.
+pub type OnText<'a> = &'a (dyn Fn(u32, &str) + Send + Sync);
 
 /// What the user sees when a step needs their go-ahead.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -198,6 +226,8 @@ pub struct TurnLoop<'a> {
     /// Extra system instructions for the harness (Research or Study).
     pub instructions: Option<&'a str>,
     pub max_output_tokens: u32,
+    /// Streams reply text to a front end. `None` makes one call per reply.
+    pub on_text: Option<OnText<'a>>,
 }
 
 struct Run<'r, 'a> {
@@ -309,10 +339,25 @@ impl Run<'_, '_> {
                 .with_system(system.clone())
                 .with_max_tokens(self.cfg.max_output_tokens);
             self.model_calls += 1;
-            let reply = self.cfg.model.complete(&req).await.map_err(|e| Stop {
+            let model = self.cfg.model;
+            let reply = match self.cfg.on_text {
+                Some(sink) => {
+                    let call = self.model_calls;
+                    let cancel = self.cfg.cancel.clone();
+                    let forward = move |t: &str| {
+                        sink(call, t);
+                        !cancel.is_cancelled()
+                    };
+                    model.complete_stream(&req, &forward).await
+                }
+                None => model.complete(&req).await,
+            }
+            .map_err(|e| Stop {
                 state: TurnState::Failed,
                 reason: e.to_string(),
             })?;
+            // A stopped stream returns what arrived; it is not an answer.
+            self.check_cancel()?;
             self.cfg.ledger.record(
                 self.cfg.model.provider_id(),
                 self.cfg.model_name,

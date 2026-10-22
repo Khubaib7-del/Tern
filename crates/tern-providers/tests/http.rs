@@ -178,3 +178,57 @@ fn missing_key_and_bad_urls_are_refused_up_front() {
     }
     assert_eq!(spec("anthropic").wire, Wire::Anthropic);
 }
+
+#[tokio::test]
+async fn openai_stream_delivers_text_as_it_arrives() {
+    let server = MockServer::start().await;
+    let sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"lo.\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(
+            serde_json::json!({"stream": true, "stream_options": {"include_usage": true}}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let p = Provider::new(spec("openai"), key(), Some(&format!("{}/v1", server.uri()))).unwrap();
+    let req = ChatRequest::new("gpt-4.1-mini", vec![ChatMessage::user("hi")]);
+    let got = std::sync::Mutex::new(Vec::<String>::new());
+    let r = p
+        .chat_stream(&req, &|t| {
+            got.lock().unwrap().push(t.to_owned());
+            true
+        })
+        .await
+        .unwrap();
+    assert_eq!(got.into_inner().unwrap(), ["Hel", "lo."]);
+    assert_eq!(r.text, "Hello.");
+    assert_eq!(r.usage, tern_providers::Usage::measured(7, 2));
+
+    // Returning false stops the read and marks the reply cancelled.
+    let r = p.chat_stream(&req, &|_| false).await.unwrap();
+    assert_eq!(r.text, "Hel");
+    assert_eq!(r.finish_reason.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+async fn stream_errors_use_the_normal_status_mapping() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let p = Provider::new(spec("groq"), key(), Some(&format!("{}/v1", server.uri()))).unwrap();
+    let req = ChatRequest::new("m", vec![ChatMessage::user("hi")]);
+    let e = p.chat_stream(&req, &|_| true).await.unwrap_err();
+    assert!(
+        matches!(e, ProviderError::Auth { status: 401, .. }),
+        "{e:?}"
+    );
+}

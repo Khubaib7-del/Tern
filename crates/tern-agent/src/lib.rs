@@ -23,7 +23,7 @@ pub mod web;
 pub use ask::{AskOptions, AskReport, Source};
 pub use chat::{ChatOptions, ChatSession, Usage, recent_sessions, title_from};
 pub use engine::{
-    ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model,
+    ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,
     StoreSink, TurnLoop, TurnOutcome,
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};

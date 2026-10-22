@@ -203,6 +203,7 @@ impl Setup {
             cancel: self.cancel.clone(),
             instructions: None,
             max_output_tokens: 512,
+            on_text: None,
         }
         .run(Vec::new(), msg)
         .await
@@ -556,4 +557,39 @@ async fn the_whole_turn_replays_from_the_store_in_order() {
         !text.contains("sk-proj-abcdefghij"),
         "a key reached the log"
     );
+}
+
+#[tokio::test]
+async fn streamed_text_is_numbered_per_model_call() {
+    let s = Setup::new();
+    let model = Script::new(&[
+        &tool_call("web_search", json!({"query": "tern"})),
+        "Found it [S1].",
+    ]);
+    let seen = std::sync::Mutex::new(Vec::<(u32, String)>::new());
+    let on_text = |call: u32, t: &str| seen.lock().unwrap().push((call, t.to_owned()));
+    let mut gate = PolicyGate::default();
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "test-model",
+        tools: &s.tools,
+        gate: &mut gate,
+        approver: &DenyAll,
+        sink: &MemorySink::default(),
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: s.cancel.clone(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: Some(&on_text),
+    }
+    .run(Vec::new(), "Search")
+    .await;
+    assert_eq!(out.answer.as_deref(), Some("Found it [S1]."));
+    let seen = seen.into_inner().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].0, 1);
+    assert!(seen[0].1.starts_with("```tool"));
+    assert_eq!(seen[1], (2, "Found it [S1].".to_owned()));
 }
