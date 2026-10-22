@@ -7517,8 +7517,6 @@ dependencies = [
  "serde_json",
  "tern-agent",
  "tern-core",
- "tern-crawl",
- "tern-platform",
  "tokio",
 ]
 

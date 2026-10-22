@@ -18,8 +18,6 @@ workspace = true
 [dependencies]
 tern-core.workspace = true
 tern-agent.workspace = true
-tern-crawl.workspace = true
-tern-platform.workspace = true
 gpui-kit = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
