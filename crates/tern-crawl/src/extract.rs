@@ -11,6 +11,24 @@ pub struct Extracted {
     /// The page's declared icon, resolved against its URL.
     pub icon: Option<String>,
     pub text: String,
+    /// The same text as Markdown, with links kept as `[text](url)` and
+    /// heading levels kept, for the built-in browser.
+    pub markdown: String,
+    /// Every link in the main text, absolute, in page order, deduplicated.
+    pub links: Vec<Anchor>,
+}
+
+/// A link in the page's main text.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Anchor {
+    pub text: String,
+    pub url: String,
+}
+
+struct Walk<'a> {
+    base: &'a Url,
+    md: bool,
+    links: Vec<Anchor>,
 }
 
 const SKIP: &[&str] = &[
@@ -89,16 +107,36 @@ pub fn extract_html(html: &str, base: &Url) -> Extracted {
         .find_map(|s| doc.select(&sel(s)).next())
         .unwrap_or_else(|| doc.root_element());
     let mut out = String::new();
-    walk(root, &mut out);
+    let mut plain = Walk {
+        base,
+        md: false,
+        links: Vec::new(),
+    };
+    walk(root, &mut out, &mut plain);
+    let mut md_out = String::new();
+    let mut md = Walk {
+        base,
+        md: true,
+        links: Vec::new(),
+    };
+    walk(root, &mut md_out, &mut md);
+    let mut links: Vec<Anchor> = Vec::new();
+    for a in plain.links {
+        if !links.iter().any(|l| l.url == a.url) {
+            links.push(a);
+        }
+    }
     Extracted {
         title,
         description,
         icon,
         text: tidy(&out),
+        markdown: tidy(&md_out),
+        links,
     }
 }
 
-fn walk(el: ElementRef<'_>, out: &mut String) {
+fn walk(el: ElementRef<'_>, out: &mut String, w: &mut Walk<'_>) {
     for child in el.children() {
         match child.value() {
             Node::Text(t) => {
@@ -135,10 +173,56 @@ fn walk(el: ElementRef<'_>, out: &mut String) {
                 if name == "li" {
                     out.push_str("- ");
                 }
-                if matches!(name, "h1" | "h2" | "h3") {
+                if w.md && name.len() == 2 && name.starts_with('h') {
+                    if let Some(level) = name[1..]
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|l| (1..=6).contains(l))
+                    {
+                        out.push_str(&"#".repeat(level));
+                        out.push(' ');
+                    }
+                } else if matches!(name, "h1" | "h2" | "h3") {
                     out.push_str("# ");
                 }
-                walk(child_el, out);
+                let href = (name == "a")
+                    .then(|| e.attr("href"))
+                    .flatten()
+                    .and_then(|h| w.base.join(h.trim()).ok())
+                    .filter(|u| matches!(u.scheme(), "http" | "https"));
+                let start = out.len();
+                walk(child_el, out, w);
+                if let Some(mut url) = href {
+                    let inner = collapse(&out[start..]);
+                    let same_page = url.fragment().is_some() && {
+                        let mut a = url.clone();
+                        a.set_fragment(None);
+                        let mut b = w.base.clone();
+                        b.set_fragment(None);
+                        a == b
+                    };
+                    if !inner.is_empty() && !same_page {
+                        if w.md {
+                            let lead = if out[start..].starts_with(' ') {
+                                " "
+                            } else {
+                                ""
+                            };
+                            let trail = if out.ends_with(' ') { " " } else { "" };
+                            out.truncate(start);
+                            out.push_str(&format!(
+                                "{lead}[{}]({}){trail}",
+                                inner.replace('[', "(").replace(']', ")"),
+                                url.as_str().replace(' ', "%20").replace(')', "%29")
+                            ));
+                        }
+                        url.set_fragment(None);
+                        w.links.push(Anchor {
+                            text: inner,
+                            url: url.to_string(),
+                        });
+                    }
+                }
                 if block {
                     out.push_str("\n\n");
                 }
@@ -211,5 +295,30 @@ mod tests {
         assert_eq!(e.text, "one\n\ntwo three");
         assert_eq!(e.title, None);
         assert_eq!(e.icon, None);
+    }
+
+    #[test]
+    fn keeps_links_and_heading_levels_in_markdown() {
+        let base = Url::parse("https://example.org/docs/a").unwrap();
+        let html = r##"<main><h2>Intro</h2>
+            <p>Read <a href="/paper.html">the paper</a> and <a href="b#x">part [2]</a>.</p>
+            <p><a href="#top">Top</a> <a href="mailto:x@y.z">mail</a> <a href="/paper.html">again</a></p></main>"##;
+        let e = extract_html(html, &base);
+        assert_eq!(
+            e.text,
+            "# Intro\n\nRead the paper and part [2].\n\nTop mail again"
+        );
+        assert_eq!(
+            e.markdown,
+            "## Intro\n\nRead [the paper](https://example.org/paper.html) and [part (2)](https://example.org/docs/b#x).\n\nTop mail [again](https://example.org/paper.html)"
+        );
+        let urls: Vec<_> = e.links.iter().map(|l| l.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://example.org/paper.html",
+                "https://example.org/docs/b"
+            ]
+        );
     }
 }

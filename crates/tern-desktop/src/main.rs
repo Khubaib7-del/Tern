@@ -10,6 +10,7 @@
 
 mod assets;
 mod bridge;
+mod browser;
 mod editor;
 mod layout;
 mod model;
