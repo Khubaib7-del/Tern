@@ -27,6 +27,8 @@ pub enum Screen {
     Git,
     /// The palette, type, glyphs, and Scout, for review.
     Appearance,
+    /// Questions on watch and what changed since their last run.
+    Watches,
 }
 
 /// One block of the transcript.
@@ -167,6 +169,8 @@ pub enum RunView {
     Report,
     /// Deep research: one row per worker.
     Workers,
+    /// The source and budget ledgers.
+    Ledger,
 }
 
 impl RunView {
@@ -176,7 +180,7 @@ impl RunView {
         if run.deep.is_some() {
             v.push(Self::Workers);
         }
-        v.extend([Self::Detailed, Self::Raw, Self::Report]);
+        v.extend([Self::Detailed, Self::Raw, Self::Report, Self::Ledger]);
         v
     }
 
@@ -187,6 +191,7 @@ impl RunView {
             Self::Detailed => "Detailed",
             Self::Raw => "Raw",
             Self::Report => "Report",
+            Self::Ledger => "Ledger",
         }
     }
 }
@@ -262,6 +267,35 @@ pub struct Model {
     /// The composer's Deep research mode: the next message is planned
     /// and researched by parallel workers.
     pub deep_mode: bool,
+    /// The running turn's steering inbox: the composer sends to it.
+    pub steering: Option<tern_agent::Steering>,
+    /// This chat's run that stopped and can be resumed.
+    pub resume_offer: Option<ResumeOffer>,
+    /// Questions on watch.
+    pub watches: Vec<tern_agent::watch::Watch>,
+    /// The watch the Watches screen shows.
+    pub watch_selected: Option<String>,
+    /// Watches running in the background now.
+    pub watches_running: usize,
+}
+
+/// A stopped run the chat can pick up again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeOffer {
+    pub question: String,
+    /// "Deep research · workers running · 2 of 3 workers done".
+    pub progress: String,
+    pub saved_at: String,
+}
+
+impl ResumeOffer {
+    pub fn of(ck: &tern_agent::RunCheckpoint) -> Self {
+        Self {
+            question: ck.question(),
+            progress: ck.progress(),
+            saved_at: ck.saved_at.clone(),
+        }
+    }
 }
 
 impl Default for Model {
@@ -301,7 +335,94 @@ impl Model {
             copied: None,
             attaching: 0,
             deep_mode: false,
+            steering: None,
+            resume_offer: None,
+            watches: Vec::new(),
+            watch_selected: None,
+            watches_running: 0,
         }
+    }
+
+    /// Whether the composer sends a steering note rather than a message:
+    /// a turn is running and has an inbox.
+    pub fn can_steer(&self) -> bool {
+        matches!(self.phase, Phase::Working { .. }) && self.steering.is_some() && !self.stopping
+    }
+
+    /// Sends a steering note to the running turn. It lands at the run's
+    /// next safe point; the run panel shows what it did.
+    pub fn steer(&mut self, text: &str) -> bool {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() || !self.can_steer() {
+            return false;
+        }
+        let Some(inbox) = &self.steering else {
+            return false;
+        };
+        if !inbox.send(&text) {
+            return false;
+        }
+        let what = tern_agent::steer::parse_steer(&text).describe();
+        self.entries.push(Entry::Notice(format!(
+            "Steer sent: {what}. It lands at the run's next safe point."
+        )));
+        true
+    }
+
+    /// Sets the chat's resume banner from its checkpoint, if it has one.
+    pub fn set_resume_offer(&mut self, ck: Option<&tern_agent::RunCheckpoint>) {
+        self.resume_offer = ck.map(ResumeOffer::of);
+    }
+
+    /// Starts resuming the chat's stopped run. `false` when it cannot now.
+    pub fn start_resume(&mut self) -> bool {
+        if !self.can_send() || self.resume_offer.is_none() {
+            return false;
+        }
+        self.resume_offer = None;
+        self.turn_pages.clear();
+        self.run_panel.pinned = None;
+        self.run_panel.open.clear();
+        self.phase = Phase::Working {
+            since: Instant::now(),
+            activity: Activity::Thinking,
+            run: Run::new(),
+            draft: String::new(),
+            draft_call: 0,
+        };
+        self.stopping = false;
+        true
+    }
+
+    /// The watch list after a load, an add, a run, or a removal.
+    pub fn watches_loaded(&mut self, watches: Vec<tern_agent::watch::Watch>) {
+        if self
+            .watch_selected
+            .as_ref()
+            .is_some_and(|id| !watches.iter().any(|w| &w.id == id))
+        {
+            self.watch_selected = None;
+        }
+        self.watches = watches;
+    }
+
+    /// The question asked before answer `i`, to put on watch.
+    pub fn question_before(&self, i: usize) -> Option<String> {
+        self.entries[..i.min(self.entries.len())]
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+    }
+
+    /// Whether `question` is already on watch.
+    pub fn is_watched(&self, question: &str) -> bool {
+        let q = question.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.watches
+            .iter()
+            .any(|w| w.question.eq_ignore_ascii_case(&q))
     }
 
     pub fn connected(&mut self, connection: Connection) {
@@ -779,6 +900,7 @@ impl Model {
         self.last_run = run.clone();
         self.context = context;
         self.stopping = false;
+        self.steering = None;
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
@@ -866,7 +988,30 @@ impl Model {
             _ => &[],
         });
         let browsed = self.browser.page.iter().map(|b| &b.page);
-        for p in pages.chain(self.turn_pages.iter()).chain(browsed) {
+        // The ledger lists pages that were never read; their icons come
+        // from the site's /favicon.ico.
+        let ledger: Vec<PageRef> = if self.run_panel.view == RunView::Ledger {
+            self.panel_run()
+                .ledger()
+                .sources
+                .iter()
+                .filter(|s| !s.site.is_empty())
+                .map(|s| PageRef {
+                    title: s.title.clone(),
+                    url: s.url.clone(),
+                    site: s.site.clone(),
+                    builtin: None,
+                    favicon: Some(format!("https://{}/favicon.ico", s.site)),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for p in pages
+            .chain(self.turn_pages.iter())
+            .chain(browsed)
+            .chain(ledger.iter())
+        {
             if self.icons.contains_key(&p.site) {
                 continue;
             }
@@ -896,6 +1041,7 @@ impl Model {
         self.entries.clear();
         self.reply_to = None;
         self.copied = None;
+        self.resume_offer = None;
         self.context = ContextUse {
             window: self.context.window,
             ..ContextUse::default()
@@ -1529,7 +1675,7 @@ mod tests {
         let run = m.panel_run();
         assert_eq!(RunView::for_run(run)[1], RunView::Workers);
         assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
-        assert_eq!(RunView::for_run(&Run::new()).len(), 4);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 5);
         // A normal turn after a deep one goes back to the summary.
         m.finish_turn(
             &outcome(TurnState::Completed, Some("A [1]."), None),
@@ -1792,5 +1938,90 @@ mod tests {
             RunView::Summary,
             "only answers have claims"
         );
+    }
+
+    #[test]
+    fn the_composer_steers_a_running_turn() {
+        let mut m = ready();
+        assert!(!m.can_steer());
+        m.start_turn("Compare Rust vs Go");
+        assert!(!m.can_steer(), "no inbox yet");
+        let inbox = tern_agent::Steering::new();
+        m.steering = Some(inbox.clone());
+        assert!(m.can_steer());
+        assert!(!m.steer("   "));
+        assert!(m.steer("drop sub-question 3"));
+        assert_eq!(inbox.take()[0].text, "drop sub-question 3");
+        assert!(matches!(
+            m.entries.last(),
+            Some(Entry::Notice(n)) if n.starts_with("Steer sent: Drop sub-question 3")
+        ));
+        m.on_event(&ev(
+            "steer.received",
+            "You steered the run: drop sub-question 3",
+            json!({"text": "drop sub-question 3"}),
+        ));
+        m.on_event(&ev(
+            "steer.applied",
+            "Applied: stopping worker 3",
+            json!({"text": "drop sub-question 3", "applied": true}),
+        ));
+        assert_eq!(m.panel_run().steers[0].applied, Some(true));
+        m.request_stop();
+        assert!(!m.can_steer(), "a stopping run takes no more notes");
+        m.finish_turn(
+            &outcome(TurnState::Cancelled, None, Some("You stopped the run.")),
+            ctx(0, 0),
+        );
+        assert!(m.steering.is_none());
+    }
+
+    #[test]
+    fn a_stopped_run_offers_resume_once() {
+        use tern_agent::checkpoint::{RunCheckpoint, RunMode, Stage};
+        let mut m = ready();
+        let ck = RunCheckpoint {
+            session: "ses_1".into(),
+            mode: RunMode::Quick,
+            message: "What is a tern?".into(),
+            stage: Stage::Started,
+            saved_at: "2026-10-22T10:00:00Z".into(),
+            ..RunCheckpoint::default()
+        };
+        m.set_resume_offer(Some(&ck));
+        let offer = m.resume_offer.clone().unwrap();
+        assert_eq!(offer.question, "What is a tern?");
+        assert_eq!(offer.progress, "Quick turn · 0 tool results");
+        assert!(m.start_resume());
+        assert!(m.is_busy() && m.resume_offer.is_none());
+        assert!(!m.start_resume(), "only one resume at a time");
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("Seabirds."), None),
+            ctx(0, 0),
+        );
+        m.set_resume_offer(Some(&ck));
+        m.new_chat();
+        assert!(m.resume_offer.is_none(), "a new chat has nothing to resume");
+    }
+
+    #[test]
+    fn watches_load_and_keep_the_selection_honest() {
+        use tern_agent::watch::WatchList;
+        let mut m = ready();
+        let mut list = WatchList::default();
+        let w = list.add("EU AI rules", 24, false).unwrap();
+        m.watch_selected = Some(w.id.clone());
+        m.watches_loaded(list.watches.clone());
+        assert_eq!(m.watch_selected.as_deref(), Some(w.id.as_str()));
+        assert!(m.is_watched("  eu ai   rules "));
+        m.watches_loaded(Vec::new());
+        assert!(m.watch_selected.is_none());
+        m.start_turn("EU AI rules");
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("They changed [1]."), None),
+            ctx(0, 0),
+        );
+        assert_eq!(m.question_before(1).as_deref(), Some("EU AI rules"));
+        assert_eq!(RunView::Ledger.label(), "Ledger");
     }
 }

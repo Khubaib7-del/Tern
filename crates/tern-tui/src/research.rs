@@ -54,6 +54,28 @@ pub async fn run(
         }
     };
     let control = DeepControl::default();
+    eprintln!(
+        "Chat {} · if this stops, `tern resume {}` picks it up",
+        session.session_id(),
+        session.session_id()
+    );
+    let steer = session.steering();
+    let steer_on = approver.ask;
+    let started = std::sync::Once::new();
+    let observer = move |e: &EventEnvelope| {
+        // Steering input opens once the plan is answered, so it never
+        // races the plan prompt for the terminal.
+        if steer_on && e.kind == "plan.answered" {
+            let steer = steer.clone();
+            started.call_once(move || {
+                read_steering(
+                    steer,
+                    "Type a note and press Enter to steer (focus on…, drop 3, add: …, redirect 2: …).",
+                )
+            });
+        }
+        observer(e);
+    };
     let out = session
         .deep_research(&question, &deep_opts, &approver, &control, &observer, None)
         .await;
@@ -94,6 +116,26 @@ pub async fn run(
         eprintln!("Report: {}", f.markdown.display());
     }
     Ok(())
+}
+
+/// Reads steering notes from the terminal on a thread of its own, one per
+/// line, until input ends. Does nothing when stdin is not a terminal.
+pub fn read_steering(steer: tern_agent::Steering, hint: &str) {
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    eprintln!("{hint}");
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        while let Some(line) = read_line(&stdin) {
+            if steer.send(&line) {
+                eprintln!(
+                    "• Steer queued: {}",
+                    tern_agent::steer::parse_steer(line.trim()).describe()
+                );
+            }
+        }
+    });
 }
 
 /// Shows the plan in the terminal and asks what to do with it.
@@ -216,7 +258,9 @@ pub fn progress_line(e: &EventEnvelope) -> Option<String> {
             None => e.user_summary.clone(),
         }),
         "plan.answered" | "worker.started" | "worker.finished" | "claims.checking"
-        | "claims.checked" => Some(e.user_summary.clone()),
+        | "claims.checked" | "steer.received" | "steer.applied" | "run.resumed" => {
+            Some(e.user_summary.clone())
+        }
         "tool.executed" | "tool.failed" if e.payload.get("worker").is_some() => {
             Some(e.user_summary.clone())
         }

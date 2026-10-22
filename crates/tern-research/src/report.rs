@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::deep::WorkerStatus;
+use crate::ledger::Ledger;
 use crate::plan::WorkerBudget;
 use crate::verdict::{ClaimCheck, Tally, Verdict};
 
@@ -39,6 +40,15 @@ pub struct RunReport {
     pub claims: Vec<ClaimCheck>,
     pub usage: ReportUsage,
     pub errors: Vec<String>,
+    /// Every URL considered and what each step used.
+    #[serde(default)]
+    pub ledger: Ledger,
+    /// Steering notes the user sent while the run went, and what each did.
+    #[serde(default)]
+    pub steers: Vec<String>,
+    /// Set when the run was resumed from a checkpoint: where it picked up.
+    #[serde(default)]
+    pub resumed_from: Option<String>,
 }
 
 /// One step, as the run panel's Detailed view shows it.
@@ -329,6 +339,20 @@ impl RunReport {
             ));
         }
 
+        if !self.ledger.is_empty() {
+            md.push_str(&self.ledger.to_markdown());
+        }
+
+        if self.resumed_from.is_some() || !self.steers.is_empty() {
+            md.push_str("\n## Resume and steering\n\n");
+            if let Some(from) = &self.resumed_from {
+                md.push_str(&format!("Resumed from a checkpoint: {}.\n", one_line(from)));
+            }
+            for s in &self.steers {
+                md.push_str(&format!("- Steer: {}\n", one_line(s)));
+            }
+        }
+
         md.push_str("\n## Errors\n\n");
         if self.errors.is_empty() {
             md.push_str("None.\n");
@@ -472,6 +496,7 @@ mod tests {
                 }),
             },
             errors: vec!["`read_url` failed: robots".into()],
+            ..RunReport::default()
         }
     }
 

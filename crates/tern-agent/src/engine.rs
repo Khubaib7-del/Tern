@@ -29,8 +29,12 @@ use tern_providers::{
 };
 use tern_store::Store;
 
+use crate::checkpoint::{
+    CHECKPOINT_VERSION, CheckpointSink, QuickState, RunCheckpoint, RunMode, Stage, now_rfc3339,
+};
 use crate::policy::{ApprovalAnswer, CallView, Decision, PolicyGate};
 use crate::protocol::{self, Reply};
+use crate::steer::{Steering, guidance_message};
 use crate::tools::{BoxFuture, ToolError, ToolOutput, ToolRegistry, validate};
 
 /// A chat model the loop can call. [`Provider`] is the real one; tests script one.
@@ -205,6 +209,27 @@ pub struct TurnOutcome {
     pub tool_calls: u32,
 }
 
+/// Checkpoints, steering, and resume for a turn. All optional.
+#[derive(Clone, Copy, Default)]
+pub struct RunHooks<'a> {
+    /// Saves the turn at the start and after every tool result.
+    pub checkpoints: Option<&'a dyn CheckpointSink>,
+    /// Notes the user sends while the turn runs, read before each model call.
+    pub steering: Option<&'a Steering>,
+    /// Picks the turn up from this checkpoint instead of starting over.
+    pub resume: Option<&'a RunCheckpoint>,
+}
+
+impl std::fmt::Debug for RunHooks<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunHooks")
+            .field("checkpoints", &self.checkpoints.is_some())
+            .field("steering", &self.steering.is_some())
+            .field("resume", &self.resume.map(|c| c.turn.as_str()))
+            .finish()
+    }
+}
+
 /// Longest tool result the model is shown. Errors are never cut.
 const RESULT_LIMIT: usize = 12_000;
 /// The same call this many times in one turn is treated as a loop.
@@ -228,6 +253,8 @@ pub struct TurnLoop<'a> {
     pub max_output_tokens: u32,
     /// Streams reply text to a front end. `None` makes one call per reply.
     pub on_text: Option<OnText<'a>>,
+    /// Checkpoints, steering, and resume.
+    pub hooks: RunHooks<'a>,
 }
 
 struct Run<'r, 'a> {
@@ -237,6 +264,13 @@ struct Run<'r, 'a> {
     usage: Usage,
     model_calls: u32,
     tool_calls: u32,
+    /// Tokens used before a resume, counted against the budget.
+    prior: u64,
+    /// The checkpoint as last saved.
+    ck: Option<RunCheckpoint>,
+    /// Applied steers, for the checkpoint.
+    steers: Vec<String>,
+    guidance: Vec<String>,
 }
 
 /// A step failed in a way that ends the turn.
@@ -264,6 +298,10 @@ impl<'a> TurnLoop<'a> {
             usage: Usage::measured(0, 0),
             model_calls: 0,
             tool_calls: 0,
+            prior: 0,
+            ck: None,
+            steers: Vec::new(),
+            guidance: Vec::new(),
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -319,27 +357,92 @@ impl Run<'_, '_> {
         user_message: ChatMessage,
     ) -> Result<(TurnState, String), Stop> {
         self.go(TurnState::Preparing)?;
+        let resume = self.cfg.hooks.resume.cloned();
+        let message_text = match &resume {
+            Some(c) => c.message.clone(),
+            None => user_message.content.clone(),
+        };
+        let mut started = json!({
+            "model": self.cfg.model_name,
+            "provider": self.cfg.model.provider_id(),
+            "tools": self.cfg.tools.names().collect::<Vec<_>>(),
+            "budget": self.cfg.budget,
+            // Kept so the chat can be reopened (see `transcript`).
+            "message": message_text,
+            "images": user_message.images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
+        });
+        if let Some(c) = &resume {
+            started["resumed"] = json!({"turn": c.turn, "stage": c.stage, "saved_at": c.saved_at});
+        }
         self.record(self.event(
             "turn.started",
             EffectClass::Analysis,
-            "Started a turn",
-            json!({
-                "model": self.cfg.model_name,
-                "provider": self.cfg.model.provider_id(),
-                "tools": self.cfg.tools.names().collect::<Vec<_>>(),
-                "budget": self.cfg.budget,
-                // Kept so the chat can be reopened (see `transcript`).
-                "message": user_message.content,
-                "images": user_message.images.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(),
-            }),
+            if resume.is_some() {
+                "Resumed a turn"
+            } else {
+                "Started a turn"
+            },
+            started,
         ))?;
         let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
         let mut messages = history;
-        messages.push(user_message);
+        let base = messages.len();
         let mut seen: HashMap<String, u32> = HashMap::new();
+        match &resume {
+            Some(c) => {
+                let q = c.quick.clone().unwrap_or_default();
+                if q.messages.is_empty() {
+                    messages.push(user_message);
+                } else {
+                    messages.extend(q.messages);
+                }
+                seen.extend(q.seen);
+                self.model_calls = c.model_calls;
+                self.tool_calls = c.tool_calls;
+                self.prior = c.tokens_in + c.tokens_out;
+                self.steers = c.steers.clone();
+                self.guidance = c.guidance.clone();
+                self.record(self.event(
+                    "run.resumed",
+                    EffectClass::Analysis,
+                    format!("Picked up from the checkpoint: {}", c.progress()),
+                    json!({
+                        "turn": c.turn,
+                        "stage": c.stage,
+                        "saved_at": c.saved_at,
+                        "progress": c.progress(),
+                        "prior": {"input": c.tokens_in, "output": c.tokens_out,
+                                  "model_calls": c.model_calls, "tool_calls": c.tool_calls},
+                        "guidance": c.guidance,
+                        "resumes": c.resumes + 1,
+                    }),
+                ))?;
+                let mut ck = c.clone();
+                ck.resumes += 1;
+                ck.turn = self.turn.to_string();
+                self.ck = Some(ck);
+            }
+            None => {
+                messages.push(user_message);
+                if self.cfg.hooks.checkpoints.is_some() {
+                    self.ck = Some(RunCheckpoint {
+                        version: CHECKPOINT_VERSION,
+                        session: self.cfg.session.to_string(),
+                        turn: self.turn.to_string(),
+                        mode: RunMode::Quick,
+                        message: message_text.clone(),
+                        model: self.cfg.model_name.to_owned(),
+                        stage: Stage::Started,
+                        ..RunCheckpoint::default()
+                    });
+                }
+            }
+        }
+        self.save(&messages[base..], &seen);
 
         loop {
             self.check_cancel()?;
+            self.take_steering(&mut messages)?;
             let b = self.cfg.budget;
             if self.model_calls >= b.max_model_calls {
                 return Err(Self::over_budget(format!(
@@ -386,10 +489,10 @@ impl Run<'_, '_> {
                 )
                 .with_usage(reply.usage.to_delta()),
             )?;
-            if self.usage.total() > b.max_tokens {
+            if self.usage.total() + self.prior > b.max_tokens {
                 return Err(Self::over_budget(format!(
                     "The turn used {} tokens, over its limit of {}.",
-                    self.usage.total(),
+                    self.usage.total() + self.prior,
                     b.max_tokens
                 )));
             }
@@ -416,6 +519,7 @@ impl Run<'_, '_> {
                     messages.push(ChatMessage::user(format!(
                         "Tern could not read that tool request: {why}. Try again or answer directly."
                     )));
+                    self.save(&messages[base..], &seen);
                 }
                 Reply::Tool { name, args } => {
                     self.go(TurnState::ToolRequested)?;
@@ -441,9 +545,82 @@ impl Run<'_, '_> {
                     let result = self.tool_step(&name, &args).await?;
                     messages.push(ChatMessage::assistant(reply.text));
                     messages.push(ChatMessage::user(result));
+                    // Safe point: the tool's result is in the conversation.
+                    self.save(&messages[base..], &seen);
                 }
             }
         }
+    }
+
+    /// Saves the turn's conversation so far, when it saves checkpoints.
+    fn save(&mut self, turn: &[ChatMessage], seen: &HashMap<String, u32>) {
+        let Some(sink) = self.cfg.hooks.checkpoints else {
+            return;
+        };
+        let (prior_in, prior_out) = (self.prior_in(), self.prior_out());
+        let Some(ck) = self.ck.as_mut() else {
+            return;
+        };
+        ck.quick = Some(QuickState {
+            messages: turn.to_vec(),
+            seen: seen.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+        });
+        ck.model_calls = self.model_calls;
+        ck.tool_calls = self.tool_calls;
+        ck.tokens_in = prior_in + self.usage.input_tokens;
+        ck.tokens_out = prior_out + self.usage.output_tokens;
+        ck.steers = self.steers.clone();
+        ck.guidance = self.guidance.clone();
+        ck.saved_at = now_rfc3339();
+        // A failed save never stops the turn.
+        let _ = sink.save(ck);
+    }
+
+    fn prior_in(&self) -> u64 {
+        self.cfg.hooks.resume.map(|c| c.tokens_in).unwrap_or(0)
+    }
+
+    fn prior_out(&self) -> u64 {
+        self.cfg.hooks.resume.map(|c| c.tokens_out).unwrap_or(0)
+    }
+
+    /// Safe point before a model call: steering notes join the
+    /// conversation as guidance.
+    fn take_steering(&mut self, messages: &mut Vec<ChatMessage>) -> Result<(), Stop> {
+        let Some(inbox) = self.cfg.hooks.steering else {
+            return Ok(());
+        };
+        for note in inbox.take() {
+            self.record(self.event(
+                "steer.received",
+                EffectClass::Analysis,
+                format!("You steered the run: {}", note.text),
+                json!({"text": note.text, "action": {"action": "guide", "text": note.text}}),
+            ))?;
+            let block = guidance_message(&note.text);
+            // Kept as one user message, since some providers want turns to
+            // alternate.
+            match messages.last_mut() {
+                Some(last) if last.role == tern_providers::Role::User => {
+                    last.content.push_str("\n\n");
+                    last.content.push_str(&block);
+                }
+                _ => messages.push(ChatMessage::user(block)),
+            }
+            let summary = format!(
+                "Applied: the model reads “{}” before its next step",
+                note.text
+            );
+            self.steers.push(summary.clone());
+            self.guidance.push(note.text.clone());
+            self.record(self.event(
+                "steer.applied",
+                EffectClass::Analysis,
+                summary,
+                json!({"text": note.text, "applied": true, "how": "guidance"}),
+            ))?;
+        }
+        Ok(())
     }
 
     fn add_usage(&mut self, u: Usage) {
@@ -616,6 +793,11 @@ impl Run<'_, '_> {
             TurnState::Cancelled => "run.cancelled",
             _ => "turn.finished",
         };
+        let answered = answer.is_some();
+        if answered && let Some(sink) = self.cfg.hooks.checkpoints {
+            let _ = sink.clear(&self.cfg.session.to_string());
+        }
+        let resumable = !answered && self.cfg.hooks.checkpoints.is_some() && self.ck.is_some();
         // The log may be what failed; the outcome still reports the stop.
         let _ = self.record(
             self.event(
@@ -628,6 +810,7 @@ impl Run<'_, '_> {
                     "tool_calls": self.tool_calls,
                     "answer_chars": answer.as_ref().map(String::len),
                     "answer": answer,
+                    "resumable": resumable,
                 }),
             )
             .with_usage(self.usage.to_delta()),

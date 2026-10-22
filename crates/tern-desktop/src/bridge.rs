@@ -57,6 +57,9 @@ pub enum Msg {
     Models(&'static str, Result<Vec<ModelInfo>, String>),
     /// Saving the choices failed; the chat still reconnects with them.
     PrefsFailed(String),
+    /// The watch list, and a line to tell the user (a run's result or an
+    /// error), if any. `finished` counts watch runs that just ended.
+    Watches(Vec<tern_agent::watch::Watch>, Option<String>, usize),
 }
 
 impl std::fmt::Debug for Msg {
@@ -81,6 +84,14 @@ impl std::fmt::Debug for Msg {
             Self::Removed(k, id, r) => write!(f, "Removed({k:?}, {id}, {})", r.is_ok()),
             Self::Models(id, r) => write!(f, "Models({id}, {})", r.is_ok()),
             Self::PrefsFailed(e) => write!(f, "PrefsFailed({e})"),
+            Self::Watches(w, note, n) => {
+                write!(
+                    f,
+                    "Watches({}, note: {}, finished: {n})",
+                    w.len(),
+                    note.is_some()
+                )
+            }
         }
     }
 }
@@ -308,6 +319,151 @@ impl Bridge {
             session.check_last_turn(&observer).await;
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));
+        });
+    }
+
+    /// Resumes the chat's stopped run from its checkpoint and hands the
+    /// session back when it ends, like [`Bridge::send`].
+    pub fn resume_run(&self, mut session: Box<ChatSession>, control: DeepControl) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let opts = tokio::task::spawn_blocking(|| Preferences::load().deep_options())
+                .await
+                .unwrap_or_default();
+            let approver = UiApprover(tx.clone());
+            let events = tx.clone();
+            let observer = move |e: &tern_core::EventEnvelope| {
+                let _ = events.send(Msg::Event(Box::new(e.clone())));
+            };
+            let texts = tx.clone();
+            let on_text = move |call: u32, t: &str| {
+                let _ = texts.send(Msg::Text(call, t.to_owned()));
+            };
+            let out = match session
+                .resume_run(&opts, &approver, &control, &observer, Some(&on_text))
+                .await
+            {
+                Ok(out) => out,
+                Err(e) => TurnOutcome {
+                    turn_id: tern_core::TurnId::new(),
+                    state: tern_core::TurnState::Failed,
+                    answer: None,
+                    reason: Some(e),
+                    states: Vec::new(),
+                    usage: tern_agent::Usage::measured(0, 0),
+                    model_calls: 0,
+                    tool_calls: 0,
+                },
+            };
+            let usage = session.context();
+            if out.answer.is_some() {
+                session.check_last_turn(&observer).await;
+            }
+            let recent = session.recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Done(session, out, usage, recent));
+        });
+    }
+
+    /// Loads the watch list.
+    pub fn load_watches(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let (list, note) = match tern_agent::watch::WatchList::load() {
+                Ok(l) => (l.watches, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            let _ = tx.send(Msg::Watches(list, note, 0));
+        });
+    }
+
+    /// Changes the watch list with `f` and saves it.
+    fn edit_watches(
+        &self,
+        f: impl FnOnce(&mut tern_agent::watch::WatchList) -> Result<String, String> + Send + 'static,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let result = tern_agent::watch::WatchList::load().and_then(|mut l| {
+                let note = f(&mut l)?;
+                l.save()?;
+                Ok((l.watches, note))
+            });
+            let msg = match result {
+                Ok((list, note)) => Msg::Watches(list, Some(note), 0),
+                Err(e) => {
+                    let list = tern_agent::watch::WatchList::load()
+                        .map(|l| l.watches)
+                        .unwrap_or_default();
+                    Msg::Watches(list, Some(e), 0)
+                }
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// Puts a question on watch.
+    pub fn add_watch(&self, question: String, every_hours: u32, deep: bool) {
+        self.edit_watches(move |l| {
+            let w = l.add(&question, every_hours, deep)?;
+            Ok(format!("Watching “{}” {}.", w.question, w.every_label()))
+        });
+    }
+
+    pub fn remove_watch(&self, id: String) {
+        self.edit_watches(move |l| {
+            let w = l.remove(&id)?;
+            Ok(format!("Stopped watching “{}”.", w.question))
+        });
+    }
+
+    /// Changes how often a watch runs.
+    pub fn set_watch_every(&self, id: String, every_hours: u32) {
+        self.edit_watches(move |l| {
+            let i = l.position(&id)?;
+            l.watches[i].every_hours = every_hours;
+            Ok(format!(
+                "“{}” now runs {}.",
+                l.watches[i].question,
+                l.watches[i].every_label()
+            ))
+        });
+    }
+
+    /// Runs watches in the background, one after another: `ids`, or every
+    /// due one when empty. Each sends the list when it ends.
+    pub fn run_watches(&self, ids: Vec<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let prefs = tokio::task::spawn_blocking(Preferences::load)
+                .await
+                .unwrap_or_default();
+            let ids = if ids.is_empty() {
+                tern_agent::watch::due_now().unwrap_or_default()
+            } else {
+                ids
+            };
+            if ids.is_empty() {
+                let list = tern_agent::watch::WatchList::load()
+                    .map(|l| l.watches)
+                    .unwrap_or_default();
+                let _ = tx.send(Msg::Watches(list, None, 1));
+                return;
+            }
+            let n = ids.len();
+            for (k, id) in ids.into_iter().enumerate() {
+                let result =
+                    tern_agent::watch::run_watch(&id, prefs.chat_options(), prefs.deep_options())
+                        .await;
+                let note = match &result {
+                    Ok(r) => format!("Watch “{}”: {}", r.watch.question, r.watch.status_line()),
+                    Err(e) => format!("A watch could not run: {e}"),
+                };
+                let list = tern_agent::watch::WatchList::load()
+                    .map(|l| l.watches)
+                    .unwrap_or_default();
+                // The last run tells the window the batch is over.
+                let _ = tx.send(Msg::Watches(list, Some(note), usize::from(k + 1 == n)));
+            }
         });
     }
 

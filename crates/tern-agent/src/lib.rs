@@ -4,8 +4,10 @@
 //! typed tool registry ([`tools`]), plus the health checks behind
 //! `tern doctor` and provider setup. Front ends reach providers, the
 //! platform, and the store only through this crate. Deep research
-//! ([`deep`]) runs an approved plan's workers in parallel; live steering
-//! follows in roadmap phase 5.
+//! ([`deep`]) runs an approved plan's workers in parallel. Research runs
+//! save checkpoints ([`checkpoint`]) and can be resumed, take steering notes
+//! while they run ([`steer`]), keep source and budget ledgers ([`ledger`]),
+//! and saved questions can be watched ([`watch`]).
 
 #![forbid(unsafe_code)]
 
@@ -14,10 +16,12 @@ pub mod attach;
 pub mod branch;
 pub mod browse;
 pub mod chat;
+pub mod checkpoint;
 pub mod deep;
 pub mod doctor;
 pub mod engine;
 pub mod git;
+pub mod ledger;
 pub mod mention;
 pub mod policy;
 pub mod prefs;
@@ -28,10 +32,12 @@ pub mod report;
 pub mod run;
 pub mod search;
 pub mod sources;
+pub mod steer;
 pub mod tools;
 pub mod transcript;
 pub mod vault;
 pub mod verify;
+pub mod watch;
 pub mod web;
 
 pub use ask::{AskOptions, AskReport, Source};
@@ -40,6 +46,7 @@ pub use chat::{
     ChatOptions, ChatSession, ContextUse, Usage, archive_session, clean_title, recent_sessions,
     rename_session, title_from,
 };
+pub use checkpoint::{CheckpointDir, CheckpointSink, RunCheckpoint, RunMode, Stage};
 pub use deep::{DeepControl, DeepOptions, PlanAnswer, PlanApprover, ResearchPlan, RunAsDrafted};
 pub use engine::{
     ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,
@@ -52,6 +59,7 @@ pub use run::{
     DeepRun, PlanState, RawFilter, Run, RunEnd, RunStep, RunSummary, StepKind, WorkerRow,
 };
 pub use sources::PageRef;
+pub use steer::Steering;
 pub use tern_providers::ImageInput;
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, SessionSummary};

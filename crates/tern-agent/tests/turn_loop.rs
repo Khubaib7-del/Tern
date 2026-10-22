@@ -205,6 +205,7 @@ impl Setup {
             instructions: None,
             max_output_tokens: 512,
             on_text: None,
+            hooks: Default::default(),
         }
         .run(Vec::new(), msg)
         .await
@@ -584,6 +585,7 @@ async fn streamed_text_is_numbered_per_model_call() {
         instructions: None,
         max_output_tokens: 512,
         on_text: Some(&on_text),
+        hooks: Default::default(),
     }
     .run(Vec::new(), "Search")
     .await;
