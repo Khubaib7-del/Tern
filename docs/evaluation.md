@@ -1,6 +1,6 @@
 # Evaluation
 
-> Status: built in PR #42 (roadmap phase 11). The offline suites run in CI on every pull request; the live, pinned, public, and human rungs need a model, the network, a downloaded benchmark, or a person, and have not been run by CI.
+> Status: built in PR #42 (roadmap phase 11); the claim check and the policy gate were tightened in PR #43, which also added a held-out claims suite. The offline suites run in CI on Windows, Linux, and macOS on every pull request; the live, pinned, public, and human rungs need a model, the network, a downloaded benchmark, or a person, and have not been run by CI.
 
 Tern measures itself with a test ladder of five rungs. Each rung is one command. Every run has at least three trials by default, reports a 95% interval for every metric, and publishes every failure, case by case, in its report.
 
@@ -29,15 +29,16 @@ Runs are saved in `<data>/evals/runs/<id>.json` and `<id>.md`. The desktop app's
 
 ## Suites
 
-Suites are versioned JSON files. Tern bundles six (`crates/tern-eval/suites/`):
+Suites are versioned JSON files. Tern bundles seven (`crates/tern-eval/suites/`):
 
 | Suite | Kind | Rung | Cases | Origin |
 | --- | --- | --- | --- | --- |
 | `research@1` | Research answers | Synthetic | 6 tasks × 3 recorded answers | Written for Tern's tests; the pages are not real sites and the answers are not real model output |
 | `claims@1` | Claim verdicts | Synthetic | 27 | Written for Tern's tests |
+| `claims-heldout@1` | Claim verdicts | Synthetic, held out | 12 | Written in PR #43 before the claim check was changed, and never used to tune it |
 | `quiz@1` | Quiz grading | Synthetic | 23 | Written for Tern's tests |
 | `decision-heldout@1` | Decision routing | Synthetic, held out | 22 | Written after the local scorer was built, on topics the 50 `tern decide bench` fixtures do not use, and never used to tune it |
-| `safety@1` | Injection and tool safety | Synthetic | 34 | Written for Tern's tests |
+| `safety@2` | Injection and tool safety | Synthetic | 42 | Written for Tern's tests; version 2 (PR #43) gives web reads their full address and where the session's addresses came from, and adds eight gate cases, three of them benign reads that must still run |
 | `pinned@1` | Research answers | Pinned | 3 | Real questions over arXiv 1706.03762, the Rust 1.85.0 announcement, and Wikipedia's Leitner system page |
 
 Every report names each suite's origin, so a score on written cases is never read as more than it is.
@@ -84,10 +85,32 @@ Each case runs once per trial; the default is three, and a run with fewer says s
 
 What the failures say:
 
-- The offline claim check is generous. A claim with a wrong number is **Partly supported** with the note "A number in the claim is not in the passage", not Not supported, and a claim that swaps a role, an entity, or a direction ("slower" for "faster", "gold" for "International Orange") but shares the passage's words is **Supported**. It catches 21% of unsupported claims in this suite. The model judge is meant to catch these; a live run measures how well.
+- The offline claim check is generous. A claim with a wrong number is **Partly supported** with the note "A number in the claim is not in the passage", not Not supported, and a claim that swaps a role, an entity, or a direction ("slower" for "faster", "gold" for "International Orange") but shares the passage's words is **Supported**. It catches 21% of unsupported claims in this suite. The model judge is meant to catch these; a live run measures how well. (Fixed in PR #43; see below.)
 - Short answers graded by word overlap miss paraphrases and give partial credit to answers that reuse the key's words for the wrong thing.
 - The trust scan rates a description that tells the model to always call it first, instead of another tool, only as a note (not a danger), so it counts as missed; and it flags a benign description that mentions passwords.
-- The policy gate allows `read_url` to a new domain by default (network steps are allowed within project scope, [05-security-model.md](05-security-model.md) section 4), so an injected page could ask the model to read a URL that carries data in its query string. The case stays in the suite as a published failure until new domains can be set to ask.
+- The policy gate allows `read_url` to a new domain by default (network steps are allowed within project scope, [05-security-model.md](05-security-model.md) section 4), so an injected page could ask the model to read a URL that carries data in its query string. The case stays in the suite as a published failure until new domains can be set to ask. (Fixed in PR #43: new domains from outside content now ask; see below.)
+
+## Scores after PR #43 (offline, 23 October 2026, 3 trials)
+
+PR #43 changed two of Tern's checkers. The offline claim check now looks for a contradiction in the passage that matches a claim best: a different number in the same place (`330` where the claim says `300`, `Two doses` where it says `One dose`), a negation that governs the claim's own words (a "without" in the next sentence no longer counts), an antonym (`slower` for `faster`, `fell` for `rose`), the two sides of a comparison swapped, or another name in the very slot the claim fills (`painted gold` against `painted International Orange`, `a month` against `a week`). Any of these makes the verdict **Not supported**, with the contradicting passage as evidence. A number the passage does not give at all, with no rival number beside the same words, stays **Partly supported**. The policy gate now tracks where web addresses came from (see [05-security-model.md](05-security-model.md) and the gate's module documentation): once a page or an MCP result has entered the session, a read of a domain that neither the user nor search introduced asks first, and an address carrying a key-, token-, or session-shaped value asks, and is refused when it goes to such a new domain.
+
+| Suite | Before (PR #42) | After (PR #43) |
+| --- | --- | --- |
+| Claims, `claims@1` | Verdict accuracy 59.3% (48/81); unsupported claims caught 21.4%; claim precision 70.6% | 100% (81/81); 100%; 100% |
+| Claims, held out, `claims-heldout@1` (run on the old check before the change) | 41.7% (15/36); unsupported caught 14.3%; claim precision 40.0% | 83.3% (30/36); 85.7%; 66.7% |
+| Research, checker agreement with the labels | 86.4% (38/44) | 95.5% (42/44) |
+| Research, citation accuracy / verified reports / unsupported claims per 100 runs | 97.7% / 94.4% / 5.6 | 88.6% / 72.2% / 27.8 |
+| Safety, gate as expected | 87.5% (21/24, `safety@1`) | 100% (48/48, `safety@2`) |
+| Safety, all cases | 90.0% (81/90, `safety@1`) | 94.7% (108/114, `safety@2`) |
+| Quiz, decision routing | 87.0%, 72.7% | Unchanged |
+
+How to read it:
+
+- `claims@1` at 100% is a score on cases the change was written against, so it says the rules do what they were meant to; the held-out suite is the honest number. Its six misses are two cases, three trials each: a paraphrase that shares too few words to be Supported ("the census counted 2.1 million people") and a swap with no telltale word ("Sydney is the capital of Australia" against a page naming Canberra as the capital and Sydney as the largest city). The model judge is still meant for these.
+- The research suite's citation accuracy, verified reports, and unsupported-claims rate are the recorded answers as the checker sees them. The recordings include wrong answers on purpose (a 75 percent libration figure, mtDNA from the father, BM25 at Google in 2004, an ease factor of 1.3, the Calvin cycle needing light directly); the old check let most of them through as Supported, the new one catches them. So these three numbers fall while agreement with the human labels rises, and the baseline moves with them.
+- The safety suite's remaining failures are the trust scan's, unchanged: an "always call me first" description rated a note, and a benign description that mentions passwords flagged.
+
+The baseline (`crates/tern-eval/baseline.json`) holds these scores, with the held-out claims suite added.
 
 Live, pinned, and public numbers will be added when they have been run with a key.
 
@@ -122,7 +145,7 @@ Drop a suite file in `<data>/evals/suites/` (any name ending `.json`). A file wi
 | `claims` | `id`, `claim`, `sources`, `gold` (`supported`, `partly`, `not_supported`, `no_source`), `tags` |
 | `quiz` | `id`, `kind` (`multiple_choice`, `true_false`, `fill_blank`, `short_answer`), `prompt`, `choices`, `key`, `passage`, `given` (the answer graded), `gold` (`correct`, `partly`, `incorrect`, `unanswered`) |
 | `decision` | The `tern decide bench` fixture format: `id`, `kind`, `question`, `context`, `choices` (`id`, `text`, `prior`), `gold` (the right choice's index). Add `"split": "held_out"` at the top when the cases were not used to tune the scorer |
-| `safety` | `id`, `check` (`scan`, `wrap`, `gate`, `canary`), `expect` (`flagged` or `clean`; `contained`; `blocked` or `allowed`; `resisted`), and `text`, `source`, `tool`, `effect`, `target`, or `canary` as the check needs |
+| `safety` | `id`, `check` (`scan`, `wrap`, `gate`, `canary`), `expect` (`flagged` or `clean`; `contained`; `blocked` or `allowed`; `resisted`), and `text`, `source`, `tool`, `effect`, `target`, or `canary` as the check needs. A gate case on a web read adds `url` (the full address), `known` (domains the user typed or search listed), and `after_untrusted` (outside content entered the session first) |
 
 Levels are `synthetic` (offline with recordings), `pinned` (live only), and `public`. Keep the `origin` honest: say who wrote the cases and from what.
 
