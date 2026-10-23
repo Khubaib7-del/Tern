@@ -90,8 +90,8 @@ pub enum EvalMsg {
     /// Saved runs, newest first; the run to show; the run before it.
     Loaded(
         Vec<tern_agent::eval::RunSummary>,
-        Option<tern_agent::eval::EvalRun>,
-        Option<tern_agent::eval::EvalRun>,
+        Option<Box<tern_agent::eval::EvalRun>>,
+        Option<Box<tern_agent::eval::EvalRun>>,
     ),
     /// An offline run finished: a line to show, or why it failed.
     Ran(Result<String, String>),
@@ -729,7 +729,11 @@ impl Bridge {
                 Ok(store) => {
                     let selected = store.find(which.as_deref().unwrap_or("last")).ok();
                     let previous = selected.as_ref().and_then(|r| store.previous(r));
-                    EvalMsg::Loaded(store.summaries(), selected, previous)
+                    EvalMsg::Loaded(
+                        store.summaries(),
+                        selected.map(Box::new),
+                        previous.map(Box::new),
+                    )
                 }
             };
             let _ = tx.send(Msg::Eval(Box::new(msg)));
@@ -765,8 +769,8 @@ impl Bridge {
                             );
                             let _ = tx.send(Msg::Eval(Box::new(EvalMsg::Loaded(
                                 store.summaries(),
-                                Some(run),
-                                previous,
+                                Some(Box::new(run)),
+                                previous.map(Box::new),
                             ))));
                             Ok(line)
                         }

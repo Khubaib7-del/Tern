@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
 
-It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, the desktop app, Tern Crawl, claim checks with run reports, deep research with parallel workers, the Study harness (tutor, quizzes, viva, flashcards with spaced repetition and Anki export, Explain in 3D), the decision model, continuity (message IDs and sub-sessions, cleaning a chat by ID range, handoff packets, the Library, highlight actions, and the side chat), and extensibility (MCP servers with their tools, prompts, and resources, Tern as an ACP agent in editors such as Zed, skills, `TERN.md` project rules, and project folders) work today (see below); study plans, evaluation, and the Linux and macOS ports are still ahead.
+It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, the desktop app, Tern Crawl, claim checks with run reports, deep research with parallel workers, the Study harness (tutor, quizzes, viva, flashcards with spaced repetition and Anki export, Explain in 3D), the decision model, continuity (message IDs and sub-sessions, cleaning a chat by ID range, handoff packets, the Library, highlight actions, and the side chat), and extensibility (MCP servers with their tools, prompts, and resources, Tern as an ACP agent in editors such as Zed, skills, `TERN.md` project rules, and project folders), and evaluation (a five-rung test ladder with versioned suites, three trials, 95% intervals, published failures, and run comparison, the offline suites checked in CI) work today (see below); study plans and the Linux and macOS ports are still ahead.
 
 ## What works today
 
@@ -45,8 +45,9 @@ It is being built as the research tool for its author's final-year project. It i
 | Skills | Folders with a `SKILL.md` (yours in Tern's data folder, a project's in `.tern/skills/`). Only names and descriptions go into the prompt; the model loads a skill's full instructions when a task needs it. Install from a folder or a git URL after a preview with the same suspicious-text scan, switch on and off. `tern skills list\|install\|enable\|disable\|show\|rm`; **Customize → Skills** |
 | Rules and instructions | `TERN.md` files (yours, folders above the project, and the project's own) merged in order with a later file winning. **Effective instructions** shows exactly what the model is told, piece by piece. `tern instructions`; **Customize → Instructions** |
 | Project folders | Projects hold chats and their sub-sessions; a project can link a folder on disk so its `TERN.md` and skills apply to its chats. Deleting a project moves its chats to the Inbox. `tern project new\|list\|mv\|rename\|root\|rm`; the desktop sidebar's project tree (drag a chat onto a folder or Move to…, collapse saved) |
+| Evaluation | A test ladder with one command per rung: **unit** (`cargo test --workspace`, read back as a run), **synthetic** (bundled suites run offline in under a second: claim verdicts, research answers replayed from recordings, quiz grading, decision routing on a held-out split, and injection and tool safety: poisoned MCP descriptions, injected page text, tool calls an injection could ask for, and canary pages for a live model), **pinned** (real questions over pinned public pages, answered live), **public** (SciFact, read from your copy), and **human** (timed scripted tasks and the System Usability Scale). Metrics include citation accuracy, claim precision and recall, unsupported claims per 100 runs, constraint retention, tokens or cost per verified report, preflight forecast error (live), verdict and grading accuracy, Brier score, and scan, containment, and gate rates, each over at least three trials with a 95% interval, and every failure listed. Runs are saved as JSON and Markdown and compared metric by metric; CI runs the offline suites against a baseline and uploads the report. First offline scores: citation accuracy 97.7%, claim verdicts 59.3% (the offline check calls wrong numbers Partly supported), quiz grading 87.0%, held-out routing 72.7% for the local scorer against 45.5% for fixed order, safety 90.0%. `tern eval list\|run\|report\|compare\|usability`; the desktop **Evaluation** page. See [docs/evaluation.md](docs/evaluation.md) |
 | Terminal | `tern` / `tern chat`: an 80×24 ratatui chat |
-| Desktop app | Windows build on GPUI: chat with streaming answers, chat list (reopen, rename, archive), providers screen, source rows with site icons, context ring, run panel (Summary, Detailed, Raw, Report, Ledger, Workers for deep research, and Decisions), a Decision model page (Off, Local, or Remote; Jev, SubQ Snap, and Voyage rows with their logos and keys; a Test button), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments, sources, and MCP resources, `@prompt:` / `@context:`), a `/` menu (Tern's commands, skills, and MCP prompts, every row with its logo; an inline form for a prompt's arguments; the server's text shown in the composer before anything is sent), message actions (copy, reply with a quote, branch into a new chat, `Branch ▾` for sub-sessions and background branches, ask in side chat), message IDs with multi-select and range actions (move to a sub-session or a new session, remove, confirm or undo, the chat's trash), a sidebar sub-session tree (`↳ Q12` rows, planned and running state) and a handoff action, a highlight popover on answer text, the side chat (docked or popped out with the tern mark), the Library page (Reports, Sources, Notes, Decks, Files, Explain in 3D, Sessions, All, and Trash; grid or list; `New ▾`; search, sort, bulk select, paging), project folders in the sidebar (Projects, chats, `↳` sub-sessions, the Inbox; drag to file, collapse saved), the Customize page (Skills, MCP servers with the trust preview and health dots, Providers, Instructions), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs and built-in service logos, an Appearance screen) and Scout, a live mascot rig in the sidebar that reacts to the run, Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser (pages as readable Markdown beside the chat, citations and sources open there, Ask about this page), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch), and the Study harness (a Study home with materials and their icons, topics with mastery rings, Tutor, Quiz, Viva, and Flashcards with the due count; a tutor chat with mode chips; a quiz card with instant feedback and a score summary; a viva screen with a timer and the rubric report; a flashcard review and deck screen; Study settings), and Explain in 3D tabs |
+| Desktop app | Windows build on GPUI: chat with streaming answers, chat list (reopen, rename, archive), providers screen, source rows with site icons, context ring, run panel (Summary, Detailed, Raw, Report, Ledger, Workers for deep research, and Decisions), a Decision model page (Off, Local, or Remote; Jev, SubQ Snap, and Voyage rows with their logos and keys; a Test button), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments, sources, and MCP resources, `@prompt:` / `@context:`), a `/` menu (Tern's commands, skills, and MCP prompts, every row with its logo; an inline form for a prompt's arguments; the server's text shown in the composer before anything is sent), message actions (copy, reply with a quote, branch into a new chat, `Branch ▾` for sub-sessions and background branches, ask in side chat), message IDs with multi-select and range actions (move to a sub-session or a new session, remove, confirm or undo, the chat's trash), a sidebar sub-session tree (`↳ Q12` rows, planned and running state) and a handoff action, a highlight popover on answer text, the side chat (docked or popped out with the tern mark), the Library page (Reports, Sources, Notes, Decks, Files, Explain in 3D, Sessions, All, and Trash; grid or list; `New ▾`; search, sort, bulk select, paging), project folders in the sidebar (Projects, chats, `↳` sub-sessions, the Inbox; drag to file, collapse saved), the Customize page (Skills, MCP servers with the trust preview and health dots, Providers, Instructions), the Evaluation page (runs with their subject's logo or the tern mark, per-suite scores with intervals and the change since the previous run, failures, and a button that runs the offline suites), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs and built-in service logos, an Appearance screen) and Scout, a live mascot rig in the sidebar that reacts to the run, Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser (pages as readable Markdown beside the chat, citations and sources open there, Ask about this page), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch), and the Study harness (a Study home with materials and their icons, topics with mastery rings, Tutor, Quiz, Viva, and Flashcards with the due count; a tutor chat with mode chips; a quiz card with instant feedback and a score summary; a viva screen with a timer and the rubric report; a flashcard review and deck screen; Study settings), and Explain in 3D tabs |
 
 Each pull request builds `tern-desktop.exe` and `tern.exe` for Windows x64 as a CI artifact. There are no releases or installers yet.
 
@@ -67,7 +68,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | Area | Planned |
 | --- | --- |
 | Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
-| Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, and `tern decide bench` are built) |
+| Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
 | Control | Safe pause at budget limits, drift detection, and a scheduler that runs watches while Tern is closed (loop detection, steering, run checkpoints, and the in-app watcher are built) |
 | Memory | Stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, and handoff packets are built) |
 | Extensibility | Watching single MCP resources, and MCP sampling, roots, and elicitation (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
@@ -75,7 +76,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | Vault | Agent edits shown as diffs (plain Markdown notes, `[[links]]`, backlinks, and Git for the vault are built) |
 | Study | Study plans, and FSRS scheduling once a deck has enough reviews to fit it (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
 | Library | A model-written handoff summary (chat ranges, sub-sessions, handoffs, the Library with bulk delete, highlights, the side chat, and project folders are built) |
-| Evaluation | Benchmarks for citation accuracy, cost, and reliability |
+| Evaluation | Live, pinned, and public scores run with a key and published, and more held-out cases (the ladder, the suites, the metrics, reports, comparison, and the CI baseline are built) |
 | Platforms | Linux and macOS builds |
 
 Full detail: [docs/01-product-spec.md](docs/01-product-spec.md).
@@ -100,12 +101,13 @@ A single Rust workspace. The headless core owns execution and security; the TUI 
 | Crate | Role |
 | --- | --- |
 | `tern-core` | Shared types, stable IDs, versioned events, turn state machine, secret redaction |
-| `tern-agent` | Turn engine, planner, tool registry, policy gate, workers, watcher, steering, checkpoints, budgets, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, side chat, MCP client, ACP server, skills, `TERN.md` rules |
+| `tern-agent` | Turn engine, planner, tool registry, policy gate, workers, watcher, steering, checkpoints, budgets, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, side chat, MCP client, ACP server, skills, `TERN.md` rules, evaluation runs on Tern's real pieces |
 | `tern-providers` | BYOK remote providers and local models, capability probing, usage accounting, MCP's HTTP transport |
 | `tern-decision` | The decision model: `score(context, question, choices)`, a local offline scorer, Jev, SubQ Snap, and Voyage adapters, hard checks, cache, decision log, benchmark fixtures |
 | `tern-crawl` | Fetch, extract, and chunk web pages and PDFs, behind an SSRF and DNS-rebinding guard |
 | `tern-store` | SQLite, append-only event log, sub-sessions, project folders, the Library index (search, filter, sort, paging, trash), Anki package export; full-text and vector indexes next |
 | `tern-research` | Research pipeline, scholarly sources, claim verification, citations, run reports |
+| `tern-eval` | Evaluation: versioned task suites, offline and live runners, metrics with 95% intervals, reports, run comparison, the CI baseline, the SciFact reader, and SUS scoring; no I/O or UI |
 | `tern-study` | Materials and anchors, topics, mastery, tutor, quizzes and grading, viva practice, flashcards and SM-2 scheduling, CSV and TSV, Explain in 3D scenes and their projection; study plans next |
 | `tern-tui` | The `tern` CLI and ratatui terminal UI |
 | `tern-desktop` | The GPUI desktop app |
@@ -138,7 +140,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | 8 | Decision model | Mostly done |
 | 9 | Continuity and library | Mostly done |
 | 10 | Extensibility: MCP, ACP, skills | Done |
-| 11 | Evaluation | Planned |
+| 11 | Evaluation | Mostly done |
 | 12 | Linux and macOS | Planned |
 
 Phase detail and exit checks: [docs/04-roadmap.md](docs/04-roadmap.md).
@@ -154,7 +156,7 @@ Not yet released. There are no installers or packages; test builds come from CI 
 ├── .github/              issue forms, PR template, code owners
 ├── assets/
 │   └── brand/            mark (PNG and SVG), lockups, app icon, animated dither hero
-├── crates/               the Rust workspace (11 crates, see Planned architecture)
+├── crates/               the Rust workspace (12 crates, see Architecture)
 ├── docs/
 │   ├── 00-vision.md
 │   ├── 01-product-spec.md
@@ -162,6 +164,7 @@ Not yet released. There are no installers or packages; test builds come from CI 
 │   ├── 03-architecture.md
 │   ├── 04-roadmap.md
 │   ├── 05-security-model.md
+│   ├── evaluation.md     the test ladder, suites, metrics, and how to add cases
 │   ├── zed.md            using Tern as an ACP agent in Zed
 │   └── decisions/        architecture decision records (0001 to 0007)
 ├── AGENTS.md             rules for AI coding agents
@@ -204,6 +207,7 @@ Not yet released. There are no installers or packages; test builds come from CI 
 | `cargo run -p tern-tui -- mcp add notes -- npx -y notes-mcp` | Adds an MCP server, off until reviewed (`--url` for HTTP; `mcp import FILE`, `list`, `preview NAME --trust`, `enable`, `disable`, `health`, `rm`) |
 | `cargo run -p tern-tui -- mcp prompts` | Lists the prompts reviewed servers offer (`mcp prompt notes review --arg code=…` prints the server's filled-in text; nothing is sent) |
 | `cargo run -p tern-tui -- mcp resources` | Lists resources and templates (`mcp read notes notes://week-1`, `--arg name=… ` for a template, `--out FILE`, `--wrapped` to see it as the model would) |
+| `cargo run -p tern-tui -- eval run` | Runs the offline evaluation suites, 3 trials (`--level unit\|synthetic\|pinned\|public`, `--live`, `--scifact DIR`, `--check-baseline`; `eval list`, `report [--list]`, `compare`, `usability`) |
 | `cargo run -p tern-tui -- acp` | Serves the Agent Client Protocol on stdio for an editor (see [docs/zed.md](docs/zed.md)) |
 | `cargo run -p tern-tui -- skills list` | Lists skills (`install PATH\|URL`, `enable`, `disable`, `show`, `rm`) |
 | `cargo run -p tern-tui -- instructions` | Prints exactly what the model is told, piece by piece |
@@ -223,6 +227,7 @@ Set `TERN_REDUCED_MOTION=1` (or `"reduced_motion": true` in `preferences.json`) 
 | [Changelog](CHANGELOG.md) | Everything merged so far |
 | [Roadmap](docs/04-roadmap.md) | Phases and exit checks |
 | [Security model](docs/05-security-model.md) | Threats, controls, trust order |
+| [Evaluation](docs/evaluation.md) | The test ladder, suites, metrics, first scores, adding cases |
 | [Contributing](CONTRIBUTING.md) · [Agent rules](AGENTS.md) · [Security policy](SECURITY.md) | How work happens here |
 
 ## Licence

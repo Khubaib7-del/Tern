@@ -545,7 +545,9 @@ impl Workspace {
             },
             Msg::Eval(m) => match *m {
                 crate::bridge::EvalMsg::Loaded(runs, sel, prev) => {
-                    self.model.eval.load(runs, sel, prev)
+                    self.model
+                        .eval
+                        .load(runs, sel.map(|r| *r), prev.map(|r| *r))
                 }
                 crate::bridge::EvalMsg::Ran(r) => self.model.eval.finished(r),
             },
