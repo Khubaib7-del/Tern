@@ -46,9 +46,10 @@ pub enum StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// Which harness a session belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Harness {
+    #[default]
     Research,
     Study,
 }

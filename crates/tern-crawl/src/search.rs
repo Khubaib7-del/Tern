@@ -1,5 +1,5 @@
 //! Web search through the user's own search API key, a self-hosted SearXNG,
-//! or the keyless Wikipedia search API (see `docs/adr/0012-keyless-search.md`).
+//! or the keyless Wikipedia search API (see `docs/decisions/0008-keyless-search.md`).
 
 use std::time::Duration;
 

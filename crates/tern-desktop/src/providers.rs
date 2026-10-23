@@ -24,8 +24,11 @@ pub struct ServiceRow {
     pub kind: Kind,
     pub id: &'static str,
     pub name: &'static str,
-    /// Runs on this machine (Ollama, LM Studio) or is self-hosted (SearXNG).
+    /// Runs on this machine (Ollama, LM Studio), is self-hosted (SearXNG),
+    /// or needs no key at all (Wikipedia).
     pub local: bool,
+    /// A public service that needs no key (Wikipedia search).
+    pub keyless: bool,
     pub key_saved: bool,
     pub key_url: &'static str,
 }
@@ -53,7 +56,10 @@ impl ServiceRow {
     pub fn status(&self) -> &'static str {
         match (self.kind, self.local, self.key_saved) {
             (Kind::Model, true, _) => "Runs on this computer, no key needed",
-            (Kind::Search, true, _) => "Self-hosted, no key needed",
+            (Kind::Search, true, _) if self.keyless => {
+                "Free, no key needed · searches Wikipedia articles only"
+            }
+            (Kind::Search, true, _) => "Self-hosted, no key needed · set its address and Test",
             (_, false, true) => "Key saved",
             (_, false, false) => "No key yet",
         }
@@ -66,6 +72,7 @@ pub fn rows_from(models: Vec<ProviderRow>, search: Vec<SearchRow>) -> Vec<Servic
         id: r.id,
         name: r.name,
         local: r.local,
+        keyless: false,
         key_saved: r.key_saved,
         key_url: r.key_url,
     });
@@ -73,7 +80,8 @@ pub fn rows_from(models: Vec<ProviderRow>, search: Vec<SearchRow>) -> Vec<Servic
         kind: Kind::Search,
         id: r.id,
         name: r.name,
-        local: r.self_hosted,
+        local: r.self_hosted || r.keyless,
+        keyless: r.keyless,
         key_saved: r.key_saved,
         key_url: r.key_url,
     });
@@ -152,7 +160,45 @@ impl ProvidersState {
         }
         self.section(kind)
             .find(|r| !r.local && r.key_saved)
+            // With no search key, the keyless search (the one chats use).
+            .or_else(|| match kind {
+                Kind::Search => self.section(kind).find(|r| r.keyless),
+                Kind::Model => None,
+            })
             .map(|r| r.id)
+    }
+
+    /// Whether the last Test of this row passed in this window.
+    pub fn tested_ok(&self, kind: Kind, id: &str) -> bool {
+        matches!(self.note(kind, id), Some(Note::Ok(_)))
+    }
+
+    /// Whether "Use" is open for a row: a self-hosted search server must
+    /// pass a Test at its address first.
+    pub fn can_choose(&self, row: &ServiceRow) -> bool {
+        if row.kind == Kind::Search && row.local && !row.keyless {
+            return self.tested_ok(row.kind, row.id);
+        }
+        row.usable()
+    }
+
+    /// The SearXNG address typed in, kept with the choices. Blank means
+    /// the default (`http://localhost:8080`).
+    pub fn set_search_url(&mut self, url: &str) -> Option<String> {
+        let url = url.trim().trim_end_matches('/');
+        let url = if url.is_empty() {
+            None
+        } else if url.contains("://") {
+            Some(url.to_owned())
+        } else {
+            Some(format!("http://{url}"))
+        };
+        if self.prefs.search_url != url {
+            // A new address has not been tested yet.
+            self.notes.remove(&(Kind::Search, "searxng"));
+        }
+        self.prefs.search_url = url.clone();
+        url
     }
 
     pub fn is_default(&self, row: &ServiceRow) -> bool {
@@ -231,7 +277,10 @@ impl ProvidersState {
 
     /// Makes a row the default. Returns false when it cannot be used yet.
     pub fn choose(&mut self, kind: Kind, id: &'static str) -> bool {
-        if !self.section(kind).any(|r| r.id == id && r.usable()) {
+        let Some(row) = self.section(kind).find(|r| r.id == id).cloned() else {
+            return false;
+        };
+        if !self.can_choose(&row) {
             return false;
         }
         match kind {
@@ -292,6 +341,7 @@ mod tests {
             id,
             name: id,
             local,
+            keyless: false,
             key_saved: key,
             key_url: "",
         }
@@ -321,8 +371,36 @@ mod tests {
         assert!(!s.choose(Kind::Model, "openai"), "no key yet");
         assert!(s.choose(Kind::Model, "ollama"));
         assert_eq!(s.default_id(Kind::Model), Some("ollama"));
+        assert!(
+            !s.choose(Kind::Search, "searxng"),
+            "a self-hosted server must pass Test first"
+        );
+        s.set_search_url("10.0.0.5:8888/");
+        assert_eq!(s.prefs.search_url.as_deref(), Some("http://10.0.0.5:8888"));
+        s.checked(Kind::Search, "searxng", Err("did not answer".into()));
+        assert!(!s.choose(Kind::Search, "searxng"));
+        s.checked(Kind::Search, "searxng", Ok("Working · 3 results".into()));
         assert!(s.choose(Kind::Search, "searxng"));
         assert_eq!(s.prefs.search.as_deref(), Some("searxng"));
+        s.set_search_url("http://10.0.0.6:8080");
+        assert!(
+            !s.tested_ok(Kind::Search, "searxng"),
+            "a new address is untested"
+        );
+    }
+
+    #[test]
+    fn with_no_search_key_the_keyless_search_is_the_default() {
+        let mut s = state();
+        let mut w = row(Kind::Search, "wikipedia", true, false);
+        w.keyless = true;
+        s.rows.push(w.clone());
+        assert_eq!(s.default_id(Kind::Search), Some("wikipedia"));
+        assert_eq!(
+            w.status(),
+            "Free, no key needed · searches Wikipedia articles only"
+        );
+        assert!(s.choose(Kind::Search, "wikipedia"), "needs no Test");
     }
 
     #[test]
@@ -393,7 +471,10 @@ mod tests {
             get("ollama").status(),
             "Runs on this computer, no key needed"
         );
-        assert_eq!(get("searxng").status(), "Self-hosted, no key needed");
+        assert_eq!(
+            get("searxng").status(),
+            "Self-hosted, no key needed · set its address and Test"
+        );
         assert!(get("ollama").usable() && !get("openai").usable());
         let mut lm = row(Kind::Model, "lmstudio", true, false);
         lm.name = "LM Studio";

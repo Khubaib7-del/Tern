@@ -46,6 +46,9 @@ pub enum Msg {
     Git(crate::git::GitSnapshot, Result<Option<String>, String>),
     /// The chat list after archiving one.
     Sessions(Vec<SessionSummary>),
+    /// The open chat after a model or search change, and why it could
+    /// not change (it keeps the old model then).
+    Swapped(Box<ChatSession>, Option<String>),
     ConnectFailed(String),
     /// An event from the running turn, as logged.
     Event(Box<tern_core::EventEnvelope>),
@@ -280,14 +283,22 @@ impl Bridge {
         ))
     }
 
-    /// Opens a new chat session with the user's saved choices.
+    /// Opens a new chat (a draft until its first message) with the
+    /// user's saved choices.
     pub fn connect(&self) {
+        self.connect_in(tern_agent::Harness::Research);
+    }
+
+    /// [`Bridge::connect`] for a harness: a new Research or Study draft.
+    pub fn connect_in(&self, harness: tern_agent::Harness) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let prefs = tokio::task::spawn_blocking(Preferences::load)
                 .await
                 .unwrap_or_default();
-            match ChatSession::open(prefs.chat_options()).await {
+            let mut opts = prefs.chat_options();
+            opts.harness = harness;
+            match ChatSession::open(opts).await {
                 Ok(s) => {
                     let recent = s.recent_sessions(RECENT).unwrap_or_default();
                     let _ = tx.send(Msg::Connected(Box::new(s), recent));
@@ -296,6 +307,84 @@ impl Bridge {
                     let _ = tx.send(Msg::ConnectFailed(e));
                 }
             }
+        });
+    }
+
+    /// Opens the chat to work in for `harness`: `prefer` when given, else
+    /// the last chat with messages (on launch, or switching harness), else
+    /// a new draft. Never makes an empty row.
+    pub fn launch(&self, harness: tern_agent::Harness, prefer: Option<SessionId>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let (prefs, reopen) = tokio::task::spawn_blocking(move || {
+                (
+                    Preferences::load(),
+                    prefer.or_else(|| tern_agent::chat_to_reopen(harness)),
+                )
+            })
+            .await
+            .unwrap_or_default();
+            if let Some(id) = reopen
+                && let Ok((s, turns)) = ChatSession::resume(prefs.chat_options(), id).await
+            {
+                let recent = s.recent_sessions(RECENT).unwrap_or_default();
+                let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
+                return;
+            }
+            let mut opts = prefs.chat_options();
+            opts.harness = harness;
+            match ChatSession::open(opts).await {
+                Ok(s) => {
+                    let recent = s.recent_sessions(RECENT).unwrap_or_default();
+                    let _ = tx.send(Msg::Connected(Box::new(s), recent));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::ConnectFailed(e));
+                }
+            }
+        });
+    }
+
+    /// Remembers the chat to reopen next launch.
+    pub fn remember(&self, harness: tern_agent::Harness, id: SessionId) {
+        self.rt.spawn_blocking(move || {
+            let _ = tern_agent::remember_chat(harness, id);
+        });
+    }
+
+    /// Saves the choices, then switches the open chat to them in place:
+    /// same chat, same history, the next answer from the new model.
+    pub fn swap(&self, mut session: Box<ChatSession>, prefs: Preferences) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let saved = {
+                let p = prefs.clone();
+                tokio::task::spawn_blocking(move || p.save())
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            };
+            if let Err(e) = saved {
+                let _ = tx.send(Msg::PrefsFailed(e));
+            }
+            let result = session.set_model(&prefs.chat_options()).await;
+            let _ = tx.send(Msg::Swapped(session, result.err()));
+        });
+    }
+
+    /// Tests a search service with an address (SearXNG) before it is chosen.
+    pub fn test_search_at(&self, id: &'static str, url: Option<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let keychain = tern_agent::providers::keychain();
+            let secrets = keychain.as_ref().ok().map(|b| b.as_ref());
+            let r = tern_agent::search::test(id, secrets, url.as_deref())
+                .await
+                .map(|n| match n {
+                    0 => "It answered, with no results for the test query".to_owned(),
+                    1 => "Working · 1 result for the test query".to_owned(),
+                    n => format!("Working · {n} results for the test query"),
+                });
+            let _ = tx.send(Msg::Checked(Kind::Search, id, r));
         });
     }
 
@@ -698,9 +787,11 @@ impl Bridge {
                     .await
                     .map(|r| model_report(r.chat_models, r.models, r.latency_ms))
                     .map_err(|e| e.to_string()),
-                Kind::Search => search::test(id, secrets, None)
-                    .await
-                    .map(|n| format!("Works, {n} result{}", if n == 1 { "" } else { "s" })),
+                Kind::Search => {
+                    search::test(id, secrets, Preferences::load().search_url.as_deref())
+                        .await
+                        .map(|n| format!("Works, {n} result{}", if n == 1 { "" } else { "s" }))
+                }
             };
             let _ = tx.send(Msg::Checked(kind, id, result));
         });

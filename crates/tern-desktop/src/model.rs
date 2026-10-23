@@ -318,6 +318,10 @@ pub struct Model {
     pub steering: Option<tern_agent::Steering>,
     /// This chat's run that stopped and can be resumed.
     pub resume_offer: Option<ResumeOffer>,
+    /// The running turn's last model reply hit the output limit.
+    pub cut_off: bool,
+    /// The last answer was cut off: the composer offers Continue.
+    pub continue_offer: bool,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -424,6 +428,8 @@ impl Model {
             deep_mode: false,
             steering: None,
             resume_offer: None,
+            cut_off: false,
+            continue_offer: false,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -623,6 +629,8 @@ impl Model {
         self.mention = None;
         self.slash = None;
         self.inserted = None;
+        self.cut_off = false;
+        self.continue_offer = false;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -1043,6 +1051,14 @@ impl Model {
 
     /// An event from the running turn.
     pub fn on_event(&mut self, e: &EventEnvelope) {
+        // The answer's own model call (not a plan or a worker's notes):
+        // did it stop at the output limit?
+        if e.kind == "model.replied"
+            && !matches!(e.payload["purpose"].as_str(), Some("plan" | "notes"))
+            && e.payload.get("worker").is_none()
+        {
+            self.cut_off = tern_agent::is_length_stop(e.payload["finish_reason"].as_str());
+        }
         if let Some(p) = page_of(&e.kind, &e.payload)
             && self.is_busy()
         {
@@ -1198,6 +1214,8 @@ impl Model {
         self.context = context;
         self.stopping = false;
         self.steering = None;
+        self.continue_offer = std::mem::take(&mut self.cut_off)
+            && out.answer.as_deref().is_some_and(|a| !a.is_empty());
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
@@ -1212,10 +1230,26 @@ impl Model {
         {
             self.entries.push(Entry::Notice(r.clone()));
         }
+        if self.continue_offer {
+            self.entries.push(Entry::Notice(
+                "Cut off at the length limit. Continue asks for the rest.".into(),
+            ));
+        }
     }
 
     /// Switching harness. Study opens the Study screen (materials, topics,
     /// tutor, quizzes, viva); Research goes back to the chat.
+    /// A chat of `harness` was opened (from the list, or on switching):
+    /// the window takes that harness, keeping the chat screen.
+    pub fn harness_of_chat(&mut self, harness: Harness) {
+        if self.harness != harness {
+            self.harness = harness;
+            if harness == Harness::Study {
+                self.deep_mode = false;
+            }
+        }
+    }
+
     pub fn choose_harness(&mut self, harness: Harness) {
         self.harness = harness;
         match harness {

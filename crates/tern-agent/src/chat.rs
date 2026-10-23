@@ -82,6 +82,8 @@ pub struct ChatSession {
     max_output_tokens: u32,
     /// The user set the answer length; a model change keeps it.
     output_set: bool,
+    /// Research or Study.
+    harness: Harness,
     check_claims: crate::verify::CheckClaims,
     /// Where runs save their checkpoints (`<data>/checkpoints`).
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
@@ -537,6 +539,15 @@ impl ChatSession {
         };
         let provider_id = provider.spec().id;
         let model_id = model.clone();
+        let harness = match resume {
+            Some(id) => store
+                .session(id)
+                .ok()
+                .flatten()
+                .map(|r| r.harness)
+                .unwrap_or(opts.harness),
+            None => opts.harness,
+        };
         let s = Self {
             decider,
             checkpoints,
@@ -566,6 +577,7 @@ impl ChatSession {
                 opts.max_output_tokens
             },
             output_set: opts.max_output_tokens != 0,
+            harness,
         };
         let opened = EventEnvelope::new(
             session,
@@ -612,6 +624,11 @@ impl ChatSession {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Research or Study.
+    pub fn harness(&self) -> Harness {
+        self.harness
     }
 
     /// Whether the chat is still a draft: nothing has been sent, so it has

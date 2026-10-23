@@ -75,6 +75,10 @@ pub struct Workspace {
     composer: Entity<TextareaState>,
     /// The one key field; only one row edits at a time.
     key_input: Entity<InputState>,
+    /// The SearXNG server address on Providers.
+    searx_input: Entity<InputState>,
+    /// The chat each harness last had open, so switching back reopens it.
+    parked: std::collections::HashMap<tern_agent::Harness, SessionId>,
     /// The title field of the chat being renamed in the list.
     rename_input: Entity<InputState>,
     renaming: Option<SessionId>,
@@ -190,6 +194,13 @@ impl Workspace {
                 .masked(true)
                 .placeholder("Paste the API key")
         });
+        let searx_input = cx.new(|cx| {
+            let mut i = InputState::new(window, cx).placeholder("http://localhost:8080");
+            if let Some(u) = tern_agent::Preferences::load().search_url {
+                i.set_value(u, window, cx);
+            }
+            i
+        });
         let key_sub = cx.subscribe_in(
             &key_input,
             window,
@@ -216,8 +227,9 @@ impl Workspace {
                 _ => {}
             },
         );
-        let address_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Address, like arxiv.org"));
+        let address_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search, or type an address like arxiv.org")
+        });
         let address_sub = cx.subscribe_in(
             &address_input,
             window,
@@ -272,7 +284,8 @@ impl Workspace {
                 }
             }
         });
-        bridge.connect();
+        // Reopen the last chat that has messages; a new draft otherwise.
+        bridge.launch(tern_agent::Harness::Research, None);
         bridge.load_watches();
         // Due watches run a minute after start, then every 15 minutes, one
         // batch at a time.
@@ -329,6 +342,8 @@ impl Workspace {
             last_layout: None,
             composer,
             key_input,
+            searx_input,
+            parked: Default::default(),
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -424,6 +439,8 @@ impl Workspace {
                     .find(|r| r.id == s.session_id())
                     .and_then(|r| r.anchor);
                 self.bridge.load_ids(s.session_id());
+                self.bridge.remember(s.harness(), s.session_id());
+                self.model.harness_of_chat(s.harness());
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
@@ -441,6 +458,26 @@ impl Workspace {
                     self.current = None;
                     self.bridge.connect();
                 }
+            }
+            Msg::Swapped(s, failed) => {
+                self.model.connected(Connection {
+                    provider: s.provider_name().to_owned(),
+                    model: s.model().to_owned(),
+                    search: s.search_name().map(str::to_owned),
+                    context_window: s.context_window(),
+                });
+                self.model.context = s.context();
+                if let Some(e) = failed {
+                    self.model
+                        .notice_line(format!("The model was not changed: {e}"));
+                } else {
+                    self.model.notice_line(format!(
+                        "Now answering with {} · {}. This chat and its history are kept.",
+                        s.provider_name(),
+                        s.model()
+                    ));
+                }
+                self.session = Some(s);
             }
             Msg::Sessions(recent) => {
                 for r in &recent {
@@ -492,6 +529,9 @@ impl Workspace {
                     Some((out.state, out.reason.as_deref())),
                 );
                 self.model.sessions = recent;
+                if !s.is_draft() {
+                    self.bridge.remember(s.harness(), s.session_id());
+                }
                 self.session = Some(s);
                 self.ticker = None;
                 self.scroll.scroll_to_bottom();
@@ -596,6 +636,10 @@ impl Workspace {
         let Some(session) = self.session.take() else {
             return;
         };
+        // Asked from the Study tools: the answer shows in the Study chat.
+        if self.model.screen == Screen::Study {
+            self.model.screen = Screen::Chat;
+        }
         let mut session = session;
         session.attach_images(std::mem::take(&mut self.model.outgoing_images));
         self.model.steering = Some(session.steering());
@@ -612,6 +656,21 @@ impl Workspace {
         self.scroll.scroll_to_bottom();
         self.start_ticker(cx);
         cx.notify();
+    }
+
+    /// Asks the model to go on from an answer cut off at the length limit.
+    fn continue_answer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.model.can_send() {
+            return;
+        }
+        self.model.continue_offer = false;
+        let deep = self.model.deep_mode;
+        self.model.deep_mode = false;
+        self.composer.update(cx, |c, cx| {
+            c.set_value(tern_agent::CONTINUE_PROMPT, window, cx)
+        });
+        self.submit(window, cx);
+        self.model.deep_mode = deep;
     }
 
     /// Picks a row of the `@` menu (the highlighted one for `None`).
@@ -647,7 +706,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.slash_keys(e, window, cx) || self.model.mention.is_none() {
+        if self.slash_keys(e, window, cx) {
+            return;
+        }
+        if self.model.mention.is_none() {
+            // Esc stops a running turn (the menus take it first when open).
+            if e.keystroke.key == "escape" && self.model.is_busy() && self.model.slash.is_none() {
+                cx.stop_propagation();
+                self.stop(cx);
+            }
             return;
         }
         match e.keystroke.key.as_str() {
@@ -1260,17 +1327,26 @@ impl Workspace {
         self.bridge.models(id);
     }
 
-    /// Opens a fresh chat with the current choices, saving them first.
+    /// Applies the current choices, saving them first. The open chat
+    /// switches model or search in place (same chat, same history); only
+    /// with no chat open yet does a new one open.
     fn reconnect(&mut self) {
         if self.model.is_busy() {
             return;
         }
-        self.session = None;
-        self.model.connection = None;
-        self.model.new_chat();
-        self.model.phase = Phase::Connecting;
-        self.bridge
-            .save_and_connect(self.model.providers.prefs.clone());
+        match self.session.take() {
+            Some(s) => {
+                self.model.phase = Phase::Connecting;
+                self.bridge.swap(s, self.model.providers.prefs.clone());
+            }
+            None => {
+                self.model.connection = None;
+                self.model.new_chat();
+                self.model.phase = Phase::Connecting;
+                self.bridge
+                    .save_and_connect(self.model.providers.prefs.clone());
+            }
+        }
     }
 
     fn apply_choice(&mut self, kind: Kind, id: &'static str) {
@@ -2316,10 +2392,18 @@ impl Workspace {
                     .into(),
             ),
             Phase::Offline(reason) => ("Tern could not open a model", reason.clone()),
+            _ if self.model.harness == tern_agent::Harness::Study => (
+                "What are we studying?",
+                "Ask Tern to explain, quiz, or test you. This chat is kept apart from Research."
+                    .into(),
+            ),
             _ => (
                 "What are we researching?",
-                "Ask a question. Tern searches, reads, and cites when a search service is set up."
-                    .into(),
+                match self.model.connection.as_ref().and_then(|c| c.search.as_deref()) {
+                    Some(s) => format!("Ask a question. Tern searches with {s}, reads, and cites."),
+                    None => "Ask a question. Web search is off, so answers come from the model alone."
+                        .into(),
+                },
             ),
         };
         div()
@@ -2417,10 +2501,19 @@ impl Workspace {
             },
         };
         let action = if busy {
+            // Labelled and in the primary colour, so it reads as Stop and
+            // not as a second Send.
             Button::new("stop")
                 .icon(IconName::Square)
+                .label(if self.model.stopping {
+                    "Stopping…"
+                } else {
+                    "Stop"
+                })
+                .primary()
                 .small()
-                .tooltip("Stop")
+                .disabled(self.model.stopping)
+                .tooltip("Stop the answer (Esc)")
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
             Button::new("send")
@@ -2457,6 +2550,7 @@ impl Workspace {
                 .children(self.arg_form_view(p, cx))
                 .children(self.inserted_banner(p, cx))
                 .children(self.resume_banner(p, cx))
+                .children(self.continue_bar(p, cx))
                 .children(self.reply_bar(p, cx))
                 .children(self.steer_hint(p))
                 .when(
@@ -2517,6 +2611,62 @@ impl Workspace {
                                 .child(action),
                         ),
                 ),
+        )
+    }
+
+    /// Over the composer after an answer stopped at the length limit.
+    fn continue_bar(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.model.continue_offer || self.model.is_busy() {
+            return None;
+        }
+        Some(
+            div()
+                .id("continue-bar")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(
+                    div()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(p.text)
+                        .child("The answer was cut off at the length limit."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(
+                            Button::new("continue-dismiss")
+                                .label("Dismiss")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.continue_offer = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("continue-answer")
+                                .label("Continue")
+                                .primary()
+                                .small()
+                                .disabled(!self.model.can_send())
+                                .tooltip("Ask for the rest, picking up where it stopped")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.continue_answer(window, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
         )
     }
 
@@ -2732,7 +2882,7 @@ impl Workspace {
                                     .child("Providers"),
                             )
                             .child(div().text_sm().text_color(p.muted).child(
-                                "Bring your own keys. Tern tests a key before saving it, and keeps it only in Windows Credential Manager. Changing the default opens a new chat.",
+                                "Bring your own keys. Tern tests a key before saving it, and keeps it only in your system keychain. Changing a default switches the open chat in place; its history stays.",
                             )),
                     )
                     .child(
@@ -2876,12 +3026,18 @@ impl Workspace {
                 ));
             }
         } else {
+            let can_choose = st.can_choose(&r);
             if !is_default {
                 actions = actions.child(
                     Button::new(bid("use"))
                         .label("Use")
                         .small()
-                        .disabled(busy_turn)
+                        .disabled(busy_turn || !can_choose)
+                        .tooltip(if can_choose {
+                            "Use this one for new answers in this chat"
+                        } else {
+                            "Test the server address first"
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.apply_choice(kind, id);
                             cx.notify();
@@ -2895,7 +3051,15 @@ impl Workspace {
                     .small()
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.model.providers.begin(kind, id, "Checking…");
-                        this.bridge.test(kind, id);
+                        if kind == Kind::Search && id == "searxng" {
+                            let typed = this.searx_input.read(cx).value().to_string();
+                            let url = this.model.providers.set_search_url(&typed);
+                            this.model.providers.begin(kind, id, "Checking…");
+                            this.bridge.save_prefs(this.model.providers.prefs.clone());
+                            this.bridge.test_search_at(id, url);
+                        } else {
+                            this.bridge.test(kind, id);
+                        }
                         cx.notify();
                     })),
             );
@@ -2933,6 +3097,20 @@ impl Workspace {
                     .child(actions),
             );
 
+        if kind == Kind::Search && id == "searxng" {
+            row = row.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .pl(px(40.))
+                    .child(div().text_xs().text_color(p.faint).child("Server address"))
+                    .child(Input::new(&self.searx_input))
+                    .child(div().text_xs().text_color(p.faint).child(
+                        "Tern asks for JSON results, so its settings.yml needs `formats: [html, json]` under `search:`.",
+                    )),
+            );
+        }
         if editing {
             row = row.child(
                 div()
@@ -3678,6 +3856,7 @@ impl Render for Workspace {
                                         .child(self.explain_view(key, p, cx)),
                                     None => d
                                         .children(self.tab_strip(p, cx))
+                                        .children(self.study_chat_header(p, cx))
                                         .child(self.transcript(p, cx))
                                         .children(self.range_bar(p, cx).map(|b| {
                                             div()
@@ -3695,7 +3874,13 @@ impl Render for Workspace {
                                 Screen::Git => d.child(self.git_screen(p, cx)),
                                 Screen::Appearance => d.child(self.appearance_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
-                                Screen::Study => d.child(self.study_screen(p, window, cx)),
+                                Screen::Study => d
+                                    .child(self.study_screen(p, window, cx))
+                                    // Asking from the tools goes to the Study chat.
+                                    .when(
+                                        self.model.study.view == crate::study::StudyView::Home,
+                                        |d| d.child(self.composer(p, cx)),
+                                    ),
                                 Screen::Decision => d.child(self.decision_screen(p, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
                                 Screen::Customize => d.child(self.customize_screen(p, window, cx)),

@@ -167,12 +167,101 @@ fn mark_glyph(mark: Mark) -> &'static str {
 impl Workspace {
     /// The harness pills: Study opens its screen and loads the library.
     pub(super) fn choose_harness(&mut self, h: Harness, cx: &mut Context<Self>) {
+        let from = self.model.harness;
+        if h != from {
+            if self.model.is_busy() {
+                self.model.notice_line(
+                    "Stop or finish the running answer before switching between Research and Study."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
+            // Each harness has its own chat: Study questions never land in
+            // the Research chat, and switching back reopens where you were.
+            if let Some(s) = &self.session
+                && !s.is_draft()
+            {
+                self.parked.insert(from, s.session_id());
+            }
+            // The right pane belongs to the chat it was opened from.
+            self.model.cont.side.open = false;
+            self.model.browser.visible = false;
+            self.session = None;
+            self.current = None;
+            self.model.new_chat();
+            self.model.phase = crate::model::Phase::Connecting;
+            self.tabs.reset_active();
+            self.bridge.launch(h, self.parked.get(&h).copied());
+        }
         self.model.choose_harness(h);
         if h == Harness::Study {
             self.model.study.busy = Some("Opening your study library…".into());
             self.bridge.study_load();
             self.bridge.cards_load();
         }
+        cx.notify();
+    }
+
+    /// Over the Study chat: where it is filed, and the way back to the
+    /// Study tools. `None` in the Research harness.
+    pub(super) fn study_chat_header(
+        &self,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.model.harness != Harness::Study {
+            return None;
+        }
+        Some(
+            div()
+                .w_full()
+                .max_w(px(super::COLUMN_MAX_W))
+                .mx_auto()
+                .px_4()
+                .pt_2()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(glyph("study", 14., p.accent))
+                        .child(serif("Study chat", p).text_lg())
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child("Its own chat, kept apart from Research"),
+                        ),
+                )
+                .child(
+                    Button::new("study-chat-back")
+                        .icon(AssetIcon::ArrowLeft)
+                        .label("Study tools")
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.screen = crate::model::Screen::Study;
+                            this.model.study.go_home();
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The Study harness's own chat: its transcript and composer. It is
+    /// a separate chat from Research, filed under Study.
+    pub(super) fn open_study_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.harness != Harness::Study {
+            self.choose_harness(Harness::Study, cx);
+        }
+        self.model.screen = crate::model::Screen::Chat;
+        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 
@@ -486,6 +575,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap_4()
+                    .pb(px(48.))
                     .children(self.study_status(p, cx))
                     .child(body),
             )
@@ -626,6 +716,16 @@ impl Workspace {
                     .flex()
                     .gap_1()
                     .child(
+                        Button::new("study-chat")
+                            .label("Study chat")
+                            .ghost()
+                            .small()
+                            .tooltip("Ask Tern to explain, quiz, or test you, in a chat of its own")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_study_chat(window, cx)
+                            })),
+                    )
+                    .child(
                         Button::new("study-add")
                             .icon(AssetIcon::Plus)
                             .label("Add files")
@@ -652,7 +752,24 @@ impl Workspace {
         // Actions.
         let weakest = lib.weakest(now).cloned();
         let has = !lib.topics.is_empty();
-        let action = |id: &'static str, icon_name: AssetIcon, label: &'static str, hint: String| {
+        let has_materials = !lib.materials.is_empty();
+        // Why a tile cannot open yet, said on the tile itself.
+        let blocked = if !has_materials {
+            Some("Needs materials: add a PDF, notes, or your last report")
+        } else if !has {
+            Some("Needs topics: use Rebuild topics under Topics")
+        } else {
+            None
+        };
+        let action = |id: &'static str,
+                      icon_name: AssetIcon,
+                      label: &'static str,
+                      hint: String,
+                      ready: bool| {
+            let line = match (ready, blocked) {
+                (false, Some(why)) => why.to_owned(),
+                _ => hint,
+            };
             div()
                 .id(id)
                 .flex_1()
@@ -664,17 +781,23 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .bg(p.canvas)
-                .when(has, |d| d.cursor_pointer().hover(|d| d.bg(p.hover)))
-                .when(!has, |d| d.opacity(0.5))
+                .when(ready, |d| d.cursor_pointer().hover(|d| d.bg(p.hover)))
+                .when(!ready, |d| d.cursor_not_allowed())
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
+                        .when(!ready, |d| d.opacity(0.6))
                         .child(icon(icon_name, p.text))
                         .child(serif(label, p).text_lg()),
                 )
-                .child(div().text_xs().text_color(p.faint).child(hint))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(if ready { p.muted } else { p.text })
+                        .child(line),
+                )
         };
         let tutor_hint = weakest
             .as_ref()
@@ -689,6 +812,7 @@ impl Workspace {
                     AssetIcon::GraduationCap,
                     "Tutor",
                     tutor_hint,
+                    has,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(t) = this
@@ -708,6 +832,7 @@ impl Workspace {
                     AssetIcon::ListChecks,
                     "Quiz",
                     "On all your materials".into(),
+                    has,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if !this.model.study.library.topics.is_empty() {
@@ -730,6 +855,7 @@ impl Workspace {
                     } else {
                         format!("{due} due today · {total} cards")
                     },
+                    total > 0 || has_materials,
                 )
                 .when(due > 0, |d| {
                     d.child(
@@ -765,6 +891,7 @@ impl Workspace {
                     AssetIcon::Mic,
                     "Viva",
                     "Oral exam practice with a rubric".into(),
+                    has,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
                     if !this.model.study.library.topics.is_empty() {
@@ -773,6 +900,59 @@ impl Workspace {
                     }
                 })),
             );
+
+        // With nothing to study from yet: the one-click ways in.
+        let start = (!has_materials).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .rounded(px(PILL))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(serif("Start here", p).text_lg())
+                .child(div().text_sm().text_color(p.muted).child(
+                    "Tutor, Quiz, Flashcards, and Viva work from your own materials. Add one, or ask Tern anything in the Study chat now.",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(
+                            Button::new("study-start-add")
+                                .icon(AssetIcon::Plus)
+                                .label("Add a PDF or notes")
+                                .primary()
+                                .small()
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_study_files(cx))),
+                        )
+                        .child(
+                            Button::new("study-start-report")
+                                .icon(AssetIcon::ScrollText)
+                                .label("Use the last report")
+                                .small()
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.study.busy = Some("Adding your report…".into());
+                                    this.bridge.study_add_report("last".into());
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("study-start-ask")
+                                .label("Ask without materials")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_study_chat(window, cx)
+                                })),
+                        ),
+                )
+        });
 
         // Materials.
         let mut materials = self.card(p).child(
@@ -1046,6 +1226,7 @@ impl Workspace {
             .flex_col()
             .gap_4()
             .child(header)
+            .children(start)
             .child(actions)
             .child(materials)
             .child(topics)

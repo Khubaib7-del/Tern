@@ -65,6 +65,119 @@ pub fn normalize(input: &str) -> Option<String> {
     Some(u.to_string())
 }
 
+/// How a search typed in the address bar is kept in the browser's
+/// history: `tern-search:` and the words.
+pub const SEARCH_SCHEME: &str = "tern-search:";
+
+/// What the address bar was given: a page to open, or words to search for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    Page(String),
+    Search(String),
+}
+
+/// An address opens as a page; anything else (`mistral le chat`) is a
+/// search with the chat's search service. `None` only for blank input.
+pub fn target(input: &str) -> Option<Target> {
+    if let Some(q) = search_query(input.trim()) {
+        return Some(Target::Search(q.to_owned()));
+    }
+    if let Some(url) = normalize(input) {
+        return Some(Target::Page(url));
+    }
+    let q = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!q.is_empty()).then_some(Target::Search(q))
+}
+
+/// The history address of a search.
+pub fn search_address(query: &str) -> String {
+    format!("{SEARCH_SCHEME}{query}")
+}
+
+/// The words of a search address, if it is one.
+pub fn search_query(address: &str) -> Option<&str> {
+    address
+        .strip_prefix(SEARCH_SCHEME)
+        .map(str::trim)
+        .filter(|q| !q.is_empty())
+}
+
+/// What the address bar shows: the words for a search, else the address.
+pub fn display_address(address: &str) -> String {
+    search_query(address).unwrap_or(address).to_owned()
+}
+
+/// A results page for the reader: each hit as a link with its site and
+/// snippet, numbered, so a click opens it in the reader.
+pub fn results_page(query: &str, service: &str, hits: &[tern_crawl::SearchHit]) -> BrowsedPage {
+    let mut md = format!("# Search: {query}\n\n");
+    if hits.is_empty() {
+        md.push_str(&format!(
+            "{service} found nothing for these words. Try other words, or type a web address.\n"
+        ));
+    } else {
+        md.push_str(&format!(
+            "{} result{} from {service}. Pick one to open it in the reader.\n\n",
+            hits.len(),
+            if hits.len() == 1 { "" } else { "s" }
+        ));
+    }
+    let mut links = Vec::new();
+    for (i, h) in hits.iter().enumerate() {
+        let title = if h.title.trim().is_empty() {
+            h.url.as_str()
+        } else {
+            h.title.trim()
+        };
+        md.push_str(&format!("{}. [{}]({}) · {}\n", i + 1, title, h.url, h.site));
+        if !h.snippet.trim().is_empty() {
+            md.push_str(&format!("   {}\n", h.snippet.trim()));
+        }
+        md.push('\n');
+        links.push((title.to_owned(), h.url.clone()));
+    }
+    BrowsedPage {
+        page: PageRef {
+            title: format!("Search: {query}"),
+            url: search_address(query),
+            site: service.to_owned(),
+            builtin: None,
+            favicon: None,
+        },
+        markdown: md,
+        links,
+        truncated: false,
+    }
+}
+
+/// Runs a search typed in the address bar with the saved search choice
+/// (the keyless default when none is set up).
+pub async fn search(query: &str) -> Result<BrowsedPage, String> {
+    let prefs = crate::Preferences::load();
+    if prefs
+        .search
+        .as_deref()
+        .is_some_and(|s| s == "off" || s == "none")
+    {
+        return Err(
+            "Web search is off. Turn it on in Providers › Web search, or type a web address."
+                .into(),
+        );
+    }
+    let keychain = crate::providers::keychain();
+    let secrets = keychain.as_ref().ok().map(|b| b.as_ref());
+    let client = crate::search::connect(
+        prefs.search.as_deref(),
+        secrets,
+        prefs.search_url.as_deref(),
+    )?;
+    let hits = client
+        .search(query, 10)
+        .await
+        .map_err(|e| format!("Search failed: {e}"))?;
+    Ok(results_page(query, client.spec().name, &hits))
+}
+
 /// Opens one page through the reader.
 pub async fn open_with(fetcher: &Fetcher, url: &str) -> Result<BrowsedPage, String> {
     // The user opened this page: a person reading, not a crawl.
@@ -86,8 +199,12 @@ pub async fn open_with(fetcher: &Fetcher, url: &str) -> Result<BrowsedPage, Stri
     })
 }
 
-/// Opens one page with the standard network guard.
+/// Opens one page with the standard network guard, or runs a search
+/// when `url` is a search address.
 pub async fn open(url: &str) -> Result<BrowsedPage, String> {
+    if let Some(q) = search_query(url) {
+        return search(q).await;
+    }
     open_with(&crate::web::shared_reader(), url).await
 }
 
@@ -150,6 +267,33 @@ impl History {
 }
 
 #[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn results_read_as_links_with_their_sites() {
+        let u = url::Url::parse("https://mistral.ai/news/le-chat").unwrap();
+        let hit = tern_crawl::SearchHit {
+            title: "Le Chat".into(),
+            url: u.to_string(),
+            snippet: "Mistral's assistant".into(),
+            site: "mistral.ai".into(),
+            icon: tern_crawl::SourceIcon::for_url(&u),
+        };
+        let p = results_page("mistral le chat", "Wikipedia", &[hit]);
+        assert_eq!(p.page.url, "tern-search:mistral le chat");
+        assert!(
+            p.markdown
+                .contains("1. [Le Chat](https://mistral.ai/news/le-chat) · mistral.ai")
+        );
+        assert!(p.markdown.contains("Mistral's assistant"));
+        assert_eq!(p.links.len(), 1);
+        let none = results_page("zzz", "Wikipedia", &[]);
+        assert!(none.markdown.contains("found nothing"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -164,6 +308,23 @@ mod tests {
             Some("http://example.org/")
         );
         assert_eq!(normalize("what is rag"), None);
+        assert_eq!(
+            target("mistral le chat"),
+            Some(Target::Search("mistral le chat".into()))
+        );
+        assert_eq!(
+            target("transformers"),
+            Some(Target::Search("transformers".into()))
+        );
+        assert_eq!(
+            target("arxiv.org/abs/1706.03762"),
+            Some(Target::Page("https://arxiv.org/abs/1706.03762".into()))
+        );
+        assert_eq!(target("   "), None);
+        let a = search_address("what is rag");
+        assert_eq!(target(&a), Some(Target::Search("what is rag".into())));
+        assert_eq!(display_address(&a), "what is rag");
+        assert_eq!(display_address("https://x.org/"), "https://x.org/");
         assert_eq!(normalize("transformers"), None);
         assert_eq!(normalize("file:///etc/passwd"), None);
         assert_eq!(normalize("ftp://x.org"), None);
