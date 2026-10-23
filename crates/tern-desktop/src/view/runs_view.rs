@@ -372,11 +372,13 @@ impl Workspace {
         let running = self.model.watches_running > 0;
         let rows = self.model.watches.iter().enumerate().map(|(ix, w)| {
             let id = w.id.clone();
+            let rm = w.id.clone();
             let selected = self.model.screen == Screen::Watches
                 && self.model.watch_selected.as_ref() == Some(&w.id);
             let changed = w.last_changes.as_ref().is_some_and(|c| !c.is_empty());
             div()
                 .id(("watch", ix))
+                .group(SharedString::from(format!("watch-row-{ix}")))
                 .flex()
                 .items_start()
                 .gap_2()
@@ -411,6 +413,23 @@ impl Workspace {
                                 .truncate()
                                 .text_color(p.faint)
                                 .child(SharedString::from(w.status_line())),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .opacity(0.)
+                        .group_hover(SharedString::from(format!("watch-row-{ix}")), |d| d.opacity(1.))
+                        .child(
+                            Button::new(("watch-row-rm", ix))
+                                .icon(AssetIcon::Trash)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Remove watch")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_watch(rm.clone(), cx);
+                                })),
                         ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -634,15 +653,18 @@ impl Workspace {
                         )
                     })
                     .child(
-                        Button::new(SharedString::from(format!("watch-rm-{}", w.id)))
-                            .icon(AssetIcon::X)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Stop watching")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.bridge.remove_watch(rm_id.clone());
-                                cx.notify();
-                            })),
+                        div().ml_auto().child(
+                            Button::new(SharedString::from(format!("watch-rm-{}", w.id)))
+                                .icon(AssetIcon::Trash)
+                                .label("Remove")
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Stop watching this question (Undo for a few seconds)")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_watch(rm_id.clone(), cx);
+                                })),
+                        ),
                     ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {

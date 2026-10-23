@@ -195,6 +195,8 @@ impl Workspace {
             self.bridge.launch(h, self.parked.get(&h).copied());
         }
         self.model.choose_harness(h);
+        // The composer keeps its mode only if it belongs to this harness.
+        self.model.composer.harness_changed(h);
         if h == Harness::Study {
             self.model.study.busy = Some("Opening your study library…".into());
             self.bridge.study_load();

@@ -8,12 +8,12 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Selectable as _, Sizable as _};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px};
 use tern_agent::deep::{PlanAnswer, PlanSource};
 use tern_agent::run::compact;
-use tern_agent::{Harness, ResearchPlan, Run, WorkerRow, WorkerStatus};
+use tern_agent::{ResearchPlan, Run, WorkerRow, WorkerStatus};
 
 use super::Workspace;
 use crate::theme::Palette;

@@ -9,7 +9,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, ClickEvent, Context, SharedString, Window, div, px};
+use gpui_kit::{AnyElement, App, ClickEvent, Context, SharedString, Window, div};
 
 use super::Workspace;
 use crate::theme::Palette;
@@ -250,7 +250,7 @@ impl Workspace {
         };
 
         div()
-            .w(px(BROWSER_W))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()

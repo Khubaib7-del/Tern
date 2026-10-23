@@ -4,11 +4,10 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use gpui_kit::ExternalPaths;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::hover_card::HoverCard;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
 use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewMotion};
@@ -57,9 +56,7 @@ use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
-const RAIL_W: f32 = 52.;
-const SIDEBAR_W: f32 = 264.;
-const RUN_PANEL_W: f32 = 300.;
+pub(crate) const RAIL_W: f32 = 52.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
@@ -150,6 +147,10 @@ pub struct Workspace {
     queued: Option<String>,
     /// When the reveal ticker last ran.
     reveal_at: Option<Instant>,
+    /// The chat column's width at the last render, for the tab strip.
+    centre_w: f32,
+    /// The tab strip's "▾" menu of tabs that do not fit is open.
+    tabs_menu_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -416,6 +417,8 @@ impl Workspace {
             link_input,
             queued: None,
             reveal_at: None,
+            centre_w: 800.,
+            tabs_menu_open: false,
             _subscriptions: {
                 let mut subs = vec![
                     picker_sub,
@@ -1559,6 +1562,7 @@ impl Workspace {
                                     })),
                             ),
                         )
+                        .child(div().occlude().child(self.workspace_button(p, cx)))
                         .children(self.git_chip(p, cx)),
                 )
                 .child(
@@ -1610,7 +1614,8 @@ impl Workspace {
                                     }
                                     cx.notify();
                                 })),
-                        ),
+                        )
+                        .children(self.maximise_button(cx)),
                 ),
         )
     }
@@ -1833,7 +1838,7 @@ impl Workspace {
                 .child(Input::new(&self.rename_input).small())
                 .into_any_element();
         }
-        div()
+        let row = div()
             .id(("chat", ix))
             .group("chat-row")
             .on_drag(
@@ -1905,67 +1910,13 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .opacity(0.)
-                    .group_hover("chat-row", |d| d.opacity(1.))
-                    .child(
-                        Button::new(("rename", ix))
-                            .icon(gpui_kit::assets::IconName::Pencil)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Rename chat")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.start_rename(id, window, cx);
-                            })),
-                    )
-                    .when(!sub, |d| {
-                        d.child(
-                            Button::new(("move-to", ix))
-                                .icon(AssetIcon::FolderInput)
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Move to a project…")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.toggle_move_menu(id, cx);
-                                })),
-                        )
+                    .when(self.model.row_menu != Some(id), |d| {
+                        d.opacity(0.).group_hover("chat-row", |d| d.opacity(1.))
                     })
-                    .child(
-                        Button::new(("open-tab", ix))
-                            .icon(gpui_kit::assets::IconName::SquarePlus)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Open in new tab")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_in_tab(id, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("handoff", ix))
-                            .icon(AssetIcon::FileOutput)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Hand off: write a packet and start a new session from it")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.hand_off(id, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("archive", ix))
-                            .icon(gpui_kit::assets::IconName::Archive)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Archive chat")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.archive_chat(id, window, cx);
-                            })),
-                    ),
+                    .child(self.row_menu_button(ix, id, cx)),
             )
-            .into_any_element()
+            .into_any_element();
+        self.with_row_menu(row, ix, id, sub, p, cx)
     }
 
     fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1978,7 +1929,7 @@ impl Workspace {
             .flat_map(|r| self.tree_row(r, p, cx))
             .collect::<Vec<_>>();
         div()
-            .w(px(SIDEBAR_W))
+            .w(px(self.model.panels.sidebar))
             .h_full()
             .flex()
             .flex_col()
@@ -2008,12 +1959,17 @@ impl Workspace {
                     .children(rows),
             )
             .children(self.watches_section(p, cx))
+            .child(self.archived_link(p, cx))
             .child(self.scout_corner(p))
     }
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         match e {
-            Entry::User { text, chips, quote } => div()
+            Entry::User {
+                text, chips, quote, ..
+            } => div()
+                .id(("msg", i))
+                .group(SharedString::from(format!("msg-{i}")))
                 .flex()
                 .flex_col()
                 .items_end()
@@ -2056,37 +2012,77 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .children(self.stamp(i, "msg", p))
                         .child(self.message_id_tag(i, p, cx))
-                        .child(self.message_actions(i, false, p, cx)),
+                        .child(self.grouped_actions(i, false, p, cx)),
                 )
                 .into_any_element(),
             Entry::Assistant {
-                text,
                 run,
-                took,
                 pages,
+                thought,
+                ..
             } => {
-                let mut meta = format!("Worked for {}s", took.as_secs().max(1));
-                let steps = run.step_count();
-                if steps > 0 {
-                    meta.push_str(&format!(
-                        " · {} step{}",
-                        steps,
-                        if steps == 1 { "" } else { "s" }
-                    ));
-                }
+                let folded = self.model.folded.contains(&i);
+                let revealing = self.model.is_revealing(i);
+                let shown = self.model.shown_answer(i).unwrap_or_default();
+                let body = if folded {
+                    // Folded: the first lines, faded.
+                    let first: String = shown.lines().take(2).collect::<Vec<_>>().join(" ");
+                    div()
+                        .text_sm()
+                        .text_color(p.muted)
+                        .line_clamp(2)
+                        .child(SharedString::from(first))
+                        .into_any_element()
+                } else {
+                    div()
+                        .id(("answer-body", i))
+                        .on_mouse_up(
+                            gpui_kit::MouseButton::Left,
+                            cx.listener(move |this, e: &gpui_kit::MouseUpEvent, window, cx| {
+                                this.answer_mouse_up(i, e, window, cx)
+                            }),
+                        )
+                        .child(
+                            TextView::markdown(("answer", i), with_badges(i, shown, run))
+                                .on_link_click(self.link_opener(cx))
+                                .selectable(true)
+                                .motion(stream_motion()),
+                        )
+                        .into_any_element()
+                };
+                let fold = div()
+                    .id(("answer-fold", i))
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .text_xs()
+                    .text_color(p.faint)
+                    .cursor_pointer()
+                    .hover(|d| d.text_color(p.text))
+                    .child(gpui_kit::component::Icon::new(if folded {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .xsmall())
+                    .child(if folded { "Show answer" } else { "Fold" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.toggle_fold(i);
+                        cx.notify();
+                    }));
                 let clickable = !run.is_empty();
-                let meta = div()
+                let open_run = div()
                     .id(("answer-run", i))
                     .flex()
                     .items_center()
-                    .gap_1()
                     .text_xs()
                     .text_color(p.faint)
-                    .child(meta)
                     .when(clickable, |d| {
                         d.cursor_pointer()
                             .hover(|d| d.text_color(p.text))
+                            .child("Run")
                             .child(gpui_kit::component::Icon::new(IconName::ChevronRight).xsmall())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.model.show_run_of(i);
@@ -2094,26 +2090,18 @@ impl Workspace {
                             }))
                     });
                 div()
+                    .id(("answer", i))
+                    .group(SharedString::from(format!("answer-{i}")))
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .id(("answer-body", i))
-                            .on_mouse_up(
-                                gpui_kit::MouseButton::Left,
-                                cx.listener(move |this, e: &gpui_kit::MouseUpEvent, window, cx| {
-                                    this.answer_mouse_up(i, e, window, cx)
-                                }),
-                            )
-                            .child(
-                                TextView::markdown(("answer", i), with_badges(i, text, run))
-                                    .on_link_click(self.link_opener(cx))
-                                    .selectable(true)
-                                    .motion(stream_motion()),
-                            ),
-                    )
-                    .when(!pages.is_empty(), |d| {
+                    .gap_2()
+                    .children(thought.as_ref().map(|th| self.thinking_done(i, th, p, cx)))
+                    .children(self.rollup(Some(i), run, p, cx))
+                    .child(body)
+                    .when(revealing && !folded, |d| {
+                        d.child(composer_view::show_all(p, cx))
+                    })
+                    .when(!pages.is_empty() && !folded, |d| {
                         d.child(self.sources(i, pages, p, cx))
                     })
                     .child(
@@ -2122,9 +2110,18 @@ impl Workspace {
                             .items_center()
                             .justify_between()
                             .gap_2()
-                            .child(meta)
-                            .child(self.message_actions(i, true, p, cx)),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(fold)
+                                    .child(open_run)
+                                    .children(self.stamp(i, "answer", p)),
+                            )
+                            .child(self.grouped_actions(i, true, p, cx)),
                     )
+                    .children(self.action_menu_view(i, p, cx))
                     .children(self.branch_menu(i, p, cx))
                     .into_any_element()
             }
@@ -2134,227 +2131,6 @@ impl Workspace {
                 .child(SharedString::from(t.clone()))
                 .into_any_element(),
         }
-    }
-
-    /// Copy, Reply, and (on answers) Branch, as small quiet icons.
-    fn message_actions(
-        &self,
-        i: usize,
-        answer: bool,
-        p: Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let copied = self.model.copied == Some(i);
-        let busy = self.model.is_busy();
-        let action = move |id: &'static str, icon: AssetIcon, tip: &'static str| {
-            div()
-                .id((id, i))
-                .p(px(3.))
-                .rounded_md()
-                .cursor_pointer()
-                .text_color(p.faint)
-                .hover(move |d| d.text_color(p.text).bg(p.hover))
-                .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
-                })
-                .child(gpui_kit::component::Icon::new(icon).xsmall())
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .child(
-                action(
-                    "copy",
-                    if copied {
-                        AssetIcon::Check
-                    } else {
-                        AssetIcon::Copy
-                    },
-                    "Copy",
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(t) = this.model.entry_text(i) {
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t.to_owned()));
-                        this.model.copied = Some(i);
-                        cx.notify();
-                    }
-                })),
-            )
-            .child(
-                action("reply", AssetIcon::Reply, "Reply").on_click(cx.listener(
-                    move |this, _, window, cx| {
-                        this.model.reply_to_entry(i);
-                        this.composer.update(cx, |c, cx| c.focus(window, cx));
-                        cx.notify();
-                    },
-                )),
-            )
-            .when(answer, |d| {
-                let saved = self.model.saved_answer == Some(i);
-                d.child(
-                    action(
-                        "save-note",
-                        if saved {
-                            AssetIcon::Check
-                        } else {
-                            AssetIcon::NotebookPen
-                        },
-                        "Save to vault",
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.save_answer(i, cx))),
-                )
-            })
-            .when(answer, |d| {
-                let watched = self
-                    .model
-                    .question_before(i)
-                    .is_some_and(|q| self.model.is_watched(&q));
-                d.child(
-                    action(
-                        "watch",
-                        if watched {
-                            AssetIcon::Check
-                        } else {
-                            AssetIcon::Eye
-                        },
-                        if watched {
-                            "On watch"
-                        } else {
-                            "Watch this question (daily)"
-                        },
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.watch_answer(i, cx))),
-                )
-            })
-            .when(answer, |d| {
-                d.child(
-                    action(
-                        "explain3d",
-                        AssetIcon::Cuboid,
-                        "Explain in 3D: this answer as an isometric machine, step by step",
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let Some(text) = this.model.entry_text(i).map(str::to_owned) else {
-                            return;
-                        };
-                        let label = this
-                            .model
-                            .question_before(i)
-                            .unwrap_or_else(|| "this answer".into());
-                        let ask = tern_agent::explain::Ask {
-                            concept: String::new(),
-                            topic: None,
-                            context: Some(text),
-                        };
-                        this.open_explain(ask, &label, window, cx);
-                    })),
-                )
-            })
-            .when(answer, |d| {
-                d.child(
-                    action(
-                        "side",
-                        AssetIcon::MessageCircle,
-                        "Ask in side chat (reads the thread, saves nothing)",
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_side(None, window, cx)
-                    })),
-                )
-            })
-            .when(answer && !busy, |d| {
-                d.child(
-                    action("branch-copy", AssetIcon::GitFork, "Branch into a new chat (a copy up to here)")
-                        .on_click(cx.listener(move |this, _, _, cx| this.branch_from(i, cx))),
-                )
-            })
-            .when(answer && !busy, |d| {
-                d.child(
-                    action(
-                        "branch",
-                        AssetIcon::GitBranch,
-                        "Branch ▾ New sub-session from here, background branch, or move to a sub-session",
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let ids = &mut this.model.cont.ids;
-                        ids.branch_menu = if ids.branch_menu == Some(i) { None } else { Some(i) };
-                        cx.notify();
-                    })),
-                )
-            })
-    }
-
-    /// The open chats as tabs, shown once there is more than one.
-    fn tab_strip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.tabs.list.len() < 2 {
-            return None;
-        }
-        let busy = self.model.is_busy();
-        let active = self.tabs.active;
-        Some(
-            div()
-                .id("tabs")
-                .flex()
-                .items_center()
-                .gap_1()
-                .px_2()
-                .py_1()
-                .border_b_1()
-                .border_color(p.border)
-                .overflow_x_scroll()
-                .children(self.tabs.list.iter().enumerate().map(|(i, t)| {
-                    let on = i == active;
-                    div()
-                        .id(("tab", i))
-                        .group("tab")
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap_1()
-                        .max_w(px(200.))
-                        .pl_2()
-                        .pr_1()
-                        .py(px(3.))
-                        .rounded_md()
-                        .text_sm()
-                        .cursor_pointer()
-                        .text_color(if on { p.text } else { p.muted })
-                        .when(on, |d| d.bg(p.raised).border_1().border_color(p.border))
-                        .when(!on, |d| d.hover(move |d| d.bg(p.hover)))
-                        .when(busy && !on, |d| d.opacity(0.5))
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(t.title.clone())),
-                        )
-                        .child(
-                            Button::new(("close-tab", i))
-                                .icon(IconName::Close)
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Close tab")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab(i, window, cx);
-                                })),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.focus_tab(i, window, cx);
-                        }))
-                }))
-                .child(
-                    Button::new("add-tab")
-                        .icon(IconName::Plus)
-                        .ghost()
-                        .xsmall()
-                        .disabled(busy)
-                        .tooltip("New tab")
-                        .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
-                )
-                .into_any_element(),
-        )
     }
 
     /// Opens a new chat that starts with this chat's turns up to entry `i`.
@@ -2544,21 +2320,19 @@ impl Workspace {
             .gap_5()
             .py_6()
             .px_4();
+        if let Some(chip) = self.workspace_chip(p, cx) {
+            column = column.child(chip);
+        }
         if self.model.entries.is_empty() && !self.model.is_busy() {
             column = column.child(self.empty_state(p, cx));
         }
         for (i, e) in self.model.entries.iter().enumerate() {
             column = column.child(self.entry(i, e, p, cx));
         }
-        if let Some(draft) = self.model.draft() {
-            // Same id the finished answer gets, so the text does not redraw
-            // when the stream ends.
-            let i = self.model.entries.len();
-            column = column.child(
-                TextView::markdown(("answer", i), draft.to_owned())
-                    .selectable(true)
-                    .motion(stream_motion()),
-            );
+        // Thinking, the working rollup, and the answer so far, revealed at
+        // reading pace.
+        if let Some(live) = self.live_answer(p, cx) {
+            column = column.child(live);
         }
         if let Some(card) = self.approval_card(p, cx) {
             column = column.child(card);
@@ -3314,7 +3088,7 @@ impl Workspace {
             }
         };
         div()
-            .w(px(RUN_PANEL_W))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()
@@ -3761,13 +3535,27 @@ impl Render for Workspace {
         // The right pane: the browser when it is showing, else the docked
         // side chat, else the run panel.
         let side_docked = self.model.cont.side.open && !self.model.cont.side.popped;
-        let side_w = if self.model.browser.visible {
-            browser_view::BROWSER_W
+        let viewport_w = f32::from(window.viewport_size().width);
+        let panels = self.model.panels;
+        let right_w = panels.right;
+        let side_w = if panels.focus == crate::panels::Focus::RightMax {
+            (viewport_w - RAIL_W).max(right_w)
+        } else if self.model.browser.visible {
+            browser_view::BROWSER_W.max(right_w)
         } else if side_docked {
-            continuity_view::SIDE_W
+            continuity_view::SIDE_W.max(right_w)
         } else {
-            RUN_PANEL_W
+            right_w
         };
+        let sidebar_w = panels.sidebar;
+        let sidebar = sidebar.filter(|_| panels.shows_sidebar());
+        let panel = panel.filter(|_| panels.shows_right());
+        // What the chat column gets, for the tab strip's overflow.
+        self.centre_w = (viewport_w
+            - RAIL_W
+            - if layout.sidebar_beside { sidebar.map_or(0., |f| sidebar_w * f) } else { 0. }
+            - if layout.panel_beside { panel.map_or(0., |f| side_w * f) } else { 0. })
+        .max(0.);
         let side_pane = |this: &Self, cx: &mut Context<Self>| {
             if this.model.browser.visible {
                 this.browser_pane(p, cx)
@@ -3790,6 +3578,7 @@ impl Render for Workspace {
             Screen::Library => "screen-library",
             Screen::Customize => "screen-customize",
             Screen::Evaluation => "screen-evaluation",
+            Screen::Archived => "screen-archived",
         };
         div()
             .relative()
@@ -3798,6 +3587,17 @@ impl Render for Workspace {
             .flex_col()
             .bg(p.canvas)
             .text_color(p.text)
+            .when(panels.dragging().is_some(), |d| d.cursor_col_resize())
+            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
+                this.panel_drag_move(f32::from(e.position.x), window, cx);
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
+            )
+            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                this.panel_keys(e, cx);
+            }))
             .child(self.title_bar(p, cx))
             .child(
                 div()
@@ -3808,7 +3608,10 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(self.rail(p, cx))
                     .when_some(sidebar.filter(|_| layout.sidebar_beside), |d, f| {
-                        d.child(sliding(self.sidebar(p, cx), SIDEBAR_W, f, false))
+                        d.child(sliding(self.sidebar(p, cx), sidebar_w, f, false))
+                            .when(f >= 1., |d| {
+                                d.child(self.drag_handle(crate::panels::Edge::Sidebar, p, cx))
+                            })
                     })
                     .child(
                         div()
@@ -3816,6 +3619,7 @@ impl Render for Workspace {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
+                            .when(!panels.shows_centre(), |d| d.hidden())
                             .map(|d| match self.model.screen {
                                 Screen::Chat => match self.active_explain() {
                                     Some(key) => d
@@ -3852,6 +3656,7 @@ impl Render for Workspace {
                                 Screen::Library => d.child(self.library_screen(p, cx)),
                                 Screen::Customize => d.child(self.customize_screen(p, window, cx)),
                                 Screen::Evaluation => d.child(self.eval_screen(p, cx)),
+                                Screen::Archived => d.child(self.archived_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,
@@ -3861,7 +3666,10 @@ impl Render for Workspace {
                             ),
                     )
                     .when_some(panel.filter(|_| layout.panel_beside), |d, f| {
-                        d.children(side.take().map(|e| sliding(e, side_w, f, true)))
+                        d.when(f >= 1. && panels.shows_centre(), |d| {
+                            d.child(self.drag_handle(crate::panels::Edge::Right, p, cx))
+                        })
+                        .children(side.take().map(|e| sliding(e, side_w, f, true)))
                     })
                     // Too narrow to sit beside the chat: the panels float over it.
                     .when_some(sidebar.filter(|_| !layout.sidebar_beside), |d, f| {
@@ -3872,7 +3680,7 @@ impl Render for Workspace {
                                 .bottom_0()
                                 .left(px(RAIL_W))
                                 .shadow_lg()
-                                .child(sliding(self.sidebar(p, cx), SIDEBAR_W, f, false)),
+                                .child(sliding(self.sidebar(p, cx), sidebar_w, f, false)),
                         )
                     })
                     .when_some(panel.filter(|_| !layout.panel_beside), |d, f| {
@@ -3888,6 +3696,7 @@ impl Render for Workspace {
                     }),
             )
             .children(self.highlight_popover(p, cx))
+            .children(self.undo_toast(p, cx))
             .children(ripple)
     }
 }

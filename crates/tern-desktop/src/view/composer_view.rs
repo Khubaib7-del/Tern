@@ -8,7 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px};
+use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px};
 use tern_agent::{ChatSession, Effort, Harness, Run};
 
 use super::Workspace;
@@ -1706,11 +1706,6 @@ impl Workspace {
                 .when(behind, |d| d.child(show_all(p, cx)))
                 .into_any_element(),
         )
-    }
-
-    /// Whether an entry is an answer (for the hover group name).
-    pub(super) fn is_answer(&self, i: usize) -> bool {
-        matches!(self.model.entries.get(i), Some(Entry::Assistant { .. }))
     }
 }
 

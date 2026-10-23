@@ -90,21 +90,6 @@ impl Mode {
         }
     }
 
-    /// The glyph key the view draws (`assets::glyph` names).
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Chat => "chat",
-            Self::Plan => "plan",
-            Self::Deep => "deep",
-            Self::Act => "act",
-            Self::Tutor => "tutor",
-            Self::Quiz => "quiz",
-            Self::Flashcards => "cards",
-            Self::Viva => "viva",
-            Self::Explain => "explain",
-        }
-    }
-
     /// What the chat session's tools are limited to for this mode.
     pub fn turn_mode(self) -> TurnMode {
         match self {
@@ -545,7 +530,7 @@ mod tests {
         assert!(Mode::Quiz.study_prefix().unwrap().starts_with("Quiz mode"));
         assert!(Mode::Chat.study_prefix().is_none());
         for m in Mode::for_harness(Harness::Research) {
-            assert!(!m.line().is_empty() && !m.glyph().is_empty());
+            assert!(!m.line().is_empty());
         }
     }
 

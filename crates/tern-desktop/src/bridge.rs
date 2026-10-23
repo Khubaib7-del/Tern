@@ -199,6 +199,8 @@ impl std::fmt::Debug for Msg {
             Self::Event(e) => write!(f, "Event({})", e.kind),
             Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
+            Self::Reasoning(call, t) => write!(f, "Reasoning({call}, {} chars)", t.len()),
+            Self::Archive(a, d, _) => write!(f, "Archive({} archived, {} deleted)", a.len(), d.len()),
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
             Self::Plan(p, _) => write!(f, "Plan({} parts)", p.sub_questions.len()),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),
@@ -613,13 +615,9 @@ impl Bridge {
     ) {
         let tx = self.tx.clone();
         self.rt.spawn_blocking(move || {
-            let mut note = None;
             match tern_agent::trash::open_store() {
                 Ok(mut store) => {
-                    match f(&mut store) {
-                        Ok(n) => note = n,
-                        Err(e) => note = Some(e),
-                    }
+                    let note = f(&mut store).unwrap_or_else(Some);
                     let (a, d) = tern_agent::trash::lists(&store).unwrap_or_default();
                     let _ = tx.send(Msg::Archive(a, d, note));
                 }
