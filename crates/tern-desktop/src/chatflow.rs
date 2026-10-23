@@ -219,8 +219,18 @@ fn stops(text: &str) -> Vec<(usize, usize)> {
                 .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
         let complete = line.ends_with('\n');
         if whole {
-            // A heading or list item shows once its line is complete.
-            words += line.split_whitespace().count();
+            // A heading or list item shows once its line is complete. Its
+            // marker (`#`, `-`, `1.`, `|`) is not a word to read.
+            let marker = |w: &str| {
+                w.chars().all(|c| "#-*|`".contains(c))
+                    || w.strip_suffix('.')
+                        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            };
+            words += line
+                .split_whitespace()
+                .filter(|w| !marker(w))
+                .count()
+                .max(1);
             at += line.len();
             if complete {
                 out.push((at, words));

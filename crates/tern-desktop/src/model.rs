@@ -2181,7 +2181,13 @@ mod tests {
                 Entry::Notice(
                     "1 earlier turn is from before Tern kept chat text, so it is not shown.".into()
                 ),
-                user("What is RAG?"),
+                // A restored message keeps when it was sent: its run's start.
+                Entry::User {
+                    text: "What is RAG?".into(),
+                    chips: Vec::new(),
+                    quote: None,
+                    at: run.started_rfc3339(),
+                },
                 Entry::Assistant {
                     text: "Retrieval [1].".into(),
                     run: Box::new(run.clone()),
