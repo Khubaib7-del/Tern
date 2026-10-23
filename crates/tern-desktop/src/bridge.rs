@@ -753,7 +753,11 @@ impl Bridge {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let rows = rows_from(setup::list(secrets), search::list(secrets));
-            let _ = tx.send(Msg::Providers(rows, Box::new(Preferences::load()), keychain.err()));
+            let _ = tx.send(Msg::Providers(
+                rows,
+                Box::new(Preferences::load()),
+                keychain.err(),
+            ));
         });
     }
 
