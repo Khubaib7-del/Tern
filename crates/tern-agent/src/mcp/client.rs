@@ -316,8 +316,15 @@ impl HttpWire {
             .clone()
             .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
             .ok_or_else(|| McpError::Start("an http server needs an http(s) url".into()))?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+        let mut b = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+        // A server on this machine is reached directly, never through a proxy.
+        let local = url::Url::parse(&url).ok().is_some_and(|u| {
+            matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]" | "::1"))
+        });
+        if local {
+            b = b.no_proxy();
+        }
+        let client = b
             .build()
             .map_err(|e| McpError::Start(e.to_string()))?;
         Ok(Self {
