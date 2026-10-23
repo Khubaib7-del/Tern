@@ -265,6 +265,13 @@ pub struct Connection {
 /// The whole window's state.
 #[derive(Debug)]
 pub struct Model {
+    /// The chat's last compaction, the turn's compaction waiting to be
+    /// announced after its answer, the summary shown under the notice,
+    /// and a "Compact now" in flight.
+    pub compacted: Option<tern_agent::Compacted>,
+    pub compact_pending: bool,
+    pub compact_open: bool,
+    pub compacting: bool,
     pub entries: Vec<Entry>,
     pub phase: Phase,
     pub connection: Option<Connection>,
@@ -441,6 +448,10 @@ impl Model {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            compacted: None,
+            compact_pending: false,
+            compact_open: false,
+            compacting: false,
             phase: Phase::Connecting,
             connection: None,
             context: ContextUse::default(),
@@ -1130,6 +1141,11 @@ impl Model {
 
     /// An event from the running turn.
     pub fn on_event(&mut self, e: &EventEnvelope) {
+        if e.kind == tern_agent::compact::EVENT {
+            self.compacted = tern_agent::compact::last(std::slice::from_ref(e));
+            self.compact_pending = true;
+            return;
+        }
         // The answer's own model call (not a plan or a worker's notes):
         // did it stop at the output limit?
         if e.kind == "model.replied"
@@ -1870,6 +1886,15 @@ impl Model {
         }
     }
 
+    /// Announces a compaction once its turn's answer is in (or at once
+    /// for "Compact now").
+    pub fn show_compaction_notice(&mut self) {
+        if std::mem::take(&mut self.compact_pending) {
+            self.compact_open = false;
+            self.entries.push(Entry::Notice(COMPACT_NOTICE.into()));
+        }
+    }
+
     /// Context used, from 0.0 to 1.0, when the model's window is known.
     pub fn context_fraction(&self) -> Option<f32> {
         self.context.fraction()
@@ -1918,6 +1943,10 @@ impl Model {
             ("Attachments and sources", parts.attachments),
             ("Conversation", parts.conversation),
         ];
+        // A compacted chat: the pinned summary is its own part.
+        if parts.summary > 0 {
+            rows.push(("Summary", parts.summary));
+        }
         if let Some(left) = c.left() {
             rows.push(("Free", left));
         }
@@ -1959,6 +1988,9 @@ impl Model {
         }
     }
 }
+
+/// The transcript line after a compaction.
+pub const COMPACT_NOTICE: &str = "Compacted earlier messages";
 
 /// How full the context window is, for the ring's colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

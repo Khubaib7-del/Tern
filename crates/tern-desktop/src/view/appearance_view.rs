@@ -81,28 +81,41 @@ impl Workspace {
                 .child(div().w(px(96.)).text_sm().text_color(p.muted).child(label))
                 .child(div().flex().flex_wrap().gap_1().children(buttons))
         };
-        let pick = |id: String, label: &'static str, c: Choice, cx: &mut Context<Self>| {
-            Button::new(SharedString::from(id))
-                .label(label)
-                .small()
-                .ghost()
-                .selected(look.is(c))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_appearance(c, window, cx);
-                }))
-                .into_any_element()
-        };
-        let themes: Vec<AnyElement> = ThemeChoice::ALL
-            .iter()
-            .map(|&t| {
-                pick(
-                    format!("look-theme-{}", t.label()),
-                    t.label(),
-                    Choice::Theme(t),
+        // Theme, font and size are segmented controls whose highlight
+        // slides to the picked option.
+        let row_of =
+            |key: &'static str, choices: Vec<(&'static str, Choice)>, cx: &mut Context<Self>| {
+                let selected = choices.iter().position(|(_, c)| look.is(*c)).unwrap_or(0);
+                let segs: Vec<super::segmented::Segment> = choices
+                    .iter()
+                    .map(|(l, _)| super::segmented::Segment::text(*l))
+                    .collect();
+                let picks: Vec<Choice> = choices.iter().map(|(_, c)| *c).collect();
+                vec![self.segmented(
+                    key,
+                    &segs,
+                    selected,
+                    super::segmented::Look {
+                        small: true,
+                        ..Default::default()
+                    },
+                    p,
+                    std::rc::Rc::new(move |this: &mut Self, i, window, cx| {
+                        if let Some(&c) = picks.get(i) {
+                            this.set_appearance(c, window, cx);
+                        }
+                    }),
                     cx,
-                )
-            })
-            .collect();
+                )]
+            };
+        let themes = row_of(
+            "look-theme",
+            ThemeChoice::ALL
+                .iter()
+                .map(|&t| (t.label(), Choice::Theme(t)))
+                .collect(),
+            cx,
+        );
         let accents: Vec<AnyElement> = Accent::ALL
             .iter()
             .map(|&a| {
@@ -135,28 +148,22 @@ impl Workspace {
                     .into_any_element()
             })
             .collect();
-        let fonts: Vec<AnyElement> = FontChoice::ALL
-            .iter()
-            .map(|&f| {
-                pick(
-                    format!("look-font-{}", f.label()),
-                    f.label(),
-                    Choice::Font(f),
-                    cx,
-                )
-            })
-            .collect();
-        let sizes: Vec<AnyElement> = TextSize::ALL
-            .iter()
-            .map(|&z| {
-                pick(
-                    format!("look-size-{}", z.label()),
-                    z.label(),
-                    Choice::Size(z),
-                    cx,
-                )
-            })
-            .collect();
+        let fonts = row_of(
+            "look-font",
+            FontChoice::ALL
+                .iter()
+                .map(|&f| (f.label(), Choice::Font(f)))
+                .collect(),
+            cx,
+        );
+        let sizes = row_of(
+            "look-size",
+            TextSize::ALL
+                .iter()
+                .map(|&z| (z.label(), Choice::Size(z)))
+                .collect(),
+            cx,
+        );
         let choices = div()
             .flex()
             .flex_col()

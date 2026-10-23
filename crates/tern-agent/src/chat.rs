@@ -55,6 +55,8 @@ pub struct ChatOptions {
     pub no_mcp: bool,
     /// Research or Study: which list a new chat is filed in.
     pub harness: Harness,
+    /// When the chat folds older turns into a summary (see [`crate::compact`]).
+    pub compaction: crate::compact::Compaction,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -110,6 +112,12 @@ pub struct ChatSession {
     workspace: Option<Arc<crate::workspace::Workspace>>,
     /// The open workspace is in the log (a draft logs it with its first turn).
     workspace_logged: bool,
+    /// When to fold older turns into a summary, the last compaction, and
+    /// the model call count when it happened (until the next call the
+    /// context is estimated from the shorter history).
+    compaction: crate::compact::Compaction,
+    compacted: Option<crate::compact::Compacted>,
+    calls_at_compaction: Option<usize>,
 }
 
 /// Where a front end takes a reply's reasoning as it streams: the model
@@ -443,7 +451,14 @@ impl ChatSession {
         let events = store.replay(session, 0).map_err(|e| e.to_string())?;
         let turns = live_turns(&events);
         let mut s = Self::open_inner(opts, secrets, store, Some(session)).await?;
-        s.history = history_of(&turns, trailing_context(&events).as_deref());
+        // A compacted chat reopens with its summary pinned in place of the
+        // turns it folded (the log keeps them all).
+        s.compacted = crate::compact::last(&events);
+        s.history = crate::compact::history(
+            &turns,
+            s.compacted.as_ref(),
+            trailing_context(&events).as_deref(),
+        );
         // The workspace the chat last had open, if it still exists.
         if let Some(path) = last_workspace(&events)
             && let Ok(ws) = crate::workspace::Workspace::open(std::path::Path::new(&path))
@@ -600,6 +615,9 @@ impl ChatSession {
             turn_mode: None,
             workspace: None,
             workspace_logged: false,
+            compaction: opts.compaction,
+            compacted: None,
+            calls_at_compaction: None,
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
@@ -852,15 +870,26 @@ impl ChatSession {
         )
         .len();
         let with_tools = crate::protocol::system_prompt(instructions.as_deref(), &self.tools).len();
-        let (mut attached, mut talk) = (0usize, 0usize);
+        let (mut attached, mut talk, mut summary) = (0usize, 0usize, 0usize);
         for m in &self.history {
+            if crate::compact::is_pinned(&m.content) {
+                summary += m.content.len();
+                continue;
+            }
             let a = attached_chars(&m.content);
             attached += a;
             talk += m.content.len().saturating_sub(a);
         }
         let parts =
-            ContextParts::estimate(system, with_tools.saturating_sub(system), attached, talk);
-        match self.ledger.last() {
+            ContextParts::estimate(system, with_tools.saturating_sub(system), attached, talk)
+                .with_summary(summary);
+        // Right after a compaction the last call's count is stale: estimate
+        // the shorter history until the next call counts it.
+        let last = self
+            .ledger
+            .last()
+            .filter(|_| self.calls_at_compaction != Some(self.ledger.calls()));
+        match last {
             Some(u) => ContextUse {
                 prompt: u.input_tokens,
                 reply: u.output_tokens,
@@ -1066,6 +1095,7 @@ impl ChatSession {
             self.history
                 .push(ChatMessage::user(text).with_images(images));
             self.history.push(ChatMessage::assistant(answer.clone()));
+            self.auto_compact(observer).await;
         }
         out
     }
@@ -1141,8 +1171,79 @@ impl ChatSession {
         if let Some(answer) = &out.answer {
             self.history.push(ChatMessage::user(text));
             self.history.push(ChatMessage::assistant(answer.clone()));
+            self.auto_compact(observer).await;
         }
         out
+    }
+
+    /// When the chat compacts on its own.
+    pub fn compaction(&self) -> crate::compact::Compaction {
+        self.compaction
+    }
+
+    pub fn set_compaction(&mut self, c: crate::compact::Compaction) {
+        self.compaction = c;
+    }
+
+    /// The chat's last compaction, if it has one.
+    pub fn compacted(&self) -> Option<&crate::compact::Compacted> {
+        self.compacted.as_ref()
+    }
+
+    /// Compacts when the context has passed the threshold. A failed
+    /// summary leaves the history as it was; the next turn tries again.
+    async fn auto_compact(&mut self, observer: &(dyn Fn(&EventEnvelope) + Send + Sync)) {
+        if self.compaction.due(self.context().fraction()) {
+            let _ = self.compact(true, observer).await;
+        }
+    }
+
+    /// Folds the older turns into one pinned summary written by the chat's
+    /// model, keeping the last turns and those with attachments word for
+    /// word. Logs `session.compacted` (the turns themselves stay in the
+    /// log). `Ok(None)` when there is nothing to fold yet.
+    pub async fn compact(
+        &mut self,
+        auto: bool,
+        observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
+    ) -> Result<Option<crate::compact::Compacted>, String> {
+        if self.is_draft() {
+            return Ok(None);
+        }
+        let events = self
+            .sink
+            .with_store(|s| s.replay(self.session, 0))?
+            .map_err(|e| e.to_string())?;
+        let turns = live_turns(&events);
+        let prior = crate::compact::last(&events);
+        let keep = self.compaction.keep_turns;
+        let fold = crate::compact::plan(&turns, prior.as_ref(), keep);
+        if fold.is_empty() {
+            return Ok(None);
+        }
+        let folding: Vec<&PastTurn> = turns.iter().filter(|t| fold.contains(&t.number)).collect();
+        let req = crate::compact::request(&self.model, prior.as_ref(), &folding);
+        let reply = self.provider.chat(&req).await.map_err(|e| e.to_string())?;
+        let summary = reply.text.trim().to_owned();
+        if summary.is_empty() {
+            return Err("The model wrote an empty summary.".into());
+        }
+        let done = crate::compact::Compacted {
+            summary,
+            turns: crate::compact::merged(prior.as_ref(), &fold),
+            kept: keep,
+            auto,
+        };
+        let tee = Tee {
+            inner: &self.sink,
+            observer,
+        };
+        tee.record(done.event(self.session))?;
+        self.history =
+            crate::compact::history(&turns, Some(&done), trailing_context(&events).as_deref());
+        self.calls_at_compaction = Some(self.ledger.calls());
+        self.compacted = Some(done.clone());
+        Ok(Some(done))
     }
 
     /// The inbox for steering notes; send to a clone of it while a turn
@@ -1388,6 +1489,8 @@ pub struct ContextParts {
     pub attachments: u64,
     /// Messages and replies.
     pub conversation: u64,
+    /// The pinned summary of compacted turns.
+    pub summary: u64,
 }
 
 impl ContextParts {
@@ -1399,11 +1502,20 @@ impl ContextParts {
             tools: t(tools),
             attachments: t(attachments),
             conversation: t(conversation),
+            summary: 0,
+        }
+    }
+
+    /// The same, with a pinned summary of `chars` characters.
+    pub fn with_summary(self, chars: usize) -> Self {
+        Self {
+            summary: Usage::estimated(chars, 0).input_tokens,
+            ..self
         }
     }
 
     pub fn total(&self) -> u64 {
-        self.system + self.tools + self.attachments + self.conversation
+        self.system + self.tools + self.attachments + self.conversation + self.summary
     }
 
     /// The same shares of a measured prompt, with the reply added to the
@@ -1417,16 +1529,18 @@ impl ContextParts {
             };
         }
         let share = |v: u64| ((v as u128 * prompt as u128) / total as u128) as u64;
-        let (system, tools, attachments) = (
+        let (system, tools, attachments, summary) = (
             share(self.system),
             share(self.tools),
             share(self.attachments),
+            share(self.summary),
         );
         Self {
             system,
             tools,
             attachments,
-            conversation: prompt.saturating_sub(system + tools + attachments) + reply,
+            summary,
+            conversation: prompt.saturating_sub(system + tools + attachments + summary) + reply,
         }
     }
 }

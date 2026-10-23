@@ -540,27 +540,6 @@ impl Workspace {
     pub(super) fn archived_screen(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let a = &self.model.archive;
         let (n_archived, n_deleted) = a.counts();
-        let tab_button =
-            |key: &'static str, label: String, tab: ArchiveTab, cx: &mut Context<Self>| {
-                let on = a.tab == tab;
-                div()
-                    .id(key)
-                    .px_3()
-                    .py_1()
-                    .text_sm()
-                    .cursor_pointer()
-                    .border_b_2()
-                    .border_color(if on { p.accent } else { p.canvas.opacity(0.) })
-                    .text_color(if on { p.text } else { p.muted })
-                    .hover(move |d| d.text_color(p.text))
-                    .child(SharedString::from(label))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.model.archive.tab = tab;
-                        this.model.archive.confirm = None;
-                        this.model.archive.confirm_empty = false;
-                        cx.notify();
-                    }))
-            };
         let deleted_tab = a.tab == ArchiveTab::Deleted;
         let header = div()
             .flex()
@@ -598,22 +577,29 @@ impl Workspace {
             .justify_between()
             .border_b_1()
             .border_color(p.border)
-            .child(
-                div()
-                    .flex()
-                    .child(tab_button(
-                        "archive-tab-archived",
-                        n_archived,
-                        ArchiveTab::Archived,
-                        cx,
-                    ))
-                    .child(tab_button(
-                        "archive-tab-deleted",
-                        n_deleted,
-                        ArchiveTab::Deleted,
-                        cx,
-                    )),
-            )
+            .child(div().pb_1().child(self.segmented(
+                "archive-tabs",
+                &[
+                    super::segmented::Segment::text(n_archived),
+                    super::segmented::Segment::text(n_deleted),
+                ],
+                usize::from(a.tab == ArchiveTab::Deleted),
+                super::segmented::Look {
+                    small: true,
+                    ..Default::default()
+                },
+                p,
+                std::rc::Rc::new(|this: &mut Self, i, _, _| {
+                    this.model.archive.tab = if i == 0 {
+                        ArchiveTab::Archived
+                    } else {
+                        ArchiveTab::Deleted
+                    };
+                    this.model.archive.confirm = None;
+                    this.model.archive.confirm_empty = false;
+                }),
+                cx,
+            )))
             .when(deleted_tab && !a.deleted.is_empty(), |d| {
                 d.child(div().pb_1().child(if a.confirm_empty {
                     div()

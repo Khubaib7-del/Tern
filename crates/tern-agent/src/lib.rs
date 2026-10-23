@@ -31,6 +31,7 @@ pub mod browse;
 pub mod cards;
 pub mod chat;
 pub mod checkpoint;
+pub mod compact;
 pub mod decide;
 pub mod deep;
 pub mod doctor;
@@ -82,6 +83,7 @@ pub use chat::{
 pub use checkpoint::{
     CheckpointDir, CheckpointSink, OfferKind, RunCheckpoint, RunMode, RunOffer, Stage, WorkerCounts,
 };
+pub use compact::{Compacted, Compaction};
 pub use decide::{Decider, DecisionKind, DecisionPrefs};
 pub use deep::{DeepControl, DeepOptions, PlanAnswer, PlanApprover, ResearchPlan, RunAsDrafted};
 pub use engine::{

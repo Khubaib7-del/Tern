@@ -523,7 +523,9 @@ pub fn effort_chip(thinking: Thinking, effort: Option<Effort>) -> EffortChip {
 }
 
 /// The effort menu's rows: step, the provider setting it sends, and whether
-/// it can be picked.
+/// it can be picked. The slider replaced the menu; kept for the tests that
+/// pin which steps a model allows.
+#[cfg(test)]
 pub fn effort_rows(thinking: Thinking) -> Vec<(Effort, String, bool)> {
     Effort::ALL
         .into_iter()
@@ -532,6 +534,119 @@ pub fn effort_rows(thinking: Thinking) -> Vec<(Effort, String, bool)> {
             (e, thinking.knob(e), ok)
         })
         .collect()
+}
+
+/// The effort slider: a compact popover over the effort chip with one
+/// stop per step, None to Max, drawn as rising feather ticks on a track
+/// and a round knob that glides between stops.
+///
+/// | Size | Value |
+/// | --- | --- |
+/// | Popover | 300 px wide |
+/// | Track | 252 px; the first and last stops sit 10 px in (the knob's radius) |
+pub const SLIDER_W: f32 = 300.;
+pub const TRACK_W: f32 = 252.;
+pub const TRACK_INSET: f32 = 10.;
+/// The last stop's index (Max); there are six stops.
+pub const LAST_STOP: usize = 5;
+
+/// What the slider can do for the current model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliderKind {
+    /// No thinking control: the slider shows greyed.
+    NoControl,
+    /// Always thinks: one fixed state, nothing to set.
+    Fixed,
+    /// Movable from stop `min` (1 when thinking cannot be turned off).
+    Adjustable { min: usize },
+}
+
+pub fn slider_kind(thinking: Thinking) -> SliderKind {
+    if !thinking.visible() {
+        SliderKind::NoControl
+    } else if !thinking.adjustable() {
+        SliderKind::Fixed
+    } else {
+        SliderKind::Adjustable {
+            min: usize::from(!thinking.can_turn_off()),
+        }
+    }
+}
+
+/// A stop's index (None = 0 … Max = 5).
+pub fn stop_of(e: Effort) -> usize {
+    Effort::ALL.iter().position(|&x| x == e).unwrap_or(0)
+}
+
+pub fn effort_at(stop: usize) -> Effort {
+    Effort::ALL[stop.min(LAST_STOP)]
+}
+
+/// The stop the slider shows for the chosen effort (the chip's rule: a
+/// model that cannot turn thinking off shows Low for None).
+pub fn shown_stop(thinking: Thinking, effort: Option<Effort>) -> usize {
+    match slider_kind(thinking) {
+        SliderKind::NoControl => 0,
+        SliderKind::Fixed => LAST_STOP,
+        SliderKind::Adjustable { min } => stop_of(effort.unwrap_or_default()).max(min),
+    }
+}
+
+/// A stop's centre on a track `track_w` wide, from its left edge.
+pub fn stop_x(stop: f32, track_w: f32) -> f32 {
+    TRACK_INSET + stop.clamp(0., LAST_STOP as f32) * (track_w - 2. * TRACK_INSET) / LAST_STOP as f32
+}
+
+/// The stop nearest `x` (from the track's left edge), kept to what the
+/// model allows; `None` when the slider cannot move.
+pub fn snap_stop(x: f32, track_w: f32, kind: SliderKind) -> Option<usize> {
+    let SliderKind::Adjustable { min } = kind else {
+        return None;
+    };
+    let step = (track_w - 2. * TRACK_INSET) / LAST_STOP as f32;
+    let at = ((x - TRACK_INSET) / step)
+        .round()
+        .clamp(0., LAST_STOP as f32) as usize;
+    Some(at.max(min))
+}
+
+/// Left and Right keys: one stop over, kept to what the model allows.
+pub fn step_stop(from: usize, right: bool, kind: SliderKind) -> Option<usize> {
+    let SliderKind::Adjustable { min } = kind else {
+        return None;
+    };
+    Some(if right {
+        (from + 1).min(LAST_STOP)
+    } else {
+        from.saturating_sub(1).max(min)
+    })
+}
+
+/// One plain line under the level's name; no provider settings.
+pub fn effort_line(e: Effort) -> &'static str {
+    match e {
+        Effort::None => "Answers straight away",
+        Effort::Low => "Thinks briefly",
+        Effort::Medium => "Thinks it through",
+        Effort::High => "Thinks carefully",
+        Effort::XHigh => "Thinks deeply; slower",
+        Effort::Max => "Thinks as long as it needs",
+    }
+}
+
+/// The slider's title and line for the current model.
+pub fn slider_title(thinking: Thinking, effort: Option<Effort>) -> (String, &'static str) {
+    match slider_kind(thinking) {
+        SliderKind::NoControl => ("Effort".into(), "This model has no thinking control"),
+        SliderKind::Fixed => (
+            "Always thinks".into(),
+            "This model thinks before every answer",
+        ),
+        SliderKind::Adjustable { .. } => {
+            let e = effort_at(shown_stop(thinking, effort));
+            (e.label().into(), effort_line(e))
+        }
+    }
 }
 
 /// The search chip's label: the search service, or `web: off`.
@@ -741,6 +856,63 @@ mod tests {
                 "{model}"
             );
         }
+    }
+
+    #[test]
+    fn the_effort_slider_snaps_steps_and_knows_the_model() {
+        let claude = tern_agent::thinking_support("anthropic", "claude-sonnet-4-5");
+        let kind = slider_kind(claude);
+        assert_eq!(kind, SliderKind::Adjustable { min: 0 });
+        // Each stop's own x snaps back to it, and so does anything nearer
+        // it than its neighbours.
+        for i in 0..=LAST_STOP {
+            let x = stop_x(i as f32, TRACK_W);
+            assert_eq!(snap_stop(x, TRACK_W, kind), Some(i));
+            if i < LAST_STOP {
+                assert_eq!(snap_stop(x + 20., TRACK_W, kind), Some(i), "right of {i}");
+            }
+            if i > 0 {
+                assert_eq!(snap_stop(x - 20., TRACK_W, kind), Some(i), "left of {i}");
+            }
+        }
+        assert_eq!(stop_x(0., TRACK_W), TRACK_INSET);
+        assert_eq!(stop_x(5., TRACK_W), TRACK_W - TRACK_INSET);
+        // Past either end it holds the end stop.
+        assert_eq!(snap_stop(-50., TRACK_W, kind), Some(0));
+        assert_eq!(snap_stop(9_000., TRACK_W, kind), Some(LAST_STOP));
+        // Keys move one stop and stop at the ends.
+        assert_eq!(step_stop(2, true, kind), Some(3));
+        assert_eq!(step_stop(2, false, kind), Some(1));
+        assert_eq!(step_stop(LAST_STOP, true, kind), Some(LAST_STOP));
+        assert_eq!(step_stop(0, false, kind), Some(0));
+        // o3 cannot turn thinking off: None is out of reach.
+        let o3t = tern_agent::thinking_support("openai", "o3");
+        let o3 = slider_kind(o3t);
+        assert_eq!(o3, SliderKind::Adjustable { min: 1 });
+        assert_eq!(snap_stop(0., TRACK_W, o3), Some(1));
+        assert_eq!(step_stop(1, false, o3), Some(1));
+        assert_eq!(shown_stop(o3t, Some(Effort::None)), 1);
+        // No control: nothing moves, and the popover says why.
+        let plain = tern_agent::thinking_support("mistral", "ministral-8b-latest");
+        assert_eq!(slider_kind(plain), SliderKind::NoControl);
+        assert_eq!(snap_stop(100., TRACK_W, SliderKind::NoControl), None);
+        assert_eq!(step_stop(2, true, SliderKind::NoControl), None);
+        assert_eq!(
+            slider_title(plain, None).1,
+            "This model has no thinking control"
+        );
+        // Always thinks: one fixed state.
+        let always = tern_agent::thinking_support("mistral", "magistral-medium-latest");
+        assert_eq!(slider_kind(always), SliderKind::Fixed);
+        assert_eq!(snap_stop(0., TRACK_W, SliderKind::Fixed), None);
+        // Titles are plain words, never the provider's setting.
+        let (title, line) = slider_title(claude, Some(Effort::Low));
+        assert_eq!((title.as_str(), line), ("Low", "Thinks briefly"));
+        for e in Effort::ALL {
+            assert!(!effort_line(e).contains(':'));
+            assert_eq!(effort_at(stop_of(e)), e);
+        }
+        assert_eq!(effort_at(stop_of(Effort::default())), Effort::Medium);
     }
 
     #[test]

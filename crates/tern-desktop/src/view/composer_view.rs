@@ -562,6 +562,11 @@ impl Workspace {
                 return;
             }
         }
+        if self.effort_keys(key, cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         self.mention_keys(e, window, cx);
     }
 
@@ -677,42 +682,261 @@ impl Workspace {
         )
     }
 
-    /// The effort chip: a bar meter and the step. Always shown; disabled,
-    /// with a tooltip saying why, when the model has no thinking control.
+    /// The effort chip: a bar meter and the step. Always shown; it opens
+    /// the effort slider, which says why when the model has no control.
     fn effort_chip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let chip = composer::effort_chip(self.thinking(), self.model.composer.effort);
         let open = self.model.composer.menu == Some(Menu::Effort);
         let tip: SharedString = chip.tooltip.clone().into();
         let enabled = chip.enabled;
-        Some(
-            div()
-                .id("effort-chip")
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .px_1p5()
-                .py(px(3.))
-                .rounded_md()
-                .text_xs()
-                .text_color(if open { p.text } else { p.muted })
-                .when(open, |d| d.bg(p.hover))
-                .when(enabled, |d| {
-                    d.cursor_pointer()
-                        .hover(|d| d.bg(p.hover).text_color(p.text))
-                })
-                .when(!enabled, |d| d.opacity(0.5))
-                .child(meter(chip.bars, p))
-                .child(SharedString::from(chip.label))
-                .tooltip(move |window, cx| {
+        let el = div()
+            .id("effort-chip")
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_1p5()
+            .py(px(3.))
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(if open { p.text } else { p.muted })
+            .when(open, |d| d.bg(p.hover))
+            .hover(|d| d.bg(p.hover).text_color(p.text))
+            .when(!enabled, |d| d.opacity(0.6))
+            .child(meter(chip.bars, p))
+            .child(SharedString::from(chip.label))
+            .when(!open, |d| {
+                d.tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
-                .when(enabled, |d| {
-                    d.on_click(
-                        cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)),
-                    )
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)));
+        Some(
+            div()
+                .relative()
+                .flex_none()
+                .child(el)
+                .when(open, |d| {
+                    d.child(gpui_kit::deferred(self.effort_slider(p, cx)).with_priority(1))
                 })
                 .into_any_element(),
         )
+    }
+
+    /// Picks an effort stop from the slider (click, drag, or keys).
+    fn set_effort_stop(&mut self, stop: usize, cx: &mut Context<Self>) {
+        let e = composer::effort_at(stop);
+        if self.model.composer.effort != Some(e) {
+            self.set_effort(e, cx);
+        }
+    }
+
+    /// The pointer at window x `x` over the slider's track.
+    fn effort_pointer(&mut self, x: f32, cx: &mut Context<Self>) {
+        let kind = composer::slider_kind(self.thinking());
+        let local = x - self.effort_track.get();
+        if let Some(stop) = composer::snap_stop(local, composer::TRACK_W, kind) {
+            self.set_effort_stop(stop, cx);
+        }
+    }
+
+    /// Left and Right on the open slider move one stop.
+    pub(super) fn effort_keys(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.model.composer.menu != Some(Menu::Effort) || !matches!(key, "left" | "right") {
+            return false;
+        }
+        let thinking = self.thinking();
+        let kind = composer::slider_kind(thinking);
+        let from = composer::shown_stop(thinking, self.model.composer.effort);
+        if let Some(stop) = composer::step_stop(from, key == "right", kind) {
+            self.set_effort_stop(stop, cx);
+        }
+        true
+    }
+
+    /// The effort slider: the level's name and a plain line, a track of
+    /// six rising feather ticks (None to Max) with a round knob that
+    /// glides between them, and a reset to the default. A model with no
+    /// thinking control shows it greyed; one that always thinks shows one
+    /// fixed state.
+    fn effort_slider(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use composer::{LAST_STOP, SliderKind, TRACK_W};
+        let thinking = self.thinking();
+        let kind = composer::slider_kind(thinking);
+        let effort = self.model.composer.effort;
+        let stop = composer::shown_stop(thinking, effort);
+        let (title, line) = composer::slider_title(thinking, effort);
+        let live = matches!(kind, SliderKind::Adjustable { .. });
+        let at = self.glide("effort-knob", stop as f32);
+        let knob_x = composer::stop_x(at, TRACK_W);
+        let lit_color = if live { p.accent } else { p.faint };
+        let is_default =
+            composer::stop_of(effort.unwrap_or_default()) == composer::stop_of(Effort::default());
+        // The ticks rise like a feather's barbs: short for None, tall for Max.
+        let ticks = (0..=LAST_STOP).map(|i| {
+            let x = composer::stop_x(i as f32, TRACK_W);
+            let h = 6. + i as f32 * 3.2;
+            let lit = live && (i as f32) <= at + 0.01;
+            div()
+                .absolute()
+                .left(px(x - 1.5))
+                .bottom(px(16.))
+                .w(px(3.))
+                .h(px(h))
+                .rounded(px(1.5))
+                .bg(if lit {
+                    lit_color
+                } else if kind == SliderKind::Fixed && i == LAST_STOP {
+                    p.muted
+                } else {
+                    p.faint.opacity(0.35)
+                })
+        });
+        let track_origin = self.effort_track.clone();
+        let track = div()
+            .id("effort-track")
+            .relative()
+            .w(px(TRACK_W))
+            .h(px(48.))
+            .when(live, |d| d.cursor_pointer())
+            .child(
+                gpui_kit::canvas(
+                    |_, _, _: &mut gpui_kit::App| (),
+                    move |b, _, _, _: &mut gpui_kit::App| {
+                        track_origin.set(f32::from(b.origin.x));
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            // The rail and its lit run up to the knob.
+            .child(
+                div()
+                    .absolute()
+                    .left(px(composer::TRACK_INSET))
+                    .right(px(composer::TRACK_INSET))
+                    .bottom(px(10.))
+                    .h(px(2.))
+                    .rounded_full()
+                    .bg(p.border),
+            )
+            .when(live, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(composer::TRACK_INSET))
+                        .bottom(px(10.))
+                        .h(px(2.))
+                        .w(px((knob_x - composer::TRACK_INSET).max(0.)))
+                        .rounded_full()
+                        .bg(lit_color),
+                )
+            })
+            .children(ticks)
+            // The knob.
+            .when(kind != SliderKind::NoControl, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left(px(knob_x - 7.))
+                        .bottom(px(4.))
+                        .size(px(14.))
+                        .rounded_full()
+                        .bg(p.text)
+                        .border_2()
+                        .border_color(if live { p.accent } else { p.muted })
+                        .shadow_sm(),
+                )
+            })
+            .when(live, |d| {
+                d.on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, e: &gpui_kit::MouseDownEvent, _, cx| {
+                        this.effort_drag = true;
+                        this.effort_pointer(f32::from(e.position.x), cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                    if this.effort_drag && e.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        this.effort_pointer(f32::from(e.position.x), cx);
+                    }
+                }))
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, _| {
+                        this.effort_drag = false;
+                    }),
+                )
+            });
+        let reset = Button::new("effort-reset")
+            .icon(AssetIcon::Undo2)
+            .ghost()
+            .xsmall()
+            .tooltip("Back to the default (Medium)")
+            .disabled(!live || is_default)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.set_effort_stop(composer::stop_of(Effort::default()), cx);
+                cx.notify();
+            }));
+        div()
+            .id("effort-slider")
+            .absolute()
+            .bottom(px(30.))
+            .right_0()
+            .w(px(composer::SLIDER_W))
+            .p_3()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap_1()
+            .rounded_xl()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.canvas)
+            .shadow_lg()
+            .occlude()
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .child(div().size(px(22.)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if live { p.text } else { p.muted })
+                                    .child(SharedString::from(title)),
+                            )
+                            .child(div().text_xs().text_color(p.muted).child(line)),
+                    )
+                    .child(reset),
+            )
+            .child(track.when(!live, |d| d.opacity(0.55)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.model.composer.menu == Some(Menu::Effort) {
+                    this.model.composer.close();
+                    this.effort_drag = false;
+                    cx.notify();
+                }
+            }))
+            .with_animation(
+                "effort-slider-in",
+                gpui_kit::Animation::new(if self.reduced_motion {
+                    std::time::Duration::ZERO
+                } else {
+                    crate::motion::UI
+                })
+                .with_easing(crate::motion::ease),
+                |d, t| d.opacity(t),
+            )
+            .into_any_element()
     }
 
     /// The search chip: which service answers web searches, or off.
@@ -810,12 +1034,16 @@ impl Workspace {
     /// The open menu, drawn inside the composer above the text so it never
     /// leaves the window.
     fn composer_menu(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.model.composer.menu.filter(|m| *m != Menu::Model)?;
+        let menu = self
+            .model
+            .composer
+            .menu
+            .filter(|m| !matches!(m, Menu::Model | Menu::Effort))?;
         let body = match menu {
             Menu::Plus => self.plus_menu(p, cx),
             Menu::Mode => self.mode_menu(p, cx),
             Menu::Model => return None,
-            Menu::Effort => self.effort_menu(p, cx),
+            Menu::Effort => return None,
             Menu::Search => self.search_menu(p, cx),
         };
         Some(
@@ -916,20 +1144,40 @@ impl Workspace {
                         "Research modes"
                     }),
             )
-            .children(
-                Mode::for_harness(harness)
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &m)| {
+            .child({
+                // The current mode's highlight slides to a newly picked row.
+                const ROW_H: f32 = 44.;
+                let modes = Mode::for_harness(harness);
+                let at = self.glide(
+                    "mode-menu",
+                    modes.iter().position(|&m| m == current).unwrap_or(0) as f32,
+                );
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(at * ROW_H))
+                            .h(px(ROW_H))
+                            .rounded_md()
+                            .bg(p.hover),
+                    )
+                    .children(modes.iter().enumerate().map(|(i, &m)| {
                         Self::menu_row(
                             ("mode-item", i),
                             icon(mode_icon(m), p.muted),
                             m.name().into(),
                             m.line().into(),
-                            m == current,
+                            false,
                             true,
                             p,
                         )
+                        .h(px(ROW_H))
+                        .when(m == current, |d| d.child(icon(AssetIcon::Check, p.text)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let chat = this
                                 .session
@@ -939,48 +1187,8 @@ impl Workspace {
                             this.model.set_mode(m, chat.as_deref());
                             cx.notify();
                         }))
-                    }),
-            )
-            .into_any_element()
-    }
-
-    fn effort_menu(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let thinking = self.thinking();
-        let current = Some(composer::effort_chip(thinking, self.model.composer.effort).bars);
-        let rows = composer::effort_rows(thinking);
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .px_2()
-                    .pt_1()
-                    .pb(px(2.))
-                    .text_xs()
-                    .text_color(p.faint)
-                    .child(if thinking.adjustable() {
-                        "Thinking effort: more thinking is slower and uses more tokens"
-                    } else {
-                        "This model always thinks before it answers"
-                    }),
-            )
-            .children(rows.into_iter().enumerate().map(|(i, (e, knob, ok))| {
-                let on = current == Some(e.bars()) && thinking.adjustable();
-                let row = Self::menu_row(
-                    ("effort-item", i),
-                    meter(e.bars(), p),
-                    e.label().into(),
-                    knob.into(),
-                    on,
-                    ok,
-                    p,
-                );
-                if ok {
-                    row.on_click(cx.listener(move |this, _, _, cx| this.set_effort(e, cx)))
-                } else {
-                    row
-                }
-            }))
+                    }))
+            })
             .into_any_element()
     }
 
