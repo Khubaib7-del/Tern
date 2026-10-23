@@ -65,6 +65,7 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
 }
 
 pub(crate) fn parse_models(v: &Value) -> Result<Vec<ModelInfo>, String> {
+    use crate::model::{Capability::*, Lifecycle, Source};
     let data = v
         .get("data")
         .and_then(Value::as_array)
@@ -72,11 +73,46 @@ pub(crate) fn parse_models(v: &Value) -> Result<Vec<ModelInfo>, String> {
     Ok(data
         .iter()
         .filter_map(|m| {
-            let mut info = ModelInfo::new(m.get("id")?.as_str()?);
+            let id = m.get("id")?.as_str()?;
+            let supported = |k: &str| {
+                m.get("capabilities")
+                    .and_then(|c| c.get(k))
+                    .and_then(|c| c.get("supported"))
+                    .and_then(Value::as_bool)
+            };
+            // Every Claude model chats and calls tools; older listings
+            // without `capabilities` leave vision to the table.
+            let mut info = match supported("image_input") {
+                Some(img) => {
+                    let mut caps = vec![Chat, Tools];
+                    if img {
+                        caps.push(Vision);
+                    }
+                    if supported("thinking") == Some(true) {
+                        caps.push(Reasoning);
+                    }
+                    ModelInfo::with_listing(id, caps, Source::Listing)
+                }
+                None => ModelInfo::new(id),
+            };
             info.display_name = str_at(m, &["display_name"]).map(str::to_owned);
+            info.context_window = u64_at(m, &["max_input_tokens"]).filter(|n| *n > 0);
+            info.lifecycle = match str_at(m, &["lifecycle"]) {
+                Some("deprecated") => Lifecycle::Deprecated,
+                Some("retired") => Lifecycle::Retired,
+                _ => Lifecycle::Active,
+            };
             Some(info)
         })
         .collect())
+}
+
+/// The `after_id` for the next page, when there is one.
+pub(crate) fn next_cursor(v: &Value) -> Option<String> {
+    if v.get("has_more").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    str_at(v, &["last_id"]).map(str::to_owned)
 }
 
 #[cfg(test)]

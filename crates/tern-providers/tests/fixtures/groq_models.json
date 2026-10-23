@@ -1,0 +1,140 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "llama-3.1-8b-instant",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Meta",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "llama-3.3-70b-versatile",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Meta",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "openai/gpt-oss-120b",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "OpenAI",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "openai/gpt-oss-20b",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "OpenAI",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "whisper-large-v3",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "OpenAI",
+   "active": true,
+   "context_window": 448,
+   "public_apps": null
+  },
+  {
+   "id": "whisper-large-v3-turbo",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "OpenAI",
+   "active": true,
+   "context_window": 448,
+   "public_apps": null
+  },
+  {
+   "id": "canopylabs/orpheus-arabic-saudi",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Canopy Labs",
+   "active": true,
+   "context_window": 4000,
+   "public_apps": null
+  },
+  {
+   "id": "canopylabs/orpheus-v1-english",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Canopy Labs",
+   "active": true,
+   "context_window": 4000,
+   "public_apps": null
+  },
+  {
+   "id": "meta-llama/llama-prompt-guard-2-22m",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Meta",
+   "active": true,
+   "context_window": 512,
+   "public_apps": null
+  },
+  {
+   "id": "meta-llama/llama-prompt-guard-2-86m",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Meta",
+   "active": true,
+   "context_window": 512,
+   "public_apps": null
+  },
+  {
+   "id": "meta-models/muse-spark-open",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Meta",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "minimaxai/minimax-m2.7",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "MiniMaxAI",
+   "active": true,
+   "context_window": 196608,
+   "public_apps": null
+  },
+  {
+   "id": "openai/gpt-oss-safeguard-20b",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "OpenAI",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "qwen/qwen3.8-27b",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Alibaba Cloud",
+   "active": true,
+   "context_window": 131072,
+   "public_apps": null
+  },
+  {
+   "id": "gemma2-9b-it",
+   "object": "model",
+   "created": 1693721698,
+   "owned_by": "Google",
+   "active": false,
+   "context_window": 8192,
+   "public_apps": null
+  }
+ ]
+}

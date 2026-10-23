@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use super::{str_at, u64_at};
-use crate::{ChatRequest, ChatResponse, ModelInfo, ModelKind, Role, Usage};
+use crate::{ChatRequest, ChatResponse, ModelInfo, Role, Usage};
 
 pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     let contents: Vec<Value> = req
@@ -65,6 +65,7 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
 }
 
 pub(crate) fn parse_models(v: &Value) -> Result<Vec<ModelInfo>, String> {
+    use crate::model::{Capability::*, Source};
     let list = v
         .get("models")
         .and_then(Value::as_array)
@@ -73,29 +74,49 @@ pub(crate) fn parse_models(v: &Value) -> Result<Vec<ModelInfo>, String> {
         .iter()
         .filter_map(|m| {
             let name = m.get("name")?.as_str()?;
-            let mut info = ModelInfo::new(name.strip_prefix("models/").unwrap_or(name));
-            info.display_name = str_at(m, &["displayName"]).map(str::to_owned);
-            info.context_window = u64_at(m, &["inputTokenLimit"]);
-            if let Some(methods) = m
+            let id = name.strip_prefix("models/").unwrap_or(name);
+            let mut info = match m
                 .get("supportedGenerationMethods")
                 .and_then(Value::as_array)
             {
-                let has = |x: &str| methods.iter().any(|v| v.as_str() == Some(x));
-                if has("generateContent") {
-                    info.kind = ModelKind::Chat;
-                } else if has("embedContent") {
-                    info.kind = ModelKind::Embedding;
+                Some(methods) => {
+                    let has = |x: &str| methods.iter().any(|v| v.as_str() == Some(x));
+                    let mut caps = Vec::new();
+                    if has("generateContent") {
+                        caps.push(Chat);
+                    }
+                    if has("embedContent") || has("embedText") || has("batchEmbedContents") {
+                        caps.push(Embedding);
+                    }
+                    if has("predict") && !has("generateContent") {
+                        caps.push(ImageGen);
+                    }
+                    if m.get("thinking").and_then(Value::as_bool) == Some(true) {
+                        caps.push(Reasoning);
+                    }
+                    ModelInfo::with_listing(id, caps, Source::Partial)
                 }
-            }
+                None => ModelInfo::new(id),
+            };
+            info.display_name = str_at(m, &["displayName"]).map(str::to_owned);
+            info.context_window = u64_at(m, &["inputTokenLimit"]);
             Some(info)
         })
         .collect())
+}
+
+/// The `pageToken` for the next page, when there is one.
+pub(crate) fn next_cursor(v: &Value) -> Option<String> {
+    str_at(v, &["nextPageToken"])
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ChatMessage;
+    use crate::ModelKind;
 
     #[test]
     fn body_maps_roles_and_system() {
@@ -133,6 +154,8 @@ mod tests {
         let m = parse_models(&v).unwrap();
         assert_eq!(m[0].id, "gemini-2.5-pro");
         assert_eq!(m[0].context_window, Some(1_048_576));
-        assert_eq!(m[1].kind, ModelKind::Embedding);
+        let mut e = m[1].clone();
+        e.finish("google");
+        assert_eq!(e.kind, ModelKind::Embedding);
     }
 }
