@@ -23,6 +23,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::providers::{Kind, ServiceRow, rows_from};
 
+mod cont;
+pub use cont::{ContMsg, LibraryChange};
+
 /// Everything the background side tells the window.
 pub enum Msg {
     Connected(Box<ChatSession>, Vec<SessionSummary>),
@@ -70,6 +73,9 @@ pub enum Msg {
     Study(Box<StudyMsg>),
     /// The Decision model page.
     Decision(Box<DecisionMsg>),
+    /// Message IDs, ranges, sub-sessions, handoff, side chat, highlights,
+    /// and the Library.
+    Cont(Box<ContMsg>),
 }
 
 /// What the Decision model page's background work tells the window.
@@ -167,6 +173,7 @@ impl std::fmt::Debug for Msg {
             Self::PrefsFailed(e) => write!(f, "PrefsFailed({e})"),
             Self::Study(m) => write!(f, "Study({m:?})"),
             Self::Decision(m) => write!(f, "Decision({m:?})"),
+            Self::Cont(m) => write!(f, "Cont({m:?})"),
             Self::Watches(w, note, n) => {
                 write!(
                     f,
@@ -221,6 +228,8 @@ pub struct Bridge {
     tx: mpsc::UnboundedSender<Msg>,
     /// The model study calls go to, opened on first use.
     study_engine: std::sync::Arc<std::sync::Mutex<Option<StudyEngine>>>,
+    /// The open side chat.
+    side: cont::SideSlot,
 }
 
 impl Bridge {
@@ -236,6 +245,7 @@ impl Bridge {
                 rt,
                 tx,
                 study_engine: Default::default(),
+                side: Default::default(),
             },
             rx,
         ))
