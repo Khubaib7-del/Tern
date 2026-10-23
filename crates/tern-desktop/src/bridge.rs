@@ -175,6 +175,7 @@ impl std::fmt::Debug for Msg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connected(..) => f.write_str("Connected"),
+            Self::Swapped(_, failed) => write!(f, "Swapped(ok: {})", failed.is_none()),
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
@@ -286,11 +287,11 @@ impl Bridge {
     /// Opens a new chat (a draft until its first message) with the
     /// user's saved choices.
     pub fn connect(&self) {
-        self.connect_in(tern_agent::Harness::Research);
+        self.connect_harness(tern_agent::Harness::Research);
     }
 
     /// [`Bridge::connect`] for a harness: a new Research or Study draft.
-    pub fn connect_in(&self, harness: tern_agent::Harness) {
+    pub fn connect_harness(&self, harness: tern_agent::Harness) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let prefs = tokio::task::spawn_blocking(Preferences::load)
