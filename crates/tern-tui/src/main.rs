@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use tern_agent::doctor::Status;
-use tern_agent::providers::{self, ModelKind, SecretStore};
+use tern_agent::providers::{self, SecretStore};
 use tern_core::SecretString;
 
 #[derive(Debug, Parser)]
@@ -403,10 +403,11 @@ enum ProviderCmd {
         #[arg(long)]
         base_url: Option<String>,
     },
-    /// List the models this key can use.
+    /// List every model this key can use, grouped by category (chat,
+    /// vision, speech, OCR, image, embeddings, safety, other).
     Models {
         id: String,
-        /// Include embedding, audio, image, and moderation models.
+        /// Also list deprecated and retired models.
         #[arg(long)]
         all: bool,
         #[arg(long)]
@@ -880,8 +881,9 @@ async fn run_provider(cmd: ProviderCmd) -> Result<(), String> {
             let mut models = providers::models(&id, store, base_url.as_deref())
                 .await
                 .map_err(|e| e.to_string())?;
+            let retired = models.iter().filter(|m| m.is_retired()).count();
             if !all {
-                models.retain(|m| m.kind == ModelKind::Chat);
+                models.retain(|m| !m.is_retired());
             }
             if json {
                 println!(
@@ -890,25 +892,43 @@ async fn run_provider(cmd: ProviderCmd) -> Result<(), String> {
                 );
                 return Ok(());
             }
-            for m in &models {
-                let ctx = m
-                    .context_window
-                    .map(|c| format!("  {}k context", c / 1000))
-                    .unwrap_or_default();
-                let name = m
-                    .display_name
-                    .as_deref()
-                    .map(|n| format!("  ({n})"))
-                    .unwrap_or_default();
-                println!("  {}{name}{ctx}", m.id);
+            for cat in providers::Category::ALL {
+                let group: Vec<_> = models.iter().filter(|m| m.category() == cat).collect();
+                if group.is_empty() {
+                    continue;
+                }
+                println!("{} ({})", cat.label(), group.len());
+                for m in group {
+                    let ctx = m
+                        .context_window
+                        .filter(|_| m.can_chat())
+                        .map(|c| format!("  {}k context", c / 1000))
+                        .unwrap_or_default();
+                    let name = Some(m.label())
+                        .filter(|n| *n != m.id)
+                        .map(|n| format!("  ({n})"))
+                        .unwrap_or_default();
+                    let badges: Vec<&str> = m.capabilities.iter().map(|c| c.badge()).collect();
+                    let aliases = if m.aliases.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  also {}", m.aliases.join(", "))
+                    };
+                    let gone = if m.is_retired() { "  [retired]" } else { "" };
+                    println!(
+                        "  {}{name}{ctx}  [{}]{aliases}{gone}",
+                        m.id,
+                        badges.join(", ")
+                    );
+                }
             }
             println!(
-                "{} models{}.",
+                "{} models.{}",
                 models.len(),
-                if all {
-                    ""
+                if all || retired == 0 {
+                    String::new()
                 } else {
-                    " for chat (use --all for every kind)"
+                    format!(" {retired} deprecated or retired hidden (use --all).")
                 }
             );
             Ok(())

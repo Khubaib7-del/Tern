@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
-tern-agent.workspace = true
+tern-agent = { workspace = true, features = ["mic"] }
 gpui-kit = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 

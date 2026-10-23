@@ -44,6 +44,7 @@ pub mod highlight;
 pub mod ledger;
 pub mod library;
 pub mod mcp;
+pub mod media;
 pub mod mention;
 pub mod policy;
 pub mod prefs;
@@ -108,6 +109,11 @@ pub use workspace::{TurnMode, Workspace};
 /// OS details the front ends need, from `tern-platform` (front ends depend
 /// on `tern-agent` and `tern-core` only).
 pub mod platform {
+    /// Speech WAV helpers for the mic.
+    pub use tern_platform::audio;
+    /// The microphone (the `mic` feature).
+    #[cfg(feature = "mic")]
+    pub use tern_platform::mic;
     pub use tern_platform::motion::os_reduces_motion;
     pub use tern_platform::open::{file_url, open};
     pub use tern_platform::os_name;

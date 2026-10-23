@@ -253,8 +253,7 @@ impl Provider {
                 let Some(found) = found.into_iter().next() else {
                     continue;
                 };
-                let same =
-                    |m: &ModelInfo| m.id == found.id || found.aliases.iter().any(|a| *a == m.id);
+                let same = |m: &ModelInfo| m.id == found.id || found.aliases.contains(&m.id);
                 if let Some(m) = models.iter_mut().find(|m| same(m)) {
                     if found.source != crate::model::Source::Table {
                         m.capabilities = found.capabilities.clone();

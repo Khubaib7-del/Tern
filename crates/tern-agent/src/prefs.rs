@@ -66,6 +66,15 @@ pub struct Preferences {
     pub effort: Option<String>,
     /// Models starred in the composer's picker, as `provider/model`.
     pub favourite_models: Vec<String>,
+    /// The model the mic sends speech to, as `provider/model`. `None`
+    /// picks a listed speech-to-text model (`docs/models.md`).
+    pub default_stt_model: Option<String>,
+    /// The model that describes pictures for a chat model that cannot
+    /// see, as `provider/model`. `None` picks a listed vision model.
+    pub default_vision_model: Option<String>,
+    /// The model that reads text out of pictures when no vision model is
+    /// chosen, as `provider/model`. `None` picks a listed OCR model.
+    pub default_ocr_model: Option<String>,
     /// The desktop's panel widths in pixels, after a drag. `None` is the
     /// default width.
     pub sidebar_width: Option<u32>,
@@ -283,6 +292,9 @@ mod tests {
             collapsed_projects: vec!["p1".into()],
             effort: Some("high".into()),
             favourite_models: vec!["mistral/mistral-large-latest".into()],
+            default_stt_model: Some("groq/whisper-large-v3-turbo".into()),
+            default_vision_model: None,
+            default_ocr_model: Some("mistral/mistral-ocr-latest".into()),
             sidebar_width: Some(300),
             right_pane_width: Some(420),
             theme: Some("light".into()),

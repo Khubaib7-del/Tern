@@ -64,6 +64,8 @@ const RAW_PAYLOAD_CHARS: usize = 4_000;
 pub struct Workspace {
     model: Model,
     bridge: Bridge,
+    /// The mic, while it records.
+    recording: Option<tern_agent::platform::mic::Recording>,
     session: Option<Box<ChatSession>>,
     current: Option<SessionId>,
     /// The open chats.
@@ -435,6 +437,7 @@ impl Workspace {
             arg_subs: Vec::new(),
             picker_input,
             link_input,
+            recording: None,
             queued: None,
             reveal_at: None,
             centre_w: 800.,
@@ -650,6 +653,7 @@ impl Workspace {
             Msg::Providers(rows, prefs, keychain) => {
                 self.model.providers.load(rows, *prefs, keychain);
                 self.refresh_models();
+                self.refresh_catalog();
             }
             Msg::Checked(kind, id, result) => {
                 let ok = result.is_ok();
@@ -664,6 +668,9 @@ impl Workspace {
                     } else if kind == Kind::Model {
                         self.refresh_models();
                     }
+                    if kind == Kind::Model {
+                        self.refresh_catalog();
+                    }
                 }
             }
             Msg::Removed(kind, id, result) => {
@@ -673,16 +680,48 @@ impl Workspace {
                     self.reconnect();
                 }
                 self.refresh_models();
+                self.refresh_catalog();
             }
             Msg::Models(id, result) => {
                 if let Ok(list) = &result {
-                    let n = list
-                        .iter()
-                        .filter(|m| m.kind == tern_agent::providers::ModelKind::Chat)
-                        .count();
+                    let n = list.iter().filter(|m| !m.is_retired()).count();
                     self.model.composer.models_loaded(id, n);
+                    // A fresh listing also refreshes the routing's copy.
+                    let c = &mut self.model.catalog;
+                    match c.providers.iter_mut().find(|(p, _)| *p == id) {
+                        Some(entry) => entry.1 = Ok(list.clone()),
+                        None => c.providers.push((id, Ok(list.clone()))),
+                    }
                 }
                 self.model.providers.models_loaded(id, result)
+            }
+            Msg::Catalog(c) => {
+                for (id, r) in &c.providers {
+                    if let Ok(list) = r {
+                        let n = list.iter().filter(|m| !m.is_retired()).count();
+                        self.model.composer.models_loaded(id, n);
+                    }
+                }
+                self.model.catalog = *c;
+            }
+            Msg::Transcribed(result) => {
+                self.model.transcribing = false;
+                match result {
+                    Ok(text) => {
+                        let now = self.composer.read(cx).value().to_string();
+                        let joined = if now.trim().is_empty() {
+                            text
+                        } else {
+                            format!("{} {text}", now.trim_end())
+                        };
+                        self.composer
+                            .update(cx, |c, cx| c.set_value(joined, window, cx));
+                    }
+                    Err(e) => self
+                        .model
+                        .entries
+                        .push(Entry::Notice(format!("Voice input failed: {e}"))),
+                }
             }
             Msg::Decision(m) => match *m {
                 crate::bridge::DecisionMsg::Loaded(rows, prefs, err) => {
@@ -769,7 +808,36 @@ impl Workspace {
             Some(prefix) => format!("{prefix}\n\n{text}"),
             None => text,
         };
-        session.attach_images(std::mem::take(&mut self.model.outgoing_images));
+        let images = std::mem::take(&mut self.model.outgoing_images);
+        let mut read_first = None;
+        if !images.is_empty() {
+            let provider = self.provider_id();
+            let chat_model = self
+                .model
+                .connection
+                .as_ref()
+                .map(|c| c.model.clone())
+                .unwrap_or_default();
+            match tern_agent::media::plan_images(
+                &self.model.catalog,
+                &provider,
+                &chat_model,
+                &self.model.providers.prefs,
+            ) {
+                tern_agent::media::ImagePlan::Send => session.attach_images(images),
+                tern_agent::media::ImagePlan::Read { via, job } => {
+                    read_first = Some(crate::bridge::ReadFirst {
+                        via,
+                        job,
+                        images,
+                        chat_model,
+                    })
+                }
+                tern_agent::media::ImagePlan::Missing(why) => {
+                    self.model.entries.push(Entry::Notice(why))
+                }
+            }
+        }
         self.model.steering = Some(session.steering());
         self.model.resume_offer = None;
         self.cancel = CancelFlag::default();
@@ -777,7 +845,8 @@ impl Workspace {
             self.deep_control = tern_agent::DeepControl::new(self.cancel.clone());
             self.bridge.deep(session, text, self.deep_control.clone());
         } else {
-            self.bridge.send(session, text, self.cancel.clone());
+            self.bridge
+                .send(session, text, self.cancel.clone(), read_first);
         }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
@@ -976,7 +1045,26 @@ impl Workspace {
     }
 
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        // Audio files go to the speech-to-text model; the transcript joins
+        // the composer like spoken words.
+        let (audio, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| {
+            p.file_name()
+                .is_some_and(|n| tern_agent::media::is_audio_name(&n.to_string_lossy()))
+        });
+        for a in audio {
+            match self.stt_model() {
+                Some(via) => {
+                    self.model.transcribing = true;
+                    self.bridge.transcribe_file(via, a);
+                }
+                None => self.model.entries.push(Entry::Notice(format!(
+                    "{} is audio. Tern transcribes audio once a provider that lists a speech-to-text model is set up (Groq or OpenAI Whisper, Mistral Voxtral).",
+                    a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                ))),
+            }
+        }
         if paths.is_empty() {
+            cx.notify();
             return;
         }
         self.model.attaching += paths.len();
@@ -1478,6 +1566,69 @@ impl Workspace {
     }
 
     /// Loads the model list of the default provider when it is not loaded.
+    /// Lists every usable provider's models for the routing (the mic and
+    /// pictures the chat model cannot see).
+    fn refresh_catalog(&mut self) {
+        let ids: Vec<&'static str> = self
+            .model
+            .providers
+            .section(Kind::Model)
+            .filter(|r| r.usable())
+            .map(|r| r.id)
+            .collect();
+        if ids.is_empty() {
+            self.model.catalog = Default::default();
+            return;
+        }
+        self.bridge.catalog(ids);
+    }
+
+    /// The speech-to-text model the mic uses: the saved choice, else the
+    /// best listed one (the chat's provider first).
+    fn stt_model(&self) -> Option<tern_agent::media::ModelRef> {
+        let near = self.model.providers.default_id(Kind::Model);
+        self.model.catalog.pick(
+            tern_agent::media::Job::Transcribe,
+            self.model.providers.prefs.default_stt_model.as_deref(),
+            near,
+        )
+    }
+
+    /// Starts recording, or stops and sends the speech to the
+    /// speech-to-text model; the transcript lands in the composer.
+    fn toggle_mic(&mut self, cx: &mut Context<Self>) {
+        if let Some(rec) = self.recording.take() {
+            match (rec.stop(), self.stt_model()) {
+                (Ok(wav), Some(via)) => {
+                    self.model.transcribing = true;
+                    self.bridge.transcribe(via, wav, "speech.wav".into());
+                }
+                (Ok(_), None) => self.model.entries.push(Entry::Notice(
+                    "No speech-to-text model is available any more, so the recording was dropped."
+                        .into(),
+                )),
+                (Err(e), _) => self.model.entries.push(Entry::Notice(e)),
+            }
+        } else if self.stt_model().is_some() {
+            match tern_agent::platform::mic::Recording::start() {
+                Ok(r) => self.recording = Some(r),
+                Err(e) => self.model.entries.push(Entry::Notice(e)),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Esc while recording: stop and throw the audio away.
+    pub(crate) fn cancel_recording(&mut self) -> bool {
+        match self.recording.take() {
+            Some(r) => {
+                r.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
     fn refresh_models(&mut self) {
         let Some(id) = self.model.providers.default_id(Kind::Model) else {
             self.model.providers.models = None;
@@ -2592,13 +2743,42 @@ impl Workspace {
     }
 
     /// Voice input stays locked until a transcription model is set up.
-    fn mic_button(&self, _p: Palette) -> impl IntoElement {
+    /// The mic: on when a speech-to-text model is listed on any configured
+    /// provider. Click to record, click again (or Esc) to stop; the speech
+    /// goes to that model and the transcript lands in the composer.
+    fn mic_button(&self, _p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let via = self.stt_model();
+        let recording = self.recording.is_some();
+        let (icon, tip, enabled): (AssetIcon, SharedString, bool) = match (&via, recording) {
+            (_, true) => (
+                AssetIcon::CircleStop,
+                "Recording. Click or press Esc to stop".into(),
+                true,
+            ),
+            (None, false) => (
+                AssetIcon::MicOff,
+                "Voice input needs a speech-to-text model. Add a key for a provider that lists one (Groq or OpenAI Whisper, Mistral Voxtral).".into(),
+                false,
+            ),
+            (Some(v), false) if self.model.transcribing => (
+                AssetIcon::Mic,
+                format!("Transcribing with {v}…").into(),
+                false,
+            ),
+            (Some(v), false) => (
+                AssetIcon::Mic,
+                format!("Speak instead of typing (transcribed by {v})").into(),
+                true,
+            ),
+        };
         Button::new("mic")
-            .icon(AssetIcon::MicOff)
+            .icon(icon)
             .ghost()
             .small()
-            .disabled(true)
-            .tooltip("Voice input needs a transcription model. Set one in Settings › Voice.")
+            .selected(recording)
+            .disabled(!enabled)
+            .tooltip(tip)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_mic(cx)))
     }
 
     /// The composer's context ring: fills as the window does, turns amber

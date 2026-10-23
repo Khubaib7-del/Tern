@@ -1,6 +1,6 @@
 [package]
 name = "tern-platform"
-description = "OS integration for Tern: keychains, app data paths, disk checks, the reduced-motion setting, the file opener."
+description = "OS integration for Tern: keychains, app data paths, disk checks, the reduced-motion setting, the file opener, the microphone."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,13 @@ directories.workspace = true
 fs4.workspace = true
 thiserror.workspace = true
 url.workspace = true
+
+# The microphone (`mic` feature, enabled by the desktop app through
+# tern-agent): cpal, Apache-2.0. On Linux it needs ALSA (libasound2-dev).
+cpal = { workspace = true, optional = true }
+
+[features]
+mic = ["dep:cpal"]
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -144,7 +144,7 @@ pub enum Source {
     Listing,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ModelInfo {
     pub id: String,
     pub display_name: Option<String>,

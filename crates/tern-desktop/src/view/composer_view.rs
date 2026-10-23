@@ -236,6 +236,31 @@ impl Workspace {
             return;
         }
         self.model.composer.close();
+        // A voice, OCR, image, or embedding model never becomes the chat
+        // model: the notice says what it does, and the chat keeps its model.
+        if let Some(info) = composer::Composer::info_of(&self.model.providers, &model) {
+            let key = format!("{provider}/{}", info.id);
+            match composer::pick_outcome(provider, info) {
+                composer::PickOutcome::Chat => {}
+                composer::PickOutcome::Mic(why) => {
+                    self.save_ui_prefs(|p| p.default_stt_model = Some(key.clone()));
+                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    cx.notify();
+                    return;
+                }
+                composer::PickOutcome::Ocr(why) => {
+                    self.save_ui_prefs(|p| p.default_ocr_model = Some(key.clone()));
+                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    cx.notify();
+                    return;
+                }
+                composer::PickOutcome::Refused(why) => {
+                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         let current = self.model.providers.default_id(Kind::Model);
         if current != Some(provider) && !self.model.providers.choose(Kind::Model, provider) {
             return;
@@ -284,7 +309,7 @@ impl Workspace {
     }
 
     /// The catalog id of the open chat's provider.
-    fn provider_id(&self) -> String {
+    pub(super) fn provider_id(&self) -> String {
         self.session
             .as_ref()
             .map(|s| s.provider_id().to_owned())
@@ -543,6 +568,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let key = e.keystroke.key.as_str();
+        if key == "escape" && self.cancel_recording() {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if key == "escape" && (self.model.composer.menu.is_some() || self.model.composer.link_open)
         {
             self.model.composer.close();
@@ -625,7 +655,7 @@ impl Workspace {
                         cx.listener(|this, _, window, cx| this.insert_trigger('/', window, cx)),
                     ),
             )
-            .child(self.mic_button(p))
+            .child(self.mic_button(p, cx))
             .into_any_element()
     }
 
@@ -1362,97 +1392,53 @@ impl Workspace {
                 .text_color(p.muted)
                 .child("No model matches.")
                 .into_any_element(),
-            (Some(prov), Some(rows)) => div()
-                .id("picker-models")
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .overflow_y_scroll()
-                .children(rows.into_iter().take(300).enumerate().map(|(i, r)| {
-                    let show_star = r.favourite || hovered.as_deref() == Some(r.id.as_str());
-                    let pick = r.id.clone();
-                    let hover = r.id.clone();
-                    let fav = r.id.clone();
-                    div()
-                        .id(("picker-model", i))
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_1p5()
-                        .h(px(26.))
-                        .flex_none()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .text_sm()
-                        .text_color(p.text)
-                        .hover(move |d| d.bg(p.hover))
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .flex_none()
-                                .when(r.current, |d| d.child(icon(AssetIcon::Check, p.text))),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(r.id.clone())),
-                        )
-                        .child(
-                            div()
-                                .id(("picker-star", i))
-                                .w(px(14.))
-                                .flex_none()
-                                .text_color(if r.favourite { p.text } else { p.faint })
-                                .when(show_star, |d| {
-                                    d.child(
-                                        gpui_kit::component::Icon::new(if r.favourite {
-                                            AssetIcon::StarFill
-                                        } else {
-                                            AssetIcon::Star
-                                        })
-                                        .xsmall(),
-                                    )
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    let mut favs =
-                                        this.model.providers.prefs.favourite_models.clone();
-                                    composer::toggle_favourite(&mut favs, prov, &fav);
-                                    this.save_ui_prefs(|p| p.favourite_models = favs.clone());
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            div()
-                                .w(px(36.))
-                                .flex_none()
-                                .text_xs()
-                                .text_right()
-                                .text_color(p.faint)
-                                .children(r.context.map(SharedString::from)),
-                        )
-                        .on_hover(cx.listener(move |this, h: &bool, _, cx| {
-                            let picker = &mut this.model.composer.picker;
-                            if *h {
-                                picker.hovered = Some(hover.clone());
-                            } else if picker.hovered.as_deref() == Some(hover.as_str()) {
-                                picker.hovered = None;
-                            }
-                            cx.notify();
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_model(prov, pick.clone(), cx)
-                        }))
-                }))
-                .into_any_element(),
+            (Some(prov), Some(rows)) => {
+                let mut items: Vec<AnyElement> = Vec::new();
+                let mut section = None;
+                for (i, r) in rows.into_iter().take(400).enumerate() {
+                    if section != Some(r.category) {
+                        section = Some(r.category);
+                        items.push(picker_section(r.category, p));
+                    }
+                    items.push(self.picker_row(i, prov, r, hovered.as_deref(), p, cx));
+                }
+                div()
+                    .id("picker-models")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .children(items)
+                    .into_any_element()
+            }
         };
+        let retired = c.retired_count(st);
+        let show_retired = c.picker.show_retired;
+        let retired_toggle = (retired > 0).then(|| {
+            div()
+                .id("picker-retired")
+                .px_1p5()
+                .text_xs()
+                .text_color(p.faint)
+                .cursor_pointer()
+                .hover(|d| d.text_color(p.text))
+                .child(SharedString::from(if show_retired {
+                    "Hide retired".to_owned()
+                } else {
+                    format!("Show retired ({retired})")
+                }))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let p = &mut this.model.composer.picker;
+                    p.show_retired = !p.show_retired;
+                    cx.notify();
+                }))
+        });
         // The small card beside the popover for the hovered model.
         let card = hovered.map(|m| {
             let hint = composer::model_hint(&m);
             let ctx = composer::Composer::context_of(st, &m);
+            let info = composer::Composer::info_of(st, &m).cloned();
             let think = shown
                 .map(|prov| tern_agent::thinking_support(prov, &m))
                 .unwrap_or(tern_agent::Thinking::Unsupported);
@@ -1487,20 +1473,48 @@ impl Workspace {
                             None => "Window size not known".to_owned(),
                         })),
                 )
-                .child(scale("Speed", hint.speed, p))
-                .child(scale("Intelligence", hint.intelligence, p))
-                .child(
+                .when(info.as_ref().is_none_or(|i| i.can_chat()), |d| {
+                    d.child(scale("Speed", hint.speed, p))
+                        .child(scale("Intelligence", hint.intelligence, p))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(
+                                    match (think.visible(), think.adjustable()) {
+                                        (false, _) => "No thinking control",
+                                        (true, false) => "Always thinks",
+                                        (true, true) => "Thinking effort adjustable",
+                                    },
+                                )),
+                        )
+                })
+                .children(info.as_ref().map(|i| {
+                    let caps: Vec<&str> = i.capabilities.iter().map(|c| c.badge()).collect();
+                    div()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(SharedString::from(if caps.is_empty() {
+                            "Not used by Tern".to_owned()
+                        } else {
+                            format!("Can: {}", caps.join(", "))
+                        }))
+                }))
+                .children(info.as_ref().filter(|i| !i.aliases.is_empty()).map(|i| {
                     div()
                         .text_xs()
                         .text_color(p.faint)
-                        .child(SharedString::from(
-                            match (think.visible(), think.adjustable()) {
-                                (false, _) => "No thinking control",
-                                (true, false) => "Always thinks",
-                                (true, true) => "Thinking effort adjustable",
-                            },
-                        )),
-                )
+                        .child(SharedString::from(format!(
+                            "Also: {}",
+                            i.aliases.join(", ")
+                        )))
+                }))
+                .children(info.as_ref().and_then(|i| i.not_chat_reason()).map(|r| {
+                    div()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(SharedString::from(r))
+                }))
         });
         div()
             .id("model-picker")
@@ -1532,7 +1546,8 @@ impl Workspace {
                             .gap_1()
                             .p_1()
                             .child(Input::new(&self.picker_input).small())
-                            .child(list),
+                            .child(list)
+                            .children(retired_toggle),
                     ),
             )
             .children(card)
@@ -2221,6 +2236,143 @@ impl Workspace {
 }
 
 /// "Show all" while the reveal is behind the stream.
+/// A section title in the model picker ("Speech").
+fn picker_section(c: tern_agent::providers::Category, p: Palette) -> AnyElement {
+    div()
+        .px_1p5()
+        .pt_1p5()
+        .pb(px(2.))
+        .flex_none()
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(p.faint)
+        .child(c.label())
+        .into_any_element()
+}
+
+impl Workspace {
+    /// One model line: tick, name (and id when the provider names it),
+    /// badges, star, window size. A model that cannot chat is drawn muted;
+    /// clicking it routes it to its own job instead.
+    fn picker_row(
+        &self,
+        i: usize,
+        prov: &'static str,
+        r: composer::PickerRow,
+        hovered: Option<&str>,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let show_star = r.favourite || hovered == Some(r.id.as_str());
+        let pick = r.id.clone();
+        let hover = r.id.clone();
+        let fav = r.id.clone();
+        let badges: Vec<&str> = r.badges.iter().take(2).copied().collect();
+        div()
+            .id(("picker-model", i))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_1p5()
+            .h(px(26.))
+            .flex_none()
+            .rounded_md()
+            .cursor_pointer()
+            .text_sm()
+            .text_color(if r.chat && !r.retired {
+                p.text
+            } else {
+                p.muted
+            })
+            .hover(move |d| d.bg(p.hover))
+            .child(
+                div()
+                    .w(px(14.))
+                    .flex_none()
+                    .when(r.current, |d| d.child(icon(AssetIcon::Check, p.text))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_baseline()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(r.label.clone().unwrap_or(r.id.clone()))),
+                    )
+                    .when(r.label.is_some(), |d| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(r.id.clone())),
+                        )
+                    }),
+            )
+            .children(badges.into_iter().map(|b| {
+                div()
+                    .flex_none()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(b)
+            }))
+            .child(
+                div()
+                    .id(("picker-star", i))
+                    .w(px(14.))
+                    .flex_none()
+                    .text_color(if r.favourite { p.text } else { p.faint })
+                    .when(show_star, |d| {
+                        d.child(
+                            gpui_kit::component::Icon::new(if r.favourite {
+                                AssetIcon::StarFill
+                            } else {
+                                AssetIcon::Star
+                            })
+                            .xsmall(),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        let mut favs = this.model.providers.prefs.favourite_models.clone();
+                        composer::toggle_favourite(&mut favs, prov, &fav);
+                        this.save_ui_prefs(|p| p.favourite_models = favs.clone());
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .w(px(36.))
+                    .flex_none()
+                    .text_xs()
+                    .text_right()
+                    .text_color(p.faint)
+                    .children(r.context.map(SharedString::from)),
+            )
+            .on_hover(cx.listener(move |this, h: &bool, _, cx| {
+                let picker = &mut this.model.composer.picker;
+                if *h {
+                    picker.hovered = Some(hover.clone());
+                } else if picker.hovered.as_deref() == Some(hover.as_str()) {
+                    picker.hovered = None;
+                }
+                cx.notify();
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| this.choose_model(prov, pick.clone(), cx)))
+            .into_any_element()
+    }
+}
+
 pub(super) fn show_all(p: Palette, cx: &mut Context<Workspace>) -> AnyElement {
     div()
         .id("show-all")

@@ -300,6 +300,11 @@ pub struct Model {
     /// Pictures from the attachments of the turn just started, taken by the
     /// window when it hands the message to the session.
     pub outgoing_images: Vec<tern_agent::ImageInput>,
+    /// Every configured provider's models, for routing the mic and
+    /// pictures (`tern_agent::media`).
+    pub catalog: tern_agent::media::Catalog,
+    /// Speech is on its way to the speech-to-text model.
+    pub transcribing: bool,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
     /// The `/` menu over the composer, while a command is being typed.
@@ -471,6 +476,8 @@ impl Model {
             icons: HashMap::new(),
             attachments: Vec::new(),
             outgoing_images: Vec::new(),
+            catalog: Default::default(),
+            transcribing: false,
             mention: None,
             slash: None,
             arg_form: None,
