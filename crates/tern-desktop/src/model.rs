@@ -1476,6 +1476,9 @@ mod tests {
             harness: Harness::Research,
             created_at: String::new(),
             events: 3,
+            parent: None,
+            anchor: None,
+            plan: None,
         });
         m.rename(id, "Attention paper");
         assert_eq!(m.sessions[0].title, "Attention paper");
