@@ -25,7 +25,7 @@ pub mod stream;
 pub mod usage;
 mod wire;
 
-pub use catalog::{CATALOG, ProviderSpec, Wire, find};
+pub use catalog::{CATALOG, DEFAULT_MAX_OUTPUT, ProviderSpec, Wire, default_max_output, find};
 pub use chat::{ChatMessage, ChatRequest, ChatResponse, IMAGE_CHARS, ImageInput, Role};
 pub use client::{ProbeReport, Provider};
 pub use error::{ProviderError, ProviderResult};

@@ -132,45 +132,135 @@ impl EventSink for MemorySink {
 
 /// Writes events to the Tern database, redacted, in order.
 #[derive(Debug)]
-pub struct StoreSink(Mutex<Store>);
+pub struct StoreSink {
+    store: Mutex<Store>,
+    /// A chat that has no row yet: it is written, with its opening
+    /// event, just before the first event of its own.
+    draft: Mutex<Option<Draft>>,
+}
+
+/// A session that exists only in memory until something happens in it.
+#[derive(Debug)]
+struct Draft {
+    id: SessionId,
+    project: tern_core::ProjectId,
+    harness: tern_store::Harness,
+    title: String,
+    opened: EventEnvelope,
+}
 
 impl StoreSink {
     pub fn new(store: Store) -> Self {
-        Self(Mutex::new(store))
+        Self {
+            store: Mutex::new(store),
+            draft: Mutex::new(None),
+        }
+    }
+
+    /// Holds session `id` back: its row and `opened` event are written
+    /// only when the first other event for it is recorded, so opening a
+    /// chat and leaving it saves nothing.
+    pub fn defer_session(
+        &self,
+        id: SessionId,
+        project: tern_core::ProjectId,
+        harness: tern_store::Harness,
+        title: &str,
+        opened: EventEnvelope,
+    ) {
+        if let Ok(mut d) = self.draft.lock() {
+            *d = Some(Draft {
+                id,
+                project,
+                harness,
+                title: title.to_owned(),
+                opened,
+            });
+        }
+    }
+
+    /// Whether session `id` is still a draft with no row.
+    pub fn is_draft(&self, id: SessionId) -> bool {
+        self.draft
+            .lock()
+            .map(|d| d.as_ref().is_some_and(|d| d.id == id))
+            .unwrap_or(false)
+    }
+
+    /// Writes the draft session's row now, if it is still a draft.
+    pub fn materialize(&self) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "the store lock was poisoned".to_owned())?;
+        self.materialize_in(&mut store)
+    }
+
+    fn materialize_in(&self, store: &mut Store) -> Result<(), String> {
+        let mut draft = self
+            .draft
+            .lock()
+            .map_err(|_| "the draft lock was poisoned".to_owned())?;
+        if let Some(d) = draft.take() {
+            store
+                .create_session_with_id(d.id, d.project, d.harness, &d.title)
+                .map_err(|e| e.to_string())?;
+            store.append(&d.opened).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// Runs `f` with the store (for small reads and renames between turns).
     pub fn with_store<T>(&self, f: impl FnOnce(&Store) -> T) -> Result<T, String> {
         let guard = self
-            .0
+            .store
             .lock()
             .map_err(|_| "the store lock was poisoned".to_owned())?;
         Ok(f(&guard))
     }
 
-    /// [`StoreSink::with_store`] for writes.
+    /// [`StoreSink::with_store`] for writes. A draft session is written
+    /// first, so writes about it find its row.
     pub fn with_store_mut<T>(&self, f: impl FnOnce(&mut Store) -> T) -> Result<T, String> {
         let mut guard = self
-            .0
+            .store
             .lock()
             .map_err(|_| "the store lock was poisoned".to_owned())?;
+        self.materialize_in(&mut guard)?;
         Ok(f(&mut guard))
     }
 
     pub fn into_inner(self) -> Store {
-        self.0.into_inner().expect("store lock")
+        self.store.into_inner().expect("store lock")
     }
 }
 
 impl EventSink for StoreSink {
     fn record(&self, event: EventEnvelope) -> Result<EventEnvelope, String> {
-        self.0
+        let mut store = self
+            .store
             .lock()
-            .map_err(|_| "the store lock was poisoned".to_owned())?
-            .append(&event)
-            .map_err(|e| e.to_string())
+            .map_err(|_| "the store lock was poisoned".to_owned())?;
+        if self.is_draft(event.session_id) {
+            self.materialize_in(&mut store)?;
+        }
+        store.append(&event).map_err(|e| e.to_string())
     }
 }
+
+/// Whether a provider's finish reason means the answer hit the output
+/// limit and was cut off (`length`, `max_tokens`, `MAX_TOKENS`).
+pub fn is_length_stop(finish_reason: Option<&str>) -> bool {
+    finish_reason.is_some_and(|r| {
+        matches!(
+            r.to_ascii_lowercase().as_str(),
+            "length" | "max_tokens" | "max_output_tokens" | "model_length"
+        )
+    })
+}
+
+/// The message a Continue sends after an answer was cut off.
+pub const CONTINUE_PROMPT: &str = "Your last answer was cut off at the length limit. Continue exactly where it stopped, without repeating what you already wrote.";
 
 /// Limits for one turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -893,4 +983,17 @@ fn truncate(s: &str, limit: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+#[cfg(test)]
+mod length_tests {
+    #[test]
+    fn length_stops_are_spotted_across_providers() {
+        assert!(super::is_length_stop(Some("length")));
+        assert!(super::is_length_stop(Some("max_tokens")));
+        assert!(super::is_length_stop(Some("MAX_TOKENS")));
+        assert!(!super::is_length_stop(Some("stop")));
+        assert!(!super::is_length_stop(Some("end_turn")));
+        assert!(!super::is_length_stop(None));
+    }
 }

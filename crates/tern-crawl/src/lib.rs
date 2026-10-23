@@ -30,4 +30,6 @@ pub use fetch::{FetchError, Fetcher, Page};
 pub use icon::{SourceIcon, TERN_CRAWL, TERN_READER, site_of};
 pub use pdf::{PdfError, PdfText};
 pub use robots::Robots;
-pub use search::{SEARCH_CATALOG, SearchClient, SearchError, SearchHit, SearchSpec, find_search};
+pub use search::{
+    KEYLESS_SEARCH, SEARCH_CATALOG, SearchClient, SearchError, SearchHit, SearchSpec, find_search,
+};

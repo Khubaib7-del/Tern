@@ -22,6 +22,10 @@ use thiserror::Error;
 
 pub use schema::SCHEMA_VERSION;
 
+/// SQL: session `s` has an event other than being opened or reopened.
+const HAS_CONTENT: &str = "EXISTS (SELECT 1 FROM events c WHERE c.session_id = s.id \
+     AND c.type NOT IN ('session.opened', 'session.resumed'))";
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
@@ -176,11 +180,35 @@ impl Store {
             return Err(StoreError::UnknownProject(project));
         }
         let id = SessionId::new();
+        self.create_session_with_id(id, project, harness, title)?;
+        Ok(id)
+    }
+
+    /// [`Store::create_session`] with an id chosen earlier (a chat that
+    /// was a draft until its first message).
+    pub fn create_session_with_id(
+        &self,
+        id: SessionId,
+        project: ProjectId,
+        harness: Harness,
+        title: &str,
+    ) -> StoreResult<()> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM projects WHERE id = ?1",
+                [project.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(StoreError::UnknownProject(project));
+        }
         self.conn.execute(
-            "INSERT INTO sessions (id, project_id, harness, title, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO sessions (id, project_id, harness, title, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id.to_string(), project.to_string(), harness.as_str(), title, now()],
         )?;
-        Ok(id)
+        Ok(())
     }
 
     /// Renames a session (the chat title in the sidebar).
@@ -293,14 +321,27 @@ impl Store {
 
     /// The newest sessions first. Sessions with no events, and archived
     /// ones, are left out.
+    /// A chat that was only opened (its log holds nothing but
+    /// `session.opened` / `session.resumed`) is left out: it has no
+    /// message to show.
     pub fn recent_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
-        self.summaries("WHERE s.archived_at IS NULL AND ?1 = ?1", "", limit)
+        self.summaries(
+            &format!("WHERE s.archived_at IS NULL AND ?1 = ?1 AND {HAS_CONTENT}"),
+            "",
+            limit,
+        )
     }
 
     /// Every session, newest first, archived or not, with or without
     /// events (for the Library index).
+    /// Chats that were only opened are left out, but a planned
+    /// sub-session (no events yet, a parent) is kept.
     pub fn all_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
-        self.summaries_left("WHERE ?1 = ?1", "", limit)
+        self.summaries_left(
+            &format!("WHERE ?1 = ?1 AND (s.parent_id IS NOT NULL OR {HAS_CONTENT})"),
+            "",
+            limit,
+        )
     }
 
     fn summaries(&self, filter: &str, arg: &str, limit: usize) -> StoreResult<Vec<SessionSummary>> {

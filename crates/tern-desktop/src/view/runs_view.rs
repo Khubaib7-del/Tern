@@ -78,23 +78,31 @@ impl Workspace {
         )
     }
 
-    /// Over the composer when the chat's last run stopped and left a
-    /// checkpoint: what it had done, Resume, and Dismiss.
+    /// Over the composer when the chat's last run stopped or failed and
+    /// left something to pick up: what happened, where it stands (from the
+    /// workers as they are), when on the local clock, and Resume or Retry.
+    /// Lines wrap, and the buttons sit on their own row, so nothing leaves
+    /// the column.
     pub(super) fn resume_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let offer = self.model.resume_offer.as_ref()?;
         if self.model.is_busy() {
             return None;
         }
-        let saved = offer
-            .saved_at
-            .get(..16)
-            .map(|t| t.replace('T', " "))
-            .unwrap_or_default();
+        let action = offer.action();
+        let tooltip = match offer.kind {
+            tern_agent::OfferKind::Resume => {
+                "Pick up from the checkpoint without paying again for finished work"
+            }
+            tern_agent::OfferKind::Retry => {
+                "Run the failed workers again; workers that finished keep their notes"
+            }
+        };
+        let about_search = offer.about_search;
         Some(
             div()
                 .id("resume-banner")
                 .flex()
-                .items_center()
+                .flex_col()
                 .gap_2()
                 .px_2()
                 .py_2()
@@ -102,47 +110,75 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .bg(p.canvas)
-                .child(glyph("checkpoint", 14., p.text))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
                         .flex()
-                        .flex_col()
-                        .child(div().text_sm().text_color(p.text).truncate().child(
-                            SharedString::from(format!("This run stopped: {}", offer.question)),
-                        ))
-                        .child(div().text_xs().text_color(p.faint).truncate().child(
-                            SharedString::from(format!(
-                                "{} · saved {saved} UTC · finished work is kept",
-                                offer.progress
-                            )),
-                        )),
+                        .items_start()
+                        .gap_2()
+                        .min_w_0()
+                        .child(div().pt(px(2.)).child(glyph("checkpoint", 14., p.text)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(p.text)
+                                        .child(SharedString::from(offer.headline.clone())),
+                                )
+                                .child(div().text_xs().text_color(p.faint).child(
+                                    SharedString::from(format!(
+                                        "{} · saved {}",
+                                        offer.progress, offer.saved_at
+                                    )),
+                                )),
+                        ),
                 )
                 .child(
-                    Button::new("resume-run")
-                        .label("Resume")
-                        .primary()
-                        .small()
-                        .disabled(!self.model.can_send())
-                        .tooltip(
-                            "Pick up from the checkpoint without paying again for finished work",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_1()
+                        .when(about_search, |d| {
+                            d.child(
+                                Button::new("resume-fix-search")
+                                    .label("Fix search")
+                                    .ghost()
+                                    .small()
+                                    .tooltip("Set up or test web search in Providers")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.open_providers(cx)),
+                                    ),
+                            )
+                        })
+                        .child(
+                            Button::new("resume-dismiss")
+                                .label("Dismiss")
+                                .ghost()
+                                .small()
+                                .tooltip("Forget the stopped run")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(s) = &this.session {
+                                        let _ = s.discard_checkpoint();
+                                    }
+                                    this.model.resume_offer = None;
+                                    cx.notify();
+                                })),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.resume_run(cx))),
-                )
-                .child(
-                    Button::new("resume-dismiss")
-                        .label("Dismiss")
-                        .ghost()
-                        .small()
-                        .tooltip("Forget the stopped run")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(s) = &this.session {
-                                let _ = s.discard_checkpoint();
-                            }
-                            this.model.resume_offer = None;
-                            cx.notify();
-                        })),
+                        .child(
+                            Button::new("resume-run")
+                                .label(action)
+                                .primary()
+                                .small()
+                                .disabled(!self.model.can_send())
+                                .tooltip(tooltip)
+                                .on_click(cx.listener(|this, _, _, cx| this.resume_run(cx))),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -280,9 +316,13 @@ impl Workspace {
             if let Some(b) = l.budget {
                 detail.push_str(&format!(" of {}", compact(b.tokens)));
             }
-            detail.push_str(&format!(" · {} pages", l.pages));
+            detail.push_str(&format!(
+                " · {} page{} read",
+                l.pages,
+                if l.pages == 1 { "" } else { "s" }
+            ));
             if let Some(b) = l.budget {
-                detail.push_str(&format!(" of {}", b.pages));
+                detail.push_str(&format!(" (budget {})", b.pages));
             }
             detail.push_str(&format!(
                 " · {} searches · {:.1}s",

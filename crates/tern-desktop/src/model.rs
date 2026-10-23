@@ -334,21 +334,47 @@ pub struct Model {
     pub projects: crate::extensions::ProjectTree,
 }
 
-/// A stopped run the chat can pick up again.
+/// A stopped or failed run the chat can pick up again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeOffer {
     pub question: String,
-    /// "Deep research · workers running · 2 of 3 workers done".
+    /// "Run failed: …", "Stopped by you: …", "This run was interrupted: …".
+    pub headline: String,
+    /// "Deep research · 3 of 5 done · 2 failed", from the workers as they stand.
     pub progress: String,
+    /// When it was saved, on the local clock ("Fri 23 Oct, 9:31 PM").
     pub saved_at: String,
+    pub kind: tern_agent::OfferKind,
+    /// The cause points at web search: the banner offers to fix it.
+    pub about_search: bool,
 }
 
 impl ResumeOffer {
-    pub fn of(ck: &tern_agent::RunCheckpoint) -> Self {
-        Self {
-            question: ck.question(),
-            progress: ck.progress(),
-            saved_at: ck.saved_at.clone(),
+    /// The offer for a checkpoint, given how the run ended (`None` when the
+    /// chat was reopened and the run was found interrupted). `None` when
+    /// nothing can be picked up.
+    pub fn of(
+        ck: &tern_agent::RunCheckpoint,
+        ended: Option<(TurnState, Option<&str>)>,
+    ) -> Option<Self> {
+        let o = ck.offer(ended)?;
+        Some(Self {
+            about_search: o.about_search(),
+            question: o.question,
+            headline: o.headline,
+            progress: o.status,
+            saved_at: tern_agent::checkpoint::local_label(
+                &o.saved_at,
+                tern_agent::checkpoint::local_offset(),
+            ),
+            kind: o.kind,
+        })
+    }
+
+    pub fn action(&self) -> &'static str {
+        match self.kind {
+            tern_agent::OfferKind::Resume => "Resume",
+            tern_agent::OfferKind::Retry => "Retry failed workers",
         }
     }
 }
@@ -463,9 +489,15 @@ impl Model {
         true
     }
 
-    /// Sets the chat's resume banner from its checkpoint, if it has one.
-    pub fn set_resume_offer(&mut self, ck: Option<&tern_agent::RunCheckpoint>) {
-        self.resume_offer = ck.map(ResumeOffer::of);
+    /// Sets the chat's resume banner from its checkpoint, if it has one
+    /// and something in it can be picked up. `ended` is how the run just
+    /// ended; `None` when the chat was reopened.
+    pub fn set_resume_offer(
+        &mut self,
+        ck: Option<&tern_agent::RunCheckpoint>,
+        ended: Option<(TurnState, Option<&str>)>,
+    ) {
+        self.resume_offer = ck.and_then(|c| ResumeOffer::of(c, ended));
     }
 
     /// Starts resuming the chat's stopped run. `false` when it cannot now.
@@ -2411,9 +2443,11 @@ mod tests {
             saved_at: "2026-10-22T10:00:00Z".into(),
             ..RunCheckpoint::default()
         };
-        m.set_resume_offer(Some(&ck));
+        m.set_resume_offer(Some(&ck), Some((TurnState::Cancelled, None)));
         let offer = m.resume_offer.clone().unwrap();
         assert_eq!(offer.question, "What is a tern?");
+        assert_eq!(offer.headline, "Stopped by you: What is a tern?");
+        assert_eq!(offer.action(), "Resume");
         assert_eq!(offer.progress, "Quick turn · 0 tool results");
         assert!(m.start_resume());
         assert!(m.is_busy() && m.resume_offer.is_none());
@@ -2422,7 +2456,7 @@ mod tests {
             &outcome(TurnState::Completed, Some("Seabirds."), None),
             ctx(0, 0),
         );
-        m.set_resume_offer(Some(&ck));
+        m.set_resume_offer(Some(&ck), None);
         m.new_chat();
         assert!(m.resume_offer.is_none(), "a new chat has nothing to resume");
     }

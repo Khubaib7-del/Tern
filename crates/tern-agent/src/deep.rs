@@ -43,9 +43,12 @@ use tern_research::ledger::LedgerReason;
 use tern_research::steer::{SteerAction, parse_steer};
 
 use crate::checkpoint::{
-    CHECKPOINT_VERSION, CheckpointSink, DeepState, RunCheckpoint, RunMode, SavedPage, Stage,
-    WorkerCheckpoint, now_rfc3339,
+    CHECKPOINT_VERSION, CheckpointSink, DROPPED_BY_STEER, DeepState, RunCheckpoint, RunMode,
+    SavedPage, Stage, WorkerCheckpoint, now_rfc3339,
 };
+
+/// How a worker's note starts when every search it ran failed.
+pub const SEARCH_FAILED: &str = "search failed: ";
 use crate::engine::{Budget, CancelFlag, EventSink, Model, OnText, TurnOutcome};
 use crate::policy::{CallView, Decision, PolicyGate};
 use crate::sources::PageRef;
@@ -763,6 +766,7 @@ impl Deep<'_> {
                 self.restore(c)?
             }
             (None, Some(approver)) => {
+                self.preflight(&question).await?;
                 let plan = self
                     .plan_and_approve(fsm, &question, opts, approver, concurrency)
                     .await?;
@@ -875,16 +879,9 @@ impl Deep<'_> {
         // 4. One answer from every worker's notes.
         let merged = merge(&notes);
         if merged.sources.is_empty() {
-            let why: Vec<String> = notes
-                .iter()
-                .map(|w| format!("{}: {}", w.worker, w.status.label().to_lowercase()))
-                .collect();
             return Err(Stop {
                 state: TurnState::Failed,
-                reason: format!(
-                    "No worker found a page to cite ({}), so there is nothing to write from.",
-                    why.join(", ")
-                ),
+                reason: self.no_sources_reason(&notes),
             });
         }
         let used = self.used();
@@ -962,6 +959,96 @@ impl Deep<'_> {
         } else {
             (TurnState::Completed, done.text)
         })
+    }
+
+    /// One real search before the plan costs a model call: a search
+    /// service that does not answer stops the run here, with its own error.
+    async fn preflight(&self, question: &str) -> Result<(), Stop> {
+        let q: String = question.chars().take(200).collect();
+        let args = json!({"query": q, "preflight": true});
+        if self
+            .allow("web_search", Some(self.search.id()), &args)
+            .is_err()
+        {
+            // The gate decides per search later; nothing to check here.
+            return Ok(());
+        }
+        let found = self
+            .guard(None, None, self.search.search(&q, 1))
+            .await
+            .map_err(|_| Self::cancelled())?;
+        match found {
+            Ok(h) => {
+                let _ = self.record(
+                    "search.checked",
+                    format!(
+                        "Web search answered ({} result{})",
+                        h.len(),
+                        if h.len() == 1 { "" } else { "s" }
+                    ),
+                    json!({"service": self.search.id(), "results": h.len()}),
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.record(
+                    "tool.failed",
+                    format!("Web search isn't working: {e}"),
+                    json!({"tool": "web_search", "args": args, "error": e, "preflight": true}),
+                );
+                Err(Stop {
+                    state: TurnState::Failed,
+                    reason: format!(
+                        "Web search isn't working, so deep research did not start: {}. Fix it in Providers › Search, or turn off Deep research to answer without the web.",
+                        e.trim_end_matches('.')
+                    ),
+                })
+            }
+        }
+    }
+
+    /// Why a run with no source to cite failed, in words that point at the
+    /// fix: the search service's own error when every search failed.
+    fn no_sources_reason(&self, notes: &[WorkerNotes]) -> String {
+        let ck = self.ck.lock().expect("checkpoint lock");
+        let note_of = |n: usize| -> String {
+            ck.as_ref()
+                .and_then(|c| c.deep.as_ref())
+                .and_then(|d| d.workers.iter().find(|w| w.n == n))
+                .map(|w| w.note.clone())
+                .unwrap_or_default()
+        };
+        let notes_text: Vec<(usize, String)> = notes
+            .iter()
+            .map(|w| (w.worker, note_of(w.worker)))
+            .collect();
+        drop(ck);
+        let search_failed: Vec<&str> = notes_text
+            .iter()
+            .filter_map(|(_, t)| t.strip_prefix(SEARCH_FAILED))
+            .collect();
+        if !notes_text.is_empty() && search_failed.len() == notes_text.len() {
+            return format!(
+                "No search service answered: {}. Fix web search in Providers › Search, then retry.",
+                search_failed[0].trim_end_matches('.')
+            );
+        }
+        let why: Vec<String> = notes
+            .iter()
+            .zip(&notes_text)
+            .map(|(w, (_, t))| {
+                let label = w.status.label().to_lowercase();
+                if t.is_empty() {
+                    format!("{}: {label}", w.worker)
+                } else {
+                    format!("{}: {label}, {t}", w.worker)
+                }
+            })
+            .collect();
+        format!(
+            "No worker found a page to cite ({}), so there is nothing to write from.",
+            why.join("; ")
+        )
     }
 
     /// Steps 1 and 2: the plan, and the user's go-ahead. Nothing is
@@ -1086,7 +1173,19 @@ impl Deep<'_> {
     /// Takes a checkpoint back: logs the resume, the plan as approved, and
     /// each finished worker as it ended, so the run's views and report show
     /// the whole run.
-    fn restore(&self, c: RunCheckpoint) -> Result<(ResearchPlan, Vec<WorkerCheckpoint>), Stop> {
+    fn restore(&self, mut c: RunCheckpoint) -> Result<(ResearchPlan, Vec<WorkerCheckpoint>), Stop> {
+        // Failed workers (and ones stopped with nothing kept) are not
+        // finished work: they run again from the start.
+        let mut retried = Vec::new();
+        if let Some(d) = c.deep.as_mut() {
+            for w in d.workers.iter_mut().filter(|w| w.retryable()) {
+                retried.push(w.n);
+                w.reset();
+            }
+            if !retried.is_empty() && c.stage > Stage::Workers {
+                c.stage = Stage::Workers;
+            }
+        }
         let Some(d) = c.deep.clone() else {
             return Err(Stop {
                 state: TurnState::Failed,
@@ -1107,6 +1206,7 @@ impl Deep<'_> {
                           "model_calls": c.model_calls, "tool_calls": c.tool_calls},
                 "guidance": c.guidance,
                 "resumes": c.resumes + 1,
+                "retried": retried,
             }),
         )
         .map_err(Self::log_stop)?;
@@ -1451,7 +1551,7 @@ impl Deep<'_> {
             }
             Ok(()) => (WorkerStatus::Done, String::new()),
             Err(Halt::Cancelled) if dropped => {
-                (WorkerStatus::Cancelled, "dropped by your steer".to_owned())
+                (WorkerStatus::Cancelled, DROPPED_BY_STEER.to_owned())
             }
             Err(Halt::Cancelled) => (WorkerStatus::Cancelled, "you stopped it".to_owned()),
             Err(Halt::TimedOut) => (
@@ -1571,6 +1671,8 @@ impl Deep<'_> {
                     break;
                 }
                 let mut hits: Vec<SearchHit> = Vec::new();
+                let mut search_ok = 0usize;
+                let mut search_error: Option<String> = None;
                 for q in queries {
                     let args = json!({"query": q});
                     self.allow("web_search", Some(self.search.id()), &args)?;
@@ -1581,6 +1683,7 @@ impl Deep<'_> {
                     self.count(0, 1);
                     match found {
                         Ok(h) => {
+                            search_ok += 1;
                             self.know_listed(&h);
                             let listed: Vec<Value> = h
                                 .iter()
@@ -1604,10 +1707,11 @@ impl Deep<'_> {
                         Err(e) => {
                             self.record(
                                 "tool.failed",
-                                format!("Worker {n}: search failed"),
+                                format!("Worker {n}: search failed: {e}"),
                                 json!({"tool": "web_search", "args": args, "error": e, "worker": n}),
                             )
                             .map_err(Halt::Failed)?;
+                            search_error.get_or_insert(e);
                         }
                     }
                 }
@@ -1641,8 +1745,16 @@ impl Deep<'_> {
                 let chosen = pick(&hits, left.min(READS_PER_ROUND), &st.seen);
                 self.note_skips(n, &hits, &chosen, &st.seen, left)?;
                 if chosen.is_empty() && st.pages.is_empty() {
-                    return Err(Halt::Failed(if hits.is_empty() {
-                        "the searches found nothing".to_owned()
+                    return Err(Halt::Failed(if hits.is_empty() && search_ok == 0 {
+                        match search_error {
+                            Some(e) => format!("{SEARCH_FAILED}{e}"),
+                            None => "no search ran".to_owned(),
+                        }
+                    } else if hits.is_empty() {
+                        format!(
+                            "the search{} found no results",
+                            if search_ok == 1 { "" } else { "es" }
+                        )
                     } else {
                         "no result was new".to_owned()
                     }));

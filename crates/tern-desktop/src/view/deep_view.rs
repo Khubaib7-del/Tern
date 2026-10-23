@@ -407,14 +407,16 @@ impl Workspace {
                 .into_any_element(),
         };
         let tokens = w.tokens_in + w.tokens_out;
+        // Pages read, then the worker's page budget: never "0 pages of 7",
+        // which reads as seven results found.
         let mut detail = format!(
-            "{} · {} page{}",
+            "{} · {} page{} read",
             w.status.label(),
             w.pages.len(),
             if w.pages.len() == 1 { "" } else { "s" }
         );
         if let Some(b) = w.budget {
-            detail.push_str(&format!(" of {}", b.pages));
+            detail.push_str(&format!(" (budget {})", b.pages));
         }
         if tokens > 0 {
             detail.push_str(&format!(" · {} tokens", compact(tokens)));

@@ -48,6 +48,34 @@ macro_rules! spec {
     };
 }
 
+/// The answer length Tern asks for when the user has not set one.
+pub const DEFAULT_MAX_OUTPUT: u32 = 8192;
+
+/// The output-token limit to ask `model` on `provider` for by default:
+/// [`DEFAULT_MAX_OUTPUT`], or less for models known to cap lower (asking
+/// for more than a model allows is an error on some services).
+pub fn default_max_output(provider: &str, model: &str) -> u32 {
+    let m = model.to_ascii_lowercase();
+    let known_lower = [
+        // OpenAI's older chat models.
+        "gpt-3.5",
+        "gpt-4-0613",
+        "gpt-4-0314",
+        // Anthropic's Claude 3 (not 3.5 or later).
+        "claude-3-opus",
+        "claude-3-sonnet",
+        "claude-3-haiku",
+    ];
+    if known_lower.iter().any(|k| m.contains(k)) {
+        return 4096;
+    }
+    match provider {
+        // Small hosted catalogs whose defaults are often 4k.
+        "together" | "fireworks" => 4096,
+        _ => DEFAULT_MAX_OUTPUT,
+    }
+}
+
 pub const CATALOG: &[ProviderSpec] = &[
     spec!(
         "openai",
@@ -138,6 +166,21 @@ pub fn find(id: &str) -> Option<&'static ProviderSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answers_get_room_by_default() {
+        assert_eq!(default_max_output("mistral", "ministral-8b-latest"), 8192);
+        assert_eq!(default_max_output("openai", "gpt-3.5-turbo"), 4096);
+        assert_eq!(
+            default_max_output("anthropic", "claude-3-haiku-20240307"),
+            4096
+        );
+        assert_eq!(
+            default_max_output("anthropic", "claude-3-5-sonnet-latest"),
+            8192
+        );
+        assert!(default_max_output("groq", "llama-3.3-70b-versatile") > 2048);
+    }
 
     #[test]
     fn ids_are_unique_lowercase_and_keychain_safe() {

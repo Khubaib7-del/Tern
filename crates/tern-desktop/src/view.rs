@@ -392,7 +392,7 @@ impl Workspace {
                 }
                 self.current = Some(s.session_id());
                 self.tabs.set_active(s.session_id(), "New chat");
-                self.model.set_resume_offer(None);
+                self.model.set_resume_offer(None, None);
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
@@ -416,7 +416,7 @@ impl Workspace {
                 self.tabs.set_active(s.session_id(), &title);
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
-                self.model.set_resume_offer(s.checkpoint().as_ref());
+                self.model.set_resume_offer(s.checkpoint().as_ref(), None);
                 self.model.cont.ids.anchor = self
                     .model
                     .sessions
@@ -487,8 +487,10 @@ impl Workspace {
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
             Msg::Done(s, out, usage, recent) => {
                 self.model.finish_turn(&out, usage);
-                self.model
-                    .set_resume_offer(s.checkpoint().filter(|_| out.answer.is_none()).as_ref());
+                self.model.set_resume_offer(
+                    s.checkpoint().filter(|_| out.answer.is_none()).as_ref(),
+                    Some((out.state, out.reason.as_deref())),
+                );
                 self.model.sessions = recent;
                 self.session = Some(s);
                 self.ticker = None;

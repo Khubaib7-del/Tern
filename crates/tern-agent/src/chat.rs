@@ -53,6 +53,8 @@ pub struct ChatOptions {
     pub project_root: Option<std::path::PathBuf>,
     /// Leave MCP servers out of this chat.
     pub no_mcp: bool,
+    /// Research or Study: which list a new chat is filed in.
+    pub harness: Harness,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -78,6 +80,8 @@ pub struct ChatSession {
     search: Option<Arc<tern_crawl::SearchClient>>,
     budget: Budget,
     max_output_tokens: u32,
+    /// The user set the answer length; a model change keeps it.
+    output_set: bool,
     check_claims: crate::verify::CheckClaims,
     /// Where runs save their checkpoints (`<data>/checkpoints`).
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
@@ -139,6 +143,67 @@ pub fn clean_title(text: &str) -> Option<String> {
         return None;
     }
     Some(line.chars().take(120).collect())
+}
+
+/// Where the desktop keeps the chat it reopens on launch, per harness.
+fn last_chat_file(paths: &AppPaths) -> std::path::PathBuf {
+    paths.config_dir.join("last-chat.json")
+}
+
+fn harness_key(h: Harness) -> &'static str {
+    match h {
+        Harness::Research => "research",
+        Harness::Study => "study",
+    }
+}
+
+/// Remembers `id` as the chat to reopen next time for `harness`.
+pub fn remember_chat(harness: Harness, id: SessionId) -> Result<(), String> {
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let path = last_chat_file(&paths);
+    let mut v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    v[harness_key(harness)] = json!(id.to_string());
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, v.to_string()).map_err(|e| e.to_string())
+}
+
+/// The chat to reopen for `harness`: the remembered one while it still
+/// has messages and is not archived, else the newest such chat of that
+/// harness that is not a sub-session. `None` means start a draft.
+pub fn pick_reopen(
+    remembered: Option<SessionId>,
+    recent: &[SessionSummary],
+    harness: Harness,
+) -> Option<SessionId> {
+    let ok = |r: &&SessionSummary| r.harness == harness && r.events > 0;
+    if let Some(id) = remembered
+        && recent.iter().filter(ok).any(|r| r.id == id)
+    {
+        return Some(id);
+    }
+    recent
+        .iter()
+        .filter(ok)
+        .find(|r| r.parent.is_none())
+        .map(|r| r.id)
+}
+
+/// [`pick_reopen`] from the saved file and the database.
+pub fn chat_to_reopen(harness: Harness) -> Option<SessionId> {
+    let paths = AppPaths::discover().ok()?;
+    let remembered = std::fs::read_to_string(last_chat_file(&paths))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v[harness_key(harness)].as_str().map(str::to_owned))
+        .and_then(|s| s.parse().ok());
+    let recent = recent_sessions(200).ok()?;
+    pick_reopen(remembered, &recent, harness)
 }
 
 /// Hides a chat from the list without opening a provider. Its log stays.
@@ -390,12 +455,14 @@ impl ChatSession {
     ) -> Result<Self, String> {
         let (provider, model, context_window) = connect_model(&opts, secrets).await?;
         let mut tools = ToolRegistry::new();
-        let search =
-            match search::connect(opts.search.as_deref(), secrets, opts.search_url.as_deref()) {
+        let search = match opts.search.as_deref() {
+            Some("off" | "none") => None,
+            id => match search::connect(id, secrets, opts.search_url.as_deref()) {
                 Ok(c) => Some(c),
                 Err(e) if opts.search.is_some() => return Err(e),
                 Err(_) => None,
-            };
+            },
+        };
         let search_name = search.as_ref().map(|c| c.spec().name);
         let search = search.map(Arc::new);
         let decider = Arc::new(crate::decide::decider_from(&opts.decision, secrets));
@@ -410,8 +477,11 @@ impl ChatSession {
                 crate::vault::register(&mut tools, Arc::new(v));
             }
         }
-        let session = match resume {
-            Some(id) => id,
+        // A new chat is a draft: its row is written with its first event
+        // that is not just the opening, so a chat opened and left empty
+        // leaves nothing behind.
+        let (session, draft) = match resume {
+            Some(id) => (id, None),
             None => {
                 let name = opts
                     .project
@@ -423,17 +493,16 @@ impl ChatSession {
                     Some(p) => p,
                     None => store.ensure_project(name).map_err(|e| e.to_string())?,
                 };
-                store
-                    .create_session(project, Harness::Research, "Chat")
-                    .map_err(|e| e.to_string())?
+                (SessionId::new(), Some(project))
             }
         };
         // The project's folder gives the chat its TERN.md rules and skills.
         let root = opts.project_root.clone().or_else(|| {
-            store
-                .session_project(session)
-                .ok()
-                .flatten()
+            let project = match draft {
+                Some(p) => Some(p),
+                None => store.session_project(session).ok().flatten(),
+            };
+            project
                 .and_then(|p| store.project(p).ok().flatten())
                 .and_then(|p| p.root)
         });
@@ -466,6 +535,8 @@ impl ChatSession {
             }
             None => crate::steer::Steering::new(),
         };
+        let provider_id = provider.spec().id;
+        let model_id = model.clone();
         let s = Self {
             decider,
             checkpoints,
@@ -490,12 +561,13 @@ impl ChatSession {
             budget: opts.budget,
             check_claims: opts.check_claims,
             max_output_tokens: if opts.max_output_tokens == 0 {
-                2048
+                tern_providers::default_max_output(provider_id, &model_id)
             } else {
                 opts.max_output_tokens
             },
+            output_set: opts.max_output_tokens != 0,
         };
-        s.sink.record(EventEnvelope::new(
+        let opened = EventEnvelope::new(
             session,
             if resume.is_some() {
                 "session.resumed"
@@ -522,7 +594,15 @@ impl ChatSession {
                 "mcp": mcp_servers,
                 "mcp_notes": s.mcp_notes,
             }),
-        ))?;
+        );
+        match draft {
+            Some(project) => s
+                .sink
+                .defer_session(session, project, opts.harness, "Chat", opened),
+            None => {
+                s.sink.record(opened)?;
+            }
+        }
         Ok(s)
     }
 
@@ -532,6 +612,79 @@ impl ChatSession {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Whether the chat is still a draft: nothing has been sent, so it has
+    /// no row in the chat list.
+    pub fn is_draft(&self) -> bool {
+        self.sink.is_draft(self.session)
+    }
+
+    /// The most output tokens an answer may use.
+    pub fn max_output_tokens(&self) -> u32 {
+        self.max_output_tokens
+    }
+
+    /// Switches this chat to another provider, model, or search service in
+    /// place: the session id, history, and context stay, and the next
+    /// answer comes from the new model. Nothing changes if it fails.
+    pub async fn set_model(&mut self, opts: &ChatOptions) -> Result<(), String> {
+        let keychain = providers::keychain();
+        let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+        self.set_model_with(opts, secrets).await
+    }
+
+    /// [`ChatSession::set_model`] with the keychain given, for tests.
+    pub async fn set_model_with(
+        &mut self,
+        opts: &ChatOptions,
+        secrets: Option<&dyn SecretStore>,
+    ) -> Result<(), String> {
+        let (provider, model, context_window) = connect_model(opts, secrets).await?;
+        let search = match opts.search.as_deref() {
+            Some("off" | "none") => None,
+            id => match search::connect(id, secrets, opts.search_url.as_deref()) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) if opts.search.is_some() => return Err(e),
+                Err(_) => None,
+            },
+        };
+        let from = format!("{} · {}", self.provider.spec().name, self.model);
+        self.provider = provider;
+        self.model = model;
+        self.context_window = context_window;
+        if !self.output_set {
+            self.max_output_tokens =
+                tern_providers::default_max_output(self.provider.spec().id, &self.model);
+        }
+        self.search_name = search.as_ref().map(|c| c.spec().name);
+        match &search {
+            Some(c) => {
+                self.tools
+                    .register(WebSearchTool(c.clone(), Some(self.decider.clone())));
+                self.tools.register(ReadUrlTool::default());
+            }
+            None => {
+                self.tools.unregister("web_search");
+                self.tools.unregister("read_url");
+            }
+        }
+        self.search = search;
+        if !self.is_draft() {
+            self.sink.record(EventEnvelope::new(
+                self.session,
+                "session.model_changed",
+                EffectClass::Analysis,
+                format!(
+                    "Switched from {from} to {} · {}",
+                    self.provider.spec().name,
+                    self.model
+                ),
+                json!({"provider": self.provider.spec().id, "model": self.model,
+                       "search": self.search_name}),
+            ))?;
+        }
+        Ok(())
     }
 
     /// The search service the chat's web tools use, if any.
@@ -815,7 +968,9 @@ impl ChatSession {
             decider: Some(&self.decider),
         };
         self.steering.clear();
-        let out = crate::deep::run_deep(deps, text, opts, approver, control).await;
+        let mut opts = *opts;
+        opts.max_output_tokens = opts.max_output_tokens.max(self.max_output_tokens);
+        let out = crate::deep::run_deep(deps, text, &opts, approver, control).await;
         if !self.titled {
             self.titled = true;
             let title = title_from(&crate::deep::question_of(text));
@@ -901,7 +1056,9 @@ impl ChatSession {
                     steering: Some(&self.steering),
                     decider: Some(&self.decider),
                 };
-                crate::deep::resume_deep(deps, ck, opts, control).await
+                let mut opts = *opts;
+                opts.max_output_tokens = opts.max_output_tokens.max(self.max_output_tokens);
+                crate::deep::resume_deep(deps, ck, &opts, control).await
             }
             RunMode::Quick => {
                 let instructions = self.instructions(self.search_name.map(|_| WEB_INSTRUCTIONS));
