@@ -4,6 +4,22 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #40)
+
+- **MCP client** (`tern_agent::mcp`): servers in `<data>/mcp.json`, over stdio or Streamable HTTP, on Tern's own JSON-RPC 2.0 code (no SDK crate). Spec `2026-07-28` first, with a fallback to the `initialize` handshake for servers on `2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05` (including the legacy HTTP session and its DELETE on close). Tools are listed page by page, called with timeouts, and pinged; a bad command or a stopped server says why. Connections are shared across chats in one process. MCP's HTTP transport lives in `tern-providers` (`rpc_http`), so `tern-agent` keeps no HTTP library of its own.
+- **Trust preview** (`mcp::trust`): a new server is off until its preview is read: the command and environment (secret-looking values hidden) or address, what the server says it is, every tool with its description and input, and flags for invisible characters, hidden-instruction tags, text that hides actions from the user, reaches for secrets, or sends data elsewhere. Trusting switches it on; each tool then has its own switch and approval (Ask, Allow, Deny) behind the policy gate.
+- **Untrusted data channel** (`tern_agent::untrusted`): MCP results reach the model in a labelled `<untrusted-data>` block, cleaned of invisible characters and unable to close its own block, and the system prompt says nothing inside one is an instruction.
+- **Health checks**: start, ping, and list each server, timing each step (Ok, Slow over a second, Down, Off), with a restart option.
+- **ACP server** (`tern_agent::acp`, `tern acp`): ACP v1 over stdio, hand-written: `initialize`, `authenticate`, `session/new` (the editor's folder becomes the project root), `session/load` (a past chat replayed), `session/prompt` (streamed `agent_message_chunk`, `tool_call`, and `tool_call_update`), and `session/cancel`; the policy gate's questions go to the editor as `session/request_permission` (allow once, allow for this session, reject). Tested end to end: a session is made, prompted, streamed, and loaded again.
+- **Skills** (`tern_agent::skills`): `SKILL.md` folders in `<data>/skills/` and `<project>/.tern/skills/` (the project's win on a name clash). Only names and descriptions go into the prompt; the `load_skill` tool reads a body on demand. Install from a folder or a git URL after a preview with the same suspicious-text scan; switch on and off (`<data>/skills.json`).
+- **`TERN.md` rules and effective instructions** (`tern_agent::rules`): rules from `<data>/TERN.md`, `TERN.md` in folders above the project (inside the home folder), and the project's own, merged lowest first under headings naming each file, with a later file winning. The effective instructions show exactly what the model is told, piece by piece.
+- **Project folders** (`tern_store::projects`, store schema v4; `tern_agent::projects`): projects hold chats and their sub-sessions; a project can link a folder on disk so its `TERN.md` and skills apply to its chats; deleting a project moves its chats to the Inbox.
+- Terminal: `tern mcp add|import|list|preview|enable|disable|health|rm`, `tern acp`, `tern skills list|install|enable|disable|show|rm`, `tern instructions`, `tern project new|list|mv|rename|root|rm`.
+- Desktop: a **Customize** rail item with Skills, MCP servers (the trust preview sheet, per-tool switches and approvals, health dots), Providers, and Instructions tabs; the sidebar's project tree (Projects, then chats, then `↳` sub-sessions, the Inbox; drag a chat onto a folder or Move to…; new, rename, and delete folders; collapse state saved in `preferences.json` as `collapsed_projects`).
+- Docs: roadmap phase 10, architecture (extensibility, and the network rule now naming `tern-decision`), [docs/zed.md](docs/zed.md) for running Tern in Zed, README.
+
+Not in this PR: MCP prompts and resources (tools only).
+
 ### Added (PR #39)
 
 - **Message IDs and sub-IDs** (`tern_agent::refs`): a turn's number is its order in the log (`Q3`); a sub-session hangs under one parent message and its messages are numbered across every sub-session of that message in start order (`Q12.1`, `Q12.2`, …), so an ID never changes or repeats. IDs resolve in `@` mentions (`@Q12.3` quotes that message to the model as an attachment), the CLI (`tern show Q12.3`, `tern range`, `tern sub run`), `tern://chat/<id>/Q12.3` links, and Library search (session rows carry their IDs, matched exactly so `Q7.3` never finds `Q7.30`).
