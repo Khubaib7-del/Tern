@@ -87,6 +87,33 @@ async fn no_saved_key_gives_a_plain_next_step() {
 }
 
 #[tokio::test]
+async fn a_voice_model_cannot_be_the_chat_model() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "whisper-large-v3"}, {"id": "llama3.2"}]
+        })))
+        .mount(&s)
+        .await;
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        model: Some("whisper-large-v3".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    let err = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.starts_with("whisper-large-v3 only transcribes speech, so it cannot chat"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn a_remote_provider_without_a_key_says_so() {
     let opts = ChatOptions {
         provider: Some("openai".into()),

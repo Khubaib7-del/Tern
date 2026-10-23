@@ -431,7 +431,7 @@ pub async fn ask_with(
             .await
             .map_err(|e| e.to_string())?
             .into_iter()
-            .find(|m| m.kind == tern_providers::ModelKind::Chat)
+            .find(|m| m.can_chat() && !m.is_retired())
             .map(|m| m.id)
             .ok_or_else(|| {
                 format!(

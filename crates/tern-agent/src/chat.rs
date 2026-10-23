@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde_json::json;
 use tern_core::{EffectClass, EventEnvelope, Measure, SessionId};
 use tern_platform::AppPaths;
-use tern_providers::{ChatMessage, ModelKind, Provider, UsageLedger};
+use tern_providers::{ChatMessage, Provider, UsageLedger};
 use tern_store::{Harness, SessionSummary, Store};
 
 pub use tern_providers::Usage;
@@ -269,11 +269,17 @@ pub(crate) async fn connect_model(
         Some(m) => {
             // Look the window up when the listing has it; a failed
             // listing is not fatal, since the model id may still work.
-            let window = provider
+            let listed = provider
                 .list_models()
                 .await
                 .ok()
-                .and_then(|ms| ms.into_iter().find(|x| x.id == m))
+                .and_then(|ms| ms.into_iter().find(|x| x.id == m || x.aliases.contains(&m)));
+            // A voice, OCR, image, or embedding model cannot be the chat
+            // model: say so instead of failing on the first message.
+            if let Some(reason) = listed.as_ref().and_then(|x| x.not_chat_reason()) {
+                return Err(reason);
+            }
+            let window = listed
                 .and_then(|x| x.context_window)
                 .or_else(|| tern_providers::known_context_window(&m));
             (m, window)
@@ -282,7 +288,7 @@ pub(crate) async fn connect_model(
             let models = provider.list_models().await.map_err(|e| e.to_string())?;
             let m = models
                 .into_iter()
-                .find(|m| m.kind == ModelKind::Chat)
+                .find(|m| m.can_chat() && !m.is_retired())
                 .ok_or_else(|| {
                     format!(
                         "{} lists no chat models. Pick one with `--model`.",
