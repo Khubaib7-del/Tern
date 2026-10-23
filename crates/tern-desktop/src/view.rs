@@ -45,6 +45,7 @@ mod library_view;
 mod panels_view;
 mod runs_view;
 mod scout_view;
+mod segmented;
 mod study_view;
 
 use crate::layout::{Layout, Tab, Tabs};
@@ -151,6 +152,18 @@ pub struct Workspace {
     reveal_at: Option<Instant>,
     /// The chat column's width at the last render, for the tab strip.
     centre_w: f32,
+    /// The right pane's width at the last render, for its header.
+    side_w: f32,
+    /// The run panel's ⋯ menu of views that do not fit is open.
+    run_more_open: bool,
+    /// Sliding highlights and knobs, by control, and whether one moved
+    /// this frame (so the frame after is drawn too).
+    glides: std::cell::RefCell<std::collections::HashMap<&'static str, crate::motion::Glide>>,
+    anim_pending: std::cell::Cell<bool>,
+    /// The effort slider's track: its left edge in the window at the last
+    /// paint, and whether the knob is being dragged.
+    effort_track: std::rc::Rc<std::cell::Cell<f32>>,
+    effort_drag: bool,
     /// The tab strip's "▾" menu of tabs that do not fit is open.
     tabs_menu_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -425,6 +438,12 @@ impl Workspace {
             queued: None,
             reveal_at: None,
             centre_w: 800.,
+            side_w: crate::panels::RIGHT_DEFAULT,
+            run_more_open: false,
+            glides: Default::default(),
+            anim_pending: Default::default(),
+            effort_track: Default::default(),
+            effort_drag: false,
             tabs_menu_open: false,
             _subscriptions: {
                 let mut subs = vec![
@@ -3116,35 +3135,115 @@ impl Workspace {
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
-        let tabs =
+        // The views as a sliding segmented control sized to the pane: what
+        // does not fit goes in a ⋯ menu, so nothing runs past the edge.
+        let views = RunView::for_run(run);
+        let labels: Vec<&str> = views.iter().map(|v| v.label()).collect();
+        let active = views.iter().position(|&v| v == view).unwrap_or(0);
+        let (show_label, shown, hidden) =
+            crate::panels::run_header_fit(&labels, self.side_w, active);
+        let segs: Vec<segmented::Segment> = shown
+            .iter()
+            .map(|&i| segmented::Segment::text(labels[i]))
+            .collect();
+        let picked = shown.iter().position(|&i| i == active).unwrap_or(0);
+        let shown_views: Vec<RunView> = shown.iter().map(|&i| views[i]).collect();
+        let tabs = self.segmented(
+            "run-views",
+            &segs,
+            picked,
+            segmented::Look::default(),
+            p,
+            std::rc::Rc::new(move |this: &mut Self, i, _, _| {
+                if let Some(&v) = shown_views.get(i) {
+                    this.model.set_run_view(v);
+                    this.run_more_open = false;
+                }
+            }),
+            cx,
+        );
+        let more = (!hidden.is_empty()).then(|| {
+            let hidden_views: Vec<RunView> = hidden.iter().map(|&i| views[i]).collect();
             div()
-                .flex()
-                .items_center()
-                .gap_1()
-                .children(RunView::for_run(run).into_iter().map(|v| {
-                    let selected = v == view;
-                    div()
-                        .id(SharedString::from(format!("run-view-{}", v.label())))
-                        .px_2()
-                        .py(px(2.))
-                        .rounded_md()
-                        .text_xs()
-                        .cursor_pointer()
-                        .text_color(if selected { p.text } else { p.muted })
-                        .when(selected, |d| d.bg(p.hover))
-                        .hover(|d| d.text_color(p.text))
-                        .child(v.label())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.set_run_view(v);
+                .relative()
+                .flex_none()
+                .child(
+                    Button::new("run-views-more")
+                        .icon(IconName::Ellipsis)
+                        .ghost()
+                        .xsmall()
+                        .selected(self.run_more_open)
+                        .tooltip("More views")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.run_more_open = !this.run_more_open;
                             cx.notify();
-                        }))
-                }));
+                        })),
+                )
+                .when(self.run_more_open, |d| {
+                    d.child(
+                        gpui_kit::deferred(
+                            div()
+                                .id("run-views-menu")
+                                .absolute()
+                                .top(px(26.))
+                                .right_0()
+                                .w(px(140.))
+                                .p_1()
+                                .flex()
+                                .flex_col()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(p.border)
+                                .bg(p.canvas)
+                                .shadow_lg()
+                                .occlude()
+                                .children(hidden_views.into_iter().map(|v| {
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "run-view-more-{}",
+                                            v.label()
+                                        )))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .text_color(p.muted)
+                                        .hover(|d| d.bg(p.hover).text_color(p.text))
+                                        .child(v.label())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.model.set_run_view(v);
+                                            this.run_more_open = false;
+                                            cx.notify();
+                                        }))
+                                }))
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.run_more_open = false;
+                                    cx.notify();
+                                })),
+                        )
+                        .with_priority(1),
+                    )
+                })
+        });
         let header = div()
             .flex()
             .items_center()
             .justify_between()
-            .child(div().text_xs().text_color(p.faint).child("Run"))
-            .child(tabs);
+            .gap_1()
+            .min_w_0()
+            .when(show_label, |d| {
+                d.child(div().flex_none().text_xs().text_color(p.faint).child("Run"))
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .child(tabs)
+                    .children(more),
+            );
         let status: Option<AnyElement> = if let Some(line) = self.model.working_line() {
             Some(working_line(&line, p, self.reduced_motion, "panel").into_any_element())
         } else {
@@ -3681,41 +3780,41 @@ impl Render for Workspace {
         let right_w = panels.right;
         let sidebar_w = panels.sidebar;
         let sidebar = sidebar.filter(|_| panels.shows_sidebar());
+        let panel = panel.filter(|_| panels.shows_right());
+        let beside_sidebar = if layout.sidebar_beside {
+            sidebar.map_or(0., |f| sidebar_w * f)
+        } else {
+            0.
+        };
+        let want = if self.model.browser.visible {
+            browser_view::BROWSER_W.max(right_w)
+        } else if side_docked {
+            continuity_view::SIDE_W.max(right_w)
+        } else {
+            right_w
+        };
+        // One row that never runs past the window's edge: the pane sits
+        // beside the chat only when both fit, else it floats over it.
+        let frame = crate::panels::Panels::frame(
+            viewport_w,
+            RAIL_W,
+            beside_sidebar,
+            want,
+            layout.panel_beside,
+        );
+        let pane_beside = frame.right_beside;
         let side_w = if panels.focus == crate::panels::Focus::RightMax {
             (viewport_w - RAIL_W).max(0.)
         } else {
-            let want = if self.model.browser.visible {
-                browser_view::BROWSER_W.max(right_w)
-            } else if side_docked {
-                continuity_view::SIDE_W.max(right_w)
-            } else {
-                right_w
-            };
-            // Never past the window's edge, at any size or saved width.
-            let beside_sidebar = if layout.sidebar_beside {
-                sidebar.map_or(0., |f| sidebar_w * f)
-            } else {
-                0.
-            };
-            crate::panels::Panels::right_fit(
-                want,
-                viewport_w,
-                RAIL_W,
-                beside_sidebar,
-                layout.panel_beside,
-            )
+            frame.right
         };
-        let panel = panel.filter(|_| panels.shows_right());
+        self.side_w = side_w;
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
             - RAIL_W
-            - if layout.sidebar_beside {
-                sidebar.map_or(0., |f| sidebar_w * f)
-            } else {
-                0.
-            }
-            - if layout.panel_beside {
-                panel.map_or(0., |f| side_w * f)
+            - beside_sidebar
+            - if pane_beside {
+                panel.map_or(0., |f| (side_w + crate::panels::HANDLE_W) * f)
             } else {
                 0.
             })
@@ -3744,7 +3843,7 @@ impl Render for Workspace {
             Screen::Evaluation => "screen-evaluation",
             Screen::Archived => "screen-archived",
         };
-        div()
+        let root = div()
             .relative()
             .size_full()
             .flex()
@@ -3834,7 +3933,7 @@ impl Render for Workspace {
                                 |d, t| d.opacity(t),
                             ),
                     )
-                    .when_some(panel.filter(|_| layout.panel_beside), |d, f| {
+                    .when_some(panel.filter(|_| pane_beside), |d, f| {
                         d.when(f >= 1. && panels.shows_centre(), |d| {
                             d.child(self.drag_handle(crate::panels::Edge::Right, p, cx))
                         })
@@ -3852,7 +3951,7 @@ impl Render for Workspace {
                                 .child(sliding(self.sidebar(p, cx), sidebar_w, f, false)),
                         )
                     })
-                    .when_some(panel.filter(|_| !layout.panel_beside), |d, f| {
+                    .when_some(panel.filter(|_| !pane_beside), |d, f| {
                         d.child(
                             div()
                                 .absolute()
@@ -3866,7 +3965,12 @@ impl Render for Workspace {
             )
             .children(self.highlight_popover(p, cx))
             .children(self.undo_toast(p, cx))
-            .children(ripple)
+            .children(ripple);
+        // A sliding highlight or knob still moving draws the next frame.
+        if self.anim_pending.take() {
+            window.request_animation_frame();
+        }
+        root
     }
 }
 

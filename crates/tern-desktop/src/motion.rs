@@ -128,6 +128,56 @@ impl Slide {
     }
 }
 
+/// A value that glides to each new target (a segmented control's
+/// highlight, the effort knob) over [`UI`] on the house curve. A new
+/// target mid-glide starts from where the value is now, so nothing jumps;
+/// reduced motion moves it at once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Glide {
+    to: f32,
+    /// The glide in flight: when it started and where from.
+    moving: Option<(Instant, f32)>,
+    shown: f32,
+}
+
+impl Glide {
+    pub fn new(at: f32) -> Self {
+        Self {
+            to: at,
+            moving: None,
+            shown: at,
+        }
+    }
+
+    /// Where to draw the value this frame, heading for `target`.
+    pub fn frame(&mut self, target: f32, now: Instant, reduced: bool) -> f32 {
+        if (target - self.to).abs() > f32::EPSILON {
+            self.to = target;
+            self.moving = Some((now, self.shown));
+        }
+        self.shown = match self.moving {
+            Some((since, from)) if !reduced => {
+                let r = raw(since, UI, now);
+                if r >= 1.0 {
+                    self.moving = None;
+                    self.to
+                } else {
+                    from + (self.to - from) * ease(r)
+                }
+            }
+            _ => {
+                self.moving = None;
+                self.to
+            }
+        };
+        self.shown
+    }
+
+    pub fn moving(&self) -> bool {
+        self.moving.is_some()
+    }
+}
+
 fn raw(start: Instant, dur: Duration, now: Instant) -> f32 {
     (now.saturating_duration_since(start).as_secs_f32() / dur.as_secs_f32()).min(1.0)
 }
@@ -225,6 +275,24 @@ mod tests {
             Some(1.0),
             "reduced motion"
         );
+    }
+
+    #[test]
+    fn a_glide_eases_to_each_target_without_jumping() {
+        let t0 = Instant::now();
+        let mut g = Glide::new(0.0);
+        assert_eq!(g.frame(0.0, t0, false), 0.0);
+        assert!(!g.moving());
+        assert!(g.frame(3.0, t0, false) < 0.01, "starts where it was");
+        let quarter = g.frame(3.0, t0 + UI / 4, false);
+        assert!(quarter > 1.5 && quarter < 3.0, "fast start: {quarter}");
+        // Retarget mid-glide: it turns from where it is.
+        let turn = g.frame(1.0, t0 + UI / 4, false);
+        assert!((turn - quarter).abs() < 1e-4);
+        assert_eq!(g.frame(1.0, t0 + UI * 2, false), 1.0);
+        assert!(!g.moving());
+        assert_eq!(g.frame(4.0, t0 + UI * 3, true), 4.0, "reduced motion");
+        assert_eq!(UI, Duration::from_millis(200));
     }
 
     #[test]

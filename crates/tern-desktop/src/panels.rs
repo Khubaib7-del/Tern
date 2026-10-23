@@ -148,6 +148,37 @@ impl Panels {
         want.min(max).max(0.)
     }
 
+    /// Lays out one row of the window: rail, sidebar, the drag handles,
+    /// the chat, and the right pane, so that together they never run past
+    /// `window_w`. `sidebar` is the sidebar's width on screen (0 when
+    /// closed or floating), `want` the right pane's wanted width (its saved
+    /// width, or a view's own minimum such as the browser's 460), and
+    /// `beside` whether the layout puts the pane beside the chat at this
+    /// width. When the chat would drop under [`CENTRE_MIN`] even with the
+    /// pane at [`RIGHT_MIN`], the pane floats over the chat instead of
+    /// squeezing it; floating, it still never passes the window's edge.
+    pub fn frame(window_w: f32, rail: f32, sidebar: f32, want: f32, beside: bool) -> Frame {
+        let window_w = window_w.max(0.);
+        let sidebar_handle = if sidebar > 0. { HANDLE_W } else { 0. };
+        let used = rail + sidebar + sidebar_handle;
+        let beside_room = (window_w - used - HANDLE_W - CENTRE_MIN).max(0.);
+        if beside && beside_room >= RIGHT_MIN {
+            let right = want.max(0.).min(beside_room);
+            Frame {
+                right,
+                right_beside: true,
+                centre: (window_w - used - HANDLE_W - right).max(0.),
+            }
+        } else {
+            let right = want.min((window_w - rail).max(0.));
+            Frame {
+                right,
+                right_beside: false,
+                centre: (window_w - used).max(0.),
+            }
+        }
+    }
+
     pub fn toggle_right_max(&mut self) {
         self.focus = if self.focus == Focus::RightMax {
             Focus::Normal
@@ -178,6 +209,49 @@ impl Panels {
         self.focus != Focus::CentreMax
     }
 }
+
+/// One row of the window, from [`Panels::frame`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame {
+    /// The right pane's width.
+    pub right: f32,
+    /// Whether it sits beside the chat (else it floats over it).
+    pub right_beside: bool,
+    /// What the chat column gets.
+    pub centre: f32,
+}
+
+/// The run panel's header at a pane width: whether the "Run" label shows,
+/// and which view tabs show (the rest go in a ⋯ menu). `labels` are the
+/// tab labels; `active` the selected one, which always shows.
+pub fn run_header_fit(
+    labels: &[&str],
+    pane_w: f32,
+    active: usize,
+) -> (bool, Vec<usize>, Vec<usize>) {
+    // The pane's padding (12 px each side) and its border.
+    let room = (pane_w - 25.).max(0.);
+    let widths: Vec<f32> = labels.iter().map(|l| segment_width(l)).collect();
+    let total: f32 = widths.iter().sum::<f32>() + SEGMENT_PAD * 2.;
+    let label = RUN_LABEL_W + total <= room;
+    let room = if label { room - RUN_LABEL_W } else { room } - SEGMENT_PAD * 2.;
+    let (shown, hidden) = tab_overflow(&widths, room, MORE_W, active);
+    (label, shown, hidden)
+}
+
+/// A segment's width for a label, before layout: text at 12 px is about
+/// 6.6 px a character, plus 8 px padding each side. Generous on purpose,
+/// so an estimate never comes out narrower than the drawn label.
+pub fn segment_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * 7.).ceil() + 16.
+}
+
+/// The segmented control's inner padding.
+pub const SEGMENT_PAD: f32 = 2.;
+/// The "Run" label and its gap.
+pub const RUN_LABEL_W: f32 = 36.;
+/// The ⋯ button for tabs that do not fit.
+pub const MORE_W: f32 = 28.;
 
 /// How many tabs of `widths` fit in `room` px with an overflow button of
 /// `more_w` px; the active tab is always among those shown. Returns the
@@ -364,6 +438,74 @@ mod tests {
         assert!(a.rows().is_empty());
         assert!(a.confirm.is_none());
         assert_eq!(a.counts(), ("1 archived".into(), "0 in the trash".into()));
+    }
+
+    /// The real window sizes: a 1918x1078 display at 125 to 150 % scaling
+    /// gives a 1280 to 1536 logical px window; 1024 and 1366 are common
+    /// laptops. All panes open: sidebar, browser (460) and side chat (320).
+    #[test]
+    fn every_pane_fits_at_common_logical_widths() {
+        const RAIL: f32 = 52.;
+        let labels = [
+            "Summary",
+            "Workers",
+            "Detailed",
+            "Raw",
+            "Report",
+            "Ledger",
+            "Decisions",
+        ];
+        for window in [1024., 1280., 1366., 1536.] {
+            let layout = crate::layout::Layout::for_width(window);
+            let sidebar = if layout.sidebar_beside {
+                SIDEBAR_DEFAULT
+            } else {
+                0.
+            };
+            for want in [RIGHT_DEFAULT, 320., 460., RIGHT_MAX] {
+                let f = Panels::frame(window, RAIL, sidebar, want, layout.panel_beside);
+                if f.right_beside {
+                    let handles = HANDLE_W + if sidebar > 0. { HANDLE_W } else { 0. };
+                    let row = RAIL + sidebar + handles + f.centre + f.right;
+                    assert!(row <= window + 0.01, "{window}/{want}: row {row}");
+                    assert!(f.centre >= CENTRE_MIN, "{window}/{want}: chat {}", f.centre);
+                    assert!(f.right >= RIGHT_MIN, "{window}/{want}: pane {}", f.right);
+                } else {
+                    assert!(
+                        RAIL + f.right <= window,
+                        "{window}/{want}: floating {}",
+                        f.right
+                    );
+                }
+                assert!(f.right <= want);
+                // Whatever width the pane gets, its header fits inside it.
+                for active in 0..labels.len() {
+                    let (label, shown, hidden) = run_header_fit(&labels, f.right, active);
+                    let used: f32 = shown.iter().map(|&i| segment_width(labels[i])).sum::<f32>()
+                        + SEGMENT_PAD * 2.
+                        + if label { RUN_LABEL_W } else { 0. }
+                        + if hidden.is_empty() { 0. } else { MORE_W };
+                    assert!(
+                        used <= f.right - 24.,
+                        "{window}/{want}: header {used} in {}",
+                        f.right
+                    );
+                    assert!(shown.contains(&active));
+                    assert_eq!(shown.len() + hidden.len(), labels.len());
+                }
+            }
+        }
+        // 1280 (the reported 1918 px display at 150 %): the pane sits beside
+        // the chat at its saved 300, and the browser gets what is left.
+        let f = Panels::frame(1280., RAIL, SIDEBAR_DEFAULT, RIGHT_DEFAULT, true);
+        assert!(f.right_beside && f.right == RIGHT_DEFAULT);
+        let f = Panels::frame(1280., RAIL, SIDEBAR_DEFAULT, 460., true);
+        assert!(f.right_beside && f.right == 436.);
+        // The 300 px default pane drops tabs into the ⋯ menu instead of
+        // clipping "Report" at the window edge.
+        let six = ["Summary", "Workers", "Detailed", "Raw", "Report", "Ledger"];
+        let (_, shown, hidden) = run_header_fit(&six, RIGHT_DEFAULT, 0);
+        assert!(!hidden.is_empty() && shown.contains(&0));
     }
 
     #[test]
