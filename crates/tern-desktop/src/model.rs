@@ -1888,6 +1888,66 @@ impl Model {
         }
     }
 
+    /// The context popover: used / total, a percent, and one row per kind
+    /// of content plus the free space, each with its share of the bar.
+    pub fn context_breakdown(&self) -> ContextBreakdown {
+        let c = &self.context;
+        let used = c.used();
+        let parts = if c.parts.total() == 0 {
+            tern_agent::ContextParts {
+                conversation: used,
+                ..Default::default()
+            }
+        } else {
+            c.parts
+        };
+        let mut rows = vec![
+            ("System + instructions", parts.system),
+            ("Tools", parts.tools),
+            ("Attachments and sources", parts.attachments),
+            ("Conversation", parts.conversation),
+        ];
+        if let Some(left) = c.left() {
+            rows.push(("Free", left));
+        }
+        let whole = c.window.filter(|w| *w > 0).unwrap_or(used.max(1)) as f32;
+        let header = match c.window {
+            Some(w) => format!(
+                "{}{} / {}",
+                if c.estimated { "~" } else { "" },
+                compact(used),
+                compact(w)
+            ),
+            None => format!(
+                "{}{} used",
+                if c.estimated { "~" } else { "" },
+                compact(used)
+            ),
+        };
+        ContextBreakdown {
+            header,
+            percent: c
+                .fraction()
+                .map(|f| format!("{:.0}%", f * 100.))
+                .unwrap_or_default(),
+            rows: rows
+                .into_iter()
+                .map(|(label, tokens)| ContextRow {
+                    label,
+                    tokens,
+                    share: (tokens as f32 / whole).clamp(0., 1.),
+                })
+                .collect(),
+            note: if c.estimated {
+                "Estimated at about four characters a token; the provider has not counted yet."
+                    .into()
+            } else {
+                "Total counted by the provider; the split by kind is estimated.".into()
+            },
+            level: self.context_level(),
+        }
+    }
+
     /// The hover card's lines, as (label, value) with exact numbers.
     pub fn context_details(&self) -> Vec<(&'static str, String)> {
         let c = &self.context;
@@ -1939,6 +1999,28 @@ pub enum ContextLevel {
     Fine,
     Filling,
     Full,
+}
+
+/// What the context popover shows (`Model::context_breakdown`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextBreakdown {
+    /// "12.4k / 128k", with "~" when estimated.
+    pub header: String,
+    /// "10%", empty when the window is unknown.
+    pub percent: String,
+    pub rows: Vec<ContextRow>,
+    /// Measured or estimated, in words.
+    pub note: String,
+    pub level: ContextLevel,
+}
+
+/// One kind of content in the context window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextRow {
+    pub label: &'static str,
+    pub tokens: u64,
+    /// Its part of the bar, 0 to 1.
+    pub share: f32,
 }
 
 /// 12,345 with thousands separators.
@@ -2211,7 +2293,47 @@ mod tests {
             estimated: false,
             session_tokens: prompt + reply,
             calls: 1,
+            parts: tern_agent::ContextParts::estimate(4_000, 8_000, 0, 1_000)
+                .scaled_to(prompt, reply),
         }
+    }
+
+    #[test]
+    fn context_breakdown_splits_the_window() {
+        let mut m = ready();
+        m.context = ctx(90_000, 2_345);
+        let b = m.context_breakdown();
+        assert_eq!(b.header, "92.3k / 128k");
+        assert_eq!(b.percent, "72%");
+        let labels: Vec<_> = b.rows.iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            [
+                "System + instructions",
+                "Tools",
+                "Attachments and sources",
+                "Conversation",
+                "Free"
+            ]
+        );
+        let sum: u64 = b.rows.iter().map(|r| r.tokens).sum();
+        assert_eq!(sum, 128_000, "the parts and the free space fill the window");
+        assert!((b.rows.iter().map(|r| r.share).sum::<f32>() - 1.0).abs() < 0.01);
+        assert!(b.note.contains("counted by the provider"));
+        // Unknown window: no Free row, shares of what is used.
+        m.context.window = None;
+        let b = m.context_breakdown();
+        assert_eq!(b.percent, "");
+        assert!(b.rows.iter().all(|r| r.label != "Free"));
+        // Estimated.
+        m.context = ContextUse {
+            prompt: 100,
+            window: Some(128_000),
+            estimated: true,
+            parts: tern_agent::ContextParts::estimate(200, 0, 0, 200),
+            ..ContextUse::default()
+        };
+        assert!(m.context_breakdown().note.contains("Estimated"));
     }
 
     #[test]

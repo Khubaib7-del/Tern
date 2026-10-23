@@ -43,15 +43,6 @@ impl ServiceRow {
         self.local || self.key_saved
     }
 
-    /// The letter drawn in the row's logo tile until the service glyphs land.
-    pub fn monogram(&self) -> String {
-        self.name
-            .chars()
-            .find(|c| c.is_alphanumeric())
-            .map(|c| c.to_uppercase().collect())
-            .unwrap_or_default()
-    }
-
     /// The second line under the name.
     pub fn status(&self) -> &'static str {
         match (self.kind, self.local, self.key_saved) {
@@ -200,6 +191,15 @@ impl ProvidersState {
         }
         self.prefs.search_url = url.clone();
         url
+    }
+
+    /// A row's second line in the search menu. SearXNG with no address
+    /// saved is "Not set up": Tern cannot guess where it runs.
+    pub fn search_status(&self, row: &ServiceRow) -> &'static str {
+        if row.kind == Kind::Search && row.id == "searxng" && !self.prefs.searxng_configured() {
+            return "Not set up · set its address in Manage search";
+        }
+        row.status()
     }
 
     pub fn is_default(&self, row: &ServiceRow) -> bool {
@@ -479,6 +479,9 @@ mod tests {
         assert!(get("ollama").usable() && !get("openai").usable());
         let mut lm = row(Kind::Model, "lmstudio", true, false);
         lm.name = "LM Studio";
-        assert_eq!(lm.monogram(), "L");
+        assert!(matches!(
+            crate::brands::logo(lm.id),
+            crate::brands::Logo::Mark(..)
+        ));
     }
 }

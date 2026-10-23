@@ -277,6 +277,31 @@ pub struct ProviderEntry {
     pub current: bool,
 }
 
+/// One line in the picker's model list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickerRow {
+    pub id: String,
+    /// The chat's model now: drawn with a tick.
+    pub current: bool,
+    /// Starred: listed first, its star always shown (others on hover).
+    pub favourite: bool,
+    /// "128k", muted on the right; `None` when no size is known.
+    pub context: Option<String>,
+}
+
+/// The picker popover's width, its most height, and its provider column.
+pub const PICKER_W: f32 = 460.;
+pub const PICKER_MAX_H: f32 = 360.;
+pub const PICKER_LEFT_W: f32 = 148.;
+
+/// The popover's size in a window: the design size, shrunk to leave a
+/// 16 px margin on each side of a small window.
+pub fn picker_size(window_w: f32, window_h: f32) -> (f32, f32) {
+    let w = PICKER_W.min((window_w - 32.).max(240.));
+    let h = PICKER_MAX_H.min((window_h - 160.).max(200.));
+    (w, h)
+}
+
 /// The model picker's own state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModelPicker {
@@ -395,7 +420,7 @@ impl Composer {
         Some(out)
     }
 
-    /// The context window of a listed model, when the listing gave one.
+    /// The context window of a model: the listing's, else Tern's table.
     pub fn context_of(st: &ProvidersState, model: &str) -> Option<u64> {
         match &st.models {
             Some(Models::Loaded(_, list)) => list
@@ -404,6 +429,30 @@ impl Composer {
                 .and_then(|m| m.context_window),
             _ => None,
         }
+        .or_else(|| tern_agent::known_context_window(model))
+    }
+
+    /// The picker's model rows: one line each, favourites first, the
+    /// current model ticked, its window as a short muted size.
+    pub fn picker_rows(
+        &self,
+        st: &ProvidersState,
+        current: Option<&str>,
+    ) -> Option<Vec<PickerRow>> {
+        let shown = self.shown_provider(st)?;
+        let current_provider = st.default_id(crate::providers::Kind::Model);
+        let favs = &st.prefs.favourite_models;
+        Some(
+            self.models(st)?
+                .into_iter()
+                .map(|id| PickerRow {
+                    id: id.to_owned(),
+                    current: Some(shown) == current_provider && current == Some(id),
+                    favourite: favs.iter().any(|f| *f == format!("{shown}/{id}")),
+                    context: Self::context_of(st, id).map(crate::model::compact),
+                })
+                .collect(),
+        )
     }
 
     /// A list loaded: its count joins the column.
@@ -432,20 +481,31 @@ pub struct EffortChip {
     pub label: String,
     pub tooltip: String,
     pub adjustable: bool,
+    /// Whether the chip opens the effort menu. Off for models with no
+    /// thinking: the chip still shows, so the control is never a mystery.
+    pub enabled: bool,
 }
 
-/// The chip for the current model, or `None` when it has no thinking.
-pub fn effort_chip(thinking: Thinking, effort: Option<Effort>) -> Option<EffortChip> {
+/// The chip for the current model. Always shown; disabled when the model
+/// has no thinking control.
+pub fn effort_chip(thinking: Thinking, effort: Option<Effort>) -> EffortChip {
     if !thinking.visible() {
-        return None;
+        return EffortChip {
+            bars: 0,
+            label: "Effort".into(),
+            tooltip: "This model has no thinking control".into(),
+            adjustable: false,
+            enabled: false,
+        };
     }
     if !thinking.adjustable() {
-        return Some(EffortChip {
+        return EffortChip {
             bars: 5,
             label: "Thinks".into(),
             tooltip: "This model always thinks before it answers; there is nothing to set".into(),
             adjustable: false,
-        });
+            enabled: true,
+        };
     }
     let e = effort.unwrap_or_default();
     let e = if e == Effort::None && !thinking.can_turn_off() {
@@ -453,12 +513,13 @@ pub fn effort_chip(thinking: Thinking, effort: Option<Effort>) -> Option<EffortC
     } else {
         e
     };
-    Some(EffortChip {
+    EffortChip {
         bars: e.bars(),
         label: e.label().into(),
         tooltip: format!("Thinking effort: {} ({})", e.label(), thinking.knob(e)),
         adjustable: true,
-    })
+        enabled: true,
+    }
 }
 
 /// The effort menu's rows: step, the provider setting it sends, and whether
@@ -627,26 +688,33 @@ mod tests {
     #[test]
     fn effort_chip_follows_the_model() {
         let plain = tern_agent::thinking_support("mistral", "ministral-8b-latest");
-        assert!(
-            effort_chip(plain, Some(Effort::High)).is_none(),
-            "hidden on plain models"
-        );
+        let chip = effort_chip(plain, Some(Effort::High));
+        assert!(!chip.enabled, "shown but disabled on plain models");
+        assert_eq!(chip.tooltip, "This model has no thinking control");
+        assert_eq!(chip.bars, 0);
         let always = tern_agent::thinking_support("mistral", "magistral-medium-latest");
-        let chip = effort_chip(always, None).unwrap();
-        assert!(!chip.adjustable);
+        let chip = effort_chip(always, None);
+        assert!(chip.enabled && !chip.adjustable);
         assert!(effort_rows(always).iter().all(|r| !r.2));
         let o3 = tern_agent::thinking_support("openai", "o3");
-        let chip = effort_chip(o3, Some(Effort::None)).unwrap();
+        let chip = effort_chip(o3, Some(Effort::None));
+        assert!(chip.enabled && chip.adjustable);
         assert_eq!(chip.label, "Low", "o3 cannot turn thinking off");
         assert_eq!(chip.bars, 1);
         let rows = effort_rows(o3);
         assert_eq!(rows.len(), 6);
         assert!(!rows[0].2 && rows[1].2);
         let claude = tern_agent::thinking_support("anthropic", "claude-sonnet-4-5");
-        let chip = effort_chip(claude, Some(Effort::High)).unwrap();
+        let chip = effort_chip(claude, Some(Effort::High));
         assert_eq!(chip.bars, 3);
         assert!(chip.tooltip.contains("budget 12,000 tokens"));
         assert!(effort_rows(claude)[0].2, "Claude can turn thinking off");
+        for (prov, model) in [("google", "gemini-2.5-pro"), ("openai", "o4-mini")] {
+            assert!(
+                effort_chip(tern_agent::thinking_support(prov, model), None).adjustable,
+                "{model}"
+            );
+        }
     }
 
     #[test]

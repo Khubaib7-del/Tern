@@ -13,6 +13,7 @@
 
 mod app_menu;
 mod assets;
+mod brands;
 mod bridge;
 mod browser;
 mod chatflow;

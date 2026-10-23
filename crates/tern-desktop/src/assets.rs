@@ -183,7 +183,9 @@ fn lookup(path: &str) -> Option<&'static [u8]> {
         let name = path.strip_prefix(prefix)?.strip_suffix(".svg")?;
         set.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
     };
-    find(GLYPHS, "tern/glyph/").or_else(|| find(SERVICES, "tern/service/"))
+    find(GLYPHS, "tern/glyph/")
+        .or_else(|| find(SERVICES, "tern/service/"))
+        .or_else(|| crate::brands::lookup(path))
 }
 
 #[derive(Debug)]
@@ -206,7 +208,8 @@ impl AssetSource for TernAssets {
                     .iter()
                     .map(|(n, _)| format!("tern/glyph/{n}.svg").into()),
             )
-            .chain(SERVICES.iter().map(|(n, _)| service_path(n)));
+            .chain(SERVICES.iter().map(|(n, _)| service_path(n)))
+            .chain(crate::brands::paths().map(SharedString::from));
         out.extend(ours.filter(|p| p.starts_with(path)));
         Ok(out)
     }
