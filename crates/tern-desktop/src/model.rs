@@ -1546,6 +1546,7 @@ mod tests {
             parent: None,
             anchor: None,
             plan: None,
+            project: None,
         });
         m.rename(id, "Attention paper");
         assert_eq!(m.sessions[0].title, "Attention paper");

@@ -435,6 +435,7 @@ mod tests {
                 parent,
                 anchor,
                 plan: None,
+                project: None,
             };
         let a = row(None, None, "3");
         let b = row(None, None, "2");
