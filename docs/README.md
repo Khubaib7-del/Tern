@@ -23,6 +23,7 @@ Architecture decision records live in [decisions/](decisions/). Each has a statu
 | [0004](decisions/0004-turn-loop-and-policy-gate.md) | Bounded turn loop, policy gate, text tool protocol | Accepted |
 | [0005](decisions/0005-quick-ask-search-reader-source-icons.md) | Quick ask: BYOK search, guarded reader, checked citations, source icons | Accepted |
 | [0006](decisions/0006-desktop-shell-gpui-kit.md) | Desktop shell on GPUI Kit, brought forward | Accepted |
+| [0007](decisions/0007-decision-model.md) | The decision model: local scorer, System One and rerank adapters, hard checks first | Accepted |
 
 ## Conventions
 

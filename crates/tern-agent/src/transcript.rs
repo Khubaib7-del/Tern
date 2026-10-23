@@ -43,7 +43,14 @@ const ENDS: [&str; 3] = ["turn.finished", "run.cancelled", "budget.exceeded"];
 pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
     let mut out = Vec::new();
     let mut open: Option<(PastTurn, time::OffsetDateTime)> = None;
+    // Decisions made just before a turn starts (the first-tool hint)
+    // belong to that turn.
+    let mut early: Vec<&EventEnvelope> = Vec::new();
     for e in events {
+        if e.kind == "decision.made" && open.is_none() {
+            early.push(e);
+            continue;
+        }
         if e.kind == "turn.started" {
             if let Some((mut t, _)) = open.take() {
                 t.stop = Some("This turn did not finish.".into());
@@ -54,6 +61,9 @@ pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
                 ..PastTurn::default()
             };
             turn.run.push(e);
+            for d in early.drain(..) {
+                turn.run.push(d);
+            }
             open = Some((turn, e.ts));
             continue;
         }

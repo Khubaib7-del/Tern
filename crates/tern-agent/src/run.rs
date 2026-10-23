@@ -47,6 +47,8 @@ pub enum StepKind {
     Worker,
     /// A steering note from the user, received or applied.
     Steer,
+    /// The decision model scored a choice.
+    Decision,
 }
 
 /// The Raw view's filter chips.
@@ -414,6 +416,8 @@ pub struct Run {
     pub resumed: Option<Box<ResumeInfo>>,
     /// It stopped short and left a checkpoint to resume from.
     pub resumable: bool,
+    /// What the decision model decided, in order.
+    pub decisions: Vec<crate::decide::Decision>,
 }
 
 impl Run {
@@ -484,6 +488,24 @@ impl Run {
             }
             "turn.finished" | "run.cancelled" | "budget.exceeded" => {
                 self.resumable = e.payload["resumable"] == true;
+            }
+            _ => {}
+        }
+        match e.kind.as_str() {
+            "decision.made" => {
+                if let Ok(d) = serde_json::from_value(e.payload.clone()) {
+                    self.decisions.push(d);
+                }
+            }
+            "tool.executed" if e.payload["meta"].get("decision").is_some() => {
+                if let Ok(d) = serde_json::from_value(e.payload["meta"]["decision"].clone()) {
+                    self.decisions.push(d);
+                }
+            }
+            "claims.checked" => {
+                let ds: Vec<crate::decide::Decision> =
+                    serde_json::from_value(e.payload["decisions"].clone()).unwrap_or_default();
+                self.decisions.extend(ds);
             }
             _ => {}
         }
@@ -727,6 +749,26 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                 .map(|t| format!("checkpoint saved {t}"))
                 .unwrap_or_default();
         }
+        "decision.made" => {
+            step.kind = StepKind::Decision;
+            step.verb = "Decided";
+            let kind = str_at(p, "kind")
+                .and_then(crate::decide::DecisionKind::parse)
+                .unwrap_or_default();
+            step.target = kind.label().to_owned();
+            let chosen = p["chosen"].as_u64().unwrap_or(0) as usize;
+            let choice = p["choices"][chosen].as_str().unwrap_or_default();
+            let prob = p["probabilities"][chosen].as_f64().unwrap_or(0.0);
+            step.note = format!(
+                "{} · {:.0}% · {}",
+                tern_decision_clip(choice),
+                prob * 100.0,
+                str_at(p, "model").unwrap_or_default()
+            );
+            if let Some(n) = p["worker"].as_u64() {
+                step.note = with_worker(&step.note, n);
+            }
+        }
         "sources.skipped" => {
             step.kind = StepKind::Tool;
             step.verb = "Skipped";
@@ -862,6 +904,18 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
         }
     }
     step
+}
+
+fn tern_decision_clip(s: &str) -> String {
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    if s.chars().count() > 48 {
+        format!("{}…", s.chars().take(47).collect::<String>())
+    } else {
+        s.to_owned()
+    }
 }
 
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

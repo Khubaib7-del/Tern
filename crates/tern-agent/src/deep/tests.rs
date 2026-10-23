@@ -245,6 +245,7 @@ impl Fixture {
             on_text: None,
             checkpoints: None,
             steering: None,
+            decider: None,
         };
         run_deep(
             deps,
@@ -797,6 +798,7 @@ async fn run_with(
         on_text: None,
         checkpoints: Some(checkpoints),
         steering,
+        decider: None,
     };
     match resume {
         Some(c) => resume_deep(deps, c, &opts(workers), control).await,
@@ -1100,6 +1102,7 @@ async fn a_running_worker_takes_a_redirect_at_its_next_round() {
         on_text: None,
         checkpoints: None,
         steering: Some(&steer),
+        decider: None,
     };
     let out = run_deep(
         deps,
@@ -1175,6 +1178,7 @@ async fn a_late_steer_is_logged_but_not_applied() {
         on_text: None,
         checkpoints: None,
         steering: Some(&steer),
+        decider: None,
     };
     let out = run_deep(
         deps,

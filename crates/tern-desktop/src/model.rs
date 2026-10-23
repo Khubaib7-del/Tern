@@ -31,6 +31,8 @@ pub enum Screen {
     Watches,
     /// The Study harness: materials, topics, tutor, quizzes, viva.
     Study,
+    /// Decision model settings: off, local, or a remote provider.
+    Decision,
 }
 
 /// One block of the transcript.
@@ -46,7 +48,7 @@ pub enum Entry {
     /// A finished answer, with the run that led to it and how long it took.
     Assistant {
         text: String,
-        run: Run,
+        run: Box<Run>,
         took: Duration,
         /// Pages read on the way, shown as source rows.
         pages: Vec<PageRef>,
@@ -173,6 +175,8 @@ pub enum RunView {
     Workers,
     /// The source and budget ledgers.
     Ledger,
+    /// What the decision model decided, and why.
+    Decisions,
 }
 
 impl RunView {
@@ -183,6 +187,9 @@ impl RunView {
             v.push(Self::Workers);
         }
         v.extend([Self::Detailed, Self::Raw, Self::Report, Self::Ledger]);
+        if !run.decisions.is_empty() {
+            v.push(Self::Decisions);
+        }
         v
     }
 
@@ -194,6 +201,7 @@ impl RunView {
             Self::Raw => "Raw",
             Self::Report => "Report",
             Self::Ledger => "Ledger",
+            Self::Decisions => "Decisions",
         }
     }
 }
@@ -240,6 +248,8 @@ pub struct Model {
     pub stopping: bool,
     pub screen: Screen,
     pub providers: ProvidersState,
+    /// The Decision model settings page.
+    pub decision: crate::decision::DecisionPage,
     /// Pages read so far in the running turn.
     pub turn_pages: Vec<PageRef>,
     pub icons: HashMap<String, SiteIcon>,
@@ -325,6 +335,7 @@ impl Model {
             stopping: false,
             screen: Screen::Chat,
             providers: ProvidersState::default(),
+            decision: Default::default(),
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),
@@ -915,7 +926,7 @@ impl Model {
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
-                run,
+                run: Box::new(run),
                 took,
                 pages: std::mem::take(&mut self.turn_pages),
             }),
@@ -968,7 +979,7 @@ impl Model {
             if let Some(a) = &t.answer {
                 self.entries.push(Entry::Assistant {
                     text: a.clone(),
-                    run: t.run.clone(),
+                    run: Box::new(t.run.clone()),
                     took: t.took,
                     pages: t.pages.clone(),
                 });
@@ -1158,7 +1169,7 @@ impl Model {
                 .run_panel
                 .pinned
                 .and_then(|i| match self.entries.get(i) {
-                    Some(Entry::Assistant { run, .. }) => Some(run),
+                    Some(Entry::Assistant { run, .. }) => Some(&**run),
                     _ => None,
                 })
                 .unwrap_or(&self.last_run),
@@ -1504,7 +1515,7 @@ mod tests {
                 user("What is RAG?"),
                 Entry::Assistant {
                     text: "Retrieval [1].".into(),
-                    run: run.clone(),
+                    run: Box::new(run.clone()),
                     took: Duration::from_secs(3),
                     pages: Vec::new(),
                 },
@@ -1827,7 +1838,7 @@ mod tests {
         m.attachments.push(rubric);
         m.entries.push(Entry::Assistant {
             text: "a".into(),
-            run: Run::new(),
+            run: Box::new(Run::new()),
             took: Duration::ZERO,
             pages: vec![PageRef {
                 title: "RAG survey".into(),
@@ -1937,7 +1948,7 @@ mod tests {
         });
         m.entries.push(Entry::Assistant {
             text: "Water boils at 100 C [1].".into(),
-            run: Run::new(),
+            run: Box::new(Run::new()),
             took: Duration::ZERO,
             pages: vec![],
         });

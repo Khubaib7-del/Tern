@@ -32,6 +32,7 @@ use crate::bridge::{Bridge, Msg};
 mod appearance_view;
 mod browser_view;
 mod cards_view;
+mod decision_view;
 mod deep_view;
 mod editor_view;
 mod explain_view;
@@ -440,6 +441,27 @@ impl Workspace {
                 self.refresh_models();
             }
             Msg::Models(id, result) => self.model.providers.models_loaded(id, result),
+            Msg::Decision(m) => match *m {
+                crate::bridge::DecisionMsg::Loaded(rows, prefs, err) => {
+                    self.model.decision.load(rows, prefs, err)
+                }
+                crate::bridge::DecisionMsg::Checked(id, result) => {
+                    if result.is_ok() {
+                        self.key_input
+                            .update(cx, |k, cx| k.set_value("", window, cx));
+                    }
+                    self.model.decision.checked(id, result);
+                }
+                crate::bridge::DecisionMsg::Removed(id, result) => {
+                    self.model.decision.removed(id, result)
+                }
+                crate::bridge::DecisionMsg::Tested(result) => {
+                    self.model.decision.test = Some(match result {
+                        Ok(t) => crate::decision::RowNote::Ok(t),
+                        Err(e) => crate::decision::RowNote::Failed(e),
+                    });
+                }
+            },
             Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
                 "Tern could not save your choice: {e}"
             ))),
@@ -1422,6 +1444,20 @@ impl Workspace {
                             this.close_appearance(window, cx);
                         } else {
                             this.open_appearance(cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("rail-decision")
+                    .icon(AssetIcon::Signpost)
+                    .ghost()
+                    .when(self.model.screen == Screen::Decision, |b| b.selected(true))
+                    .tooltip("Decision model")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Decision {
+                            this.close_decision(window, cx);
+                        } else {
+                            this.open_decision(cx);
                         }
                     })),
             )
@@ -2888,6 +2924,7 @@ impl Workspace {
                 RunView::Report => self.run_report(run, p, cx),
                 RunView::Workers => self.run_workers(run, p, cx),
                 RunView::Ledger => self.run_ledger(run, p, cx),
+                RunView::Decisions => self.run_decisions(run, p),
             }
         };
         div()
@@ -3356,6 +3393,7 @@ impl Render for Workspace {
             Screen::Appearance => "screen-appearance",
             Screen::Watches => "screen-watches",
             Screen::Study => "screen-study",
+            Screen::Decision => "screen-decision",
         };
         div()
             .relative()
@@ -3398,6 +3436,7 @@ impl Render for Workspace {
                                 Screen::Appearance => d.child(self.appearance_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
                                 Screen::Study => d.child(self.study_screen(p, window, cx)),
+                                Screen::Decision => d.child(self.decision_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,
@@ -3480,6 +3519,7 @@ fn step_line(s: &RunStep, p: Palette, with_time: bool) -> AnyElement {
         StepKind::Plan => AssetIcon::ListChecks,
         StepKind::Worker => AssetIcon::Workflow,
         StepKind::Steer => AssetIcon::Compass,
+        StepKind::Decision => AssetIcon::Signpost,
     };
     div()
         .flex()

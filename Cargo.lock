@@ -7596,6 +7596,7 @@ dependencies = [
  "tempfile",
  "tern-core",
  "tern-crawl",
+ "tern-decision",
  "tern-platform",
  "tern-providers",
  "tern-research",
@@ -7642,7 +7643,12 @@ dependencies = [
 name = "tern-decision"
 version = "0.0.0"
 dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
  "tern-core",
+ "tokio",
+ "wiremock",
 ]
 
 [[package]]

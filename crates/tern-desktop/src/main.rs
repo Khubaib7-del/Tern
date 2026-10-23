@@ -11,6 +11,7 @@
 mod assets;
 mod bridge;
 mod browser;
+mod decision;
 mod editor;
 mod explain;
 mod git;

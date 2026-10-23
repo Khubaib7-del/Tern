@@ -410,12 +410,38 @@ pub fn due_now() -> Result<Vec<String>, String> {
     Ok(WatchList::load()?.due(OffsetDateTime::now_utc()))
 }
 
-/// Runs every due watch, one after another.
+/// The due watches in the order to run them: the decision model weighs
+/// each question and how overdue it is; with decisions off, list order.
+pub async fn order_due(list: &WatchList, decider: &crate::decide::Decider) -> Vec<String> {
+    let now = OffsetDateTime::now_utc();
+    let due = list.due(now);
+    let rows: Vec<(String, f32)> = due
+        .iter()
+        .filter_map(|id| list.watches.iter().find(|w| &w.id == id))
+        .map(|w| {
+            let late = w
+                .next_due()
+                .map(|d| (now - d).as_seconds_f32() / 3600.0)
+                .unwrap_or(w.every_hours as f32)
+                .max(0.0);
+            (w.question.clone(), late)
+        })
+        .collect();
+    match crate::decide::order_watches(decider, &rows).await {
+        Some((order, _)) => order.into_iter().map(|i| due[i].clone()).collect(),
+        None => due,
+    }
+}
+
+/// Runs every due watch, one after another, most pressing first.
 pub async fn run_due(opts: ChatOptions, deep: DeepOptions) -> Vec<Result<WatchRun, String>> {
-    let due = match WatchList::load() {
-        Ok(l) => l.due(OffsetDateTime::now_utc()),
+    let list = match WatchList::load() {
+        Ok(l) => l,
         Err(e) => return vec![Err(e)],
     };
+    let secrets = crate::providers::keychain().ok();
+    let decider = crate::decide::decider_from(&opts.decision, secrets.as_deref());
+    let due = order_due(&list, &decider).await;
     let mut out = Vec::new();
     for id in due {
         out.push(run_watch(&id, opts.clone(), deep).await);

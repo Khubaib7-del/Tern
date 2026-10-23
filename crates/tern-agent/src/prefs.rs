@@ -45,6 +45,8 @@ pub struct Preferences {
     pub study_difficulty: Option<String>,
     /// Questions in a viva. `None` means 6.
     pub study_viva_questions: Option<usize>,
+    /// The decision model: off, local, or a remote provider.
+    pub decision: crate::decide::DecisionPrefs,
 }
 
 impl Preferences {
@@ -157,6 +159,7 @@ impl Preferences {
             model: self.model.clone(),
             search: self.search.clone(),
             vault: crate::vault::default_root(self).ok(),
+            decision: self.decision.clone(),
             ..ChatOptions::default()
         }
     }
@@ -185,6 +188,11 @@ mod tests {
             study_quiz_count: Some(10),
             study_difficulty: Some("hard".into()),
             study_viva_questions: Some(40),
+            decision: crate::decide::DecisionPrefs {
+                mode: Some("remote".into()),
+                provider: Some("typesafe".into()),
+                ..Default::default()
+            },
         };
         assert_eq!(p.quiz_spec(None).count, 10);
         assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);
