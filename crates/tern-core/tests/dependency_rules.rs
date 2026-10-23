@@ -40,7 +40,7 @@ fn tern_deps(deps: &BTreeSet<String>) -> BTreeSet<&str> {
 }
 
 #[test]
-fn all_eleven_crates_exist() {
+fn all_twelve_crates_exist() {
     let names: BTreeSet<_> = workspace_crates().into_keys().collect();
     let expected: BTreeSet<String> = [
         "tern-core",
@@ -51,6 +51,7 @@ fn all_eleven_crates_exist() {
         "tern-store",
         "tern-research",
         "tern-study",
+        "tern-eval",
         "tern-tui",
         "tern-desktop",
         "tern-platform",
@@ -128,5 +129,25 @@ fn only_providers_and_crawl_may_reach_the_network() {
         for f in ["reqwest", "hyper", "ureq", "isahc", "surf"] {
             assert!(!deps.contains(f), "{name} must not depend on {f}");
         }
+    }
+}
+
+#[test]
+fn eval_harness_is_headless_and_below_the_agent() {
+    let all = workspace_crates();
+    let eval = &all["tern-eval"];
+    for f in [
+        "tern-agent",
+        "tern-store",
+        "tern-crawl",
+        "tern-providers",
+        "tern-platform",
+        "gpui",
+        "gpui-kit",
+        "ratatui",
+        "crossterm",
+        "rusqlite",
+    ] {
+        assert!(!eval.contains(f), "tern-eval must not depend on {f}");
     }
 }

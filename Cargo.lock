@@ -7665,6 +7665,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tern-eval"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tern-decision",
+ "tern-research",
+ "tern-study",
+ "tokio",
+]
+
+[[package]]
 name = "tern-platform"
 version = "0.0.0"
 dependencies = [

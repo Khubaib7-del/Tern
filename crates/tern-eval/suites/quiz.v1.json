@@ -1,0 +1,249 @@
+{
+  "format": 1,
+  "id": "quiz",
+  "version": 1,
+  "title": "Quiz grading",
+  "kind": "quiz",
+  "level": "synthetic",
+  "origin": "synthetic: cases, pages, and recorded answers written for Tern's tests; the pages are not real sites and the answers are not real model output",
+  "description": "A question, its key, the passage it came from, a student's answer, and the grade a fair teacher would give. Answer-key questions are graded exactly; short answers by the model judge, or by word overlap offline.",
+  "cases": [
+    {
+      "id": "q-mcq-letter",
+      "kind": "multiple_choice",
+      "prompt": "Which organelle makes most of a cell's ATP?",
+      "key": "Mitochondria",
+      "given": "A",
+      "gold": "correct",
+      "passage": "",
+      "choices": [
+        "Mitochondria",
+        "Ribosome",
+        "Nucleus",
+        "Golgi apparatus"
+      ]
+    },
+    {
+      "id": "q-mcq-text",
+      "kind": "multiple_choice",
+      "prompt": "Which organelle makes most of a cell's ATP?",
+      "key": "Mitochondria",
+      "given": "mitochondria",
+      "gold": "correct",
+      "passage": "",
+      "choices": [
+        "Mitochondria",
+        "Ribosome",
+        "Nucleus",
+        "Golgi apparatus"
+      ]
+    },
+    {
+      "id": "q-mcq-wrong",
+      "kind": "multiple_choice",
+      "prompt": "Which organelle makes most of a cell's ATP?",
+      "key": "Mitochondria",
+      "given": "C",
+      "gold": "incorrect",
+      "passage": "",
+      "choices": [
+        "Mitochondria",
+        "Ribosome",
+        "Nucleus",
+        "Golgi apparatus"
+      ]
+    },
+    {
+      "id": "q-mcq-lower-letter",
+      "kind": "multiple_choice",
+      "prompt": "Which organelle makes most of a cell's ATP?",
+      "key": "Mitochondria",
+      "given": "a",
+      "gold": "correct",
+      "passage": "",
+      "choices": [
+        "Mitochondria",
+        "Ribosome",
+        "Nucleus",
+        "Golgi apparatus"
+      ]
+    },
+    {
+      "id": "q-mcq-blank",
+      "kind": "multiple_choice",
+      "prompt": "Which organelle makes most of a cell's ATP?",
+      "key": "Mitochondria",
+      "given": "",
+      "gold": "unanswered",
+      "passage": "",
+      "choices": [
+        "Mitochondria",
+        "Ribosome",
+        "Nucleus",
+        "Golgi apparatus"
+      ]
+    },
+    {
+      "id": "q-tf-true",
+      "kind": "true_false",
+      "prompt": "The Leitner system moves a failed card back to the first box.",
+      "key": "true",
+      "given": "True",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-tf-yes",
+      "kind": "true_false",
+      "prompt": "The Leitner system moves a failed card back to the first box.",
+      "key": "true",
+      "given": "yes",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-tf-false",
+      "kind": "true_false",
+      "prompt": "SM-2 starts every card with an ease factor of 1.3.",
+      "key": "false",
+      "given": "true",
+      "gold": "incorrect",
+      "passage": ""
+    },
+    {
+      "id": "q-tf-f",
+      "kind": "true_false",
+      "prompt": "SM-2 starts every card with an ease factor of 1.3.",
+      "key": "false",
+      "given": "F",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-blank-exact",
+      "kind": "fill_blank",
+      "prompt": "The Transformer is based solely on ____ mechanisms.",
+      "key": "attention",
+      "given": "attention",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-blank-typo",
+      "kind": "fill_blank",
+      "prompt": "The Transformer is based solely on ____ mechanisms.",
+      "key": "attention",
+      "given": "attenion",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-blank-plural",
+      "kind": "fill_blank",
+      "prompt": "Rust frees a value when its ____ goes out of scope.",
+      "key": "owner",
+      "given": "owners",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-blank-wrong",
+      "kind": "fill_blank",
+      "prompt": "Rust frees a value when its ____ goes out of scope.",
+      "key": "owner",
+      "given": "borrower",
+      "gold": "incorrect",
+      "passage": ""
+    },
+    {
+      "id": "q-blank-case",
+      "kind": "fill_blank",
+      "prompt": "The Calvin cycle takes place in the ____ of the chloroplast.",
+      "key": "stroma",
+      "given": "Stroma",
+      "gold": "correct",
+      "passage": ""
+    },
+    {
+      "id": "q-short-full",
+      "kind": "short_answer",
+      "prompt": "What does photosynthesis take in and give out?",
+      "key": "It takes in carbon dioxide and water and gives out glucose and oxygen.",
+      "given": "Carbon dioxide and water go in; glucose and oxygen come out.",
+      "gold": "correct",
+      "passage": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen."
+    },
+    {
+      "id": "q-short-partial",
+      "kind": "short_answer",
+      "prompt": "What does photosynthesis take in and give out?",
+      "key": "It takes in carbon dioxide and water and gives out glucose and oxygen.",
+      "given": "It makes oxygen.",
+      "gold": "partly",
+      "passage": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen."
+    },
+    {
+      "id": "q-short-wrong",
+      "kind": "short_answer",
+      "prompt": "What does photosynthesis take in and give out?",
+      "key": "It takes in carbon dioxide and water and gives out glucose and oxygen.",
+      "given": "It turns heat into electricity.",
+      "gold": "incorrect",
+      "passage": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen."
+    },
+    {
+      "id": "q-short-empty",
+      "kind": "short_answer",
+      "prompt": "What does photosynthesis take in and give out?",
+      "key": "It takes in carbon dioxide and water and gives out glucose and oxygen.",
+      "given": "",
+      "gold": "unanswered",
+      "passage": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen."
+    },
+    {
+      "id": "q-short-own-good",
+      "kind": "short_answer",
+      "prompt": "When does Rust free a value's memory?",
+      "key": "When the value's owner goes out of scope, the value is dropped and its memory freed.",
+      "given": "When its owner goes out of scope the value is dropped.",
+      "gold": "correct",
+      "passage": "Each value in Rust has an owner. When the owner goes out of scope, the value will be dropped and its memory is freed."
+    },
+    {
+      "id": "q-short-own-paraphrase",
+      "kind": "short_answer",
+      "prompt": "When does Rust free a value's memory?",
+      "key": "When the value's owner goes out of scope, the value is dropped and its memory freed.",
+      "given": "As soon as the variable holding it is no longer reachable at the end of its block.",
+      "gold": "correct",
+      "passage": "Each value in Rust has an owner. When the owner goes out of scope, the value will be dropped and its memory is freed."
+    },
+    {
+      "id": "q-short-own-wrong",
+      "kind": "short_answer",
+      "prompt": "When does Rust free a value's memory?",
+      "key": "When the value's owner goes out of scope, the value is dropped and its memory freed.",
+      "given": "A garbage collector frees it every few seconds.",
+      "gold": "incorrect",
+      "passage": "Each value in Rust has an owner. When the owner goes out of scope, the value will be dropped and its memory is freed."
+    },
+    {
+      "id": "q-short-bm-good",
+      "kind": "short_answer",
+      "prompt": "What does k1 control in BM25?",
+      "key": "Term frequency saturation.",
+      "given": "k1 sets how quickly term frequency saturates.",
+      "gold": "correct",
+      "passage": "The parameter k1 controls term frequency saturation, and b controls how much document length matters."
+    },
+    {
+      "id": "q-short-bm-swap",
+      "kind": "short_answer",
+      "prompt": "What does k1 control in BM25?",
+      "key": "Term frequency saturation.",
+      "given": "How much document length matters.",
+      "gold": "incorrect",
+      "passage": "The parameter k1 controls term frequency saturation, and b controls how much document length matters."
+    }
+  ]
+}

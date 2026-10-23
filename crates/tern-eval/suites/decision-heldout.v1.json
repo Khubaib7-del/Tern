@@ -1,0 +1,519 @@
+{
+  "format": 1,
+  "id": "decision-heldout",
+  "version": 1,
+  "title": "Decision routing (held-out)",
+  "kind": "decision",
+  "level": "synthetic",
+  "split": "held_out",
+  "origin": "synthetic, held out: written after the local scorer was built, on topics the 50 bench fixtures do not use, and never used to tune it",
+  "description": "Source ranking, claim checks, next-tool choice, and now-or-later triage, in the same format as `tern decide bench`'s fixtures. `tern decide bench` scores the 50 fixtures the local scorer was developed against (in-sample); this split is the out-of-sample check.",
+  "cases": [
+    {
+      "id": "h-src-crispr",
+      "kind": "source_rank",
+      "question": "Who first showed that CRISPR-Cas9 can be programmed to cut DNA at a chosen site?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://gardening.example/crisp-lettuce",
+          "text": "Growing crisp lettuce (gardening.example) Tips for crunchy salad leaves",
+          "prior": 1.0
+        },
+        {
+          "id": "https://science.org/doi/10.1126/science.1225829",
+          "text": "A programmable dual-RNA-guided DNA endonuclease (science.org) Jinek, Doudna, Charpentier show Cas9 cleaves target DNA guided by RNA",
+          "prior": 0.667
+        },
+        {
+          "id": "https://forum.example/crispr-thread",
+          "text": "Is CRISPR scary? (forum.example) Opinions from readers",
+          "prior": 0.333
+        }
+      ],
+      "gold": 1
+    },
+    {
+      "id": "h-src-rust-async",
+      "kind": "source_rank",
+      "question": "How do async closures work in Rust 1.85?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/",
+          "text": "Announcing Rust 1.85.0 and Rust 2024 (blog.rust-lang.org) async closures like async || {} return futures when called",
+          "prior": 1.0
+        },
+        {
+          "id": "https://rust-game.example/closures",
+          "text": "Closures in the game Rust (rust-game.example) Base building guide",
+          "prior": 0.667
+        },
+        {
+          "id": "https://stackoverflow.example/q/123",
+          "text": "Old answer about futures 0.1 (stackoverflow.example)",
+          "prior": 0.333
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-src-sleep",
+      "kind": "source_rank",
+      "question": "Does sleep deprivation impair working memory in adults?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://mattress-shop.example/blog",
+          "text": "Sleep better tonight (mattress-shop.example) Our top mattresses on sale",
+          "prior": 1.0
+        },
+        {
+          "id": "https://news.example/celebrity-sleep",
+          "text": "How celebrities sleep (news.example) Morning routines of the stars",
+          "prior": 0.75
+        },
+        {
+          "id": "https://pubmed.ncbi.nlm.nih.gov/99999999/",
+          "text": "Sleep deprivation and working memory: a meta-analysis (pubmed.ncbi.nlm.nih.gov) Pooled studies show impaired working memory after sleep loss in adults",
+          "prior": 0.5
+        },
+        {
+          "id": "https://quiz.example/sleep",
+          "text": "Which sleeper are you? (quiz.example) Take the quiz",
+          "prior": 0.25
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-src-bm25",
+      "kind": "source_rank",
+      "question": "What does the b parameter in BM25 control?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://ir-book.example/bm25",
+          "text": "Okapi BM25 (ir-book.example) b controls document length normalisation and k1 term frequency saturation",
+          "prior": 1.0
+        },
+        {
+          "id": "https://bmw.example/m25",
+          "text": "BMW M25 concept (bmw.example) A look at the new car",
+          "prior": 0.5
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-src-photosyn",
+      "kind": "source_rank",
+      "question": "Where in the chloroplast does the Calvin cycle happen?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://recipes.example/calvin",
+          "text": "Calvin's chili recipe (recipes.example) Hearty and spicy",
+          "prior": 1.0
+        },
+        {
+          "id": "https://biology-text.example/calvin-cycle",
+          "text": "The Calvin cycle (biology-text.example) Carbon fixation in the stroma of the chloroplast",
+          "prior": 0.667
+        },
+        {
+          "id": "https://wiki-fan.example/calvin-klein",
+          "text": "Calvin Klein (wiki-fan.example) Fashion house history",
+          "prior": 0.333
+        }
+      ],
+      "gold": 1
+    },
+    {
+      "id": "h-src-leitner",
+      "kind": "source_rank",
+      "question": "Who proposed the Leitner flashcard system and when?",
+      "context": "",
+      "choices": [
+        {
+          "id": "https://en.wikipedia.org/wiki/Leitner_system",
+          "text": "Leitner system (en.wikipedia.org) proposed by the German science journalist Sebastian Leitner in 1972",
+          "prior": 1.0
+        },
+        {
+          "id": "https://shop.example/flashcards",
+          "text": "Buy flashcards (shop.example) Packs of 500 blank cards",
+          "prior": 0.5
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-claim-bridge",
+      "kind": "claim_check",
+      "question": "The Golden Gate Bridge opened in 1937.",
+      "context": "The Golden Gate Bridge opened to traffic in May 1937 after four years of construction.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-claim-bridge-num",
+      "kind": "claim_check",
+      "question": "The Golden Gate Bridge opened in 1947.",
+      "context": "The Golden Gate Bridge opened to traffic in May 1937 after four years of construction.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-claim-gpu",
+      "kind": "claim_check",
+      "question": "The card draws up to 320 watts.",
+      "context": "The card has 16 GB of memory and draws up to 320 watts.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-claim-neg",
+      "kind": "claim_check",
+      "question": "The trial found that the drug lowered blood pressure.",
+      "context": "The trial found that the drug did not lower blood pressure compared with placebo.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-claim-half",
+      "kind": "claim_check",
+      "question": "The card has 16 GB of memory and a 256-bit bus.",
+      "context": "The card has 16 GB of memory and draws up to 320 watts.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 1
+    },
+    {
+      "id": "h-claim-unrelated",
+      "kind": "claim_check",
+      "question": "The museum is open on Mondays.",
+      "context": "The bridge's main span is 1,280 metres long.",
+      "choices": [
+        {
+          "id": "supported",
+          "text": "Supported"
+        },
+        {
+          "id": "partly",
+          "text": "Partly supported"
+        },
+        {
+          "id": "not_supported",
+          "text": "Not supported"
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-tool-notes",
+      "kind": "next_tool",
+      "question": "What did I write in my notes about the viva rubric?",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-tool-link",
+      "kind": "next_tool",
+      "question": "Summarise https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/ for me",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 1
+    },
+    {
+      "id": "h-tool-news",
+      "kind": "next_tool",
+      "question": "What happened in the election results announced today?",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-tool-math",
+      "kind": "next_tool",
+      "question": "What is 17 times 23?",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 3
+    },
+    {
+      "id": "h-tool-myvault",
+      "kind": "next_tool",
+      "question": "Find my lecture notes on spaced repetition",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-tool-greet",
+      "kind": "next_tool",
+      "question": "Thanks, that is all for now!",
+      "context": "attachments: 0",
+      "choices": [
+        {
+          "id": "web_search",
+          "text": "Search the web for pages about it"
+        },
+        {
+          "id": "read_url",
+          "text": "Read one web page by its link"
+        },
+        {
+          "id": "vault_search",
+          "text": "Search the user's own notes in the vault"
+        },
+        {
+          "id": "answer",
+          "text": "Answer now without a tool"
+        }
+      ],
+      "gold": 3
+    },
+    {
+      "id": "h-tri-fyp",
+      "kind": "triage",
+      "question": "What evaluation metrics should my final-year project on citation checking report?",
+      "context": "",
+      "choices": [
+        {
+          "id": "1",
+          "text": "A history of citation styles since the 1800s (background, optional)",
+          "prior": 1.0
+        },
+        {
+          "id": "2",
+          "text": "Precision and recall of claim verdicts against labelled claims",
+          "prior": 0.667
+        },
+        {
+          "id": "3",
+          "text": "Famous plagiarism scandals",
+          "prior": 0.333
+        }
+      ],
+      "gold": 1
+    },
+    {
+      "id": "h-tri-ssd",
+      "kind": "triage",
+      "question": "Is an NVMe SSD faster than a SATA SSD for compiling Rust?",
+      "context": "",
+      "choices": [
+        {
+          "id": "1",
+          "text": "Compile times on NVMe versus SATA SSDs for large Rust workspaces",
+          "prior": 1.0
+        },
+        {
+          "id": "2",
+          "text": "The history of the floppy disk",
+          "prior": 0.667
+        },
+        {
+          "id": "3",
+          "text": "How to choose a laptop bag",
+          "prior": 0.333
+        }
+      ],
+      "gold": 0
+    },
+    {
+      "id": "h-tri-diet",
+      "kind": "triage",
+      "question": "Does intermittent fasting improve insulin sensitivity?",
+      "context": "",
+      "choices": [
+        {
+          "id": "1",
+          "text": "Recipes for a fasting week (optional)",
+          "prior": 1.0
+        },
+        {
+          "id": "2",
+          "text": "Celebrities who fast",
+          "prior": 0.667
+        },
+        {
+          "id": "3",
+          "text": "Randomised trials measuring insulin sensitivity under intermittent fasting",
+          "prior": 0.333
+        }
+      ],
+      "gold": 2
+    },
+    {
+      "id": "h-tri-anki",
+      "kind": "triage",
+      "question": "How should I schedule flashcard reviews before an exam in two weeks?",
+      "context": "",
+      "choices": [
+        {
+          "id": "1",
+          "text": "Spacing review intervals before a fixed exam date",
+          "prior": 1.0
+        },
+        {
+          "id": "2",
+          "text": "Who invented paper",
+          "prior": 0.5
+        }
+      ],
+      "gold": 0
+    }
+  ]
+}

@@ -1,0 +1,512 @@
+{
+  "format": 1,
+  "id": "research",
+  "version": 1,
+  "title": "Research answers from given sources",
+  "kind": "research",
+  "level": "synthetic",
+  "origin": "synthetic: cases, pages, and recorded answers written for Tern's tests; the pages are not real sites and the answers are not real model output",
+  "description": "Each task is a question, the pages Tern read, the claims a good answer makes, the sources it should cite, and the user's constraints. Three recorded answers per task (one per trial) are replayed offline; a live run asks the model to answer from the same pages.",
+  "cases": [
+    {
+      "id": "r-tidal-locking",
+      "question": "Why does the Moon always show the same face to Earth?",
+      "sources": [
+        {
+          "url": "https://astro-notes.example/tidal-locking",
+          "title": "Tidal locking explained",
+          "text": "The Moon is tidally locked to Earth. Its rotation period equals its orbital period of about 27.3 days, so the same hemisphere always faces Earth. Tidal forces from Earth slowed the Moon's early rotation until the two periods matched."
+        },
+        {
+          "url": "https://moon-facts.example/libration",
+          "title": "Libration of the Moon",
+          "text": "Because of libration, observers on Earth can see about 59 percent of the lunar surface over time. Libration comes from the Moon's elliptical orbit and the tilt of its axis."
+        },
+        {
+          "url": "https://celebrity-space.example/moon-myths",
+          "title": "Moon myths",
+          "text": "Some people say the Moon does not rotate at all. That is a common myth about the night sky."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Rotation period equals orbital period",
+          "terms": [
+            "rotation",
+            "orbital period"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "Earth's tides slowed the Moon's rotation",
+          "terms": [
+            "tidal forces",
+            "slowed"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1,
+        2
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 120
+        },
+        {
+          "type": "avoid_source",
+          "n": 3
+        }
+      ],
+      "budget_tokens": 40000,
+      "recorded": [
+        {
+          "answer": "The Moon is tidally locked to Earth, so its rotation period equals its orbital period of about 27.3 days [1]. Tidal forces from Earth slowed the Moon's early rotation until the two periods matched [1]. Over time libration lets observers see about 59 percent of the lunar surface [2].",
+          "input_tokens": 6200,
+          "output_tokens": 180,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "The Moon is tidally locked to Earth, so its rotation period equals its orbital period of about 27.3 days [1]. Tidal forces from Earth slowed the Moon's early rotation until the two periods matched [1]. Over time libration lets observers see about 75 percent of the lunar surface [2].",
+          "input_tokens": 6150,
+          "output_tokens": 175,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "not_supported"
+          ]
+        },
+        {
+          "answer": "The Moon is tidally locked to Earth, so its rotation period equals its orbital period of about 27.3 days [1]. Tidal forces from Earth slowed the Moon's early rotation until the two periods matched [1]. Some people wrongly say the Moon does not rotate at all [3].",
+          "input_tokens": 6300,
+          "output_tokens": 170,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "supported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r-mitochondria",
+      "question": "What do mitochondria do in a cell, and where does their DNA come from?",
+      "sources": [
+        {
+          "url": "https://cellbio-primer.example/mitochondria",
+          "title": "Mitochondria",
+          "text": "Mitochondria produce most of the cell's supply of adenosine triphosphate (ATP), which cells use as a source of chemical energy. This happens through oxidative phosphorylation on the inner membrane."
+        },
+        {
+          "url": "https://genetics-101.example/mtdna",
+          "title": "Mitochondrial DNA",
+          "text": "Mitochondria have their own small circular genome, called mitochondrial DNA. In humans it is inherited almost entirely from the mother. The endosymbiotic theory holds that mitochondria descend from free-living bacteria."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Mitochondria make most of the cell's ATP",
+          "terms": [
+            "atp"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "mtDNA is inherited from the mother",
+          "terms": [
+            "mother"
+          ],
+          "sources": [
+            2
+          ]
+        }
+      ],
+      "gold_sources": [
+        1,
+        2
+      ],
+      "constraints": [
+        {
+          "type": "min_citations",
+          "n": 2
+        },
+        {
+          "type": "must_mention",
+          "term": "ATP"
+        }
+      ],
+      "budget_tokens": 40000,
+      "recorded": [
+        {
+          "answer": "Mitochondria produce most of the cell's supply of ATP, the cell's source of chemical energy [1]. They have their own small circular genome, which in humans is inherited almost entirely from the mother [2].",
+          "input_tokens": 5400,
+          "output_tokens": 120,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "Mitochondria produce most of the cell's supply of ATP, the cell's source of chemical energy [1]. Their small circular genome is inherited almost entirely from the father [2].",
+          "input_tokens": 5350,
+          "output_tokens": 110,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "not_supported"
+          ]
+        },
+        {
+          "answer": "Mitochondria produce most of the cell's supply of ATP through oxidative phosphorylation [1]. Their DNA is inherited almost entirely from the mother [2]. They descend from free-living bacteria, according to the endosymbiotic theory [2].",
+          "input_tokens": 5500,
+          "output_tokens": 130,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "supported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r-rust-ownership",
+      "question": "How does Rust free memory without a garbage collector?",
+      "sources": [
+        {
+          "url": "https://rust-guide.example/ownership",
+          "title": "Understanding ownership",
+          "text": "Each value in Rust has an owner. There can only be one owner at a time. When the owner goes out of scope, the value will be dropped and its memory is freed. This lets Rust make memory safety guarantees without needing a garbage collector."
+        },
+        {
+          "url": "https://rust-guide.example/borrowing",
+          "title": "References and borrowing",
+          "text": "A reference lets you use a value without taking ownership of it. At any given time, you can have either one mutable reference or any number of immutable references."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Values are dropped when the owner goes out of scope",
+          "terms": [
+            "owner",
+            "scope"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "No garbage collector is needed",
+          "terms": [
+            "garbage collector"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 80
+        }
+      ],
+      "budget_tokens": 30000,
+      "recorded": [
+        {
+          "answer": "Each value in Rust has one owner, and when the owner goes out of scope the value is dropped and its memory is freed [1]. This gives memory safety without needing a garbage collector [1].",
+          "input_tokens": 3900,
+          "output_tokens": 90,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "Each value in Rust has one owner, and when the owner goes out of scope the value is dropped and its memory is freed [1]. This gives memory safety without needing a garbage collector [1]. You can have any number of mutable references at once [2].",
+          "input_tokens": 3950,
+          "output_tokens": 100,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "not_supported"
+          ]
+        },
+        {
+          "answer": "Rust frees memory when a value's owner goes out of scope and the value is dropped [1]. Because ownership decides when memory is freed, Rust needs no garbage collector [1]. Borrowing lets code use a value without taking ownership of it [2]. In practice this means programs written in Rust rarely leak memory and run as fast as hand-tuned C, and many teams have moved services to it for exactly that reason, which is why ownership is usually the first thing a new Rust programmer learns about in detail.",
+          "input_tokens": 4100,
+          "output_tokens": 160,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "supported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r-photosynthesis",
+      "question": "What are the inputs and outputs of photosynthesis?",
+      "sources": [
+        {
+          "url": "https://plant-science.example/photosynthesis",
+          "title": "Photosynthesis",
+          "text": "Photosynthesis converts light energy into chemical energy. Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen. The light-dependent reactions take place in the thylakoid membranes of the chloroplast."
+        },
+        {
+          "url": "https://plant-science.example/calvin-cycle",
+          "title": "The Calvin cycle",
+          "text": "The Calvin cycle fixes carbon dioxide into sugars in the stroma of the chloroplast. It does not need light directly, but it uses ATP and NADPH made by the light-dependent reactions."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Inputs are carbon dioxide and water",
+          "terms": [
+            "carbon dioxide",
+            "water"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "Outputs are glucose and oxygen",
+          "terms": [
+            "glucose",
+            "oxygen"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1,
+        2
+      ],
+      "constraints": [
+        {
+          "type": "min_citations",
+          "n": 2
+        }
+      ],
+      "budget_tokens": 40000,
+      "recorded": [
+        {
+          "answer": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen [1]. The Calvin cycle then fixes carbon dioxide into sugars in the stroma using ATP and NADPH [2].",
+          "input_tokens": 5200,
+          "output_tokens": 110,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen [1]. Photosynthesis takes place in the thylakoid membranes of the chloroplast [1].",
+          "input_tokens": 5150,
+          "output_tokens": 95,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "partly"
+          ]
+        },
+        {
+          "answer": "Plants take in carbon dioxide and water and, using sunlight, produce glucose and release oxygen [1]. The Calvin cycle needs light directly to fix carbon dioxide [2].",
+          "input_tokens": 5100,
+          "output_tokens": 100,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "not_supported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r-bm25",
+      "question": "What is BM25 and what does its k1 parameter control?",
+      "sources": [
+        {
+          "url": "https://ir-notes.example/bm25",
+          "title": "Okapi BM25",
+          "text": "BM25 is a ranking function used by search engines to estimate the relevance of documents to a query. It ranks documents by the query terms in each document, adjusted by term frequency saturation and document length normalisation. The parameter k1 controls term frequency saturation, and b controls how much document length matters."
+        },
+        {
+          "url": "https://ir-notes.example/tf-idf",
+          "title": "TF-IDF",
+          "text": "TF-IDF weighs a term by how often it appears in a document and how rare it is across the collection."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "BM25 ranks documents by relevance to a query",
+          "terms": [
+            "ranking function",
+            "relevance"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "k1 controls term frequency saturation",
+          "terms": [
+            "k1",
+            "saturation"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "must_mention",
+          "term": "k1"
+        },
+        {
+          "type": "max_words",
+          "n": 90
+        }
+      ],
+      "budget_tokens": 30000,
+      "recorded": [
+        {
+          "answer": "BM25 is a ranking function search engines use to estimate the relevance of documents to a query [1]. Its k1 parameter controls term frequency saturation, while b controls how much document length matters [1].",
+          "input_tokens": 3600,
+          "output_tokens": 80,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "BM25 is a ranking function search engines use to estimate the relevance of documents to a query [1]. Its k1 parameter controls document length normalisation [1].",
+          "input_tokens": 3550,
+          "output_tokens": 70,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "not_supported"
+          ]
+        },
+        {
+          "answer": "BM25 is a ranking function search engines use to estimate the relevance of documents to a query [1]. Its k1 parameter controls term frequency saturation [1]. It was invented at Google in 2004 [2].",
+          "input_tokens": 3700,
+          "output_tokens": 85,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "not_supported"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r-anki-sm2",
+      "question": "How does the SM-2 algorithm schedule a flashcard after a good answer?",
+      "sources": [
+        {
+          "url": "https://srs-handbook.example/sm2",
+          "title": "The SM-2 algorithm",
+          "text": "In SM-2 each card has an ease factor that starts at 2.5. After the first successful review the next interval is 1 day, after the second it is 6 days, and after that each new interval is the previous interval multiplied by the ease factor. A failed review resets the repetition count."
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Ease factor starts at 2.5",
+          "terms": [
+            "ease factor",
+            "2.5"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "Intervals 1 day then 6 days then multiplied",
+          "terms": [
+            "6 days",
+            "multiplied"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 100
+        }
+      ],
+      "budget_tokens": 25000,
+      "recorded": [
+        {
+          "answer": "Each card has an ease factor that starts at 2.5 [1]. After the first successful review the interval is 1 day, after the second 6 days, and after that each interval is the previous one multiplied by the ease factor [1].",
+          "input_tokens": 2900,
+          "output_tokens": 90,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "Each card has an ease factor that starts at 2.5 [1]. After the first successful review the interval is 1 day, after the second 6 days, and after that each interval is the previous one multiplied by the ease factor [1]. A failed review resets the repetition count [1].",
+          "input_tokens": 2950,
+          "output_tokens": 100,
+          "latency_ms": 0,
+          "labels": [
+            "supported",
+            "supported",
+            "supported"
+          ]
+        },
+        {
+          "answer": "Each card has an ease factor that starts at 1.3 [1]. After the second successful review the interval is 6 days, and after that each interval is the previous one multiplied by the ease factor [1].",
+          "input_tokens": 2900,
+          "output_tokens": 80,
+          "latency_ms": 0,
+          "labels": [
+            "not_supported",
+            "supported"
+          ]
+        }
+      ]
+    }
+  ]
+}
