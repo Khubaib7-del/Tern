@@ -286,6 +286,27 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
 
     let cursor_y = composer.y + 1 + (crow - first) as u16;
     let cursor_x = composer.x + 2 + ccol as u16;
+    let matches = app.slash_matches();
+    if !matches.is_empty() && !matches!(app.status, Status::Approval { .. }) && !app.show_help {
+        let h = (matches.len() as u16).min(body.height);
+        let menu = Rect {
+            x: body.x,
+            y: body.bottom().saturating_sub(h),
+            width: body.width,
+            height: h,
+        };
+        let lines: Vec<Line<'_>> = matches
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let mark = if m.source == "Tern" { "◆" } else { "▸" };
+                let line = format!("{mark} /{}  {} · {}", m.name, m.detail, m.source);
+                Line::styled(truncate(&line, width), if i == 0 { bold() } else { dim() })
+            })
+            .collect();
+        f.render_widget(Clear, menu);
+        f.render_widget(Paragraph::new(lines), menu);
+    }
     if let Status::Approval { request, .. } = &app.status {
         draw_approval(f, area, request);
     } else if app.show_help {
@@ -344,7 +365,7 @@ fn draw_approval(f: &mut Frame<'_>, area: Rect, r: &tern_agent::ApprovalRequest)
     );
 }
 
-const HELP: [(&str, &str); 9] = [
+const HELP: [(&str, &str); 10] = [
     ("Enter", "send"),
     ("Shift+Enter", "new line (also Alt+Enter, Ctrl+J)"),
     ("Esc", "stop the run"),
@@ -353,6 +374,7 @@ const HELP: [(&str, &str); 9] = [
     ("Ctrl+C", "stop, then quit"),
     ("Ctrl+D", "quit when the composer is empty"),
     ("y s n", "approve once, for the session, or refuse"),
+    ("/ Tab", "commands and MCP prompts; Tab completes"),
     ("?", "this help"),
 ];
 

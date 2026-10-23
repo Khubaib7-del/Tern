@@ -11,6 +11,7 @@
 mod assets;
 mod bridge;
 mod browser;
+mod commands;
 mod continuity;
 mod decision;
 mod editor;

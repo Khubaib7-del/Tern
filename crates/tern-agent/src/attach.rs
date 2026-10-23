@@ -93,6 +93,9 @@ pub enum Source {
     Paste,
     /// A source from earlier in the chat, referenced with `@`.
     Link,
+    /// A resource an MCP server read, referenced with `@`. Its text is
+    /// wrapped as untrusted data and it is always Context.
+    Mcp,
 }
 
 /// One file read from an attachment.
@@ -268,6 +271,10 @@ impl Attachment {
                 parts.push(format!("{} chars", compact(self.chars())));
             }
             Source::Link => parts.push("source from this chat".into()),
+            Source::Mcp => {
+                parts.push("MCP resource".into());
+                parts.push(plural(self.lines(), "line"));
+            }
         }
         if !self.skipped.is_empty() {
             parts.push(format!("{} skipped", self.skipped.len()));

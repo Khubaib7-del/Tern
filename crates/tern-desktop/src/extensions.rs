@@ -399,6 +399,8 @@ mod tests {
             ping_ms: Some(1500),
             list_ms: Some(3),
             tools: 2,
+            prompts: 0,
+            resources: 0,
             protocol: None,
             error: None,
         });

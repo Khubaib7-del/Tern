@@ -230,6 +230,11 @@ pub struct Effective {
     /// Things worth knowing (servers that did not start, skills that
     /// could not be read).
     pub notes: Vec<String>,
+    /// MCP prompts and resources the user can add to a message (`/` and
+    /// `@`), one line each. Not part of the prompt: the model sees one
+    /// only when the user adds it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<String>,
 }
 
 /// The project block appended to the harness's instructions: rules, then
@@ -351,6 +356,7 @@ pub fn effective(
         pieces,
         prompt,
         notes,
+        offers: Vec::new(),
     }
 }
 
@@ -364,6 +370,14 @@ impl Effective {
                 s.push_str(&format!("\n\n_From {src}_"));
             }
             s.push_str(&format!("\n\n{}\n", p.text));
+        }
+        if !self.offers.is_empty() {
+            s.push_str(
+                "\n## MCP prompts and resources\n\n_Not in the prompt. You add one to a message with / or @; the model sees it only then._\n\n",
+            );
+            for o in &self.offers {
+                s.push_str(&format!("- {o}\n"));
+            }
         }
         if !self.notes.is_empty() {
             s.push_str("\n## Notes\n\n");
