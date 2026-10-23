@@ -114,11 +114,7 @@ where
     let writer = tokio::spawn(async move {
         let mut output = output;
         while let Some(v) = rx.recv().await {
-            if output
-                .write_all(format!("{v}\n").as_bytes())
-                .await
-                .is_err()
-            {
+            if output.write_all(format!("{v}\n").as_bytes()).await.is_err() {
                 break;
             }
             let _ = output.flush().await;
@@ -267,7 +263,10 @@ impl Server {
             keychain.as_ref().ok().map(|b| b.as_ref());
         let (chat, turns) = match resume {
             Some(s) => ChatSession::resume_with(opts, secrets, store, s).await?,
-            None => (ChatSession::open_with(opts, secrets, store).await?, Vec::new()),
+            None => (
+                ChatSession::open_with(opts, secrets, store).await?,
+                Vec::new(),
+            ),
         };
         let sid = chat.session_id().to_string();
         self.sessions.lock().expect("sessions").insert(
@@ -285,7 +284,11 @@ impl Server {
             return rpc_error(id, -32602, "session/prompt needs a sessionId");
         };
         let Some(slot) = self.sessions.lock().expect("sessions").get(&sid).cloned() else {
-            return rpc_error(id, -32602, "Unknown session. Call session/new or session/load first.");
+            return rpc_error(
+                id,
+                -32602,
+                "Unknown session. Call session/new or session/load first.",
+            );
         };
         let text = prompt_text(&params["prompt"]);
         if text.trim().is_empty() {
@@ -601,9 +604,18 @@ mod tests {
     #[tokio::test]
     async fn permission_answers_map_to_the_gate() {
         for (pick, want) in [
-            (json!({"outcome": "selected", "optionId": "allow-once"}), ApprovalAnswer::AllowOnce),
-            (json!({"outcome": "selected", "optionId": "allow-session"}), ApprovalAnswer::AllowForSession),
-            (json!({"outcome": "selected", "optionId": "reject-once"}), ApprovalAnswer::Deny),
+            (
+                json!({"outcome": "selected", "optionId": "allow-once"}),
+                ApprovalAnswer::AllowOnce,
+            ),
+            (
+                json!({"outcome": "selected", "optionId": "allow-session"}),
+                ApprovalAnswer::AllowForSession,
+            ),
+            (
+                json!({"outcome": "selected", "optionId": "reject-once"}),
+                ApprovalAnswer::Deny,
+            ),
             (json!({"outcome": "cancelled"}), ApprovalAnswer::Deny),
         ] {
             let (tx, mut rx) = mpsc::unbounded_channel();
@@ -629,7 +641,8 @@ mod tests {
                 assert_eq!(sent["params"]["options"].as_array().unwrap().len(), 3);
                 let key = sent["id"].to_string();
                 let tx = peer.pending.lock().unwrap().remove(&key).unwrap();
-                tx.send(json!({"id": sent["id"], "result": {"outcome": pick}})).unwrap();
+                tx.send(json!({"id": sent["id"], "result": {"outcome": pick}}))
+                    .unwrap();
             };
             let (got, ()) = tokio::join!(approver.ask(&req), answering);
             assert_eq!(got, want);
@@ -651,7 +664,12 @@ mod tests {
         s.finish("Paris is the capital.");
         let mut texts = Vec::new();
         while let Ok(v) = rx.try_recv() {
-            texts.push(v["params"]["update"]["content"]["text"].as_str().unwrap().to_owned());
+            texts.push(
+                v["params"]["update"]["content"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
         }
         assert_eq!(texts, ["Let me look.", "Paris is the capital."]);
     }

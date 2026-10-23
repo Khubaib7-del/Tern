@@ -104,9 +104,7 @@ impl Store {
     /// Renames a project. The Inbox keeps its name.
     pub fn rename_project(&self, id: ProjectId, name: &str) -> StoreResult<()> {
         let name = clean(name)?;
-        let row = self
-            .project(id)?
-            .ok_or(StoreError::UnknownProject(id))?;
+        let row = self.project(id)?.ok_or(StoreError::UnknownProject(id))?;
         if row.inbox {
             return Err(StoreError::Invalid("The Inbox cannot be renamed.".into()));
         }
@@ -142,9 +140,7 @@ impl Store {
     /// Deletes a project folder. Its sessions are not deleted: they move to
     /// the Inbox. Returns how many moved.
     pub fn delete_project(&mut self, id: ProjectId) -> StoreResult<usize> {
-        let row = self
-            .project(id)?
-            .ok_or(StoreError::UnknownProject(id))?;
+        let row = self.project(id)?.ok_or(StoreError::UnknownProject(id))?;
         if row.inbox {
             return Err(StoreError::Invalid("The Inbox cannot be deleted.".into()));
         }
@@ -233,7 +229,10 @@ mod tests {
         let a = s.create_session(inbox, Harness::Research, "loose").unwrap();
         s.append(&ev(a)).unwrap();
         let fyp = s.new_project("  FYP   thesis ", None).unwrap();
-        assert!(s.new_project("fyp THESIS", None).is_err(), "names are unique");
+        assert!(
+            s.new_project("fyp THESIS", None).is_err(),
+            "names are unique"
+        );
         assert!(s.new_project("   ", None).is_err());
         let rows = s.projects().unwrap();
         assert_eq!(rows[0].name, INBOX);
@@ -252,7 +251,8 @@ mod tests {
 
         s.rename_project(fyp, "Final year project").unwrap();
         assert!(s.rename_project(inbox, "Other").is_err());
-        s.set_project_root(fyp, Some(Path::new("/tmp/fyp"))).unwrap();
+        s.set_project_root(fyp, Some(Path::new("/tmp/fyp")))
+            .unwrap();
         assert_eq!(
             s.project(fyp).unwrap().unwrap().root,
             Some(PathBuf::from("/tmp/fyp"))

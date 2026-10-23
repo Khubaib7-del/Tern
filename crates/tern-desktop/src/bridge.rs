@@ -24,7 +24,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::providers::{Kind, ServiceRow, rows_from};
 
 mod cont;
+mod ext;
 pub use cont::{ContMsg, LibraryChange};
+pub use ext::{ExtMsg, McpChange, ProjectChange, SkillChange};
 
 /// Everything the background side tells the window.
 pub enum Msg {
@@ -76,6 +78,8 @@ pub enum Msg {
     /// Message IDs, ranges, sub-sessions, handoff, side chat, highlights,
     /// and the Library.
     Cont(Box<ContMsg>),
+    /// MCP servers, skills, instructions, and project folders.
+    Ext(Box<ExtMsg>),
 }
 
 /// What the Decision model page's background work tells the window.
@@ -174,6 +178,7 @@ impl std::fmt::Debug for Msg {
             Self::Study(m) => write!(f, "Study({m:?})"),
             Self::Decision(m) => write!(f, "Decision({m:?})"),
             Self::Cont(m) => write!(f, "Cont({m:?})"),
+            Self::Ext(m) => write!(f, "Ext({m:?})"),
             Self::Watches(w, note, n) => {
                 write!(
                     f,

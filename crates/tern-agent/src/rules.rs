@@ -245,7 +245,11 @@ pub fn project_block(ctx: &ProjectContext, untrusted: bool) -> Option<String> {
 
 /// The harness instructions and the project block, joined as the turn
 /// loop receives them.
-pub fn instructions(harness: Option<&str>, ctx: &ProjectContext, untrusted: bool) -> Option<String> {
+pub fn instructions(
+    harness: Option<&str>,
+    ctx: &ProjectContext,
+    untrusted: bool,
+) -> Option<String> {
     match (harness, project_block(ctx, untrusted)) {
         (Some(h), Some(p)) => Some(format!("{h}\n\n{p}")),
         (Some(h), None) => Some(h.to_owned()),
@@ -337,12 +341,12 @@ pub fn effective(
         });
     }
     let mut notes: Vec<String> = ctx.skills.problems.clone();
-    notes.extend(
-        ctx.rules
-            .iter()
-            .filter(|f| f.cut)
-            .map(|f| format!("{} is longer than Tern keeps; the end is left out.", f.path.display())),
-    );
+    notes.extend(ctx.rules.iter().filter(|f| f.cut).map(|f| {
+        format!(
+            "{} is longer than Tern keeps; the end is left out.",
+            f.path.display()
+        )
+    }));
     Effective {
         pieces,
         prompt,
@@ -389,7 +393,12 @@ mod tests {
         let scopes: Vec<_> = files.iter().map(|f| f.scope).collect();
         assert_eq!(
             scopes,
-            [RuleScope::Global, RuleScope::Parent, RuleScope::Parent, RuleScope::Project]
+            [
+                RuleScope::Global,
+                RuleScope::Parent,
+                RuleScope::Parent,
+                RuleScope::Project
+            ]
         );
         let m = merged(&files).unwrap();
         let (apa, ieee) = (m.find("APA").unwrap(), m.find("IEEE").unwrap());
@@ -410,7 +419,11 @@ mod tests {
         std::fs::write(root.path().join(FILE), "Answer in Urdu when asked in Urdu.").unwrap();
         let sk = crate::skills::user_dir(data.path()).join("apa");
         std::fs::create_dir_all(&sk).unwrap();
-        std::fs::write(sk.join("SKILL.md"), "---\nname: apa-cite\ndescription: APA help.\n---\nBody.").unwrap();
+        std::fs::write(
+            sk.join("SKILL.md"),
+            "---\nname: apa-cite\ndescription: APA help.\n---\nBody.",
+        )
+        .unwrap();
         let ctx = ProjectContext::load_in(data.path(), Some(root.path()), None);
         let mut tools = ToolRegistry::new();
         ctx.register(&mut tools);

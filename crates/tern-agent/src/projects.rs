@@ -53,8 +53,12 @@ pub fn find(store: &Store, which: &str) -> Result<ProjectSummary, String> {
         .collect();
     match hits.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("There is no project called “{which}”. See `tern project list`.")),
-        _ => Err(format!("“{which}” matches more than one project; give more of its id.")),
+        [] => Err(format!(
+            "There is no project called “{which}”. See `tern project list`."
+        )),
+        _ => Err(format!(
+            "“{which}” matches more than one project; give more of its id."
+        )),
     }
 }
 

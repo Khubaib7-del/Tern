@@ -20,6 +20,7 @@ pub mod chat;
 mod client;
 pub mod error;
 pub mod model;
+pub mod rpc_http;
 pub mod stream;
 pub mod usage;
 mod wire;

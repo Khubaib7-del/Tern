@@ -286,10 +286,17 @@ mod tests {
     fn a_tool_mode_overrides_its_class() {
         let mut g = PolicyGate::default();
         let a = json!({});
-        let c = call("mcp__notes__search", EffectClass::ExternalSideEffect, None, &a);
+        let c = call(
+            "mcp__notes__search",
+            EffectClass::ExternalSideEffect,
+            None,
+            &a,
+        );
         assert_eq!(g.check(&c), Decision::Ask);
         g.set_tool_mode("mcp__notes__search", Mode::Allow);
-        assert!(matches!(g.check(&c), Decision::Allow { because } if because.contains("you allowed")));
+        assert!(
+            matches!(g.check(&c), Decision::Allow { because } if because.contains("you allowed"))
+        );
         g.set_tool_mode("mcp__notes__search", Mode::Deny);
         assert!(matches!(g.check(&c), Decision::Deny { .. }));
         // Other tools of the class are untouched.

@@ -288,12 +288,8 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
         }
     }
     let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
-    let mut e = crate::rules::effective(
-        web.then_some(WEB_INSTRUCTIONS),
-        &project,
-        &tools,
-        untrusted,
-    );
+    let mut e =
+        crate::rules::effective(web.then_some(WEB_INSTRUCTIONS), &project, &tools, untrusted);
     e.notes.extend(notes);
     Ok(e)
 }
@@ -563,8 +559,11 @@ impl ChatSession {
             },
             None => {
                 let chars: usize = self.history.iter().map(|m| m.content.len()).sum::<usize>()
-                    + crate::protocol::system_prompt(self.instructions(None).as_deref(), &self.tools)
-                        .len();
+                    + crate::protocol::system_prompt(
+                        self.instructions(None).as_deref(),
+                        &self.tools,
+                    )
+                    .len();
                 ContextUse {
                     prompt: Usage::estimated(chars, 0).input_tokens,
                     estimated: true,

@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{Value, json};
+use tern_providers::rpc_http::{RpcHttp, RpcHttpError};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, oneshot};
 
@@ -268,8 +269,10 @@ impl Wire for StdioWire {
                     self.pending.lock().expect("pending").remove(&id);
                     // Tell the server to stop working on it.
                     let _ = self
-                        .notify(json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
-                                        "params": {"requestId": msg["id"], "reason": "timed out"}}))
+                        .notify(
+                            json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                                        "params": {"requestId": msg["id"], "reason": "timed out"}}),
+                        )
                         .await;
                     Err(McpError::Timeout("the server"))
                 }
@@ -298,10 +301,10 @@ impl Wire for StdioWire {
     }
 }
 
-/// A server reached over Streamable HTTP: one POST per message.
+/// A server reached over Streamable HTTP: one POST per message. The
+/// network itself lives in `tern-providers`.
 struct HttpWire {
-    client: reqwest::Client,
-    url: String,
+    http: RpcHttp,
     headers: Vec<(String, String)>,
     /// The protocol version for the `MCP-Protocol-Version` header.
     version: std::sync::Mutex<Option<String>>,
@@ -316,20 +319,9 @@ impl HttpWire {
             .clone()
             .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
             .ok_or_else(|| McpError::Start("an http server needs an http(s) url".into()))?;
-        let mut b = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
-        // A server on this machine is reached directly, never through a proxy.
-        let local = url::Url::parse(&url).ok().is_some_and(|u| {
-            matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]" | "::1"))
-        });
-        if local {
-            b = b.no_proxy();
-        }
-        let client = b
-            .build()
-            .map_err(|e| McpError::Start(e.to_string()))?;
+        let http = RpcHttp::new(&url).map_err(|e| McpError::Start(e.to_string()))?;
         Ok(Self {
-            client,
-            url,
+            http,
             headers: cfg
                 .headers
                 .iter()
@@ -342,60 +334,52 @@ impl HttpWire {
 
     async fn post(&self, msg: &Value, timeout: Duration) -> Result<Option<Value>, McpError> {
         let method = msg["method"].as_str().unwrap_or_default();
-        let mut req = self
-            .client
-            .post(&self.url)
-            .timeout(timeout)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Method", header_value(method));
+        let mut headers: Vec<(String, String)> = vec![
+            (
+                "Accept".into(),
+                "application/json, text/event-stream".into(),
+            ),
+            ("Mcp-Method".into(), header_value(method)),
+        ];
         if let Some(v) = self.version.lock().expect("version").clone() {
-            req = req.header("MCP-Protocol-Version", v);
+            headers.push(("MCP-Protocol-Version".into(), v));
         }
         if let Some(name) = msg["params"]["name"]
             .as_str()
             .or_else(|| msg["params"]["uri"].as_str())
         {
-            req = req.header("Mcp-Name", header_value(name));
+            headers.push(("Mcp-Name".into(), header_value(name)));
         }
         if let Some(s) = self.session.lock().expect("session").clone() {
-            req = req.header("Mcp-Session-Id", s);
+            headers.push(("Mcp-Session-Id".into(), s));
         }
-        for (k, v) in &self.headers {
-            req = req.header(k.as_str(), v.as_str());
+        headers.extend(self.headers.iter().cloned());
+        let resp = self
+            .http
+            .post(&headers, msg, timeout)
+            .await
+            .map_err(|e| match e {
+                RpcHttpError::Timeout => McpError::Timeout("the server"),
+                RpcHttpError::Connect(e) => McpError::Start(e),
+                RpcHttpError::Read(e) => McpError::Closed(e),
+            })?;
+        if let Some(s) = &resp.session {
+            *self.session.lock().expect("session") = Some(s.clone());
         }
-        let resp = req.json(msg).send().await.map_err(|e| {
-            if e.is_timeout() {
-                McpError::Timeout("the server")
-            } else {
-                McpError::Start(e.to_string())
-            }
-        })?;
-        if let Some(s) = resp
-            .headers()
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok())
-        {
-            *self.session.lock().expect("session") = Some(s.to_owned());
-        }
-        let status = resp.status();
+        let status = resp.status;
+        let ok = resp.is_success();
         let sse = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
+            .content_type
+            .as_deref()
             .is_some_and(|c| c.starts_with("text/event-stream"));
-        let body = resp.text().await.map_err(|e| {
-            if e.is_timeout() {
-                McpError::Timeout("the server")
-            } else {
-                McpError::Closed(e.to_string())
-            }
-        })?;
+        let body = resp.body;
         if msg.get("id").is_none() {
-            return if status.is_success() {
+            return if ok {
                 Ok(None)
             } else {
-                Err(McpError::Protocol(format!("notification refused ({status})")))
+                Err(McpError::Protocol(format!(
+                    "notification refused (HTTP {status})"
+                )))
             };
         }
         let id = &msg["id"];
@@ -409,7 +393,7 @@ impl HttpWire {
         match found {
             // Modern servers answer errors with 4xx and a JSON-RPC body.
             Some(v) if v.get("result").is_some() || v.get("error").is_some() => Ok(Some(v)),
-            _ if !status.is_success() => Err(McpError::Protocol(format!(
+            _ if !ok => Err(McpError::Protocol(format!(
                 "HTTP {status}{}",
                 if body.trim().is_empty() {
                     String::new()
@@ -417,7 +401,9 @@ impl HttpWire {
                     format!(": {}", body.chars().take(200).collect::<String>())
                 }
             ))),
-            _ => Err(McpError::Protocol("no JSON-RPC response in the reply".into())),
+            _ => Err(McpError::Protocol(
+                "no JSON-RPC response in the reply".into(),
+            )),
         }
     }
 }
@@ -448,12 +434,8 @@ impl Wire for HttpWire {
             // A legacy session is ended with DELETE; modern servers have none.
             let session = self.session.lock().expect("session").clone();
             if let Some(s) = session {
-                let _ = self
-                    .client
-                    .delete(&self.url)
-                    .header("Mcp-Session-Id", s)
-                    .timeout(Duration::from_secs(3))
-                    .send()
+                self.http
+                    .delete(&[("Mcp-Session-Id".into(), s)], Duration::from_secs(3))
                     .await;
             }
         })
@@ -601,7 +583,11 @@ impl McpClient {
         // Modern first: `server/discover`. A legacy stdio server may not
         // answer an unknown method before `initialize`, so wait briefly.
         let probe = self
-            .raw("server/discover", json!({"_meta": modern_meta()}), Duration::from_secs(5))
+            .raw(
+                "server/discover",
+                json!({"_meta": modern_meta()}),
+                Duration::from_secs(5),
+            )
             .await;
         let fallback = match probe {
             Ok(resp) => match result_of(resp) {
@@ -829,7 +815,10 @@ mod tests {
     #[test]
     fn header_values_follow_the_base64_rule() {
         assert_eq!(header_value("get_weather"), "get_weather");
-        assert_eq!(header_value("Hello, 世界"), "=?base64?SGVsbG8sIOS4lueVjA==?=");
+        assert_eq!(
+            header_value("Hello, 世界"),
+            "=?base64?SGVsbG8sIOS4lueVjA==?="
+        );
         assert_eq!(header_value(" padded "), "=?base64?IHBhZGRlZCA=?=");
         assert_eq!(
             header_value("=?base64?literal?="),

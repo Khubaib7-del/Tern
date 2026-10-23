@@ -7591,7 +7591,6 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "sha1_smol",

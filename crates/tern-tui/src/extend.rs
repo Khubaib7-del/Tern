@@ -145,12 +145,19 @@ fn print_preview(p: &TrustPreview) {
     if let Some(i) = &p.info {
         println!(
             "  says it is {} {} (protocol {})",
-            if i.name.is_empty() { "(unnamed)" } else { &i.name },
+            if i.name.is_empty() {
+                "(unnamed)"
+            } else {
+                &i.name
+            },
             i.version,
             i.protocol
         );
         if let Some(text) = &i.instructions {
-            println!("  its instructions (never sent to the model): {}", text.trim());
+            println!(
+                "  its instructions (never sent to the model): {}",
+                text.trim()
+            );
         }
     }
     let mark = |s: Severity| match s {
@@ -158,13 +165,26 @@ fn print_preview(p: &TrustPreview) {
         Severity::Note => "·",
     };
     for f in &p.flags {
-        println!("  {} {}{}", mark(f.severity), f.reason, if f.excerpt.is_empty() { String::new() } else { format!(": {}", f.excerpt) });
+        println!(
+            "  {} {}{}",
+            mark(f.severity),
+            f.reason,
+            if f.excerpt.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", f.excerpt)
+            }
+        );
     }
     if let Some(e) = &p.error {
         println!("\nCould not read its tools: {e}");
         return;
     }
-    println!("\n{} tool{}:", p.tools.len(), if p.tools.len() == 1 { "" } else { "s" });
+    println!(
+        "\n{} tool{}:",
+        p.tools.len(),
+        if p.tools.len() == 1 { "" } else { "s" }
+    );
     for t in &p.tools {
         println!(
             "\n  {} ({}){}",
@@ -241,7 +261,8 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
             Ok(())
         }
         McpCmd::Import { file } => {
-            let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let other: McpConfig = serde_json::from_str(&text)
                 .map_err(|e| format!("{} is not an MCP config: {e}", file.display()))?;
             let mut cfg = McpConfig::load()?;
@@ -264,7 +285,10 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
         McpCmd::List { json } => {
             let cfg = McpConfig::load()?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?
+                );
                 return Ok(());
             }
             if cfg.servers.is_empty() {
@@ -279,15 +303,16 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
                 } else {
                     "off"
                 };
-                println!(
-                    "{name:<20} {state:<13} {}",
-                    s.target()
-                );
+                println!("{name:<20} {state:<13} {}", s.target());
                 for (t, set) in &s.tern.tools {
                     println!(
                         "    {t}: {}{}",
                         if set.enabled { "on" } else { "off" },
-                        if set.enabled { format!(", {}", mode_label(set.approval)) } else { String::new() }
+                        if set.enabled {
+                            format!(", {}", mode_label(set.approval))
+                        } else {
+                            String::new()
+                        }
                     );
                 }
             }
@@ -299,7 +324,10 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
             dim(&format!("Starting “{name}” to read its tools…"));
             let p = mcp::trust::preview(&name, &server).await;
             if json {
-                println!("{}", serde_json::to_string_pretty(&p).map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&p).map_err(|e| e.to_string())?
+                );
             } else {
                 print_preview(&p);
             }
@@ -310,7 +338,9 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
             if yes {
                 mcp::trust::trust(&mut cfg, &name, &p)?;
                 cfg.save()?;
-                println!("Trusted “{name}”. Its tools ask before each call; change that with `tern mcp enable {name} --tool <tool> --approval allow`.");
+                println!(
+                    "Trusted “{name}”. Its tools ask before each call; change that with `tern mcp enable {name} --tool <tool> --approval allow`."
+                );
             } else if !json {
                 println!("Nothing changed. Run `tern mcp preview {name} --trust` to trust it.");
             }
@@ -326,9 +356,7 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
             match tool {
                 None => {
                     if s.tern.trusted.is_none() {
-                        return Err(format!(
-                            "Review “{name}” first: tern mcp preview {name}"
-                        ));
+                        return Err(format!("Review “{name}” first: tern mcp preview {name}"));
                     }
                     s.tern.enabled = true;
                     s.disabled = false;
@@ -392,7 +420,8 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
                         HealthState::Down => "✕",
                         HealthState::Off | HealthState::NeedsReview => "○",
                     };
-                    let ms = |v: Option<u64>| v.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into());
+                    let ms =
+                        |v: Option<u64>| v.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into());
                     println!(
                         "{dot} {:<20} {:<13} start {} · ping {} · tools/list {} · {} tools{}",
                         h.server,
@@ -401,7 +430,10 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
                         ms(h.ping_ms),
                         ms(h.list_ms),
                         h.tools,
-                        h.protocol.as_deref().map(|p| format!(" · {p}")).unwrap_or_default()
+                        h.protocol
+                            .as_deref()
+                            .map(|p| format!(" · {p}"))
+                            .unwrap_or_default()
                     );
                     if let Some(e) = &h.error {
                         println!("    {e}");
@@ -410,7 +442,10 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
                 all.push(h);
             }
             if json {
-                println!("{}", serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?
+                );
             }
             mcp::hub().stop_all().await;
             Ok(())
@@ -458,8 +493,12 @@ pub(crate) enum SkillsCmd {
         #[arg(long, short)]
         yes: bool,
     },
-    Enable { name: String },
-    Disable { name: String },
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
     /// Print a skill's full instructions.
     Show {
         name: String,
@@ -467,7 +506,9 @@ pub(crate) enum SkillsCmd {
         root: Option<PathBuf>,
     },
     /// Remove one of your skills.
-    Rm { name: String },
+    Rm {
+        name: String,
+    },
 }
 
 fn here() -> Option<PathBuf> {
@@ -480,7 +521,10 @@ pub(crate) fn skills_cmd(cmd: SkillsCmd) -> Result<(), String> {
         SkillsCmd::List { root, json } => {
             let set = skills::discover(&data, root.or_else(here).as_deref());
             if json {
-                println!("{}", serde_json::to_string_pretty(&set).map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&set).map_err(|e| e.to_string())?
+                );
                 return Ok(());
             }
             if set.skills.is_empty() {
@@ -495,7 +539,10 @@ pub(crate) fn skills_cmd(cmd: SkillsCmd) -> Result<(), String> {
                     if s.enabled { "●" } else { "○" },
                     s.name,
                     s.source.label(),
-                    s.description.split_whitespace().collect::<Vec<_>>().join(" ")
+                    s.description
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 );
             }
             for p in &set.problems {
@@ -521,9 +568,17 @@ pub(crate) fn skills_cmd(cmd: SkillsCmd) -> Result<(), String> {
                 for f in &p.flags {
                     println!(
                         "  {} {}{}",
-                        if f.severity == Severity::Danger { "⚠" } else { "·" },
+                        if f.severity == Severity::Danger {
+                            "⚠"
+                        } else {
+                            "·"
+                        },
                         f.reason,
-                        if f.excerpt.is_empty() { String::new() } else { format!(": “{}”", f.excerpt) }
+                        if f.excerpt.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": “{}”", f.excerpt)
+                        }
                     );
                 }
             }
@@ -550,7 +605,13 @@ pub(crate) fn skills_cmd(cmd: SkillsCmd) -> Result<(), String> {
             let s = set
                 .get(&name)
                 .ok_or_else(|| format!("No skill called “{name}”. See `tern skills list`."))?;
-            println!("# {} ({}, {})\n\n{}\n", s.name, s.source.label(), if s.enabled { "on" } else { "off" }, s.description);
+            println!(
+                "# {} ({}, {})\n\n{}\n",
+                s.name,
+                s.source.label(),
+                if s.enabled { "on" } else { "off" },
+                s.description
+            );
             println!("{}", s.body()?);
             let files = s.files();
             if !files.is_empty() {
@@ -586,7 +647,10 @@ pub(crate) async fn instructions(
     let e = tern_agent::chat::preview_instructions(&opts).await?;
     mcp::hub().stop_all().await;
     if json {
-        println!("{}", serde_json::to_string_pretty(&e).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&e).map_err(|e| e.to_string())?
+        );
     } else if raw {
         println!("{}", e.prompt);
     } else {
@@ -616,7 +680,10 @@ pub(crate) enum ProjectCmd {
         /// The project's name or id (`Inbox` to unfile it).
         project: String,
     },
-    Rename { project: String, name: String },
+    Rename {
+        project: String,
+        name: String,
+    },
     /// Link a folder to a project, or unlink it with --unlink.
     Root {
         project: String,
@@ -643,7 +710,10 @@ pub(crate) fn project(cmd: ProjectCmd) -> Result<(), String> {
         ProjectCmd::List { json } => {
             let all = projects::list(&store)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?
+                );
                 return Ok(());
             }
             for p in all {
@@ -652,8 +722,16 @@ pub(crate) fn project(cmd: ProjectCmd) -> Result<(), String> {
                     p.row.name,
                     p.row.sessions,
                     if p.row.sessions == 1 { " " } else { "s" },
-                    p.row.root.as_ref().map(|r| r.display().to_string()).unwrap_or_default(),
-                    if p.tern_md.is_some() { "  · TERN.md" } else { "" }
+                    p.row
+                        .root
+                        .as_ref()
+                        .map(|r| r.display().to_string())
+                        .unwrap_or_default(),
+                    if p.tern_md.is_some() {
+                        "  · TERN.md"
+                    } else {
+                        ""
+                    }
                 );
             }
             Ok(())
@@ -702,7 +780,10 @@ pub(crate) fn project(cmd: ProjectCmd) -> Result<(), String> {
                 }
                 (None, false) => match &p.root {
                     Some(r) => println!("{}", r.display()),
-                    None => println!("“{}” has no folder. Link one: tern project root \"{}\" <dir>", p.name, p.name),
+                    None => println!(
+                        "“{}” has no folder. Link one: tern project root \"{}\" <dir>",
+                        p.name, p.name
+                    ),
                 },
             }
             Ok(())

@@ -58,8 +58,7 @@ pub fn parse(text: &str) -> Reply {
 }
 
 /// Tern's opening line in every system prompt.
-pub const BASE: &str =
-    "You are Tern, a careful research and study assistant. Answer plainly and say when you are unsure.";
+pub const BASE: &str = "You are Tern, a careful research and study assistant. Answer plainly and say when you are unsure.";
 
 /// How to ask for a tool, after the tool list.
 pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and nothing else:\n```tool\n{\"tool\": \"<name>\", \"args\": {...}}\n```\nYou will get the result in the next message. Ask for one tool at a time. When you have enough, reply with the final answer and no tool block.";

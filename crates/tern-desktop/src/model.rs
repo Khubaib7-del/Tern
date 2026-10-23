@@ -35,6 +35,8 @@ pub enum Screen {
     Decision,
     /// The Library of everything.
     Library,
+    /// Skills, MCP servers, providers, and the effective instructions.
+    Customize,
 }
 
 /// One block of the transcript.
@@ -295,6 +297,10 @@ pub struct Model {
     pub study: crate::study::StudyState,
     /// Message IDs, range actions, the side chat, highlights, the Library.
     pub cont: crate::continuity::Continuity,
+    /// The Customize page.
+    pub customize: crate::extensions::CustomizeState,
+    /// The sidebar's project folders.
+    pub projects: crate::extensions::ProjectTree,
 }
 
 /// A stopped run the chat can pick up again.
@@ -365,7 +371,14 @@ impl Model {
                 c.ids.reset();
                 c
             },
+            customize: Default::default(),
+            projects: Default::default(),
         }
+    }
+
+    /// A plain line in the transcript.
+    pub fn notice_line(&mut self, text: String) {
+        self.entries.push(Entry::Notice(text));
     }
 
     /// Which user message (0 for the first) entry `i` is or answers.

@@ -13,7 +13,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn sse(parts: &[&str]) -> String {
     let mut s = String::new();
     for (i, p) in parts.iter().enumerate() {
-        let finish = if i + 1 == parts.len() { json!("stop") } else { Value::Null };
+        let finish = if i + 1 == parts.len() {
+            json!("stop")
+        } else {
+            Value::Null
+        };
         s.push_str(&format!(
             "data: {}\n\n",
             json!({"choices": [{"delta": {"content": p}, "finish_reason": finish}]})
@@ -27,7 +31,9 @@ async fn model() -> MockServer {
     let s = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": "llama3.2"}]})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": "llama3.2"}]})),
+        )
         .mount(&s)
         .await;
     Mock::given(method("POST"))
@@ -125,7 +131,11 @@ async fn a_session_round_trips_and_loads_again() {
     let m = model().await;
     let db = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
-    std::fs::write(project.path().join("TERN.md"), "Always answer in one sentence.").unwrap();
+    std::fs::write(
+        project.path().join("TERN.md"),
+        "Always answer in one sentence.",
+    )
+    .unwrap();
     let opts = AcpOptions {
         chat: ChatOptions {
             provider: Some("ollama".into()),
@@ -164,7 +174,10 @@ async fn a_session_round_trips_and_loads_again() {
         )
         .await;
     assert_eq!(done["result"]["stopReason"], "end_turn");
-    assert_eq!(texts(&updates, "agent_message_chunk"), "Hello from the mock.");
+    assert_eq!(
+        texts(&updates, "agent_message_chunk"),
+        "Hello from the mock."
+    );
     // The project's TERN.md reached the model.
     let reqs = m.received_requests().await.unwrap();
     let body: Value = reqs.last().unwrap().body_json().unwrap();
@@ -199,7 +212,10 @@ async fn a_session_round_trips_and_loads_again() {
         .await;
     assert!(loaded.get("error").is_none(), "{loaded}");
     assert!(texts(&updates, "user_message_chunk").starts_with("Say hello"));
-    assert_eq!(texts(&updates, "agent_message_chunk"), "Hello from the mock.");
+    assert_eq!(
+        texts(&updates, "agent_message_chunk"),
+        "Hello from the mock."
+    );
     let (again, updates) = ed
         .call(
             "session/prompt",
@@ -217,5 +233,9 @@ async fn a_session_round_trips_and_loads_again() {
         .filter(|m| m["role"] == "user")
         .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
         .collect();
-    assert_eq!(said, ["Say hello", "And again"], "the loaded history goes to the model");
+    assert_eq!(
+        said,
+        ["Say hello", "And again"],
+        "the loaded history goes to the model"
+    );
 }

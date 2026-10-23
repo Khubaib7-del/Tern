@@ -256,7 +256,12 @@ mod tests {
         c.save_to(dir.path()).unwrap();
         let again = McpConfig::load_from(dir.path()).unwrap();
         assert_eq!(again, c);
-        assert!(McpConfig::load_from(&dir.path().join("none")).unwrap().servers.is_empty());
+        assert!(
+            McpConfig::load_from(&dir.path().join("none"))
+                .unwrap()
+                .servers
+                .is_empty()
+        );
         std::fs::write(dir.path().join("mcp.json"), "{nope").unwrap();
         assert!(McpConfig::load_from(dir.path()).is_err());
     }

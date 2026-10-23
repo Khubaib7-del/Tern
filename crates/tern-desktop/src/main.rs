@@ -15,6 +15,7 @@ mod continuity;
 mod decision;
 mod editor;
 mod explain;
+mod extensions;
 mod git;
 mod layout;
 mod model;

@@ -117,8 +117,7 @@ impl ToolRegistry {
     /// The tool list as the model sees it in the system prompt: Tern's
     /// own tools, then MCP tools.
     pub fn describe(&self) -> String {
-        let (mcp, own): (Vec<&str>, Vec<&str>) =
-            self.names().partition(|n| n.starts_with("mcp__"));
+        let (mcp, own): (Vec<&str>, Vec<&str>) = self.names().partition(|n| n.starts_with("mcp__"));
         [self.describe_only(&own), self.describe_only(&mcp)]
             .into_iter()
             .filter(|s| !s.is_empty())

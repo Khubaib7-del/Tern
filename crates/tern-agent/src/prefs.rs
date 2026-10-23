@@ -47,6 +47,8 @@ pub struct Preferences {
     pub study_viva_questions: Option<usize>,
     /// The decision model: off, local, or a remote provider.
     pub decision: crate::decide::DecisionPrefs,
+    /// Project folders collapsed in the desktop sidebar, by id.
+    pub collapsed_projects: Vec<String>,
 }
 
 impl Preferences {
@@ -193,6 +195,7 @@ mod tests {
                 provider: Some("typesafe".into()),
                 ..Default::default()
             },
+            collapsed_projects: vec!["p1".into()],
         };
         assert_eq!(p.quiz_spec(None).count, 10);
         assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);
