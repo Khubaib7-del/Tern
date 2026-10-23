@@ -68,8 +68,12 @@ pub(crate) fn parse_models(v: &Value) -> Result<Vec<ModelInfo>, String> {
             let id = m.get("id")?.as_str()?;
             let mut info = ModelInfo::new(id);
             info.display_name = str_at(m, &["name"]).map(str::to_owned);
-            info.context_window =
-                u64_at(m, &["context_length"]).or_else(|| u64_at(m, &["context_window"]));
+            // OpenRouter and LM Studio say `context_length`, Mistral
+            // `max_context_length`, vLLM `max_model_len`.
+            info.context_window = u64_at(m, &["context_length"])
+                .or_else(|| u64_at(m, &["max_context_length"]))
+                .or_else(|| u64_at(m, &["context_window"]))
+                .or_else(|| u64_at(m, &["max_model_len"]));
             Some(info)
         })
         .collect())
@@ -122,5 +126,11 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].context_window, Some(200_000));
         assert_eq!(m[1].kind, ModelKind::Embedding);
+    }
+
+    #[test]
+    fn parses_mistral_max_context_length() {
+        let v = json!({"object": "list", "data": [{"id": "ministral-8b-latest", "max_context_length": 131072}]});
+        assert_eq!(parse_models(&v).unwrap()[0].context_window, Some(131_072));
     }
 }

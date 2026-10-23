@@ -75,8 +75,9 @@ pub mod workspace;
 pub use ask::{AskOptions, AskReport, Source};
 pub use attach::{Attachment, Chip, Role};
 pub use chat::{
-    ChatOptions, ChatSession, ContextUse, ReasoningSink, Usage, archive_session, chat_to_reopen,
-    clean_title, pick_reopen, recent_sessions, remember_chat, rename_session, title_from,
+    ChatOptions, ChatSession, ContextParts, ContextUse, ReasoningSink, Usage, archive_session,
+    chat_to_reopen, clean_title, pick_reopen, recent_sessions, remember_chat, rename_session,
+    title_from,
 };
 pub use checkpoint::{
     CheckpointDir, CheckpointSink, OfferKind, RunCheckpoint, RunMode, RunOffer, Stage, WorkerCounts,

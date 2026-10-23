@@ -151,9 +151,10 @@ impl ProvidersState {
     /// The row a new chat uses: the saved choice, else the first remote
     /// row with a key (the same rule `ChatSession::open` follows).
     pub fn default_id(&self, kind: Kind) -> Option<&'static str> {
+        let search = self.prefs.effective_search();
         let chosen = match kind {
             Kind::Model => self.prefs.provider.as_deref(),
-            Kind::Search => self.prefs.search.as_deref(),
+            Kind::Search => search.as_deref(),
         };
         if let Some(id) = chosen {
             return self.section(kind).find(|r| r.id == id).map(|r| r.id);

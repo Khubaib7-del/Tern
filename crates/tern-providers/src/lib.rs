@@ -31,5 +31,5 @@ pub use chat::{ChatMessage, ChatRequest, ChatResponse, IMAGE_CHARS, ImageInput, 
 pub use client::{Delta, ProbeReport, Provider};
 pub use effort::{Effort, ThinkSplitter, Thinking, thinking_support};
 pub use error::{ProviderError, ProviderResult};
-pub use model::{ModelInfo, ModelKind};
+pub use model::{ModelInfo, ModelKind, known_context_window};
 pub use usage::{LedgerEntry, Usage, UsageLedger};
