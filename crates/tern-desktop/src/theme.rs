@@ -7,7 +7,10 @@
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{App, Hsla, Window, rgb};
 
-use crate::assets::{MONO_FONT, UI_FONT};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use crate::appearance::{Accent, Appearance};
+use crate::assets::MONO_FONT;
 
 /// The surfaces and text colours the shell uses.
 #[derive(Clone, Copy, Debug)]
@@ -48,9 +51,22 @@ const LIGHT: [u32; 10] = [
     0x56603F,
 ];
 
+/// The accent the Appearance screen chose, as `Accent::index`. One
+/// process-wide value, so every `Palette::get` (the main window, the
+/// popped-out side chat, the theme wipe) agrees.
+static ACCENT: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the accent every palette uses from now on.
+pub fn set_accent(a: Accent) {
+    ACCENT.store(a.index(), Ordering::Relaxed);
+}
+
 impl Palette {
     pub fn get(dark: bool) -> Self {
-        if dark { Self::dark() } else { Self::light() }
+        let mut p = if dark { Self::dark() } else { Self::light() };
+        let accent = Accent::from_index(ACCENT.load(Ordering::Relaxed));
+        p.accent = rgb(accent.hex(dark)).into();
+        p
     }
 
     fn from_hex(h: [u32; 10], warm: u32) -> Self {
@@ -79,9 +95,10 @@ impl Palette {
     }
 }
 
-/// Sets the kit's theme to match: light or dark, Tern's fonts, and the
-/// accent on focus rings, selection, the caret, and links.
-pub fn apply_kit(dark: bool, window: Option<&mut Window>, cx: &mut App) {
+/// Sets the kit's theme to match: light or dark, the chosen font and text
+/// size, and the accent on focus rings, selection, the caret, and links.
+pub fn apply_kit(dark: bool, look: &Appearance, window: Option<&mut Window>, cx: &mut App) {
+    set_accent(look.accent);
     let mode = if dark {
         ThemeMode::Dark
     } else {
@@ -90,7 +107,8 @@ pub fn apply_kit(dark: bool, window: Option<&mut Window>, cx: &mut App) {
     Theme::change(mode, window, cx);
     let p = Palette::get(dark);
     let theme = Theme::global_mut(cx);
-    theme.font_family = UI_FONT.into();
+    theme.font_family = look.font.family().into();
+    theme.font_size = gpui_kit::px(look.size.px());
     theme.mono_font_family = MONO_FONT.into();
     theme.colors.ring = p.accent;
     theme.colors.caret = p.text;
@@ -146,6 +164,20 @@ mod tests {
             assert!(contrast(p[9], warm) >= 4.5);
             assert!(contrast(p[8], warm) >= 3.0);
         }
+    }
+
+    #[test]
+    fn every_accent_reads_like_lichen() {
+        for a in Accent::ALL {
+            for (dark, p) in [(true, DARK), (false, LIGHT)] {
+                for surface in [0, 1, 2, 3] {
+                    let r = contrast(a.hex(dark), p[surface]);
+                    assert!(r >= 4.5, "{a:?} dark={dark} on {surface}: {r:.2}");
+                }
+            }
+        }
+        assert_eq!(Accent::Lichen.hex(true), DARK[9]);
+        assert_eq!(Accent::Lichen.hex(false), LIGHT[9]);
     }
 
     #[test]

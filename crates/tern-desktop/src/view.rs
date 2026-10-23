@@ -107,6 +107,8 @@ pub struct Workspace {
     scout_wake: Option<Task<()>>,
     scout_preview: Option<crate::scout::Mood>,
     reduced_motion: bool,
+    /// The Appearance choices, applied and saved on each click.
+    look: crate::appearance::Appearance,
     _listener: Task<()>,
     /// The built-in browser's address bar.
     address_input: Entity<InputState>,
@@ -342,6 +344,9 @@ impl Workspace {
             }
         });
         let mut model = Model::new();
+        let look = crate::appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
+        model.dark = look.is_dark(system_dark(window));
+        crate::theme::apply_kit(model.dark, &look, Some(window), cx);
         model.study = crate::study::StudyState::from_prefs(&tern_agent::Preferences::load());
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
@@ -375,6 +380,7 @@ impl Workspace {
             scout_wake: None,
             scout_preview: None,
             reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
+            look,
             model,
             bridge,
             session: None,
@@ -1377,15 +1383,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The title bar's sun and moon: flips the theme and saves it as an
+    /// explicit Light or Dark choice.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.dark = !self.model.dark;
-        if !self.reduced_motion {
+        let to = if self.model.dark {
+            crate::appearance::ThemeChoice::Light
+        } else {
+            crate::appearance::ThemeChoice::Dark
+        };
+        self.set_appearance(crate::appearance::Choice::Theme(to), window, cx);
+    }
+
+    /// One click on the Appearance screen: applied at once (theme, accent,
+    /// font, text size) and saved to preferences.
+    pub(super) fn set_appearance(
+        &mut self,
+        choice: crate::appearance::Choice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.look.apply(choice) {
+            return;
+        }
+        let dark = self.look.is_dark(system_dark(window));
+        if dark != self.model.dark && !self.reduced_motion {
             self.wipe = Some(ThemeWipe {
                 since: Instant::now(),
-                to_dark: self.model.dark,
+                to_dark: dark,
             });
         }
-        crate::theme::apply_kit(self.model.dark, Some(window), cx);
+        self.model.dark = dark;
+        crate::theme::apply_kit(dark, &self.look, Some(window), cx);
+        let look = self.look;
+        self.save_ui_prefs(move |p| look.save_to(p));
+        window.refresh();
         cx.notify();
     }
 
@@ -1621,97 +1652,100 @@ impl Workspace {
         )
     }
 
+    /// The left rail: tight groups of icons 4 px apart with a short rule
+    /// between groups (chats, work surfaces, tools), settings at the foot.
     fn rail(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let rule = || {
+            div()
+                .w(px(18.))
+                .h(px(1.))
+                .my(px(6.))
+                .bg(p.border)
+                .flex_none()
+        };
         div()
             .w(px(RAIL_W))
             .h_full()
             .flex()
             .flex_col()
             .items_center()
-            .justify_between()
+            .gap(px(crate::layout::RAIL_GAP))
             .py_2()
             .bg(p.rail)
             .border_r_1()
             .border_color(p.border)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new("rail-new")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .tooltip("New chat")
-                            .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
-                    )
-                    .child(
-                        Button::new("rail-chats")
-                            .icon(IconName::Inbox)
-                            .ghost()
-                            .tooltip("Chats")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.model.sidebar_open = !this.model.sidebar_open;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-library")
-                            .icon(AssetIcon::Library)
-                            .ghost()
-                            .when(self.model.screen == Screen::Library, |b| b.selected(true))
-                            .tooltip("Library")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Library {
-                                    this.close_library(window, cx);
-                                } else {
-                                    this.open_library(cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-editor")
-                            .icon(IconName::FileText)
-                            .ghost()
-                            .when(self.model.screen == Screen::Editor, |b| b.selected(true))
-                            .tooltip("Editor")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Editor {
-                                    this.close_editor(window, cx);
-                                } else {
-                                    this.open_editor(window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-browser")
-                            .icon(IconName::Globe)
-                            .ghost()
-                            .when(
-                                self.model.browser.visible && self.model.run_panel_open,
-                                |b| b.selected(true),
-                            )
-                            .tooltip("Browser")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("rail-git")
-                            .icon(AssetIcon::GitBranch)
-                            .ghost()
-                            .when(self.model.screen == Screen::Git, |b| b.selected(true))
-                            .tooltip("Git")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Git {
-                                    this.close_git(window, cx);
-                                } else {
-                                    this.open_git(window, cx);
-                                }
-                            })),
-                    ),
+                Button::new("rail-new")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .tooltip("New chat")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
             )
+            .child(
+                Button::new("rail-chats")
+                    .icon(IconName::Inbox)
+                    .ghost()
+                    .tooltip("Chats")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model.sidebar_open = !this.model.sidebar_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("rail-library")
+                    .icon(AssetIcon::Library)
+                    .ghost()
+                    .when(self.model.screen == Screen::Library, |b| b.selected(true))
+                    .tooltip("Library")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Library {
+                            this.close_library(window, cx);
+                        } else {
+                            this.open_library(cx);
+                        }
+                    })),
+            )
+            .child(rule())
+            .child(
+                Button::new("rail-editor")
+                    .icon(IconName::FileText)
+                    .ghost()
+                    .when(self.model.screen == Screen::Editor, |b| b.selected(true))
+                    .tooltip("Editor")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Editor {
+                            this.close_editor(window, cx);
+                        } else {
+                            this.open_editor(window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("rail-browser")
+                    .icon(IconName::Globe)
+                    .ghost()
+                    .when(
+                        self.model.browser.visible && self.model.run_panel_open,
+                        |b| b.selected(true),
+                    )
+                    .tooltip("Browser")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))),
+            )
+            .child(
+                Button::new("rail-git")
+                    .icon(AssetIcon::GitBranch)
+                    .ghost()
+                    .when(self.model.screen == Screen::Git, |b| b.selected(true))
+                    .tooltip("Git")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Git {
+                            this.close_git(window, cx);
+                        } else {
+                            this.open_git(window, cx);
+                        }
+                    })),
+            )
+            .child(rule())
             .child(
                 Button::new("rail-customize")
                     .icon(AssetIcon::Blocks)
@@ -1772,6 +1806,7 @@ impl Workspace {
                         }
                     })),
             )
+            .child(div().flex_1())
             .child(
                 Button::new("rail-settings")
                     .icon(IconName::Settings)
@@ -3644,17 +3679,32 @@ impl Render for Workspace {
         let viewport_w = f32::from(window.viewport_size().width);
         let panels = self.model.panels;
         let right_w = panels.right;
-        let side_w = if panels.focus == crate::panels::Focus::RightMax {
-            (viewport_w - RAIL_W).max(right_w)
-        } else if self.model.browser.visible {
-            browser_view::BROWSER_W.max(right_w)
-        } else if side_docked {
-            continuity_view::SIDE_W.max(right_w)
-        } else {
-            right_w
-        };
         let sidebar_w = panels.sidebar;
         let sidebar = sidebar.filter(|_| panels.shows_sidebar());
+        let side_w = if panels.focus == crate::panels::Focus::RightMax {
+            (viewport_w - RAIL_W).max(0.)
+        } else {
+            let want = if self.model.browser.visible {
+                browser_view::BROWSER_W.max(right_w)
+            } else if side_docked {
+                continuity_view::SIDE_W.max(right_w)
+            } else {
+                right_w
+            };
+            // Never past the window's edge, at any size or saved width.
+            let beside_sidebar = if layout.sidebar_beside {
+                sidebar.map_or(0., |f| sidebar_w * f)
+            } else {
+                0.
+            };
+            crate::panels::Panels::right_fit(
+                want,
+                viewport_w,
+                RAIL_W,
+                beside_sidebar,
+                layout.panel_beside,
+            )
+        };
         let panel = panel.filter(|_| panels.shows_right());
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
@@ -3735,6 +3785,9 @@ impl Render for Workspace {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
+                            // The chat gives way rather than pushing the
+                            // right pane off the window.
+                            .overflow_hidden()
                             .when(!panels.shows_centre(), |d| d.hidden())
                             .map(|d| match self.model.screen {
                                 Screen::Chat => match self.active_explain() {
@@ -3980,6 +4033,14 @@ fn sent_chip(c: &tern_agent::Chip, p: Palette) -> AnyElement {
 
 /// A side panel part-way open: it keeps its full width inside a clip that
 /// grows, and fades with it, so its contents never reflow mid-slide.
+/// Whether the operating system shows this window dark.
+fn system_dark(window: &Window) -> bool {
+    matches!(
+        window.appearance(),
+        gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+    )
+}
+
 fn sliding(panel: impl IntoElement, width: f32, f: f32, from_right: bool) -> impl IntoElement {
     div()
         .flex_none()

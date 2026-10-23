@@ -12,6 +12,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_menu;
+mod appearance;
 mod assets;
 mod brands;
 mod bridge;
@@ -63,7 +64,10 @@ fn main() {
             gpui_kit::init(cx);
             app_menu::install(cx);
             assets::register_fonts(cx);
-            theme::apply_kit(true, None, cx);
+            let look = appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
+            // The window's own light or dark setting is read once it opens;
+            // until then System starts dark.
+            theme::apply_kit(look.is_dark(true), &look, None, cx);
             // Closing the window ends the app on every platform.
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {

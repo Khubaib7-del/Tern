@@ -65,6 +65,14 @@ pub struct Preferences {
     /// default width.
     pub sidebar_width: Option<u32>,
     pub right_pane_width: Option<u32>,
+    /// The desktop's Appearance choices. `None` is the default for each:
+    /// `dark` theme (`system`, `light`, `dark`), `lichen` accent (`slate`,
+    /// `clay`, `mono`), `plex` font (`system`), `default` size (`small`,
+    /// `large`).
+    pub theme: Option<String>,
+    pub accent: Option<String>,
+    pub ui_font: Option<String>,
+    pub text_size: Option<String>,
 }
 
 impl Preferences {

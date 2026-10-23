@@ -659,6 +659,32 @@ mod tests {
     }
 
     #[test]
+    fn picker_is_a_compact_popover_with_one_line_rows() {
+        let mut st = st();
+        st.prefs.favourite_models = vec!["mistral/mistral-large-latest".into()];
+        if let Some(Models::Loaded(_, list)) = &mut st.models {
+            // A listing without a size falls back to Tern's table.
+            list[1].context_window = None;
+        }
+        let c = Composer::default();
+        let rows = c.picker_rows(&st, Some("ministral-8b-latest")).unwrap();
+        assert_eq!(rows[0].id, "mistral-large-latest", "favourites first");
+        assert!(rows[0].favourite && !rows[0].current);
+        let current = rows.iter().find(|r| r.current).unwrap();
+        assert_eq!(current.id, "ministral-8b-latest");
+        assert_eq!(current.context.as_deref(), Some("128k"));
+        let magistral = rows.iter().find(|r| r.id.starts_with("magistral")).unwrap();
+        assert_eq!(magistral.context.as_deref(), Some("128k"), "from the table");
+        assert_eq!(rows.iter().filter(|r| r.current).count(), 1);
+        // The popover keeps its design size in a normal window and shrinks
+        // in a small one, never past the window.
+        assert_eq!(picker_size(1280., 820.), (PICKER_W, PICKER_MAX_H));
+        let (w, h) = picker_size(400., 420.);
+        assert!(w <= 400. - 32. && h <= 420.);
+        const { assert!(PICKER_LEFT_W < PICKER_W / 2.) };
+    }
+
+    #[test]
     fn favourites_go_first_and_toggle() {
         let mut st = st();
         assert!(toggle_favourite(

@@ -1337,6 +1337,79 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Web search failed its check: one line naming the service (and
+    /// SearXNG's address), with Switch to Wikipedia and Set address.
+    fn search_down_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let reason = self.model.search_down.clone()?;
+        let service = self
+            .model
+            .connection
+            .as_ref()
+            .and_then(|c| c.search.clone())
+            .unwrap_or_else(|| "Web search".into());
+        let is_searx = service.eq_ignore_ascii_case("searxng");
+        let address = self
+            .model
+            .providers
+            .prefs
+            .search_url
+            .clone()
+            .or_else(|| is_searx.then(|| "http://localhost:8080".to_owned()));
+        let line = chatflow::search_down_line(&service, address.as_deref());
+        let detail: SharedString = reason.into();
+        Some(
+            div()
+                .id("search-down")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(icon(AssetIcon::GlobeOff, p.muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(p.text)
+                        .truncate()
+                        .child(SharedString::from(line)),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
+                })
+                .child(
+                    Button::new("search-down-wiki")
+                        .label("Switch to Wikipedia")
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.search_down = None;
+                            this.choose_search(Some("wikipedia"), cx);
+                        })),
+                )
+                .child(
+                    Button::new("search-down-set")
+                        .label(if is_searx {
+                            "Set address"
+                        } else {
+                            "Manage search"
+                        })
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.search_down = None;
+                            this.open_providers(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The banners over the composer, one at a time with "N more" to open
     /// the rest.
     fn notices(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1348,6 +1421,7 @@ impl Workspace {
         let mut col = div().flex().flex_col().gap_1();
         for n in shown {
             col = col.children(match n {
+                Notice::SearchDown => self.search_down_banner(p, cx),
                 Notice::Resume => self.resume_banner(p, cx),
                 Notice::Continue => self.continue_bar(p, cx),
                 Notice::Inserted => self.inserted_banner(p, cx),

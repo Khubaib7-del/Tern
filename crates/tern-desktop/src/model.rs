@@ -330,6 +330,9 @@ pub struct Model {
     pub cut_off: bool,
     /// The last answer was cut off: the composer offers Continue.
     pub continue_offer: bool,
+    /// Web search failed the last deep run's check: the stop reason. The
+    /// banner offers Wikipedia or the address field.
+    pub search_down: Option<String>,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -475,6 +478,7 @@ impl Model {
             resume_offer: None,
             cut_off: false,
             continue_offer: false,
+            search_down: None,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -695,6 +699,7 @@ impl Model {
         self.inserted = None;
         self.cut_off = false;
         self.continue_offer = false;
+        self.search_down = None;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -1384,6 +1389,9 @@ impl Model {
     pub fn active_notices(&self) -> Vec<crate::chatflow::Notice> {
         use crate::chatflow::Notice;
         let mut v = Vec::new();
+        if self.search_down.is_some() && !self.is_busy() {
+            v.push(Notice::SearchDown);
+        }
         if self.resume_offer.is_some() && !self.is_busy() {
             v.push(Notice::Resume);
         }
@@ -1522,6 +1530,9 @@ impl Model {
         if out.state != TurnState::Completed
             && let Some(r) = &out.reason
         {
+            if crate::chatflow::is_search_failure(r) {
+                self.search_down = Some(r.clone());
+            }
             self.entries.push(Entry::Notice(r.clone()));
         }
         if self.continue_offer {

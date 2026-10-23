@@ -133,6 +133,21 @@ impl Panels {
         }
     }
 
+    /// The right pane's width on screen: `want` (the saved width, or a
+    /// view's own minimum such as the browser's) clamped so the pane never
+    /// runs past the window's edge. Beside the chat it leaves the centre
+    /// [`CENTRE_MIN`]; floating over the chat it leaves the rail. Applied
+    /// on every frame, so a resize or a restored width re-clamps at once.
+    pub fn right_fit(want: f32, window_w: f32, rail: f32, sidebar: f32, beside: bool) -> f32 {
+        let free = (window_w - rail - if beside { sidebar } else { 0. }).max(0.);
+        let max = if beside {
+            (free - CENTRE_MIN).max(RIGHT_MIN.min(free))
+        } else {
+            free
+        };
+        want.min(max).max(0.)
+    }
+
     pub fn toggle_right_max(&mut self) {
         self.focus = if self.focus == Focus::RightMax {
             Focus::Normal
@@ -349,5 +364,57 @@ mod tests {
         assert!(a.rows().is_empty());
         assert!(a.confirm.is_none());
         assert_eq!(a.counts(), ("1 archived".into(), "0 in the trash".into()));
+    }
+
+    #[test]
+    fn the_right_pane_always_fits_in_the_window() {
+        const RAIL: f32 = 52.;
+        for window in [1280., 1440., 1920.] {
+            for want in [RIGHT_DEFAULT, 460., RIGHT_MAX, 2_000.] {
+                for sidebar in [0., SIDEBAR_DEFAULT, SIDEBAR_MAX] {
+                    let w = Panels::right_fit(want, window, RAIL, sidebar, true);
+                    assert!(w <= want, "{window} {want} {sidebar}");
+                    assert!(
+                        RAIL + sidebar + w <= window,
+                        "past the edge at {window} px: {w}"
+                    );
+                    assert!(
+                        window - RAIL - sidebar - w >= CENTRE_MIN || w <= RIGHT_MIN,
+                        "the chat keeps its minimum at {window} px"
+                    );
+                }
+            }
+        }
+        // The browser's 460 px fits a 1280 px window with the sidebar open
+        // only by giving up 16 px.
+        assert_eq!(
+            Panels::right_fit(460., 1280., RAIL, SIDEBAR_DEFAULT, true),
+            444.
+        );
+        assert_eq!(
+            Panels::right_fit(460., 1920., RAIL, SIDEBAR_DEFAULT, true),
+            460.
+        );
+        assert_eq!(
+            Panels::right_fit(300., 1440., RAIL, SIDEBAR_DEFAULT, true),
+            300.
+        );
+        // A saved 720 px width shrinks with the window and grows back.
+        assert_eq!(
+            Panels::right_fit(720., 1280., RAIL, SIDEBAR_DEFAULT, true),
+            444.
+        );
+        assert_eq!(
+            Panels::right_fit(720., 1920., RAIL, SIDEBAR_DEFAULT, true),
+            720.
+        );
+        // Floating over the chat: within the window past the rail.
+        assert_eq!(
+            Panels::right_fit(720., 600., RAIL, SIDEBAR_DEFAULT, false),
+            548.
+        );
+        // A window too small for the chat's minimum still never overflows.
+        let w = Panels::right_fit(460., 700., RAIL, SIDEBAR_DEFAULT, true);
+        assert!(RAIL + SIDEBAR_DEFAULT + w <= 700.);
     }
 }
