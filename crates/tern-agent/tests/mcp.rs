@@ -462,7 +462,10 @@ async fn attached_tools_are_gated_and_their_output_is_untrusted_data() {
     assert!(a.notes[0].contains("changed its tools"));
     let h = mcp::check(name, config.get(name).unwrap(), false).await;
     assert_eq!(h.state, HealthState::NeedsReview);
-    mcp::hub().stop_all().await;
+    // Only this test's server: the hub is shared by every test in this
+    // binary, and `stop_all` here would drop a connection another test is
+    // still using (the macOS run on main failed that way).
+    mcp::hub().stop(name).await;
 }
 
 fn args(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -627,7 +630,10 @@ async fn menu_prompts_and_resources_need_a_reviewed_server() {
     let menu = mcp::catalog::menu(&config, None).await;
     assert!(menu.items.is_empty());
     assert!(menu.notes[0].contains("changed its tools, prompts, or resources"));
-    mcp::hub().stop_all().await;
+    // Only this test's server: the hub is shared by every test in this
+    // binary, and `stop_all` here would drop a connection another test is
+    // still using (the macOS run on main failed that way).
+    mcp::hub().stop(name).await;
 }
 
 mod http {
