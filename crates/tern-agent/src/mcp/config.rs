@@ -176,13 +176,14 @@ impl McpConfig {
         std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
     }
 
-    /// The user's config from the app data folder.
+    /// The user's config from the settings folder (the data folder on
+    /// Windows and macOS, `$XDG_CONFIG_HOME/tern` on Linux).
     pub fn load() -> Result<Self, String> {
-        Self::load_from(&data_dir()?)
+        Self::load_from(&config_dir()?)
     }
 
     pub fn save(&self) -> Result<(), String> {
-        self.save_to(&data_dir()?)
+        self.save_to(&config_dir()?)
     }
 
     pub fn get(&self, name: &str) -> Result<&ServerConfig, String> {
@@ -229,6 +230,13 @@ pub fn valid_name(name: &str) -> bool {
 pub fn data_dir() -> Result<PathBuf, String> {
     tern_platform::AppPaths::discover()
         .map(|p| p.data_dir)
+        .map_err(|e| e.to_string())
+}
+
+/// The settings folder (`TERN_HOME` or the OS convention).
+pub fn config_dir() -> Result<PathBuf, String> {
+    tern_platform::AppPaths::discover()
+        .map(|p| p.config_dir)
         .map_err(|e| e.to_string())
 }
 

@@ -5,9 +5,13 @@
 //! driving the same `ChatSession` as the TUI. Colours stay neutral grey until
 //! the palette decision (ADR 0002) is made.
 
+// Runs on Windows (DirectX), Linux (X11 and Wayland, Vulkan through wgpu),
+// and macOS (Metal); see docs/linux.md and docs/macos.md.
+
 // Hide the console window on Windows release builds.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod app_menu;
 mod assets;
 mod bridge;
 mod browser;
@@ -32,6 +36,9 @@ use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
 use bridge::Bridge;
+
+/// The window's application id (Wayland app id, X11 class).
+pub(crate) const APP_ID: &str = "io.github.khubaib7_del.Tern";
 use view::Workspace;
 
 fn main() {
@@ -50,6 +57,7 @@ fn main() {
         .with_assets(assets::TernAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            app_menu::install(cx);
             assets::register_fonts(cx);
             theme::apply_kit(true, None, cx);
             // Closing the window ends the app on every platform.
@@ -63,6 +71,9 @@ fn main() {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(720.), px(480.))),
+                // Matches the `.desktop` file's StartupWMClass on Linux, so
+                // the dock shows Tern's icon for this window.
+                app_id: Some(APP_ID.into()),
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, move |window, cx| {

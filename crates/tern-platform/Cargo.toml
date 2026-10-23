@@ -1,6 +1,6 @@
 [package]
 name = "tern-platform"
-description = "OS integration for Tern: keychain, app data paths, disk checks."
+description = "OS integration for Tern: keychains, app data paths, disk checks, the reduced-motion setting, the file opener."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ tern-core.workspace = true
 directories.workspace = true
 fs4.workspace = true
 thiserror.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -23,3 +24,12 @@ tempfile.workspace = true
 [target.'cfg(windows)'.dependencies]
 keyring-core.workspace = true
 windows-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring-core.workspace = true
+zbus-secret-service-keyring-store.workspace = true
+linux-keyutils-keyring-store.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring-core.workspace = true
+apple-native-keyring-store.workspace = true
