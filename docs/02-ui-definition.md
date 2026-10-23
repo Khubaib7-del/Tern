@@ -79,7 +79,7 @@ Every screen is checked at 1280, 1440, and 1920px wide with both side panels ope
 
 ### 2.3 Providers screen
 
-Each provider is a row, not a bare name: a 36px rounded tile with the provider's monochrome logo, the name in text colour, and a muted status line underneath ("Not connected.", "Connected · 12 models", "Key invalid."). A 1px-bordered card holds the rows, separated by 1px rules.
+Each provider is a row, not a bare name: a 36px rounded tile with the provider's logo, the name in text colour, and a muted status line underneath ("Not connected.", "Connected · 12 models", "Key invalid."). A 1px-bordered card holds the rows, separated by 1px rules.
 
 | State | Right-hand control |
 | --- | --- |
@@ -87,7 +87,7 @@ Each provider is a row, not a bare name: a 36px rounded tile with the provider's
 | Connected | The standard toggle used elsewhere in Settings (enabled or disabled), plus a `⋯` menu (edit key, test, remove) |
 | Local (Ollama, LM Studio, OpenAI-compatible) | `Add` with an endpoint field instead of a key |
 
-No "Install" wording: providers are connected, not installed. Logos come from an MIT-licensed icon set (for example Lobe Icons) and are drawn in one colour. A refresh icon at the top re-probes all connected providers.
+No "Install" wording: providers are connected, not installed. Logos come from Lobe Icons (MIT) and are drawn in their own colours, or in the text colour for one-colour marks; see [assets.md](assets.md). A refresh icon at the top re-probes all connected providers.
 
 ### 2.4 Model picker
 

@@ -12,6 +12,7 @@ Tern is pre-alpha. These documents describe what is planned; nothing in them is 
 | [05 · Security model](05-security-model.md) | Assets, threats, controls, trust order, effect classes, data handling |
 | [Evaluation](evaluation.md) | The test ladder, suites, metrics and intervals, first scores, and how to add cases |
 | [Using Tern in Zed](zed.md) | Running Tern as an ACP agent inside Zed |
+| [Assets](assets.md) | Third-party brand logos (Lobe Icons, MIT), their sources, and the trademark note |
 
 ## Decisions
 

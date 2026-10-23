@@ -1958,50 +1958,6 @@ impl Model {
             level: self.context_level(),
         }
     }
-
-    /// The hover card's lines, as (label, value) with exact numbers.
-    pub fn context_details(&self) -> Vec<(&'static str, String)> {
-        let c = &self.context;
-        let mut rows = Vec::new();
-        let pct = c
-            .fraction()
-            .map(|f| format!(" ({:.1}%)", f * 100.0))
-            .unwrap_or_default();
-        let window = c
-            .window
-            .map(|w| format!(" of {}", grouped(w)))
-            .unwrap_or_default();
-        rows.push(("Context", format!("{}{window}{pct}", grouped(c.used()))));
-        if c.calls > 0 {
-            rows.push(("Last prompt", grouped(c.prompt)));
-            rows.push(("Last reply", grouped(c.reply)));
-        } else if c.used() > 0 {
-            rows.push(("History", grouped(c.prompt)));
-        }
-        if let Some(left) = c.left() {
-            rows.push(("Free", grouped(left)));
-        }
-        if c.calls > 0 {
-            rows.push((
-                "This chat",
-                format!(
-                    "{} tokens over {} call{}",
-                    grouped(c.session_tokens),
-                    c.calls,
-                    if c.calls == 1 { "" } else { "s" }
-                ),
-            ));
-        }
-        rows.push((
-            "Counted",
-            if c.estimated {
-                "estimated, 4 characters a token".into()
-            } else {
-                "by the provider".into()
-            },
-        ));
-        rows
-    }
 }
 
 /// How full the context window is, for the ring's colour.
@@ -2348,16 +2304,11 @@ mod tests {
     }
 
     #[test]
-    fn context_details_are_exact() {
+    fn context_label_and_level() {
         let mut m = ready();
         assert_eq!(m.context_label(), "0 of 128k tokens");
         m.context = ctx(90_000, 2_345);
         assert_eq!(m.context_level(), ContextLevel::Filling);
-        let d = m.context_details();
-        assert_eq!(d[0], ("Context", "92,345 of 128,000 (72.1%)".to_owned()));
-        assert_eq!(d[1], ("Last prompt", "90,000".to_owned()));
-        assert_eq!(d[3], ("Free", "35,655".to_owned()));
-        assert_eq!(d[4], ("This chat", "92,345 tokens over 1 call".to_owned()));
         m.context = ContextUse {
             prompt: 8,
             window: Some(128_000),
@@ -2365,7 +2316,6 @@ mod tests {
             ..ContextUse::default()
         };
         assert_eq!(m.context_label(), "~8 of 128k tokens");
-        assert_eq!(m.context_details()[1], ("History", "8".to_owned()));
         m.context.prompt = 120_000;
         assert_eq!(m.context_level(), ContextLevel::Full);
         assert_eq!(grouped(1_234_567), "1,234,567");

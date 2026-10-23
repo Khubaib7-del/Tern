@@ -275,6 +275,10 @@ mod tests {
             favourite_models: vec!["mistral/mistral-large-latest".into()],
             sidebar_width: Some(300),
             right_pane_width: Some(420),
+            theme: Some("light".into()),
+            accent: Some("clay".into()),
+            ui_font: Some("system".into()),
+            text_size: Some("large".into()),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         assert_eq!(p.quiz_spec(None).count, 10);
