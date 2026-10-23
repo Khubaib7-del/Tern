@@ -80,6 +80,21 @@ pub enum Msg {
     Cont(Box<ContMsg>),
     /// MCP servers, skills, instructions, and project folders.
     Ext(Box<ExtMsg>),
+    /// The Evaluation page.
+    Eval(Box<EvalMsg>),
+}
+
+/// What the Evaluation page's background work tells the window.
+#[derive(Debug)]
+pub enum EvalMsg {
+    /// Saved runs, newest first; the run to show; the run before it.
+    Loaded(
+        Vec<tern_agent::eval::RunSummary>,
+        Option<Box<tern_agent::eval::EvalRun>>,
+        Option<Box<tern_agent::eval::EvalRun>>,
+    ),
+    /// An offline run finished: a line to show, or why it failed.
+    Ran(Result<String, String>),
 }
 
 /// What the Decision model page's background work tells the window.
@@ -179,6 +194,15 @@ impl std::fmt::Debug for Msg {
             Self::Decision(m) => write!(f, "Decision({m:?})"),
             Self::Cont(m) => write!(f, "Cont({m:?})"),
             Self::Ext(m) => write!(f, "Ext({m:?})"),
+            Self::Eval(m) => match m.as_ref() {
+                EvalMsg::Loaded(runs, sel, _) => write!(
+                    f,
+                    "Eval(Loaded({} runs, showing {}))",
+                    runs.len(),
+                    sel.as_ref().map(|r| r.id.as_str()).unwrap_or("none")
+                ),
+                EvalMsg::Ran(r) => write!(f, "Eval(Ran(ok: {}))", r.is_ok()),
+            },
             Self::Watches(w, note, n) => {
                 write!(
                     f,
@@ -692,6 +716,69 @@ impl Bridge {
                     Kind::Search => search::remove(id, store.as_ref()),
                 });
             let _ = tx.send(Msg::Removed(kind, id, result));
+        });
+    }
+
+    /// Reads the saved evaluation runs and the one to show (`last` when
+    /// `which` is `None`) with the run before it.
+    pub fn eval_load(&self, which: Option<String>) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let msg = match tern_agent::eval::EvalStore::discover() {
+                Err(_) => EvalMsg::Loaded(Vec::new(), None, None),
+                Ok(store) => {
+                    let selected = store.find(which.as_deref().unwrap_or("last")).ok();
+                    let previous = selected.as_ref().and_then(|r| store.previous(r));
+                    EvalMsg::Loaded(
+                        store.summaries(),
+                        selected.map(Box::new),
+                        previous.map(Box::new),
+                    )
+                }
+            };
+            let _ = tx.send(Msg::Eval(Box::new(msg)));
+        });
+    }
+
+    /// Runs the offline (synthetic) suites, saves the run, and shows it.
+    pub fn eval_run(&self, trials: usize) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            use tern_agent::eval::{self as ev, EvalRequest, EvalStore, TernSubject};
+            let result = match EvalStore::discover() {
+                Err(e) => Err(e),
+                Ok(store) => {
+                    let req = EvalRequest {
+                        trials: Some(trials),
+                        ..Default::default()
+                    };
+                    match Box::pin(ev::run(&store, &req, &TernSubject::offline())).await {
+                        Ok((run, _)) => {
+                            let (p, a) = run.passed();
+                            let broken = ev::check_baseline(&run, &ev::baseline());
+                            let previous = store.previous(&run);
+                            let line = format!(
+                                "{}: {p}/{a} case-trials passed in {:.1} s{}",
+                                run.id,
+                                run.seconds,
+                                if broken.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" · {} below the baseline", broken.len())
+                                }
+                            );
+                            let _ = tx.send(Msg::Eval(Box::new(EvalMsg::Loaded(
+                                store.summaries(),
+                                Some(Box::new(run)),
+                                previous.map(Box::new),
+                            ))));
+                            Ok(line)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+            };
+            let _ = tx.send(Msg::Eval(Box::new(EvalMsg::Ran(result))));
         });
     }
 

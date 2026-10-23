@@ -15,6 +15,7 @@ mod commands;
 mod continuity;
 mod decision;
 mod editor;
+mod evaluation;
 mod explain;
 mod extensions;
 mod git;

@@ -1,0 +1,121 @@
+{
+  "format": 1,
+  "id": "pinned",
+  "version": 1,
+  "title": "Pinned real tasks",
+  "kind": "research",
+  "level": "pinned",
+  "origin": "real questions over real public pages, pinned on 23 October 2026 (the key terms were on each page that day); answered by your model, read through Tern's reader",
+  "description": "Live only. If a page changes so that its key terms are gone, the run reports source drift instead of blaming the model.",
+  "cases": [
+    {
+      "id": "p-transformer",
+      "question": "What architecture did Attention Is All You Need propose, and what BLEU score did it reach on WMT 2014 English-to-German?",
+      "sources": [
+        {
+          "url": "https://arxiv.org/abs/1706.03762",
+          "title": "Attention Is All You Need"
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "The Transformer, based solely on attention",
+          "terms": [
+            "transformer",
+            "attention"
+          ],
+          "sources": [
+            1
+          ]
+        },
+        {
+          "text": "28.4 BLEU on WMT 2014 English-to-German",
+          "terms": [
+            "28.4"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 120
+        }
+      ],
+      "budget_tokens": 40000
+    },
+    {
+      "id": "p-rust-2024",
+      "question": "Which Rust release stabilised the 2024 edition, and when was it announced?",
+      "sources": [
+        {
+          "url": "https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/",
+          "title": "Announcing Rust 1.85.0 and Rust 2024"
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Rust 1.85.0 stabilised the 2024 edition",
+          "terms": [
+            "1.85",
+            "2024"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 100
+        },
+        {
+          "type": "must_mention",
+          "term": "1.85"
+        }
+      ],
+      "budget_tokens": 40000
+    },
+    {
+      "id": "p-leitner",
+      "question": "Who proposed the Leitner system and in what year?",
+      "sources": [
+        {
+          "url": "https://en.wikipedia.org/wiki/Leitner_system",
+          "title": "Leitner system"
+        }
+      ],
+      "gold_claims": [
+        {
+          "text": "Proposed by Sebastian Leitner in 1972",
+          "terms": [
+            "leitner",
+            "1972"
+          ],
+          "sources": [
+            1
+          ]
+        }
+      ],
+      "gold_sources": [
+        1
+      ],
+      "constraints": [
+        {
+          "type": "max_words",
+          "n": 80
+        }
+      ],
+      "budget_tokens": 30000
+    }
+  ]
+}

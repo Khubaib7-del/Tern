@@ -37,6 +37,19 @@ jobs:
         run: |
           $env:TERN_HOME = "$env:RUNNER_TEMP\tern-home"
           cargo run --locked -p tern-tui -- doctor
+      - name: Evaluation (offline suites, 3 trials, baseline check)
+        shell: pwsh
+        run: |
+          $env:TERN_HOME = "$env:RUNNER_TEMP\tern-eval-home"
+          cargo run --locked -p tern-tui -- eval run --level synthetic --trials 3 --check-baseline
+          Get-Content (Get-ChildItem "$env:TERN_HOME\evals\runs\*.md" | Select-Object -First 1).FullName | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - name: Upload the evaluation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tern-eval-report
+          path: ${{ runner.temp }}/tern-eval-home/evals/runs/
+          retention-days: 14
 
   desktop:
     name: Windows desktop build (download to test)

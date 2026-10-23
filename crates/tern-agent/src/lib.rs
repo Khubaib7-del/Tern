@@ -35,6 +35,7 @@ pub mod decide;
 pub mod deep;
 pub mod doctor;
 pub mod engine;
+pub mod eval;
 pub mod explain;
 pub mod git;
 pub mod handoff;

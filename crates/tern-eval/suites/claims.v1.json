@@ -1,0 +1,439 @@
+{
+  "format": 1,
+  "id": "claims",
+  "version": 1,
+  "title": "Claim verdicts",
+  "kind": "claims",
+  "level": "synthetic",
+  "origin": "synthetic: cases, pages, and recorded answers written for Tern's tests; the pages are not real sites and the answers are not real model output",
+  "description": "One claim and the pages it cites, with the verdict a careful reader would give: supported, partly supported, not supported (a wrong number, a negation, a swapped entity, an unrelated claim), or no source (the page could not be read).",
+  "cases": [
+    {
+      "id": "c-eiffel-ok",
+      "claim": "The Eiffel Tower was completed in 1889.",
+      "sources": [
+        {
+          "url": "https://paris-guide.example/eiffel",
+          "title": "Eiffel Tower",
+          "text": "The Eiffel Tower was completed in 1889 as the entrance arch to the World's Fair. It is 330 metres tall and was the tallest man-made structure in the world until 1930."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "id": "c-eiffel-number",
+      "claim": "The Eiffel Tower is 300 metres tall.",
+      "sources": [
+        {
+          "url": "https://paris-guide.example/eiffel",
+          "title": "Eiffel Tower",
+          "text": "The Eiffel Tower was completed in 1889 as the entrance arch to the World's Fair. It is 330 metres tall and was the tallest man-made structure in the world until 1930."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-eiffel-year",
+      "claim": "The Eiffel Tower was completed in 1899.",
+      "sources": [
+        {
+          "url": "https://paris-guide.example/eiffel",
+          "title": "Eiffel Tower",
+          "text": "The Eiffel Tower was completed in 1889 as the entrance arch to the World's Fair. It is 330 metres tall and was the tallest man-made structure in the world until 1930."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-eiffel-tallest",
+      "claim": "The Eiffel Tower was the tallest man-made structure in the world until 1930.",
+      "sources": [
+        {
+          "url": "https://paris-guide.example/eiffel",
+          "title": "Eiffel Tower",
+          "text": "The Eiffel Tower was completed in 1889 as the entrance arch to the World's Fair. It is 330 metres tall and was the tallest man-made structure in the world until 1930."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "verbatim"
+      ]
+    },
+    {
+      "id": "c-eiffel-unrelated",
+      "claim": "The Louvre holds the Mona Lisa.",
+      "sources": [
+        {
+          "url": "https://paris-guide.example/eiffel",
+          "title": "Eiffel Tower",
+          "text": "The Eiffel Tower was completed in 1889 as the entrance arch to the World's Fair. It is 330 metres tall and was the tallest man-made structure in the world until 1930."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "unrelated"
+      ]
+    },
+    {
+      "id": "c-mmr-ok",
+      "claim": "Two doses of the MMR vaccine are about 97 percent effective against measles.",
+      "sources": [
+        {
+          "url": "https://health-brief.example/mmr",
+          "title": "MMR vaccine",
+          "text": "Large cohort studies found no link between the MMR vaccine and autism. Two doses of the MMR vaccine are about 97 percent effective at preventing measles."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-mmr-negation",
+      "claim": "Large cohort studies found a link between the MMR vaccine and autism.",
+      "sources": [
+        {
+          "url": "https://health-brief.example/mmr",
+          "title": "MMR vaccine",
+          "text": "Large cohort studies found no link between the MMR vaccine and autism. Two doses of the MMR vaccine are about 97 percent effective at preventing measles."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "negation"
+      ]
+    },
+    {
+      "id": "c-mmr-number",
+      "claim": "One dose of the MMR vaccine is about 97 percent effective against measles.",
+      "sources": [
+        {
+          "url": "https://health-brief.example/mmr",
+          "title": "MMR vaccine",
+          "text": "Large cohort studies found no link between the MMR vaccine and autism. Two doses of the MMR vaccine are about 97 percent effective at preventing measles."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number",
+        "entity swap"
+      ]
+    },
+    {
+      "id": "c-mmr-noautism",
+      "claim": "Studies found no link between the MMR vaccine and autism.",
+      "sources": [
+        {
+          "url": "https://health-brief.example/mmr",
+          "title": "MMR vaccine",
+          "text": "Large cohort studies found no link between the MMR vaccine and autism. Two doses of the MMR vaccine are about 97 percent effective at preventing measles."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "negation kept"
+      ]
+    },
+    {
+      "id": "c-gpu-ok",
+      "claim": "The card has 16 GB of memory.",
+      "sources": [
+        {
+          "url": "https://hw-review.example/gpu",
+          "title": "GPU review",
+          "text": "The card has 16 GB of memory and draws up to 320 watts. In our tests it ran the benchmark 18 percent faster than last year's model."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-gpu-watts",
+      "claim": "The card draws up to 230 watts.",
+      "sources": [
+        {
+          "url": "https://hw-review.example/gpu",
+          "title": "GPU review",
+          "text": "The card has 16 GB of memory and draws up to 320 watts. In our tests it ran the benchmark 18 percent faster than last year's model."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-gpu-faster",
+      "claim": "The card ran the benchmark 18 percent faster than last year's model.",
+      "sources": [
+        {
+          "url": "https://hw-review.example/gpu",
+          "title": "GPU review",
+          "text": "The card has 16 GB of memory and draws up to 320 watts. In our tests it ran the benchmark 18 percent faster than last year's model."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "verbatim"
+      ]
+    },
+    {
+      "id": "c-gpu-slower",
+      "claim": "The card ran the benchmark 18 percent slower than last year's model.",
+      "sources": [
+        {
+          "url": "https://hw-review.example/gpu",
+          "title": "GPU review",
+          "text": "The card has 16 GB of memory and draws up to 320 watts. In our tests it ran the benchmark 18 percent faster than last year's model."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "antonym"
+      ]
+    },
+    {
+      "id": "c-gpu-partly",
+      "claim": "The card has 16 GB of memory and costs 599 dollars.",
+      "sources": [
+        {
+          "url": "https://hw-review.example/gpu",
+          "title": "GPU review",
+          "text": "The card has 16 GB of memory and draws up to 320 watts. In our tests it ran the benchmark 18 percent faster than last year's model."
+        }
+      ],
+      "gold": "partly",
+      "tags": [
+        "half supported"
+      ]
+    },
+    {
+      "id": "c-nosource",
+      "claim": "The bridge opened in 1937.",
+      "sources": [
+        {
+          "url": "https://gone.example/page",
+          "title": "Page that could not be read",
+          "text": ""
+        }
+      ],
+      "gold": "no_source",
+      "tags": [
+        "unreadable"
+      ]
+    },
+    {
+      "id": "c-bridge-ok",
+      "claim": "The Golden Gate Bridge opened in 1937.",
+      "sources": [
+        {
+          "url": "https://sf-history.example/golden-gate",
+          "title": "Golden Gate Bridge",
+          "text": "The Golden Gate Bridge opened to traffic in May 1937. Its main span is 1,280 metres long, and it was painted International Orange."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "id": "c-bridge-colour",
+      "claim": "The Golden Gate Bridge was painted International Orange.",
+      "sources": [
+        {
+          "url": "https://sf-history.example/golden-gate",
+          "title": "Golden Gate Bridge",
+          "text": "The Golden Gate Bridge opened to traffic in May 1937. Its main span is 1,280 metres long, and it was painted International Orange."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "verbatim"
+      ]
+    },
+    {
+      "id": "c-bridge-span",
+      "claim": "The bridge's main span is 2,280 metres long.",
+      "sources": [
+        {
+          "url": "https://sf-history.example/golden-gate",
+          "title": "Golden Gate Bridge",
+          "text": "The Golden Gate Bridge opened to traffic in May 1937. Its main span is 1,280 metres long, and it was painted International Orange."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-bridge-gold",
+      "claim": "The Golden Gate Bridge was painted gold.",
+      "sources": [
+        {
+          "url": "https://sf-history.example/golden-gate",
+          "title": "Golden Gate Bridge",
+          "text": "The Golden Gate Bridge opened to traffic in May 1937. Its main span is 1,280 metres long, and it was painted International Orange."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "entity swap"
+      ]
+    },
+    {
+      "id": "c-retrieval-ok",
+      "claim": "Students who practised retrieval remembered more after a week than students who reread.",
+      "sources": [
+        {
+          "url": "https://edu-research.example/retrieval",
+          "title": "Retrieval practice",
+          "text": "Students who practised retrieval remembered more after a week than students who reread the material. The effect held for both multiple choice and short answer tests."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "id": "c-retrieval-reverse",
+      "claim": "Students who reread remembered more after a week than students who practised retrieval.",
+      "sources": [
+        {
+          "url": "https://edu-research.example/retrieval",
+          "title": "Retrieval practice",
+          "text": "Students who practised retrieval remembered more after a week than students who reread the material. The effect held for both multiple choice and short answer tests."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "role swap"
+      ]
+    },
+    {
+      "id": "c-retrieval-mc",
+      "claim": "The retrieval effect held for multiple choice tests.",
+      "sources": [
+        {
+          "url": "https://edu-research.example/retrieval",
+          "title": "Retrieval practice",
+          "text": "Students who practised retrieval remembered more after a week than students who reread the material. The effect held for both multiple choice and short answer tests."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "id": "c-retrieval-month",
+      "claim": "Students who practised retrieval remembered more after a month.",
+      "sources": [
+        {
+          "url": "https://edu-research.example/retrieval",
+          "title": "Retrieval practice",
+          "text": "Students who practised retrieval remembered more after a week than students who reread the material. The effect held for both multiple choice and short answer tests."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number",
+        "overreach"
+      ]
+    },
+    {
+      "id": "c-two-first",
+      "claim": "Atmospheric carbon dioxide passed 420 parts per million in 2023.",
+      "sources": [
+        {
+          "url": "https://climate-a.example/co2",
+          "title": "CO2 record",
+          "text": "Atmospheric carbon dioxide passed 420 parts per million in 2023."
+        },
+        {
+          "url": "https://climate-b.example/temp",
+          "title": "Temperature record",
+          "text": "2023 was the warmest year in the instrumental record."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "two sources"
+      ]
+    },
+    {
+      "id": "c-two-second",
+      "claim": "2023 was the warmest year in the instrumental record.",
+      "sources": [
+        {
+          "url": "https://climate-a.example/co2",
+          "title": "CO2 record",
+          "text": "Atmospheric carbon dioxide passed 420 parts per million in 2023."
+        },
+        {
+          "url": "https://climate-b.example/temp",
+          "title": "Temperature record",
+          "text": "2023 was the warmest year in the instrumental record."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "two sources"
+      ]
+    },
+    {
+      "id": "c-two-mixed",
+      "claim": "Atmospheric carbon dioxide passed 450 parts per million in 2023.",
+      "sources": [
+        {
+          "url": "https://climate-a.example/co2",
+          "title": "CO2 record",
+          "text": "Atmospheric carbon dioxide passed 420 parts per million in 2023."
+        },
+        {
+          "url": "https://climate-b.example/temp",
+          "title": "Temperature record",
+          "text": "2023 was the warmest year in the instrumental record."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "c-two-none",
+      "claim": "Sea ice reached a record high in 2023.",
+      "sources": [
+        {
+          "url": "https://climate-a.example/co2",
+          "title": "CO2 record",
+          "text": "Atmospheric carbon dioxide passed 420 parts per million in 2023."
+        },
+        {
+          "url": "https://climate-b.example/temp",
+          "title": "Temperature record",
+          "text": "2023 was the warmest year in the instrumental record."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "unrelated"
+      ]
+    }
+  ]
+}

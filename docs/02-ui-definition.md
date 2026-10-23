@@ -62,6 +62,7 @@ There is no separate terminal window in the desktop app and no sparkle or star i
 | Library | Reports, Sources, Notes, Decks, Files, All; grid or list; `New ▾` (note, report, deck, folder, upload) |
 | Scheduled | Topic watches, weekly paper digests, spaced-repetition reminders; suggestion cards when empty |
 | Customize | Skills, MCP servers, Providers |
+| Evaluation | Saved evaluation runs (subject logo or the tern mark, rung, mode, trials, passed), the selected run's suites with a glyph per kind, every metric with its 95% interval and the change since the previous run, failures per suite, and Run offline suites (built, PR #42) |
 | Settings | General, Providers, Models, Decision model, Privacy, Integrations (Git and GitHub, MCP, Browser), Study, Appearance, Shortcuts, About. Scout sits beside each page title |
 
 ### 2.2 Responsive composer (acceptance test)

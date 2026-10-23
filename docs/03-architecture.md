@@ -1,6 +1,6 @@
 # 03 · Architecture
 
-> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). Since PR #39 continuity is built: schema v3 in `tern-store` (sub-sessions and the Library index) and, in `tern-agent`, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, highlights, and the side chat (section 5.1). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
+> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). Since PR #39 continuity is built: schema v3 in `tern-store` (sub-sessions and the Library index) and, in `tern-agent`, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, highlights, and the side chat (section 5.1). Since PR #42 a twelfth crate, `tern-eval`, holds the evaluation harness (section 5.3, [evaluation.md](evaluation.md)). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
 
 ## 1. Shape
 
@@ -39,6 +39,7 @@ One Rust workspace. A headless core owns state, execution, and security. The TUI
 | `tern-store` | Persistence: SQLite for projects, sessions (with sub-sessions: a parent, the message they hang under, a planned question), ledgers, and the append-only event log; the Library index (one row per report, source, note, deck, file, scene, and session, with search, filter, sort, paging, and a live/trash/purged state); full-text index; vector index; hashed artifacts; checkpoints; Anki packages (`.apkg`: an SQLite collection and media in a zip); the Markdown vault on disk | `rusqlite`, `zip`, `sha1_smol`, `tantivy`, `sqlite-vec` or LanceDB, `notify` |
 | `tern-research` | The Research harness: clarify and plan, search, read, verify, write, record. Scholarly API clients, claim extraction and verification, evidence tables, citation formatting, run report, export | `hayagriva` or `citeproc`; pandoc detected, not bundled |
 | `tern-study` | The Study harness: materials and anchors, topics, mastery, tutor, flashcards with SM-2 spaced repetition, quizzes, viva practice, Explain in 3D scenes and their isometric projection and SVG, study plans; grading with the shared verdict vocabulary; CSV and Anki-ready TSV (the `.apkg` writer is in `tern-store`). Pure: no I/O and no model calls; `tern-agent` reads the files and calls the provider | `serde`, `serde_json` |
+| `tern-eval` | The evaluation harness: versioned task suites (JSON, bundled and the user's own), runners for each suite kind against a `Subject` over N trials, metrics with 95% intervals (Wilson for proportions, t over trials), every failure, JSON and Markdown reports, run comparison, the CI baseline, the SciFact reader, SUS scoring. No I/O, no clock, no UI, no HTTP library; `tern_agent::eval` supplies Tern as the subject and keeps `<data>/evals/` | `serde`, `serde_json`; `tern-research`, `tern-study`, `tern-decision` |
 | `tern-tui` | The `tern` binary: CLI commands (`tern ask`, `tern doctor`, `tern run --json`), the ratatui TUI, terminal capability probing | `clap`, `ratatui`, `crossterm` |
 | `tern-desktop` | The GPUI desktop app: shell, sessions, transcript, right rail, vault editor, Scout | `gpui` via a pinned component kit |
 | `tern-platform` | OS integration behind traits so ports stay small: keychain, app data paths, file dialogs, notifications, process spawning. Windows implementation first | `keyring`, `directories`, `windows` |
@@ -51,6 +52,7 @@ One Rust workspace. A headless core owns state, execution, and security. The TUI
 | `tern-platform` depends only on `tern-core` | OS code stays in one place for porting |
 | `tern-tui` and `tern-desktop` depend on `tern-agent` and `tern-core` only; they never call providers, the crawler, or the store directly | UIs are subscribers; the GPUI pre-1.0 risk stays out of the engine |
 | `tern-research` and `tern-study` never import each other | Harnesses share the core, not each other |
+| `tern-eval` depends on no UI, store, crawler, provider, or `tern-agent`; `tern-agent` depends on it | The harness is measured from below: the same runners score offline recordings and live runs, and the UIs read results through `tern-agent` |
 | Only `tern-providers`, `tern-crawl`, and `tern-decision` may depend on an HTTP library; only `tern-providers` talks to model APIs (and carries MCP's Streamable HTTP for `tern-agent`); only `tern-crawl` fetches arbitrary URLs | One place to enforce keys, budgets, and the network guard |
 | Every side effect passes the policy gate in `tern-agent` | The model never holds permissions |
 
@@ -140,12 +142,22 @@ Message IDs: a turn's number is its order among the log's `turn.started` events 
 
 Compaction thresholds are per model. The log is persisted first, the summary is split into verified facts, decisions, assumptions, failures, done, and next, and the user is told when it happened.
 
+### 5.3 Evaluation
+
+| Piece | Where | How it works |
+| --- | --- | --- |
+| Suites | `tern-eval::suite`, `crates/tern-eval/suites/*.v1.json`, `<data>/evals/suites/` | A file names its format, id, version, kind (research, claims, quiz, decision, safety), rung (synthetic, pinned, public), and origin, then its cases; every case is checked on load (unique ids, gold sources in range, one label per cited sentence). A user file with a bundled id replaces it |
+| Subject | `tern_eval::Subject`, `tern_agent::eval::TernSubject` | What a run measures: the chat model (live only), the trust scan (`mcp::trust::scan`, danger flags), the untrusted-data wrapper, the policy gate under default settings, Tern Crawl's reader (pinned pages), and the decision models (fixed order and the local scorer) |
+| Runners | `tern_eval::run` | Research answers go through `tern_research::claims::extract`, `verdict::check_lexical`, and, live, the model judge; quiz answers through `tern_study::grade`; decision cases through `tern_decision::bench::run_model`; safety cases through the subject's scan, wrapper, gate, and (live) a canary prompt. Offline, trial `k` replays recording `k mod n` |
+| Reports | `tern_eval::report`, `<data>/evals/runs/<id>.json` and `.md` | Metrics per trial with a 95% interval, every failure, model use; `compare` marks regressions; `check_baseline` against `crates/tern-eval/baseline.json` |
+| Rungs outside suites | `tern_eval::unit`, `tern_eval::usability` | `cargo test` output read back as a run; a timed usability session with the System Usability Scale |
+
 ## 6. Storage layout (planned)
 
 | Location | Contents |
 | --- | --- |
 | OS keychain | Provider and search API keys |
-| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, crawl cache, checkpoints, run reports (`runs/`), handoff packets (`handoffs/`), the Library trash (`trash/`) |
+| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, crawl cache, checkpoints, run reports (`runs/`), handoff packets (`handoffs/`), the Library trash (`trash/`), evaluation runs and the user's suites (`evals/`) |
 | Vault directory (user-chosen) | Plain Markdown notes and reports, Obsidian-compatible; optional git-backed history |
 
 ## 7. Platform order
