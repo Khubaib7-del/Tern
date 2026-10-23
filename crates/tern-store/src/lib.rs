@@ -239,6 +239,117 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes a chat to the trash: a tombstone that hides it (and its
+    /// sub-sessions) from every list. Its events stay until the trash is
+    /// emptied; [`Store::restore_session`] brings it back.
+    pub fn delete_session(&self, id: SessionId) -> StoreResult<()> {
+        let n = self.conn.execute(
+            "UPDATE sessions SET deleted_at = ?1 WHERE (id = ?2 OR parent_id = ?2) AND deleted_at IS NULL",
+            params![now(), id.to_string()],
+        )?;
+        if n == 0 && self.session(id)?.is_none() {
+            return Err(StoreError::UnknownSession(id));
+        }
+        Ok(())
+    }
+
+    /// Takes a chat (and its sub-sessions) out of the trash.
+    pub fn restore_session(&self, id: SessionId) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE sessions SET deleted_at = NULL WHERE id = ?1 OR parent_id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a chat is in the trash.
+    pub fn is_deleted(&self, id: SessionId) -> StoreResult<bool> {
+        let v: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT deleted_at FROM sessions WHERE id = ?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(matches!(v, Some(Some(_))))
+    }
+
+    /// Archived chats (not deleted), newest first.
+    pub fn archived_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        self.summaries_left(
+            "WHERE s.archived_at IS NOT NULL AND s.deleted_at IS NULL AND s.parent_id IS NULL AND ?1 = ?1",
+            "",
+            limit,
+        )
+    }
+
+    /// Chats in the trash, newest first (sub-sessions go with their parent).
+    pub fn deleted_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        self.summaries_left(
+            "WHERE s.deleted_at IS NOT NULL AND (s.parent_id IS NULL OR s.parent_id NOT IN (SELECT id FROM sessions WHERE deleted_at IS NOT NULL)) AND ?1 = ?1",
+            "",
+            limit,
+        )
+    }
+
+    /// Erases a chat in the trash for good: writes its purge record, then
+    /// deletes its events, its sub-sessions' events, and the rows. Refuses a
+    /// chat that is not in the trash. Returns the ids erased (the chat and
+    /// its sub-sessions), so the caller can remove their checkpoints and
+    /// run files.
+    pub fn purge_session(&mut self, id: SessionId) -> StoreResult<Vec<SessionId>> {
+        if !self.is_deleted(id)? {
+            return Err(StoreError::Invalid(
+                "Only a chat in the trash can be erased.".into(),
+            ));
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let ids: Vec<(String, String, String)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, title, COALESCE(deleted_at, '') FROM sessions WHERE id = ?1 OR parent_id = ?1",
+            )?;
+            let rows =
+                stmt.query_map([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let at = now();
+        for (sid, title, deleted_at) in &ids {
+            let n: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                [sid],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO purges (session_id, title, events, deleted_at, purged_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![sid, title, n, deleted_at, at],
+            )?;
+            tx.execute("DELETE FROM events WHERE session_id = ?1", [sid])?;
+            tx.execute("DELETE FROM sessions WHERE id = ?1", [sid])?;
+        }
+        tx.commit()?;
+        Ok(ids.iter().filter_map(|(s, _, _)| s.parse().ok()).collect())
+    }
+
+    /// Erases every chat in the trash. Returns the ids erased.
+    pub fn empty_trash(&mut self) -> StoreResult<Vec<SessionId>> {
+        let mut out = Vec::new();
+        for s in self.deleted_sessions(100_000)? {
+            out.extend(self.purge_session(s.id)?);
+        }
+        Ok(out)
+    }
+
+    /// How many chats were ever purged (their records stay).
+    pub fn purge_count(&self) -> StoreResult<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM purges", [], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
     /// Whether a session is archived.
     pub fn is_archived(&self, id: SessionId) -> StoreResult<bool> {
         let v: Option<Option<String>> = self
@@ -304,7 +415,7 @@ impl Store {
     /// Planned sub-sessions with no events yet are included.
     pub fn sub_sessions(&self, parent: SessionId) -> StoreResult<Vec<SessionSummary>> {
         let mut out = self.summaries_left(
-            "WHERE s.parent_id = ?1 AND s.archived_at IS NULL",
+            "WHERE s.parent_id = ?1 AND s.archived_at IS NULL AND s.deleted_at IS NULL",
             &parent.to_string(),
             10_000,
         )?;
@@ -327,7 +438,9 @@ impl Store {
     /// message to show.
     pub fn recent_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
         self.summaries(
-            &format!("WHERE s.archived_at IS NULL AND ?1 = ?1 AND {HAS_CONTENT}"),
+            &format!(
+                "WHERE s.archived_at IS NULL AND s.deleted_at IS NULL AND ?1 = ?1 AND {HAS_CONTENT}"
+            ),
             "",
             limit,
         )
@@ -339,7 +452,9 @@ impl Store {
     /// sub-session (no events yet, a parent) is kept.
     pub fn all_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
         self.summaries_left(
-            &format!("WHERE ?1 = ?1 AND (s.parent_id IS NOT NULL OR {HAS_CONTENT})"),
+            &format!(
+                "WHERE ?1 = ?1 AND s.deleted_at IS NULL AND (s.parent_id IS NOT NULL OR {HAS_CONTENT})"
+            ),
             "",
             limit,
         )
@@ -683,5 +798,133 @@ mod tests {
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
         assert!(s.integrity_ok().unwrap());
         assert_eq!(s.replay(ses, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_is_a_tombstone_until_the_trash_is_emptied() {
+        let (mut s, ses) = setup();
+        s.append(&ev(ses, "turn.started")).unwrap();
+        let sub = s.create_sub_session(ses, 1, "Costs", None).unwrap();
+        s.append(&ev(sub, "turn.started")).unwrap();
+        let other = s
+            .create_session(
+                s.ensure_project("Inbox").unwrap(),
+                Harness::Research,
+                "Keep",
+            )
+            .unwrap();
+        s.append(&ev(other, "turn.started")).unwrap();
+
+        s.delete_session(ses).unwrap();
+        assert!(s.is_deleted(ses).unwrap());
+        assert!(
+            s.is_deleted(sub).unwrap(),
+            "sub-sessions go with their chat"
+        );
+        let ids: Vec<_> = s
+            .recent_sessions(10)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, [other]);
+        assert!(s.all_sessions(10).unwrap().iter().all(|r| r.id != ses));
+        assert!(s.sub_sessions(ses).unwrap().is_empty());
+        let trash: Vec<_> = s
+            .deleted_sessions(10)
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(
+            trash,
+            [ses],
+            "the trash lists the chat, not its sub-session"
+        );
+        // Still append-only while in the trash.
+        assert!(
+            s.conn
+                .execute(
+                    "DELETE FROM events WHERE session_id = ?1",
+                    [ses.to_string()]
+                )
+                .is_err()
+        );
+
+        s.restore_session(ses).unwrap();
+        assert!(!s.is_deleted(sub).unwrap());
+        assert_eq!(s.recent_sessions(10).unwrap().len(), 3);
+
+        // Erasing needs the tombstone first.
+        assert!(s.purge_session(ses).is_err());
+        s.delete_session(ses).unwrap();
+        let gone = s.purge_session(ses).unwrap();
+        assert_eq!(gone.len(), 2);
+        assert!(s.session(ses).unwrap().is_none());
+        assert!(s.replay(ses, 0).unwrap().is_empty());
+        assert!(s.replay(sub, 0).unwrap().is_empty());
+        assert_eq!(s.purge_count().unwrap(), 2);
+        // Purge records cannot be changed, and other chats stay append-only.
+        assert!(s.conn.execute("DELETE FROM purges", []).is_err());
+        assert!(s.conn.execute("UPDATE purges SET title = 'x'", []).is_err());
+        assert!(
+            s.conn
+                .execute(
+                    "DELETE FROM events WHERE session_id = ?1",
+                    [other.to_string()]
+                )
+                .is_err()
+        );
+        assert_eq!(s.replay(other, 0).unwrap().len(), 1);
+        // A purged chat takes no new events.
+        assert!(matches!(
+            s.append(&ev(ses, "x")),
+            Err(StoreError::UnknownSession(_))
+        ));
+    }
+
+    #[test]
+    fn archived_view_and_empty_trash() {
+        let (mut s, ses) = setup();
+        s.append(&ev(ses, "turn.started")).unwrap();
+        s.archive_session(ses).unwrap();
+        assert_eq!(s.archived_sessions(10).unwrap().len(), 1);
+        s.delete_session(ses).unwrap();
+        assert!(
+            s.archived_sessions(10).unwrap().is_empty(),
+            "deleted leaves Archived"
+        );
+        assert_eq!(s.empty_trash().unwrap(), [ses]);
+        assert!(s.deleted_sessions(10).unwrap().is_empty());
+        assert!(s.integrity_ok().unwrap());
+    }
+
+    #[test]
+    fn version_4_databases_migrate_to_5_keeping_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v4.sqlite3");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(&format!(
+                "BEGIN; {} {} {} {} PRAGMA user_version = 4; COMMIT;",
+                schema::tests_v(1),
+                schema::tests_v(2),
+                schema::tests_v(3),
+                schema::tests_v(4)
+            ))
+            .unwrap();
+            c.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p', 'Inbox', 'now')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 5);
+        assert!(
+            s.conn.execute("DELETE FROM events", []).is_ok(),
+            "no rows, nothing refused"
+        );
+        assert_eq!(s.purge_count().unwrap(), 0);
     }
 }

@@ -12,6 +12,15 @@ use crate::{
     ChatRequest, ChatResponse, ModelInfo, ProviderError, ProviderResult, ProviderSpec, Wire,
 };
 
+/// One piece of a streamed reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delta<'a> {
+    /// Answer text.
+    Text(&'a str),
+    /// The model's reasoning, for the Thinking section.
+    Reasoning(&'a str),
+}
+
 /// The result of `tern provider test`.
 #[derive(Clone, Debug, Serialize)]
 pub struct ProbeReport {
@@ -185,6 +194,8 @@ impl Provider {
                 )
             }
         };
+        let mut body = body;
+        crate::effort::apply(&mut body, self.spec, req);
         let json = self.send(self.http.post(url).json(&body), &what).await?;
         let decode = |reason: String| ProviderError::Decode {
             provider: self.spec.name,
@@ -201,10 +212,27 @@ impl Provider {
     /// One streaming chat call. `on_text` gets each piece of text as it
     /// arrives and returns `false` to stop early (the user pressed Stop); the
     /// reply then holds what arrived, with finish reason `cancelled`.
+    /// Reasoning is dropped; [`Provider::chat_stream_deltas`] passes it on.
     pub async fn chat_stream(
         &self,
         req: &ChatRequest,
         on_text: &(dyn Fn(&str) -> bool + Send + Sync),
+    ) -> ProviderResult<ChatResponse> {
+        let on = |d: Delta<'_>| match d {
+            Delta::Text(t) => on_text(t),
+            Delta::Reasoning(_) => true,
+        };
+        self.chat_stream_deltas(req, &on).await
+    }
+
+    /// [`Provider::chat_stream`] that also streams the model's reasoning
+    /// (thinking) as [`Delta::Reasoning`]. Reasoning never joins the
+    /// reply's text. `<think>` blocks at the start of a reply (open models)
+    /// count as reasoning too.
+    pub async fn chat_stream_deltas(
+        &self,
+        req: &ChatRequest,
+        on: &(dyn Fn(Delta<'_>) -> bool + Send + Sync),
     ) -> ProviderResult<ChatResponse> {
         let what = format!("the model `{}`", req.model);
         let (url, body) = match self.spec.wire {
@@ -214,18 +242,22 @@ impl Provider {
                 if reports_stream_usage(self.spec.id) {
                     body["stream_options"] = serde_json::json!({"include_usage": true});
                 }
+                crate::effort::apply(&mut body, self.spec, req);
                 (self.url("chat/completions"), body)
             }
             Wire::Anthropic => {
                 let mut body = wire::anthropic::chat_body(req);
                 body["stream"] = serde_json::json!(true);
+                crate::effort::apply(&mut body, self.spec, req);
                 (self.url("messages"), body)
             }
             Wire::Gemini => {
                 let model = req.model.strip_prefix("models/").unwrap_or(&req.model);
+                let mut body = wire::gemini::chat_body(req);
+                crate::effort::apply(&mut body, self.spec, req);
                 (
                     self.url(&format!("models/{model}:streamGenerateContent?alt=sse")),
-                    wire::gemini::chat_body(req),
+                    body,
                 )
             }
         };
@@ -257,18 +289,34 @@ impl Provider {
         }
         let mut parser = SseParser::default();
         let mut asm = Assembler::default();
+        let mut split = crate::effort::ThinkSplitter::default();
+        let inline = self.spec.wire == Wire::OpenAiCompatible;
         let mut stopped = false;
+        // Sends a piece on: its reasoning, then its text (with any leading
+        // `<think>` block moved over to reasoning). `false` stops.
+        let mut forward = |piece: &mut stream::Piece| -> bool {
+            if inline && !piece.text.is_empty() {
+                let (r, t) = split.push(&piece.text);
+                piece.reasoning.push_str(&r);
+                piece.text = t;
+            }
+            if !piece.reasoning.is_empty() && !on(Delta::Reasoning(&piece.reasoning)) {
+                return false;
+            }
+            !(!piece.text.is_empty() && !on(Delta::Text(&piece.text)))
+        };
         'read: while let Some(chunk) = resp.chunk().await.map_err(network)? {
             for e in parser.push(&chunk) {
-                let piece = stream::decode(self.spec.wire, &e);
+                let mut piece = stream::decode(self.spec.wire, &e);
                 if let Some(err) = piece.error {
                     return Err(ProviderError::Network {
                         provider,
                         reason: format!("the stream reported an error: {}", short(&err)),
                     });
                 }
+                let go = forward(&mut piece);
                 asm.add(&piece);
-                if !piece.text.is_empty() && !on_text(&piece.text) {
+                if !go {
                     stopped = true;
                     break 'read;
                 }
@@ -277,11 +325,27 @@ impl Provider {
                 }
             }
         }
-        if !stopped && let Some(e) = parser.finish() {
-            let piece = stream::decode(self.spec.wire, &e);
-            asm.add(&piece);
-            if !piece.text.is_empty() {
-                on_text(&piece.text);
+        if !stopped {
+            let mut tail = parser
+                .finish()
+                .map(|e| stream::decode(self.spec.wire, &e))
+                .unwrap_or_default();
+            forward(&mut tail);
+            asm.add(&tail);
+            let (r, t) = split.finish();
+            let mut rest = stream::Piece {
+                text: t,
+                reasoning: r,
+                ..Default::default()
+            };
+            if !rest.text.is_empty() || !rest.reasoning.is_empty() {
+                if !rest.reasoning.is_empty() {
+                    on(Delta::Reasoning(&rest.reasoning));
+                }
+                if !rest.text.is_empty() {
+                    on(Delta::Text(&rest.text));
+                }
+                asm.add(&std::mem::take(&mut rest));
             }
         }
         Ok(asm.finish(req, stopped))

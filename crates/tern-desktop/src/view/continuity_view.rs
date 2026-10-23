@@ -830,7 +830,7 @@ impl Workspace {
     pub(super) fn side_panel(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let side = &self.model.cont.side;
         div()
-            .w(px(SIDE_W))
+            .w_full()
             .h_full()
             .flex()
             .flex_col()

@@ -425,6 +425,28 @@ impl Run {
         Self::default()
     }
 
+    /// When the run's first event was logged (the user pressed Enter), as
+    /// RFC 3339 in UTC.
+    pub fn started_rfc3339(&self) -> Option<String> {
+        self.started.and_then(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+    }
+
+    /// The answer's reasoning, as logged with its model reply (the last
+    /// reply that carried any), and how long the model thought.
+    pub fn thought(&self) -> Option<(String, std::time::Duration)> {
+        self.steps.iter().rev().find_map(|s| {
+            if s.event != "model.replied" || s.payload.get("worker").is_some() {
+                return None;
+            }
+            let text = s.payload["reasoning"].as_str()?;
+            let ms = s.payload["thought_ms"].as_u64().unwrap_or(0);
+            Some((text.to_owned(), std::time::Duration::from_millis(ms)))
+        })
+    }
+
     /// Adds an event. The first event's time is the turn's start.
     pub fn push(&mut self, e: &EventEnvelope) {
         let started = *self.started.get_or_insert(e.ts);

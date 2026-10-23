@@ -166,6 +166,9 @@ impl PlanApprover for RunAsDrafted {
 pub struct DeepControl {
     all: CancelFlag,
     workers: Arc<Mutex<HashSet<usize>>>,
+    /// Pause: workers hold at their next safe point (before a round, a
+    /// search, or a page read) and no new worker starts.
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DeepControl {
@@ -174,7 +177,40 @@ impl DeepControl {
         Self {
             all,
             workers: Arc::default(),
+            paused: Arc::default(),
         }
+    }
+
+    /// Holds the run at its next safe point.
+    pub fn pause(&self) {
+        self.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Lets a paused run carry on.
+    pub fn unpause(&self) {
+        self.paused
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Waits while paused. Returns how long it held, so a worker can push
+    /// its deadline back; stops waiting when `n` (or the run) is cancelled.
+    pub async fn hold(&self, n: Option<usize>) -> Duration {
+        let start = std::time::Instant::now();
+        while self.is_paused() {
+            let stopped = match n {
+                Some(n) => self.worker_cancelled(n),
+                None => self.is_cancelled(),
+            };
+            if stopped {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        start.elapsed()
     }
 
     pub fn cancel_all(&self) {
@@ -847,15 +883,19 @@ impl Deep<'_> {
             if self.control.is_cancelled() {
                 break;
             }
-            while running.len() < concurrency {
+            while running.len() < concurrency && !self.control.is_paused() {
                 let Some(job) = pending.pop_front() else {
                     break;
                 };
                 running_ids.push(job.sub.n);
                 running.push(self.worker(&question, job.sub, job.budget, job.saved));
             }
-            if running.is_empty() {
+            if running.is_empty() && !(self.control.is_paused() && !pending.is_empty()) {
                 break;
+            }
+            if running.is_empty() {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                continue;
             }
             tokio::select! {
                 Some(w) = running.next() => {
@@ -1653,8 +1693,11 @@ impl Deep<'_> {
         started: Instant,
     ) -> Result<(), Halt> {
         let n = sub.n;
+        let mut deadline = deadline;
         let took = |st: &WorkerState| st.took_before + started.elapsed().as_millis() as u64;
         while st.round < ROUNDS + st.extra_rounds {
+            // A safe point: hold here while the run is paused.
+            deadline += self.control.hold(Some(n)).await;
             let round = st.round;
             if !st.pending_notes {
                 // The planned searches first; later rounds run the one the
@@ -1674,6 +1717,7 @@ impl Deep<'_> {
                 let mut search_ok = 0usize;
                 let mut search_error: Option<String> = None;
                 for q in queries {
+                    deadline += self.control.hold(Some(n)).await;
                     let args = json!({"query": q});
                     self.allow("web_search", Some(self.search.id()), &args)?;
                     let found = self

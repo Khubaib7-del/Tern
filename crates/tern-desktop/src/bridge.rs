@@ -54,6 +54,11 @@ pub enum Msg {
     Event(Box<tern_core::EventEnvelope>),
     /// Reply text streaming in: the model call's number and the new text.
     Text(u32, String),
+    /// The model's reasoning streaming in, the same way.
+    Reasoning(u32, String),
+    /// The Archived chats view: archived chats, chats in the trash, and a
+    /// line to tell the user.
+    Archive(Vec<SessionSummary>, Vec<SessionSummary>, Option<String>),
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
     /// A deep research plan for the user to run, edit, skip, or cancel.
     Plan(ResearchPlan, oneshot::Sender<PlanAnswer>),
@@ -85,6 +90,14 @@ pub enum Msg {
     Ext(Box<ExtMsg>),
     /// The Evaluation page.
     Eval(Box<EvalMsg>),
+}
+
+/// Sends a reply's reasoning to the window as it streams.
+fn reasoning_sink(tx: &mpsc::UnboundedSender<Msg>) -> tern_agent::ReasoningSink {
+    let tx = tx.clone();
+    std::sync::Arc::new(move |call: u32, t: &str| {
+        let _ = tx.send(Msg::Reasoning(call, t.to_owned()));
+    })
 }
 
 /// What the Evaluation page's background work tells the window.
@@ -186,6 +199,10 @@ impl std::fmt::Debug for Msg {
             Self::Event(e) => write!(f, "Event({})", e.kind),
             Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
+            Self::Reasoning(call, t) => write!(f, "Reasoning({call}, {} chars)", t.len()),
+            Self::Archive(a, d, _) => {
+                write!(f, "Archive({} archived, {} deleted)", a.len(), d.len())
+            }
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
             Self::Plan(p, _) => write!(f, "Plan({} parts)", p.sub_questions.len()),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),
@@ -503,6 +520,7 @@ impl Bridge {
             let on_text = move |call: u32, t: &str| {
                 let _ = texts.send(Msg::Text(call, t.to_owned()));
             };
+            session.set_reasoning_sink(Some(reasoning_sink(&tx)));
             let out = session
                 .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
                 .await;
@@ -560,6 +578,7 @@ impl Bridge {
             let on_text = move |call: u32, t: &str| {
                 let _ = texts.send(Msg::Text(call, t.to_owned()));
             };
+            session.set_reasoning_sink(Some(reasoning_sink(&tx)));
             let out = match session
                 .resume_run(&opts, &approver, &control, &observer, Some(&on_text))
                 .await
@@ -582,6 +601,74 @@ impl Bridge {
             }
             let recent = session.recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Done(session, out, usage, recent));
+        });
+    }
+
+    /// Loads the Archived chats view.
+    pub fn load_archive(&self) {
+        self.trash(|_| Ok(None));
+    }
+
+    /// Runs `f` on the database off the UI thread, then sends the archive
+    /// lists and the chat list.
+    fn trash(
+        &self,
+        f: impl FnOnce(&mut tern_agent::Store) -> Result<Option<String>, String> + Send + 'static,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            match tern_agent::trash::open_store() {
+                Ok(mut store) => {
+                    let note = f(&mut store).unwrap_or_else(Some);
+                    let (a, d) = tern_agent::trash::lists(&store).unwrap_or_default();
+                    let _ = tx.send(Msg::Archive(a, d, note));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Archive(Vec::new(), Vec::new(), Some(e)));
+                }
+            }
+            let recent = tern_agent::recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Sessions(recent));
+        });
+    }
+
+    /// Moves a chat to the trash.
+    pub fn delete_chat(&self, id: SessionId) {
+        self.trash(move |s| tern_agent::trash::delete(s, id).map(|_| None));
+    }
+
+    /// Takes a chat out of the trash.
+    pub fn restore_chat(&self, id: SessionId) {
+        self.trash(move |s| {
+            tern_agent::trash::restore(s, id).map(|_| Some("Chat restored.".into()))
+        });
+    }
+
+    /// Brings an archived chat back to the sidebar.
+    pub fn unarchive_chat(&self, id: SessionId) {
+        self.trash(move |s| {
+            tern_agent::trash::unarchive(s, id).map(|_| Some("Chat back in the list.".into()))
+        });
+    }
+
+    /// Erases a chat in the trash for good.
+    pub fn erase_chat(&self, id: SessionId) {
+        self.trash(move |s| {
+            let data = tern_agent::trash::data_dir()?;
+            tern_agent::trash::erase(s, &data, id).map(|_| Some("Chat deleted for good.".into()))
+        });
+    }
+
+    /// Erases every chat in the trash.
+    pub fn empty_trash(&self) {
+        self.trash(move |s| {
+            let data = tern_agent::trash::data_dir()?;
+            let n = tern_agent::trash::empty(s, &data)?;
+            Ok(Some(match n {
+                0 => "The trash was already empty.".into(),
+                1 => "Deleted 1 chat for good.".into(),
+                n => format!("Deleted {n} chats for good."),
+            }))
         });
     }
 
@@ -735,6 +822,15 @@ impl Bridge {
             if let Err(e) = prefs.save() {
                 let _ = tx.send(Msg::PrefsFailed(e));
             }
+        });
+    }
+
+    /// Reads a link (URL or DOI) through the guarded reader and attaches it.
+    pub fn attach_link(&self, url: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = tern_agent::browse::open(&url).await.map(|p| p.attachment());
+            let _ = tx.send(Msg::Attached(r));
         });
     }
 

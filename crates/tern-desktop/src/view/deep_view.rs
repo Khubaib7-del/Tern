@@ -5,43 +5,20 @@
 //! and a cancel button).
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px};
 use tern_agent::deep::{PlanAnswer, PlanSource};
 use tern_agent::run::compact;
-use tern_agent::{Harness, ResearchPlan, Run, WorkerRow, WorkerStatus};
+use tern_agent::{ResearchPlan, Run, WorkerRow, WorkerStatus};
 
 use super::Workspace;
 use crate::theme::Palette;
 
 impl Workspace {
-    /// The composer's Deep research toggle (Research harness only).
-    pub(super) fn deep_toggle(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.model.harness != Harness::Research {
-            return None;
-        }
-        Some(
-            Button::new("deep-mode")
-                .icon(AssetIcon::Telescope)
-                .label("Deep research")
-                .ghost()
-                .small()
-                .selected(self.model.deep_mode)
-                .tooltip("Plan first, then research the parts in parallel")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if !this.model.is_busy() {
-                        this.model.deep_mode = !this.model.deep_mode;
-                    }
-                    cx.notify();
-                }))
-                .into_any_element(),
-        )
-    }
-
     /// Hands the plan to the window: one text field per sub-question for
     /// editing, then the card.
     pub(super) fn show_plan(

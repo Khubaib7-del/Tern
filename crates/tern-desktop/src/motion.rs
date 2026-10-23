@@ -6,7 +6,7 @@
 //! | Curve | `cubic-bezier(.32,.72,0,1)` for everything |
 //! | UI (panels, chips, screens) | 200 ms |
 //! | The tern mark | 700 ms |
-//! | Theme switch | 600 ms, every colour token at once, soft circle from the toggle |
+//! | Theme switch | 800 ms: the new theme is drawn whole and revealed from the centre out (a vertical split, as v2 s17); no ripple, no colour blending |
 //! | Shimmer | A light band across the status phrase every 1.6 s |
 //!
 //! Motion follows real events (a step starts, a page lands, text streams);
@@ -20,7 +20,7 @@ use crate::theme::Palette;
 
 pub const UI: Duration = Duration::from_millis(200);
 pub const MARK: Duration = Duration::from_millis(700);
-pub const THEME: Duration = Duration::from_millis(600);
+pub const THEME: Duration = Duration::from_millis(800);
 pub const SHIMMER: Duration = Duration::from_millis(1600);
 
 /// `cubic-bezier(.32,.72,0,1)`: fast start, long calm settle.
@@ -136,24 +136,26 @@ fn raw(start: Instant, dur: Duration, now: Instant) -> f32 {
 #[derive(Clone, Copy, Debug)]
 pub struct ThemeWipe {
     pub since: Instant,
-    /// Where the toggle was clicked, in window pixels.
-    pub origin: (f32, f32),
     pub to_dark: bool,
 }
 
 impl ThemeWipe {
-    /// The palette at `now`: every token moves together from the old theme
-    /// to the new one.
-    pub fn palette(&self, now: Instant) -> Palette {
-        let t = progress(self.since, THEME, now);
-        Palette::get(!self.to_dark).lerp(&Palette::get(self.to_dark), t)
+    /// The palette the window is drawn in: the new one, whole, from the
+    /// first frame. Nothing blends.
+    pub fn palette(&self, _now: Instant) -> Palette {
+        Palette::get(self.to_dark)
     }
 
-    /// The soft circle's radius (as a share of the window's diagonal) and
-    /// strength, both 0 to 1.
-    pub fn circle(&self, now: Instant) -> (f32, f32) {
-        let t = progress(self.since, THEME, now);
-        (t, (1.0 - t) * 0.35)
+    /// The old theme's canvas, still covering each side: the share of the
+    /// window's width covered on the left and on the right (0.5 at the
+    /// start, 0 when done). The new theme shows in the middle band.
+    pub fn inset(&self, now: Instant) -> f32 {
+        (1.0 - progress(self.since, THEME, now)) * 0.5
+    }
+
+    /// The old theme's canvas colour, for the covers.
+    pub fn old_canvas(&self) -> Hsla {
+        Palette::get(!self.to_dark).canvas
     }
 
     pub fn done(&self, now: Instant) -> bool {
@@ -242,18 +244,21 @@ mod tests {
     }
 
     #[test]
-    fn theme_wipe_moves_every_token() {
+    fn theme_reveal_splits_from_the_centre() {
         let t0 = Instant::now();
         let w = ThemeWipe {
             since: t0,
-            origin: (0.0, 0.0),
             to_dark: true,
         };
-        assert_eq!(w.palette(t0).canvas, Palette::light().canvas);
-        assert_eq!(w.palette(t0 + THEME).canvas, Palette::dark().canvas);
-        let mid = w.palette(t0 + THEME / 2).text;
-        assert!(mid.l < Palette::dark().text.l && mid.l > Palette::light().text.l);
+        // The new palette is drawn whole from the start: no blending.
+        assert_eq!(w.palette(t0).canvas, Palette::dark().canvas);
+        assert_eq!(w.palette(t0 + THEME / 2).text, Palette::dark().text);
+        assert_eq!(w.old_canvas(), Palette::light().canvas);
+        assert_eq!(w.inset(t0), 0.5);
+        let mid = w.inset(t0 + THEME / 2);
+        assert!(mid > 0.0 && mid < 0.5);
+        assert_eq!(w.inset(t0 + THEME), 0.0);
         assert!(w.done(t0 + THEME));
-        assert_eq!(w.circle(t0 + THEME).1, 0.0);
+        assert_eq!(THEME, Duration::from_millis(800));
     }
 }

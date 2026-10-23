@@ -56,9 +56,25 @@ pub struct Preferences {
     pub decision: crate::decide::DecisionPrefs,
     /// Project folders collapsed in the desktop sidebar, by id.
     pub collapsed_projects: Vec<String>,
+    /// Thinking effort for models that can think (`none` … `max`).
+    /// `None` leaves each provider's default.
+    pub effort: Option<String>,
+    /// Models starred in the composer's picker, as `provider/model`.
+    pub favourite_models: Vec<String>,
+    /// The desktop's panel widths in pixels, after a drag. `None` is the
+    /// default width.
+    pub sidebar_width: Option<u32>,
+    pub right_pane_width: Option<u32>,
 }
 
 impl Preferences {
+    /// The saved thinking effort.
+    pub fn effort(&self) -> Option<tern_providers::Effort> {
+        self.effort
+            .as_deref()
+            .and_then(tern_providers::Effort::parse)
+    }
+
     /// Who commits vault checkpoints.
     pub fn git_identity(&self) -> crate::git::Identity {
         crate::git::Identity {
@@ -212,7 +228,12 @@ mod tests {
                 ..Default::default()
             },
             collapsed_projects: vec!["p1".into()],
+            effort: Some("high".into()),
+            favourite_models: vec!["mistral/mistral-large-latest".into()],
+            sidebar_width: Some(300),
+            right_pane_width: Some(420),
         };
+        assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         assert_eq!(p.quiz_spec(None).count, 10);
         assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);
         assert_eq!(p.viva_questions(), 15, "capped");

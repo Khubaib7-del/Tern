@@ -596,3 +596,90 @@ async fn streamed_text_is_numbered_per_model_call() {
     assert!(seen[0].1.starts_with("```tool"));
     assert_eq!(seen[1], (2, "Found it [S1].".to_owned()));
 }
+
+/// Streams a reasoning delta, then the answer, and records the effort it was asked for.
+struct Thinker(Mutex<Option<tern_providers::Effort>>);
+
+impl Model for Thinker {
+    fn provider_id(&self) -> &str {
+        "script"
+    }
+    fn complete<'a>(
+        &'a self,
+        _req: &'a ChatRequest,
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        unreachable!("the loop streams when it has a text sink")
+    }
+    fn complete_deltas<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on: &'a (dyn Fn(tern_providers::Delta<'_>) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        *self.0.lock().unwrap() = req.effort;
+        Box::pin(async move {
+            on(tern_providers::Delta::Reasoning("Paging splits memory "));
+            on(tern_providers::Delta::Reasoning("into pages."));
+            on(tern_providers::Delta::Text("Paging maps pages to frames."));
+            Ok(ChatResponse {
+                text: "Paging maps pages to frames.".into(),
+                usage: Usage::measured(10, 5),
+                finish_reason: Some("stop".into()),
+                model: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn reasoning_streams_to_its_own_sink_and_is_logged_with_the_effort() {
+    let s = Setup::new();
+    let model = Thinker(Mutex::new(None));
+    let sink = MemorySink::default();
+    let text = Mutex::new(String::new());
+    let thought = Mutex::new(String::new());
+    let on_text = |_: u32, t: &str| text.lock().unwrap().push_str(t);
+    let on_reasoning = |_: u32, t: &str| thought.lock().unwrap().push_str(t);
+    let mut gate = PolicyGate::default();
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "test-model",
+        tools: &s.tools,
+        gate: &mut gate,
+        approver: &DenyAll,
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: Some(&on_text),
+        hooks: tern_agent::engine::RunHooks {
+            effort: Some(tern_providers::Effort::High),
+            on_reasoning: Some(&on_reasoning),
+            ..Default::default()
+        },
+    }
+    .run(Vec::new(), "What is paging?")
+    .await;
+    assert_eq!(out.answer.as_deref(), Some("Paging maps pages to frames."));
+    assert_eq!(*text.lock().unwrap(), "Paging maps pages to frames.");
+    assert_eq!(*thought.lock().unwrap(), "Paging splits memory into pages.");
+    assert_eq!(*model.0.lock().unwrap(), Some(tern_providers::Effort::High));
+    let replied = sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "model.replied")
+        .unwrap();
+    assert_eq!(
+        replied.payload["reasoning"],
+        "Paging splits memory into pages."
+    );
+    assert_eq!(replied.payload["effort"], "high");
+    let mut run = tern_agent::Run::new();
+    for e in sink.events() {
+        run.push(&e);
+    }
+    assert_eq!(run.thought().unwrap().0, "Paging splits memory into pages.");
+    assert!(run.started_rfc3339().is_some());
+}

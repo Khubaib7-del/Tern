@@ -58,6 +58,19 @@ pub trait Model: Send + Sync {
             Ok(reply)
         })
     }
+
+    /// [`Model::complete_stream`] with reasoning too. The default streams
+    /// text only.
+    fn complete_deltas<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on: &'a (dyn Fn(tern_providers::Delta<'_>) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(async move {
+            let text = move |t: &str| on(tern_providers::Delta::Text(t));
+            self.complete_stream(req, &text).await
+        })
+    }
 }
 
 impl Model for Provider {
@@ -73,6 +86,23 @@ impl Model for Provider {
         on_text: &'a (dyn Fn(&str) -> bool + Send + Sync),
     ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
         Box::pin(self.chat_stream(req, on_text))
+    }
+    fn complete_deltas<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on: &'a (dyn Fn(tern_providers::Delta<'_>) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(self.chat_stream_deltas(req, on))
+    }
+}
+
+/// How much of a reply's reasoning the log keeps.
+const REASONING_KEEP: usize = 20_000;
+
+fn cap_chars(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((at, _)) => format!("{}…", &s[..at]),
+        None => s.to_owned(),
     }
 }
 
@@ -317,6 +347,11 @@ pub struct RunHooks<'a> {
     pub steering: Option<&'a Steering>,
     /// Picks the turn up from this checkpoint instead of starting over.
     pub resume: Option<&'a RunCheckpoint>,
+    /// How hard the model should think, for models that can.
+    pub effort: Option<tern_providers::Effort>,
+    /// Receives the model's reasoning as it streams (call number, text),
+    /// for a front end's Thinking section.
+    pub on_reasoning: Option<OnText<'a>>,
 }
 
 impl std::fmt::Debug for RunHooks<'_> {
@@ -560,18 +595,45 @@ impl Run<'_, '_> {
             self.go(TurnState::ModelStreaming)?;
             let req = ChatRequest::new(self.cfg.model_name, messages.clone())
                 .with_system(system.clone())
-                .with_max_tokens(self.cfg.max_output_tokens);
+                .with_max_tokens(self.cfg.max_output_tokens)
+                .with_effort(self.cfg.hooks.effort);
             self.model_calls += 1;
             let model = self.cfg.model;
+            let thought = Mutex::new((
+                String::new(),
+                None::<std::time::Instant>,
+                None::<std::time::Duration>,
+            ));
+            let asked = std::time::Instant::now();
             let reply = match self.cfg.on_text {
                 Some(sink) => {
                     let call = self.model_calls;
                     let cancel = self.cfg.cancel.clone();
-                    let forward = move |t: &str| {
-                        sink(call, t);
+                    let on_reasoning = self.cfg.hooks.on_reasoning;
+                    let thought = &thought;
+                    let forward = move |d: tern_providers::Delta<'_>| {
+                        match d {
+                            tern_providers::Delta::Text(t) => {
+                                let mut th = thought.lock().expect("thought lock");
+                                if th.1.is_some() && th.2.is_none() {
+                                    th.2 = Some(asked.elapsed());
+                                }
+                                drop(th);
+                                sink(call, t);
+                            }
+                            tern_providers::Delta::Reasoning(r) => {
+                                let mut th = thought.lock().expect("thought lock");
+                                th.0.push_str(r);
+                                th.1.get_or_insert_with(std::time::Instant::now);
+                                drop(th);
+                                if let Some(f) = on_reasoning {
+                                    f(call, r);
+                                }
+                            }
+                        }
                         !cancel.is_cancelled()
                     };
-                    model.complete_stream(&req, &forward).await
+                    model.complete_deltas(&req, &forward).await
                 }
                 None => model.complete(&req).await,
             }
@@ -592,7 +654,20 @@ impl Run<'_, '_> {
                     "model.replied",
                     EffectClass::Network,
                     format!("{} replied", self.cfg.model_name),
-                    json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len()}),
+                    {
+                        let (text, _, took) = thought.into_inner().unwrap_or_default();
+                        let mut p = json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len()});
+                        if !text.is_empty() {
+                            // The reasoning is kept (capped) so a reopened chat
+                            // still has its Thinking section.
+                            p["reasoning"] = json!(cap_chars(&text, REASONING_KEEP));
+                            p["thought_ms"] = json!(took.unwrap_or_else(|| asked.elapsed()).as_millis() as u64);
+                        }
+                        if let Some(e) = self.cfg.hooks.effort {
+                            p["effort"] = json!(e.id());
+                        }
+                        p
+                    },
                 )
                 .with_usage(reply.usage.to_delta()),
             )?;

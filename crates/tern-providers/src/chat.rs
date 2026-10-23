@@ -73,6 +73,9 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub max_tokens: u32,
     pub temperature: Option<f32>,
+    /// How hard to think, for models that can (see [`crate::effort`]).
+    /// `None` leaves the provider's default.
+    pub effort: Option<crate::Effort>,
 }
 
 impl ChatRequest {
@@ -83,6 +86,7 @@ impl ChatRequest {
             messages,
             max_tokens: 1024,
             temperature: None,
+            effort: None,
         }
     }
 
@@ -93,6 +97,11 @@ impl ChatRequest {
 
     pub fn with_max_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;
+        self
+    }
+
+    pub fn with_effort(mut self, effort: Option<crate::Effort>) -> Self {
+        self.effort = effort;
         self
     }
 
