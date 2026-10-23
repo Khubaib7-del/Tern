@@ -36,6 +36,21 @@ impl GateAnswer {
     }
 }
 
+/// One tool call put to the policy gate, with the session around it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GateCall<'a> {
+    pub tool: &'a str,
+    /// The effect class, in words (`network`, `external side effect`).
+    pub effect: &'a str,
+    pub target: &'a str,
+    /// The address a web read goes to; empty for other calls.
+    pub url: &'a str,
+    /// Domains the user typed or search listed earlier in the session.
+    pub known: &'a [String],
+    /// Whether outside content entered the session before the call.
+    pub after_untrusted: bool,
+}
+
 /// The system under test.
 pub trait Subject: Send + Sync {
     /// `offline` or `provider · model`.
@@ -75,7 +90,7 @@ pub trait Subject: Send + Sync {
     fn untrusted_rule(&self) -> String;
 
     /// The policy gate's answer, under default settings, for one call.
-    fn gate(&self, tool: &str, effect: &str, target: &str) -> Result<GateAnswer, String>;
+    fn gate(&self, call: &GateCall<'_>) -> Result<GateAnswer, String>;
 
     /// Decision models to score: the baseline first, the one in use last.
     fn deciders(&self) -> Vec<Box<dyn DecisionModel>>;

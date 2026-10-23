@@ -3,14 +3,17 @@
 //! | Verdict | Meaning |
 //! | --- | --- |
 //! | Supported | A passage of a cited source states the claim |
-//! | Partly supported | A passage covers some of it, or its numbers differ |
-//! | Not supported | No passage of the cited sources states it |
+//! | Partly supported | A passage covers some of it, or adds a detail (a number) it does not give |
+//! | Not supported | No passage of the cited sources states it, or the best passage contradicts it |
 //! | No source | The claim cites nothing Tern read |
 //!
 //! Two paths reach a verdict. The lexical path is deterministic and
 //! offline: it finds the passage of the cited sources that shares the most
 //! of the claim's content words, and checks that every number in the claim
-//! appears there. The model path (see [`judge_prompt`] and
+//! appears there. On the best passage it then looks for a contradiction
+//! (see [`conflict`]): a different number in the same place, the opposite
+//! polarity, an antonym, two sides of a comparison swapped, or a different
+//! name where the claim has its own. The model path (see [`judge_prompt`] and
 //! [`parse_judgments`]) shows a model the best passages and reads its
 //! verdict back; the front end runs it through its provider and falls back
 //! to the lexical verdict for any claim the model does not answer.
@@ -247,12 +250,399 @@ fn negated(text: &str) -> bool {
         })
 }
 
-/// Numbers in a text, normalised (`1,200` and `1200` match).
+/// Numbers in a text written in digits, normalised (`1,200` and `1200`
+/// match). Number words (`two doses`) are left to [`conflict`], which only
+/// uses them where the words around them match.
 fn numbers(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
         .map(|w| w.trim_matches(['.', ',']).replace(',', ""))
         .filter(|w| !w.is_empty() && w.chars().any(|c| c.is_ascii_digit()))
         .collect()
+}
+
+/// Number words read as digits. `one` only counts before a noun-like word
+/// (`one dose`), not in `one of` or `one another`.
+const NUMBER_WORDS: &[&str] = &[
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve",
+];
+
+/// One word of a text, in order, for the checks that look at position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Token {
+    lower: String,
+    stem: String,
+    /// The number it is, normalised, when it is one.
+    number: Option<String>,
+}
+
+fn tokens(text: &str) -> Vec<Token> {
+    let raw: Vec<String> = words(text).map(str::to_lowercase).collect();
+    raw.iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let digits = w.chars().any(|c| c.is_ascii_digit());
+            let number = if digits {
+                let n = w.trim_end_matches('%').replace(',', "");
+                n.chars()
+                    .all(|c| c.is_ascii_digit() || c == '.')
+                    .then_some(n)
+            } else {
+                NUMBER_WORDS.iter().position(|n| n == w).and_then(|k| {
+                    let next = raw.get(i + 1).map(String::as_str);
+                    let ok = k != 1 || !matches!(next, None | Some("of" | "another" | "or"));
+                    ok.then(|| k.to_string())
+                })
+            };
+            Token {
+                lower: w.clone(),
+                stem: stem(w),
+                number,
+            }
+        })
+        .collect()
+}
+
+/// Words that join a phrase to its neighbour without naming anything.
+const GLUE: &[&str] = &[
+    "a", "an", "the", "of", "in", "on", "at", "by", "to", "as", "for", "with", "from", "into",
+    "is", "was", "are", "were", "be", "been", "its", "their", "his", "her",
+];
+
+/// Prepositions and the like: a different one is wording, not a swap.
+const PREPOSITIONS: &[&str] = &[
+    "against", "about", "above", "across", "after", "along", "among", "around", "before", "behind",
+    "below", "beside", "beyond", "during", "except", "inside", "outside", "through", "toward",
+    "towards", "until", "upon", "within", "without", "since", "despite", "per",
+];
+
+/// Words that open a new part of a sentence: a slot does not reach past them.
+const BREAKS: &[&str] = &["and", "or", "but", "while", "whereas", "although", "though"];
+
+/// Pairs that say opposite things.
+const ANTONYMS: &[(&str, &str)] = &[
+    ("faster", "slower"),
+    ("higher", "lower"),
+    ("highest", "lowest"),
+    ("larger", "smaller"),
+    ("bigger", "smaller"),
+    ("largest", "smallest"),
+    ("longer", "shorter"),
+    ("warmer", "cooler"),
+    ("warmest", "coldest"),
+    ("hotter", "colder"),
+    ("heavier", "lighter"),
+    ("stronger", "weaker"),
+    ("older", "younger"),
+    ("earlier", "later"),
+    ("better", "worse"),
+    ("best", "worst"),
+    ("more", "less"),
+    ("more", "fewer"),
+    ("increase", "decrease"),
+    ("increased", "decreased"),
+    ("increases", "decreases"),
+    ("rise", "fall"),
+    ("rises", "falls"),
+    ("rose", "fell"),
+    ("gain", "loss"),
+    ("gained", "lost"),
+    ("won", "lost"),
+    ("positive", "negative"),
+    ("maximum", "minimum"),
+    ("majority", "minority"),
+    ("above", "below"),
+    ("success", "failure"),
+    ("succeeded", "failed"),
+];
+
+fn is_stop(w: &str) -> bool {
+    w.chars().count() < 3 || STOP.contains(&w)
+}
+
+fn is_glue(t: &Token) -> bool {
+    t.number.is_none()
+        && (GLUE.contains(&t.lower.as_str()) || is_stop(&t.lower))
+        && !BREAKS.contains(&t.lower.as_str())
+}
+
+/// A word that can fill a slot: a name, a thing, a quality.
+fn fills(t: &Token) -> bool {
+    t.number.is_none()
+        && !is_stop(&t.lower)
+        && !GLUE.contains(&t.lower.as_str())
+        && !PREPOSITIONS.contains(&t.lower.as_str())
+        && !BREAKS.contains(&t.lower.as_str())
+        && !t.lower.ends_with("ing")
+}
+
+/// Stems compared loosely (`dose` and `dos`, from `doses`, match).
+fn same_stem(a: &str, b: &str) -> bool {
+    a.trim_end_matches('e') == b.trim_end_matches('e')
+}
+
+fn has_stem(set: &BTreeSet<String>, w: &str) -> bool {
+    set.iter().any(|s| same_stem(s, w))
+}
+
+/// Content stems within two words of position `i`.
+fn context_of(toks: &[Token], i: usize) -> BTreeSet<String> {
+    let lo = i.saturating_sub(2);
+    let hi = (i + 3).min(toks.len());
+    (lo..hi)
+        .filter(|&k| k != i)
+        .map(|k| &toks[k])
+        .filter(|t| t.number.is_none() && !is_stop(&t.lower) && !GLUE.contains(&t.lower.as_str()))
+        .map(|t| t.stem.clone())
+        .collect()
+}
+
+/// Why the best passage contradicts a claim it otherwise matches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Conflict {
+    /// The passage gives another number in the same place.
+    Number { claim: String, passage: String },
+    /// One says "not", the other does not.
+    Polarity,
+    /// The passage uses the opposite word.
+    Antonym { claim: String, passage: String },
+    /// The two sides of a comparison are swapped.
+    Roles,
+    /// The passage has another name or thing where the claim has its own.
+    Swap { claim: String, passage: String },
+}
+
+impl Conflict {
+    /// The verdict's note.
+    pub fn note(&self) -> String {
+        match self {
+            Self::Number { claim, passage } => {
+                format!("The passage gives {passage} where the claim says {claim}")
+            }
+            Self::Polarity => "The passage says the opposite".into(),
+            Self::Antonym { claim, passage } => {
+                format!("The passage says “{passage}”, not “{claim}”")
+            }
+            Self::Roles => {
+                "The passage has the two sides of the comparison the other way round".into()
+            }
+            Self::Swap { claim, passage } => {
+                format!("The passage has “{passage}” where the claim has “{claim}”")
+            }
+        }
+    }
+}
+
+/// Looks for a contradiction between a claim and the passage it matches
+/// best. Each check is narrow on purpose: it fires only when the passage
+/// puts something else in the very place the claim fills.
+pub fn conflict(claim: &str, passage: &str) -> Option<Conflict> {
+    let ct = tokens(claim);
+    let pt = tokens(passage);
+    let p_stems: BTreeSet<String> = pt.iter().map(|t| t.stem.clone()).collect();
+    let c_stems: BTreeSet<String> = ct.iter().map(|t| t.stem.clone()).collect();
+    let c_nums: BTreeSet<&str> = ct.iter().filter_map(|t| t.number.as_deref()).collect();
+    let p_nums: BTreeSet<&str> = pt.iter().filter_map(|t| t.number.as_deref()).collect();
+
+    // A number the passage lacks, where the passage has another number
+    // with the same words around it.
+    for (i, t) in ct.iter().enumerate() {
+        let Some(n) = t.number.as_deref() else {
+            continue;
+        };
+        if p_nums.contains(n) {
+            continue;
+        }
+        let around = context_of(&ct, i);
+        for (j, u) in pt.iter().enumerate() {
+            let Some(m) = u.number.as_deref() else {
+                continue;
+            };
+            if c_nums.contains(m) {
+                continue;
+            }
+            let theirs = context_of(&pt, j);
+            if around.iter().any(|a| has_stem(&theirs, a)) {
+                return Some(Conflict::Number {
+                    claim: t.lower.clone(),
+                    passage: u.lower.clone(),
+                });
+            }
+        }
+    }
+
+    // "Not" only flips what it governs: the claim's words must sit right
+    // after the other side's negation, so a "without" in a neighbouring
+    // sentence changes nothing.
+    if flipped(claim, negated(claim), &c_stems, passage) {
+        return Some(Conflict::Polarity);
+    }
+
+    let c_lower: BTreeSet<&str> = ct.iter().map(|t| t.lower.as_str()).collect();
+    let p_lower: BTreeSet<&str> = pt.iter().map(|t| t.lower.as_str()).collect();
+    for &(a, b) in ANTONYMS {
+        for (mine, other) in [(a, b), (b, a)] {
+            if c_lower.contains(mine) && !p_lower.contains(mine) && p_lower.contains(other) {
+                return Some(Conflict::Antonym {
+                    claim: mine.into(),
+                    passage: other.into(),
+                });
+            }
+        }
+    }
+
+    if let (Some(c), Some(p)) = (sides(&ct), sides(&pt)) {
+        let c_before: BTreeSet<_> = c.0.difference(&c.1).collect();
+        let c_after: BTreeSet<_> = c.1.difference(&c.0).collect();
+        let p_before: BTreeSet<_> = p.0.difference(&p.1).collect();
+        let p_after: BTreeSet<_> = p.1.difference(&p.0).collect();
+        if c_before.iter().any(|w| p_after.contains(w))
+            || c_after.iter().any(|w| p_before.contains(w))
+        {
+            return Some(Conflict::Roles);
+        }
+    }
+
+    swap(&ct, &pt, &c_stems, &p_stems)
+}
+
+/// Whether one side negates what the other states.
+fn flipped(
+    claim: &str,
+    claim_negated: bool,
+    claim_stems: &BTreeSet<String>,
+    passage: &str,
+) -> bool {
+    match (claim_negated, negated(passage)) {
+        (false, true) => governed(passage)
+            .iter()
+            .any(|scope| covers(scope, claim_stems)),
+        (true, false) => {
+            let p_stems: BTreeSet<String> = tokens(passage).into_iter().map(|t| t.stem).collect();
+            governed(claim).iter().any(|scope| covers(scope, &p_stems))
+        }
+        _ => false,
+    }
+}
+
+/// The content words each negation governs: up to four after it, within
+/// its sentence and before a word that opens a new part of it.
+fn governed(text: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for (a, b) in sentences(text) {
+        let ws: Vec<String> = text[a..b]
+            .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        for (i, w) in ws.iter().enumerate() {
+            let neg = matches!(
+                w.as_str(),
+                "not" | "no" | "never" | "neither" | "nor" | "none" | "cannot" | "without"
+            ) || w.ends_with("n't");
+            if !neg {
+                continue;
+            }
+            let scope: Vec<String> = ws[i + 1..]
+                .iter()
+                .take_while(|w| !BREAKS.contains(&w.as_str()))
+                .filter(|w| !is_stop(w) && !GLUE.contains(&w.as_str()))
+                .take(4)
+                .map(|w| stem(w))
+                .collect();
+            if !scope.is_empty() {
+                out.push(scope);
+            }
+        }
+    }
+    out
+}
+
+/// Whether a negation's scope is about the other side's words: its first
+/// word, or two of them, appear there.
+fn covers(scope: &[String], other: &BTreeSet<String>) -> bool {
+    let hits = scope.iter().filter(|w| has_stem(other, w)).count();
+    scope.first().is_some_and(|w| has_stem(other, w)) || hits >= 2
+}
+
+/// The content stems before and after `than` in a comparison.
+fn sides(toks: &[Token]) -> Option<(BTreeSet<String>, BTreeSet<String>)> {
+    let at = toks.iter().position(|t| t.lower == "than")?;
+    let set = |r: &[Token]| {
+        r.iter()
+            .filter(|t| t.number.is_some() || !is_stop(&t.lower))
+            .map(|t| t.stem.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    Some((set(&toks[..at]), set(&toks[at + 1..])))
+}
+
+/// A claim word the passage lacks, right after a word both share, where
+/// the passage puts other words after that shared word instead.
+fn swap(
+    ct: &[Token],
+    pt: &[Token],
+    c_stems: &BTreeSet<String>,
+    p_stems: &BTreeSet<String>,
+) -> Option<Conflict> {
+    for (i, t) in ct.iter().enumerate() {
+        if !fills(t) || has_stem(p_stems, &t.stem) {
+            continue;
+        }
+        // The shared word the slot hangs off, past glue only.
+        let mut k = i;
+        let anchor = loop {
+            if k == 0 {
+                break None;
+            }
+            k -= 1;
+            let left = &ct[k];
+            if is_glue(left) {
+                continue;
+            }
+            let shared = left.number.is_none()
+                && !BREAKS.contains(&left.lower.as_str())
+                && has_stem(p_stems, &left.stem);
+            break shared.then_some(left);
+        };
+        let Some(anchor) = anchor else {
+            continue;
+        };
+        let mine: Vec<&str> = ct[i..]
+            .iter()
+            .take_while(|t| fills(t) && !has_stem(p_stems, &t.stem))
+            .map(|t| t.lower.as_str())
+            .collect();
+        // The slot must close the phrase: what follows is the end, a new
+        // part of the sentence, or a number, never more shared words (then
+        // the claim is rewording, as in "bees share where flowers are").
+        let closes = ct[i + mine.len()..]
+            .iter()
+            .find(|t| !is_glue(t))
+            .is_none_or(|t| t.number.is_some() || BREAKS.contains(&t.lower.as_str()));
+        if !closes {
+            continue;
+        }
+        for (j, u) in pt.iter().enumerate() {
+            if !same_stem(&u.stem, &anchor.stem) {
+                continue;
+            }
+            let theirs: Vec<&str> = pt[j + 1..]
+                .iter()
+                .skip_while(|t| is_glue(t))
+                .take_while(|t| fills(t) && !has_stem(c_stems, &t.stem))
+                .take(4)
+                .map(|t| t.lower.as_str())
+                .collect();
+            if !theirs.is_empty() {
+                return Some(Conflict::Swap {
+                    claim: mine.join(" "),
+                    passage: theirs.join(" "),
+                });
+            }
+        }
+    }
+    None
 }
 
 /// One stretch of a source: one or two neighbouring sentences.
@@ -272,7 +662,8 @@ pub struct Passage {
 pub fn passages(claim: &str, sources: &[&SourceText]) -> Vec<Passage> {
     let want = content_words(claim);
     let want_numbers = numbers(claim);
-    let want_negated = negated(claim);
+    let want_stems: BTreeSet<String> = tokens(claim).into_iter().map(|t| t.stem).collect();
+    let claim_negated = negated(claim);
     let mut out = Vec::new();
     for s in sources {
         let spans = sentences(&s.text);
@@ -300,7 +691,7 @@ pub fn passages(claim: &str, sources: &[&SourceText]) -> Vec<Passage> {
                     end: b,
                     overlap,
                     numbers_match: want_numbers.is_subset(&have_numbers),
-                    polarity_match: negated(text) == want_negated,
+                    polarity_match: !flipped(claim, claim_negated, &want_stems, text),
                 });
             }
         }
@@ -310,6 +701,7 @@ pub fn passages(claim: &str, sources: &[&SourceText]) -> Vec<Passage> {
         y.overlap
             .cmp(&x.overlap)
             .then(y.numbers_match.cmp(&x.numbers_match))
+            .then(y.polarity_match.cmp(&x.polarity_match))
             .then((x.end - x.start).cmp(&(y.end - y.start)))
             .then(x.source.cmp(&y.source))
             .then(x.start.cmp(&y.start))
@@ -373,6 +765,27 @@ pub fn check_lexical(claim: &Claim, sources: &[SourceText]) -> ClaimCheck {
     };
     check.verdict = lexical_verdict(&best);
     check.overlap = best.overlap;
+    if check.verdict != Verdict::NotSupported {
+        let source = readable
+            .iter()
+            .find(|s| s.n == best.source)
+            .expect("passage from a given source");
+        let found = conflict(&claim.text, &source.text[best.start..best.end]);
+        // A contradiction only counts where the passage is about the same
+        // thing; polarity and swapped sides need a close match, since one
+        // stray word can flip them.
+        let counts = match &found {
+            Some(Conflict::Polarity | Conflict::Roles) => best.overlap >= SUPPORTED_AT,
+            Some(_) => true,
+            None => false,
+        };
+        if let (true, Some(c)) = (counts, found) {
+            check.verdict = Verdict::NotSupported;
+            check.note = c.note();
+            check.evidence = Some(evidence_of(&best, &readable));
+            return check;
+        }
+    }
     if check.verdict == Verdict::Partly && best.overlap >= SUPPORTED_AT {
         check.note = if !best.numbers_match {
             "A number in the claim is not in the passage".into()
@@ -730,7 +1143,7 @@ Rust is memory safe [9].",
             only,
             [
                 Verdict::Supported,
-                Verdict::Partly,
+                Verdict::NotSupported,
                 Verdict::NotSupported,
                 Verdict::Supported,
                 Verdict::NoSource,
@@ -767,6 +1180,13 @@ Rust is memory safe [9].",
         let s = fixtures();
         let c = &extract("The Eiffel Tower is 300 metres tall and was completed in 1889 [2].")[0];
         let k = check_lexical(c, &s);
+        assert_eq!(k.verdict, Verdict::NotSupported);
+        assert_eq!(k.note, "The passage gives 330 where the claim says 300");
+        assert!(k.evidence.is_some(), "a contradiction shows its passage");
+        // A number the passage does not give at all is a detail it lacks.
+        let c =
+            &extract("The Eiffel Tower was completed in 1889 for the 1900 World's Fair [2].")[0];
+        let k = check_lexical(c, &s);
         assert_eq!(k.verdict, Verdict::Partly);
         assert_eq!(k.note, "A number in the claim is not in the passage");
         let c = &extract("Rust is memory safe [9].")[0];
@@ -774,8 +1194,8 @@ Rust is memory safe [9].",
         // Contradicted: the source says the opposite.
         let c = &extract("The Eiffel Tower was not completed in 1889 [2].")[0];
         let k = check_lexical(c, &s);
-        assert_eq!(k.verdict, Verdict::Partly);
-        assert_eq!(k.note, "The passage may say the opposite");
+        assert_eq!(k.verdict, Verdict::NotSupported);
+        assert_eq!(k.note, "The passage says the opposite");
     }
 
     #[test]
@@ -788,6 +1208,55 @@ Rust is memory safe [9].",
         let t = Tally::of(&checks);
         assert_eq!(t.total(), 3);
         assert_eq!(t.line(), "1 supported · 1 not supported · 1 no source");
+    }
+
+    #[test]
+    fn conflicts_are_narrow() {
+        let p = "Two doses of the vaccine are about 97 percent effective at preventing measles.";
+        let got = conflict("One dose of the vaccine is about 97 percent effective.", p);
+        assert!(matches!(got, Some(Conflict::Number { .. })), "{got:?}");
+        assert_eq!(
+            conflict(
+                "Two doses are about 97 percent effective against measles.",
+                p
+            ),
+            None,
+            "a different preposition is wording"
+        );
+        assert!(matches!(
+            conflict(
+                "The bridge was painted gold.",
+                "The bridge was painted International Orange."
+            ),
+            Some(Conflict::Swap { .. })
+        ));
+        assert!(matches!(
+            conflict(
+                "Readers of print scored higher than readers of screens.",
+                "Readers of screens scored higher than readers of print."
+            ),
+            Some(Conflict::Roles)
+        ));
+        assert!(matches!(
+            conflict("Sales rose in May.", "Sales fell in May."),
+            Some(Conflict::Antonym { .. })
+        ));
+        // A detail after "and" is extra, not a swap.
+        assert_eq!(
+            conflict(
+                "The card has 16 GB of memory and costs 599 dollars.",
+                "The card has 16 GB of memory and draws up to 320 watts."
+            ),
+            None
+        );
+        // "one of" is not a number.
+        assert_eq!(
+            conflict(
+                "It is one of the oldest bridges.",
+                "It is one of the oldest bridges in 1900."
+            ),
+            None
+        );
     }
 
     #[test]

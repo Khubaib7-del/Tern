@@ -26,5 +26,5 @@ pub use report::{
     Unit, baseline, check_baseline, compare,
 };
 pub use run::{MIN_TRIALS, RunOptions, run_suite};
-pub use subject::{BoxFuture, Completion, GateAnswer, Subject};
+pub use subject::{BoxFuture, Completion, GateAnswer, GateCall, Subject};
 pub use suite::{Level, Suite, SuiteKind, bundled, for_level};

@@ -371,6 +371,14 @@ impl Run<'_, '_> {
             Some(c) => c.message.clone(),
             None => user_message.content.clone(),
         };
+        // What the user typed is where trusted web addresses start.
+        for m in history
+            .iter()
+            .filter(|m| m.role == tern_providers::Role::User)
+        {
+            self.cfg.gate.note_user_message(&m.content);
+        }
+        self.cfg.gate.note_user_message(&message_text);
         let mut started = json!({
             "model": self.cfg.model_name,
             "provider": self.cfg.model.provider_id(),
@@ -632,6 +640,33 @@ impl Run<'_, '_> {
         Ok(())
     }
 
+    /// What a tool result adds to the gate's web provenance: search lists
+    /// addresses the user's own provider chose; a page or a server's output
+    /// is content Tern did not write.
+    fn note_provenance(&mut self, name: &str, o: &ToolOutput) {
+        let gate = &mut *self.cfg.gate;
+        if name == "web_search" {
+            for h in o.meta["hits"].as_array().into_iter().flatten() {
+                if let Some(u) = h["url"].as_str() {
+                    gate.know_text(u);
+                }
+            }
+        }
+        if name == "read_url" {
+            for u in &o.evidence_refs {
+                gate.know_text(u);
+            }
+        }
+        if name == "read_url"
+            || name.starts_with("mcp__")
+            || o.content
+                .to_ascii_lowercase()
+                .contains(&format!("<{}", crate::untrusted::TAG))
+        {
+            gate.saw_untrusted();
+        }
+    }
+
     fn add_usage(&mut self, u: Usage) {
         self.usage.input_tokens += u.input_tokens;
         self.usage.output_tokens += u.output_tokens;
@@ -682,16 +717,22 @@ impl Run<'_, '_> {
             args,
         };
         self.go(TurnState::PolicyCheck)?;
+        let risk = self.cfg.gate.url_risk(&view);
         let decision = self.cfg.gate.check(&view);
+        let why = match &risk {
+            Some(Ok(why)) => Some(why.clone()),
+            _ => None,
+        };
         self.record(self.event(
             "policy.decided",
             tool.effect(),
-            match &decision {
-                Decision::Allow { because } => format!("`{name}` allowed: {because}"),
-                Decision::Ask => format!("`{name}` needs your approval"),
-                Decision::Deny { reason } => reason.clone(),
+            match (&decision, &why) {
+                (Decision::Allow { because }, _) => format!("`{name}` allowed: {because}"),
+                (Decision::Ask, Some(why)) => format!("`{name}` needs your approval: {why}"),
+                (Decision::Ask, None) => format!("`{name}` needs your approval"),
+                (Decision::Deny { reason }, _) => reason.clone(),
             },
-            json!({"tool": name, "target": target, "decision": decision}),
+            json!({"tool": name, "target": target, "decision": decision, "flag": why}),
         ))?;
         match decision {
             Decision::Allow { .. } => {}
@@ -706,7 +747,10 @@ impl Run<'_, '_> {
                 self.go(TurnState::ApprovalRequested)?;
                 let req = ApprovalRequest {
                     tool: name.to_owned(),
-                    summary: tool.summary().to_owned(),
+                    summary: match &why {
+                        Some(why) => format!("{} Tern asks because {why}.", tool.summary()),
+                        None => tool.summary().to_owned(),
+                    },
                     effect: tool.effect(),
                     target: target.clone(),
                     args: args.clone(),
@@ -749,6 +793,9 @@ impl Run<'_, '_> {
             };
         self.cfg.gate.consume(&view);
         self.go(TurnState::RecordResult)?;
+        if let Ok(o) = &out {
+            self.note_provenance(name, o);
+        }
         Ok(match out {
             Ok(o) => {
                 let shown = truncate(&o.content, RESULT_LIMIT);

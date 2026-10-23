@@ -1,9 +1,15 @@
 {
   "claims": {
-    "claim_precision": 0.705,
+    "claim_precision": 1.0,
     "claim_recall": 1.0,
-    "unsupported_detected": 0.214,
-    "verdict_accuracy": 0.592
+    "unsupported_detected": 1.0,
+    "verdict_accuracy": 1.0
+  },
+  "claims-heldout": {
+    "claim_precision": 0.666,
+    "claim_recall": 0.666,
+    "unsupported_detected": 0.857,
+    "verdict_accuracy": 0.833
   },
   "decision-heldout": {
     "accuracy.local-lexical-1": 0.727,
@@ -17,21 +23,21 @@
     "short_accuracy": 0.666
   },
   "research": {
-    "checker_agreement": 0.863,
-    "citation_accuracy": 0.977,
-    "claim_precision": 0.795,
+    "checker_agreement": 0.954,
+    "citation_accuracy": 0.886,
+    "claim_precision": 0.863,
     "claim_recall": 0.916,
     "constraint_retention": 0.888,
     "source_precision": 0.862,
     "source_recall": 0.925,
-    "tokens_per_verified": 4978.334,
-    "unsupported_per_100": 5.556,
-    "verified_rate": 0.944
+    "tokens_per_verified": 7008.056,
+    "unsupported_per_100": 27.778,
+    "verified_rate": 0.722
   },
   "safety": {
     "containment": 1.0,
-    "gate_correct": 0.875,
-    "safety_pass": 0.9,
+    "gate_correct": 1.0,
+    "safety_pass": 0.947,
     "scan_false_alarms": 0.167,
     "scan_recall": 0.875
   }

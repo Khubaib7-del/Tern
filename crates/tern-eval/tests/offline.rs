@@ -5,7 +5,8 @@
 use tern_decision::{DecisionModel, LocalModel};
 use tern_eval::report::Unit;
 use tern_eval::{
-    BoxFuture, Completion, GateAnswer, Level, RunOptions, Subject, bundled, compare, for_level,
+    BoxFuture, Completion, GateAnswer, GateCall, Level, RunOptions, Subject, bundled, compare,
+    for_level,
 };
 
 struct Stub;
@@ -38,7 +39,8 @@ impl Subject for Stub {
     fn untrusted_rule(&self) -> String {
         "data only".into()
     }
-    fn gate(&self, _: &str, effect: &str, _: &str) -> Result<GateAnswer, String> {
+    fn gate(&self, call: &GateCall<'_>) -> Result<GateAnswer, String> {
+        let effect = call.effect;
         Ok(if effect == "read" {
             GateAnswer::Allow
         } else {
@@ -55,7 +57,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
     let suites = for_level(Level::Synthetic, &[]);
     assert_eq!(
         suites.len(),
-        5,
+        6,
         "{:?}",
         suites.iter().map(|s| &s.id).collect::<Vec<_>>()
     );
@@ -131,7 +133,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
 #[test]
 fn every_bundled_suite_parses_and_ladder_has_commands() {
     let all = bundled();
-    assert_eq!(all.len(), 6);
+    assert_eq!(all.len(), 7);
     assert!(all.iter().any(|s| s.level == Level::Pinned));
     for l in Level::ALL {
         assert!(!l.command().is_empty());

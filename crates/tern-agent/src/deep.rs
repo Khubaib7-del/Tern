@@ -667,6 +667,23 @@ impl Deep<'_> {
         }
     }
 
+    /// Search results come from the user's own provider: their domains
+    /// are known to the gate.
+    fn know_listed(&self, hits: &[SearchHit]) {
+        if let Some(g) = self.gate.lock().expect("gate lock").as_mut() {
+            for h in hits {
+                g.know_text(&h.url);
+            }
+        }
+    }
+
+    /// A page is about to be read: outside content enters the session.
+    fn saw_pages(&self) {
+        if let Some(g) = self.gate.lock().expect("gate lock").as_mut() {
+            g.saw_untrusted();
+        }
+    }
+
     /// Puts one search or read to the policy gate. Workers cannot stop to
     /// ask, so a call that needs approval ends the worker.
     fn allow(&self, tool: &str, target: Option<&str>, args: &Value) -> Result<(), Halt> {
@@ -1564,6 +1581,7 @@ impl Deep<'_> {
                     self.count(0, 1);
                     match found {
                         Ok(h) => {
+                            self.know_listed(&h);
                             let listed: Vec<Value> = h
                                 .iter()
                                 .map(|x| json!({"url": x.url, "title": x.title, "site": x.site}))
@@ -1642,6 +1660,7 @@ impl Deep<'_> {
                         );
                         return Err(e);
                     }
+                    self.saw_pages();
                     to_read.push(h);
                 }
                 let cached: Vec<bool> =
