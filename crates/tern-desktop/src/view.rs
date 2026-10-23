@@ -33,6 +33,8 @@ mod appearance_view;
 mod browser_view;
 mod cards_view;
 mod commands_view;
+mod composer_view;
+mod panels_view;
 mod continuity_view;
 mod customize_view;
 mod decision_view;
@@ -58,7 +60,7 @@ use crate::theme::Palette;
 const RAIL_W: f32 = 52.;
 const SIDEBAR_W: f32 = 264.;
 const RUN_PANEL_W: f32 = 300.;
-const COLUMN_MAX_W: f32 = 760.;
+pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
 
@@ -141,6 +143,13 @@ pub struct Workspace {
     /// The fields of the MCP prompt or template form, one per argument.
     arg_inputs: Vec<Entity<InputState>>,
     arg_subs: Vec<Subscription>,
+    /// The model picker's search field and the + menu's Link field.
+    picker_input: Entity<InputState>,
+    link_input: Entity<InputState>,
+    /// A message queued with Tab while a run goes; sent when it ends.
+    queued: Option<String>,
+    /// When the reveal ticker last ran.
+    reveal_at: Option<Instant>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -274,6 +283,30 @@ impl Workspace {
                 }
             },
         );
+        let picker_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
+        let picker_sub = cx.subscribe_in(
+            &picker_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, _, cx| {
+                if let InputEvent::Change = event {
+                    this.model.composer.picker.query = input.read(cx).value().to_string();
+                    cx.notify();
+                }
+            },
+        );
+        let link_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("https://… or a DOI like 10.48550/arXiv.1706.03762")
+        });
+        let link_sub = cx.subscribe_in(
+            &link_input,
+            window,
+            |this: &mut Self, input, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let typed = input.read(cx).value().to_string();
+                    this.attach_link(&typed, window, cx);
+                }
+            },
+        );
         let listener = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.recv().await {
                 if this
@@ -322,6 +355,12 @@ impl Workspace {
             if model.git.start(&refresh) {
                 bridge.git(root, refresh);
             }
+        }
+        {
+            let prefs = tern_agent::Preferences::load();
+            model.panels =
+                crate::panels::Panels::from_prefs(prefs.sidebar_width, prefs.right_pane_width);
+            model.composer.effort = prefs.effort();
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
         Self {
@@ -373,8 +412,14 @@ impl Workspace {
             ext_inputs,
             arg_inputs: Vec::new(),
             arg_subs: Vec::new(),
+            picker_input,
+            link_input,
+            queued: None,
+            reveal_at: None,
             _subscriptions: {
                 let mut subs = vec![
+                    picker_sub,
+                    link_sub,
                     sub,
                     key_sub,
                     rename_sub,
@@ -408,6 +453,7 @@ impl Workspace {
                 self.current = Some(s.session_id());
                 self.tabs.set_active(s.session_id(), "New chat");
                 self.model.set_resume_offer(None, None);
+                self.chat_shown(&s);
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
@@ -441,6 +487,7 @@ impl Workspace {
                 self.bridge.load_ids(s.session_id());
                 self.bridge.remember(s.harness(), s.session_id());
                 self.model.harness_of_chat(s.harness());
+                self.chat_shown(&s);
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
@@ -513,6 +560,14 @@ impl Workspace {
                 self.model.on_text(call, &text);
                 self.scroll.scroll_to_bottom();
             }
+            Msg::Reasoning(call, text) => {
+                self.model.on_reasoning(call, &text);
+                self.scroll.scroll_to_bottom();
+            }
+            Msg::Archive(archived, deleted, note) => {
+                self.model.archive.loaded(archived, deleted);
+                self.model.archive.note = note;
+            }
             Msg::Approval(req, reply) => {
                 if self.cancel.is_cancelled() {
                     let _ = reply.send(ApprovalAnswer::Deny);
@@ -531,10 +586,18 @@ impl Workspace {
                 self.model.sessions = recent;
                 if !s.is_draft() {
                     self.bridge.remember(s.harness(), s.session_id());
+                    self.model.composer.remember(&s.session_id().to_string());
                 }
                 self.session = Some(s);
-                self.ticker = None;
+                if self.model.reveal.is_none() {
+                    self.ticker = None;
+                }
                 self.scroll.scroll_to_bottom();
+                // A message queued with Tab goes now.
+                if let Some(q) = self.queued.take() {
+                    self.composer.update(cx, |c, cx| c.set_value(q, window, cx));
+                    self.submit(window, cx);
+                }
             }
             Msg::Providers(rows, prefs, keychain) => {
                 self.model.providers.load(rows, *prefs, keychain);
@@ -563,7 +626,16 @@ impl Workspace {
                 }
                 self.refresh_models();
             }
-            Msg::Models(id, result) => self.model.providers.models_loaded(id, result),
+            Msg::Models(id, result) => {
+                if let Ok(list) = &result {
+                    let n = list
+                        .iter()
+                        .filter(|m| m.kind == tern_agent::providers::ModelKind::Chat)
+                        .count();
+                    self.model.composer.models_loaded(id, n);
+                }
+                self.model.providers.models_loaded(id, result)
+            }
             Msg::Decision(m) => match *m {
                 crate::bridge::DecisionMsg::Loaded(rows, prefs, err) => {
                     self.model.decision.load(rows, prefs, err)
@@ -641,6 +713,14 @@ impl Workspace {
             self.model.screen = Screen::Chat;
         }
         let mut session = session;
+        let mode = self.model.composer.mode;
+        session.set_turn_mode(mode.turn_mode());
+        session.set_effort(self.model.composer.effort);
+        // A Study mode asks the same model to answer in its style.
+        let text = match mode.study_prefix() {
+            Some(prefix) => format!("{prefix}\n\n{text}"),
+            None => text,
+        };
         session.attach_images(std::mem::take(&mut self.model.outgoing_images));
         self.model.steering = Some(session.steering());
         self.model.resume_offer = None;
@@ -856,18 +936,36 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Redraws the working line twice a second while a turn runs.
+    /// Redraws while a turn runs: every 50 ms while text is being revealed
+    /// at reading pace, else twice a second for the working line.
     fn start_ticker(&mut self, cx: &mut Context<Self>) {
+        self.reveal_at = Some(Instant::now());
         self.ticker = Some(cx.spawn(async move |this, cx| {
+            let mut quiet = 0u32;
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(500))
+                    .timer(Duration::from_millis(50))
                     .await;
-                let busy = this.update(cx, |this, cx| {
-                    cx.notify();
-                    this.model.is_busy()
+                let go = this.update(cx, |this, cx| {
+                    let now = Instant::now();
+                    let dt = this
+                        .reveal_at
+                        .map(|t| now.saturating_duration_since(t))
+                        .unwrap_or_default();
+                    this.reveal_at = Some(now);
+                    let pacing = this.model.tick_reveal(dt, this.reduced_motion);
+                    quiet += 1;
+                    if pacing || quiet >= 10 {
+                        quiet = 0;
+                        cx.notify();
+                    }
+                    if pacing {
+                        this.scroll.scroll_to_bottom();
+                    }
+                    this.model.is_busy() || pacing
                 });
-                if !matches!(busy, Ok(true)) {
+                if !matches!(go, Ok(true)) {
+                    let _ = this.update(cx, |_, cx| cx.notify());
                     break;
                 }
             }
@@ -1278,10 +1376,8 @@ impl Workspace {
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model.dark = !self.model.dark;
         if !self.reduced_motion {
-            let at = window.mouse_position();
             self.wipe = Some(ThemeWipe {
                 since: Instant::now(),
-                origin: (f32::from(at.x), f32::from(at.y)),
                 to_dark: self.model.dark,
             });
         }
@@ -2485,135 +2581,6 @@ impl Workspace {
             .child(column)
     }
 
-    fn composer(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = self.model.is_busy();
-        let status = match &self.model.connection {
-            Some(c) => {
-                let mut s = format!("{} · {}", c.provider, c.model);
-                if let Some(search) = &c.search {
-                    s.push_str(&format!(" · web: {search}"));
-                }
-                s
-            }
-            None => match &self.model.phase {
-                Phase::Offline(_) => "No model connected".into(),
-                _ => "Connecting…".into(),
-            },
-        };
-        let action = if busy {
-            // Labelled and in the primary colour, so it reads as Stop and
-            // not as a second Send.
-            Button::new("stop")
-                .icon(IconName::Square)
-                .label(if self.model.stopping {
-                    "Stopping…"
-                } else {
-                    "Stop"
-                })
-                .primary()
-                .small()
-                .disabled(self.model.stopping)
-                .tooltip("Stop the answer (Esc)")
-                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-        } else {
-            Button::new("send")
-                .icon(IconName::ArrowUp)
-                .small()
-                .disabled(!self.model.can_send())
-                .tooltip("Send (Enter)")
-                .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-        };
-        div().w_full().flex().justify_center().px_4().pb_4().child(
-            div()
-                .id("composer-box")
-                .w_full()
-                .max_w(px(COLUMN_MAX_W))
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_2()
-                .rounded_xl()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .drag_over::<ExternalPaths>(move |style, _, _, _| {
-                    style.border_color(p.muted).bg(p.hover)
-                })
-                .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                    this.attach_paths(paths.paths().to_vec(), cx);
-                }))
-                .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                    this.mention_keys(e, window, cx);
-                }))
-                .children(self.slash_menu(p, cx))
-                .children(self.mention_menu(p, cx))
-                .children(self.arg_form_view(p, cx))
-                .children(self.inserted_banner(p, cx))
-                .children(self.resume_banner(p, cx))
-                .children(self.continue_bar(p, cx))
-                .children(self.reply_bar(p, cx))
-                .children(self.steer_hint(p))
-                .when(
-                    !self.model.attachments.is_empty() || self.model.attaching > 0,
-                    |d| d.child(self.attachment_chips(p, cx)),
-                )
-                .child(
-                    Textarea::new(&self.composer)
-                        .appearance(false)
-                        .disabled(!self.model.is_ready() && !busy),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .px_1()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .min_w_0()
-                                .child(
-                                    Button::new("attach")
-                                        .icon(AssetIcon::Paperclip)
-                                        .ghost()
-                                        .small()
-                                        .tooltip("Attach files, folders, or .zip")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.pick_attachments(cx)),
-                                        ),
-                                )
-                                .child(self.mic_button(p))
-                                .children(self.deep_toggle(cx)),
-                        )
-                        .child(
-                            div()
-                                .id("composer-model")
-                                .min_w_0()
-                                .px_1()
-                                .rounded_md()
-                                .text_xs()
-                                .text_color(p.faint)
-                                .truncate()
-                                .cursor_pointer()
-                                .hover(|d| d.text_color(p.text).bg(p.hover))
-                                .child(status)
-                                .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(self.context_ring(p))
-                                .child(action),
-                        ),
-                ),
-        )
-    }
-
     /// Over the composer after an answer stopped at the length limit.
     fn continue_bar(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.model.continue_offer || self.model.is_busy() {
@@ -3778,18 +3745,18 @@ impl Render for Workspace {
         if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
             window.request_animation_frame();
         }
+        // The theme change: the new theme is drawn whole and the old one's
+        // canvas parts from the centre out (v2 s17), no ripple.
         let ripple = self.wipe.map(|w| {
-            let (grow, strength) = w.circle(now);
-            let view = window.viewport_size();
-            let diag = f32::from(view.width).hypot(f32::from(view.height));
-            let r = diag * grow;
+            let inset = w.inset(now);
+            let width = f32::from(window.viewport_size().width);
+            let cover = width * inset;
+            let old = w.old_canvas();
             div()
                 .absolute()
-                .left(px(w.origin.0 - r))
-                .top(px(w.origin.1 - r))
-                .size(px(r * 2.))
-                .rounded_full()
-                .bg(p.text.opacity(strength * 0.25))
+                .inset_0()
+                .child(div().absolute().top_0().bottom_0().left_0().w(px(cover)).bg(old))
+                .child(div().absolute().top_0().bottom_0().right_0().w(px(cover)).bg(old))
         });
         // The right pane: the browser when it is showing, else the docked
         // side chat, else the run panel.

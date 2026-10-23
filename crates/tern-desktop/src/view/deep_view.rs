@@ -19,29 +19,6 @@ use super::Workspace;
 use crate::theme::Palette;
 
 impl Workspace {
-    /// The composer's Deep research toggle (Research harness only).
-    pub(super) fn deep_toggle(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.model.harness != Harness::Research {
-            return None;
-        }
-        Some(
-            Button::new("deep-mode")
-                .icon(AssetIcon::Telescope)
-                .label("Deep research")
-                .ghost()
-                .small()
-                .selected(self.model.deep_mode)
-                .tooltip("Plan first, then research the parts in parallel")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if !this.model.is_busy() {
-                        this.model.deep_mode = !this.model.deep_mode;
-                    }
-                    cx.notify();
-                }))
-                .into_any_element(),
-        )
-    }
-
     /// Hands the plan to the window: one text field per sub-question for
     /// editing, then the card.
     pub(super) fn show_plan(

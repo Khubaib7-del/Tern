@@ -41,6 +41,8 @@ pub enum Screen {
     /// Evaluation runs: scores per suite, failures, the diff against the
     /// run before.
     Evaluation,
+    /// Archived chats, and deleted ones until the trash is emptied.
+    Archived,
 }
 
 /// One block of the transcript.
@@ -52,6 +54,8 @@ pub enum Entry {
         chips: Vec<Chip>,
         /// The part of an earlier message this one replies to.
         quote: Option<String>,
+        /// When Enter was pressed (RFC 3339, UTC).
+        at: Option<String>,
     },
     /// A finished answer, with the run that led to it and how long it took.
     Assistant {
@@ -60,6 +64,10 @@ pub enum Entry {
         took: Duration,
         /// Pages read on the way, shown as source rows.
         pages: Vec<PageRef>,
+        /// The model's reasoning before it answered.
+        thought: Option<crate::chatflow::Thought>,
+        /// When the turn started (RFC 3339, UTC).
+        at: Option<String>,
     },
     /// A plain note from Tern (a stop reason, a phase that is not built yet).
     Notice(String),
@@ -336,6 +344,43 @@ pub struct Model {
     pub customize: crate::extensions::CustomizeState,
     /// The sidebar's project folders.
     pub projects: crate::extensions::ProjectTree,
+    /// The composer's menus, mode, effort, and model picker.
+    pub composer: crate::composer::Composer,
+    /// Reasoning streaming in for the running turn.
+    pub thinking: crate::chatflow::LiveThinking,
+    /// When the running turn started (RFC 3339, UTC).
+    pub turn_at: Option<String>,
+    /// The answer still being revealed at reading pace, by entry.
+    pub reveal: Option<(usize, crate::chatflow::Pacer)>,
+    /// The streaming draft's pace.
+    pub draft_pacer: crate::chatflow::Pacer,
+    /// Answers whose Thinking section the user opened.
+    pub thought_open: std::collections::HashSet<usize>,
+    /// Answers whose working rollup is open, and the view it shows.
+    pub rollup_open: std::collections::HashSet<usize>,
+    pub rollup_view: crate::chatflow::RollupView,
+    /// The live answer's rollup is open.
+    pub live_rollup_open: bool,
+    /// Answers folded to their first lines.
+    pub folded: std::collections::HashSet<usize>,
+    /// A message action menu that is open.
+    pub action_menu: Option<(usize, crate::chatflow::ActionMenu)>,
+    /// Something just removed that Undo can bring back.
+    pub undo: Option<crate::chatflow::Undo>,
+    /// The banners over the composer are all shown.
+    pub notices_open: bool,
+    /// Panel widths and maximising.
+    pub panels: crate::panels::Panels,
+    /// The Archived chats screen.
+    pub archive: crate::panels::ArchiveView,
+    /// The chat's workspace folder or file: its name and path.
+    pub workspace: Option<(String, PathBuf)>,
+    /// The deep run is paused.
+    pub paused: bool,
+    /// The sidebar row whose ⋯ menu is open, and a delete waiting for its
+    /// confirm.
+    pub row_menu: Option<tern_core::SessionId>,
+    pub confirm_delete: Option<tern_core::SessionId>,
 }
 
 /// A stopped or failed run the chat can pick up again.
@@ -441,6 +486,25 @@ impl Model {
             },
             customize: Default::default(),
             projects: Default::default(),
+            composer: Default::default(),
+            thinking: Default::default(),
+            turn_at: None,
+            reveal: None,
+            draft_pacer: Default::default(),
+            thought_open: Default::default(),
+            rollup_open: Default::default(),
+            rollup_view: Default::default(),
+            live_rollup_open: false,
+            folded: Default::default(),
+            action_menu: None,
+            undo: None,
+            notices_open: false,
+            panels: Default::default(),
+            archive: Default::default(),
+            workspace: None,
+            paused: false,
+            row_menu: None,
+            confirm_delete: None,
         }
     }
 
@@ -641,11 +705,21 @@ impl Model {
         let quote = self.reply_to.take();
         self.outgoing_images = attach::images(&attachments);
         let message = attach::compose(&reply::compose(quote.as_deref(), text), &attachments);
+        let at = tern_agent::checkpoint::now_rfc3339();
         self.entries.push(Entry::User {
             text: text.to_owned(),
             chips,
             quote,
+            at: Some(at.clone()),
         });
+        self.turn_at = Some(at);
+        self.thinking = Default::default();
+        self.draft_pacer = Default::default();
+        self.live_rollup_open = false;
+        self.paused = false;
+        self.composer.close();
+        // An answer still being revealed shows in full when the next turn starts.
+        self.reveal = None;
         self.cont.ids.started();
         self.cont.highlight = None;
         self.turn_pages.clear();
@@ -1109,8 +1183,12 @@ impl Model {
             if *draft_call != call {
                 draft.clear();
                 *draft_call = call;
+                self.draft_pacer = Default::default();
             }
             draft.push_str(text);
+            if !text.trim().is_empty() {
+                self.thinking.answer_started(call);
+            }
             if draft_visible(draft).is_some() {
                 *activity = Activity::Writing;
             }
@@ -1123,6 +1201,208 @@ impl Model {
             Phase::Working { draft, .. } => draft_visible(draft),
             _ => None,
         }
+    }
+
+    /// Reasoning from the stream, for the Thinking section.
+    pub fn on_reasoning(&mut self, call: u32, text: &str) {
+        if self.is_busy() {
+            self.thinking.push(call, text);
+        }
+    }
+
+    /// The draft as revealed so far at reading pace.
+    pub fn paced_draft(&self) -> Option<&str> {
+        let d = self.draft()?;
+        let n = floor_char(d, self.draft_pacer.shown);
+        let shown = d[..n].trim_end();
+        (!shown.is_empty()).then_some(shown)
+    }
+
+    /// The text of answer `i` as revealed so far.
+    pub fn shown_answer(&self, i: usize) -> Option<&str> {
+        let Some(Entry::Assistant { text, .. }) = self.entries.get(i) else {
+            return None;
+        };
+        Some(match &self.reveal {
+            Some((j, p)) if *j == i => &text[..floor_char(text, p.shown)],
+            _ => text,
+        })
+    }
+
+    /// Whether answer `i` is still being revealed.
+    pub fn is_revealing(&self, i: usize) -> bool {
+        matches!(&self.reveal, Some((j, _)) if *j == i)
+    }
+
+    /// Moves the reveal on by `dt`. With reduced motion everything shows at
+    /// once. Returns whether anything is still being revealed.
+    pub fn tick_reveal(&mut self, dt: Duration, reduced: bool) -> bool {
+        let mut pacing = false;
+        if let Some(d) = self.draft().map(str::to_owned) {
+            if reduced {
+                self.draft_pacer.finish(&d);
+            } else {
+                self.draft_pacer.advance(&d, dt, false);
+            }
+            pacing |= !self.draft_pacer.caught_up(&d);
+        }
+        if let Some((i, mut p)) = self.reveal.take() {
+            if let Some(Entry::Assistant { text, .. }) = self.entries.get(i) {
+                if reduced {
+                    p.finish(text);
+                } else {
+                    p.advance(text, dt, true);
+                }
+                if !p.caught_up(text) {
+                    self.reveal = Some((i, p));
+                    pacing = true;
+                }
+            }
+        }
+        pacing
+    }
+
+    /// Show all: the reveal ends now.
+    pub fn reveal_all(&mut self) {
+        self.reveal = None;
+        if let Some(d) = self.draft().map(str::to_owned) {
+            self.draft_pacer.finish(&d);
+        }
+    }
+
+    /// The hover line for entry `i`: "Sent 9:31 PM" on a message,
+    /// "9:31 PM · Worked for 32s" on an answer.
+    pub fn stamp(&self, i: usize, now: &str, offset: Option<i64>) -> Option<String> {
+        match self.entries.get(i)? {
+            Entry::User { at, .. } => crate::chatflow::Stamp {
+                at: at.clone(),
+                took: None,
+            }
+            .sent(now, offset),
+            Entry::Assistant { at, took, .. } => crate::chatflow::Stamp {
+                at: at.clone(),
+                took: Some(*took),
+            }
+            .answered(now, offset),
+            Entry::Notice(_) => None,
+        }
+    }
+
+    /// Opens or closes answer `i`'s Thinking section.
+    pub fn toggle_thought(&mut self, i: usize) {
+        if !self.thought_open.remove(&i) {
+            self.thought_open.insert(i);
+        }
+    }
+
+    /// Opens or closes answer `i`'s working rollup.
+    pub fn toggle_rollup(&mut self, i: usize) {
+        if !self.rollup_open.remove(&i) {
+            self.rollup_open.insert(i);
+        }
+    }
+
+    /// Folds or unfolds a whole answer.
+    pub fn toggle_fold(&mut self, i: usize) {
+        if !self.folded.remove(&i) {
+            self.folded.insert(i);
+        }
+    }
+
+    /// Opens a message action menu, or closes it when it is the open one.
+    pub fn toggle_action_menu(&mut self, i: usize, menu: crate::chatflow::ActionMenu) {
+        self.action_menu = if self.action_menu == Some((i, menu)) {
+            None
+        } else {
+            Some((i, menu))
+        };
+    }
+
+    /// The watch on the question before answer `i`, if there is one.
+    pub fn watch_of(&self, i: usize) -> Option<&tern_agent::watch::Watch> {
+        let q = self.question_before(i)?;
+        let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.watches
+            .iter()
+            .find(|w| w.question.eq_ignore_ascii_case(&q))
+    }
+
+    /// Unwatching: the watch leaves the list at once and Undo can put it
+    /// back. Returns the watch's id for the bridge to remove.
+    pub fn unwatch(&mut self, i: usize) -> Option<String> {
+        let w = self.watch_of(i)?.clone();
+        self.watches.retain(|x| x.id != w.id);
+        self.undo = Some(crate::chatflow::Undo::new(
+            "Stopped watching",
+            crate::chatflow::UndoKind::Watch {
+                question: w.question.clone(),
+                every_hours: w.every_hours,
+                deep: w.deep,
+            },
+        ));
+        Some(w.id)
+    }
+
+    /// A watch removed from the Watches list, with Undo.
+    pub fn remove_watch_row(&mut self, id: &str) -> bool {
+        let Some(w) = self.watches.iter().find(|w| w.id == id).cloned() else {
+            return false;
+        };
+        self.watches.retain(|x| x.id != id);
+        if self.watch_selected.as_deref() == Some(id) {
+            self.watch_selected = None;
+        }
+        self.undo = Some(crate::chatflow::Undo::new(
+            "Watch removed",
+            crate::chatflow::UndoKind::Watch {
+                question: w.question,
+                every_hours: w.every_hours,
+                deep: w.deep,
+            },
+        ));
+        true
+    }
+
+    /// Takes the pending undo, if it has not expired.
+    pub fn take_undo(&mut self) -> Option<crate::chatflow::UndoKind> {
+        let u = self.undo.take()?;
+        (!u.expired(Instant::now())).then_some(u.what)
+    }
+
+    /// A chat went to the trash: it leaves the list, with Undo.
+    pub fn chat_deleted(&mut self, id: tern_core::SessionId) {
+        self.sessions.retain(|s| s.id != id && s.parent != Some(id));
+        self.row_menu = None;
+        self.confirm_delete = None;
+        self.undo = Some(crate::chatflow::Undo::new(
+            "Chat moved to the trash",
+            crate::chatflow::UndoKind::Chat(id),
+        ));
+    }
+
+    /// The banners over the composer that have something to say.
+    pub fn active_notices(&self) -> Vec<crate::chatflow::Notice> {
+        use crate::chatflow::Notice;
+        let mut v = Vec::new();
+        if self.resume_offer.is_some() && !self.is_busy() {
+            v.push(Notice::Resume);
+        }
+        if self.continue_offer && !self.is_busy() {
+            v.push(Notice::Continue);
+        }
+        if self.inserted.is_some() {
+            v.push(Notice::Inserted);
+        }
+        v
+    }
+
+    /// Picks a composer mode; Deep research turns the deep run on.
+    pub fn set_mode(&mut self, mode: crate::composer::Mode, chat: Option<&str>) {
+        if self.is_busy() {
+            return;
+        }
+        self.composer.set_mode(mode, chat);
+        self.deep_mode = mode.is_deep();
     }
 
     pub fn ask_approval(&mut self, request: ApprovalRequest) {
@@ -1216,13 +1496,27 @@ impl Model {
         self.steering = None;
         self.continue_offer = std::mem::take(&mut self.cut_off)
             && out.answer.as_deref().is_some_and(|a| !a.is_empty());
+        let thought = self.thinking.finish();
+        let at = self.turn_at.take();
+        self.paused = false;
         match &out.answer {
-            Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
-                text: a.clone(),
-                run: Box::new(run),
-                took,
-                pages: std::mem::take(&mut self.turn_pages),
-            }),
+            Some(a) if !a.is_empty() => {
+                // The answer keeps revealing at reading pace from where the
+                // draft had got to.
+                let mut pacer = std::mem::take(&mut self.draft_pacer);
+                pacer.shown = pacer.shown.min(a.len());
+                self.entries.push(Entry::Assistant {
+                    text: a.clone(),
+                    run: Box::new(run),
+                    took,
+                    pages: std::mem::take(&mut self.turn_pages),
+                    thought,
+                    at,
+                });
+                if !pacer.caught_up(a) {
+                    self.reveal = Some((self.entries.len() - 1, pacer));
+                }
+            }
             _ => {}
         }
         if out.state != TurnState::Completed
@@ -1268,6 +1562,11 @@ impl Model {
     /// Fills the transcript from a reopened chat's past turns.
     pub fn restore(&mut self, turns: &[PastTurn]) {
         self.entries.clear();
+        self.reveal = None;
+        self.thought_open.clear();
+        self.rollup_open.clear();
+        self.folded.clear();
+        self.action_menu = None;
         self.run_panel.pinned = None;
         self.run_panel.open.clear();
         self.cont.highlight = None;
@@ -1292,6 +1591,7 @@ impl Model {
                         text: text.to_owned(),
                         chips,
                         quote: quote.map(str::to_owned),
+                        at: t.run.started_rfc3339(),
                     });
                 }
                 None => missing += 1,
@@ -1302,6 +1602,8 @@ impl Model {
                     run: Box::new(t.run.clone()),
                     took: t.took,
                     pages: t.pages.clone(),
+                    thought: t.run.thought().map(|(text, took)| crate::chatflow::Thought { text, took }),
+                    at: t.run.started_rfc3339(),
                 });
             }
             if let Some(why) = &t.stop {
@@ -1389,6 +1691,11 @@ impl Model {
             return;
         }
         self.entries.clear();
+        self.reveal = None;
+        self.thought_open.clear();
+        self.rollup_open.clear();
+        self.folded.clear();
+        self.action_menu = None;
         self.reply_to = None;
         self.copied = None;
         self.resume_offer = None;
@@ -1683,6 +1990,15 @@ pub fn draft_visible(draft: &str) -> Option<&str> {
     (!text.trim_start().is_empty()).then_some(text)
 }
 
+/// The largest char boundary at or below `n`.
+pub fn floor_char(s: &str, n: usize) -> usize {
+    let mut n = n.min(s.len());
+    while !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    n
+}
+
 /// 950 → "950", 1_234 → "1.2k", 128_000 → "128k", 1_000_000 → "1M".
 pub fn compact(n: u64) -> String {
     match n {
@@ -1722,6 +2038,7 @@ mod tests {
             text: text.into(),
             chips: Vec::new(),
             quote: None,
+            at: None,
         }
     }
 
@@ -1867,6 +2184,8 @@ mod tests {
                     run: Box::new(run.clone()),
                     took: Duration::from_secs(3),
                     pages: Vec::new(),
+                    thought: None,
+                    at: run.started_rfc3339(),
                 },
                 user("More"),
                 Entry::Notice("You stopped the run.".into()),
@@ -2186,6 +2505,8 @@ mod tests {
         rubric.name = "rubric.md".into();
         m.attachments.push(rubric);
         m.entries.push(Entry::Assistant {
+            thought: None,
+            at: None,
             text: "a".into(),
             run: Box::new(Run::new()),
             took: Duration::ZERO,
@@ -2394,6 +2715,7 @@ mod tests {
                     role: Role::Context
                 }],
                 quote: None,
+                at: None,
             }
         );
     }
@@ -2405,12 +2727,15 @@ mod tests {
             text: "q".into(),
             chips: vec![],
             quote: None,
+            at: None,
         });
         m.entries.push(Entry::Assistant {
             text: "Water boils at 100 C [1].".into(),
             run: Box::new(Run::new()),
             took: Duration::ZERO,
             pages: vec![],
+            thought: None,
+            at: None,
         });
         m.browser.visible = true;
         m.show_claim(1, 1);

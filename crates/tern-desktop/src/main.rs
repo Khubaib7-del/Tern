@@ -14,6 +14,8 @@
 mod app_menu;
 mod assets;
 mod bridge;
+mod chatflow;
+mod composer;
 mod browser;
 mod commands;
 mod continuity;
@@ -26,6 +28,7 @@ mod git;
 mod layout;
 mod model;
 mod motion;
+mod panels;
 mod providers;
 mod scout;
 mod study;
