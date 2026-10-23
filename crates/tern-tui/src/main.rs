@@ -8,6 +8,7 @@
 mod cards;
 mod continuity;
 mod decide;
+mod eval;
 mod extend;
 mod research;
 mod runs;
@@ -287,6 +288,10 @@ enum Command {
     /// Ask the decision model a fixed-choice question, set it up (off,
     /// local, or a remote provider with your own key), or benchmark it.
     Decide(decide::DecideArgs),
+    /// The evaluation ladder: list suites, run a rung (offline by
+    /// default), read reports, compare runs, run a usability session.
+    #[command(subcommand)]
+    Eval(eval::EvalCmd),
     /// MCP servers: add, review (trust preview), switch on and off, check
     /// health, remove.
     #[command(subcommand)]
@@ -529,6 +534,7 @@ fn real_main() -> ExitCode {
         } => block_on(study::viva(title, n, offline, chat)),
         Command::Cards(cmd) => block_on(cards::run(cmd)),
         Command::Decide(args) => block_on(decide::run(args)),
+        Command::Eval(cmd) => block_on(Box::pin(eval::run(cmd))),
         Command::Range(cmd) => sync(continuity::range_cmd(cmd)),
         Command::Sub(cmd) => block_on(continuity::sub_cmd(cmd)),
         Command::Show { id, chat, json } => sync(continuity::show(id, chat, json)),

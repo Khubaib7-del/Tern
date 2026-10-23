@@ -38,6 +38,9 @@ pub enum Screen {
     Library,
     /// Skills, MCP servers, providers, and the effective instructions.
     Customize,
+    /// Evaluation runs: scores per suite, failures, the diff against the
+    /// run before.
+    Evaluation,
 }
 
 /// One block of the transcript.
@@ -272,6 +275,8 @@ pub struct Model {
     pub providers: ProvidersState,
     /// The Decision model settings page.
     pub decision: crate::decision::DecisionPage,
+    /// The Evaluation page.
+    pub eval: crate::evaluation::EvalPage,
     /// Pages read so far in the running turn.
     pub turn_pages: Vec<PageRef>,
     pub icons: HashMap<String, SiteIcon>,
@@ -372,6 +377,7 @@ impl Model {
             screen: Screen::Chat,
             providers: ProvidersState::default(),
             decision: Default::default(),
+            eval: Default::default(),
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),

@@ -22,8 +22,8 @@ pub mod unit;
 pub mod usability;
 
 pub use report::{
-    Baseline, Better, Change, Comparison, Delta, EvalRun, Failure, Metric, RunSummary,
-    SuiteResult, Unit, baseline, check_baseline, compare,
+    Baseline, Better, Change, Comparison, Delta, EvalRun, Failure, Metric, RunSummary, SuiteResult,
+    Unit, baseline, check_baseline, compare,
 };
 pub use run::{MIN_TRIALS, RunOptions, run_suite};
 pub use subject::{BoxFuture, Completion, GateAnswer, Subject};

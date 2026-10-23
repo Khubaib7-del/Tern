@@ -8,11 +8,26 @@ use crate::suite::{Level, SuiteKind};
 
 /// The tasks, in order. Each is something a student does in a first week.
 pub const TASKS: &[(&str, &str)] = &[
-    ("ask", "Ask a research question and open one of the cited sources."),
-    ("verify", "Find which claims of that answer are supported, and why."),
-    ("quiz", "Make a five-question quiz from a study material and finish it."),
-    ("cards", "Write flashcards from the same material and export them for Anki."),
-    ("compare", "Run the offline evaluation and find what changed since the last run."),
+    (
+        "ask",
+        "Ask a research question and open one of the cited sources.",
+    ),
+    (
+        "verify",
+        "Find which claims of that answer are supported, and why.",
+    ),
+    (
+        "quiz",
+        "Make a five-question quiz from a study material and finish it.",
+    ),
+    (
+        "cards",
+        "Write flashcards from the same material and export them for Anki.",
+    ),
+    (
+        "compare",
+        "Run the offline evaluation and find what changed since the last run.",
+    ),
 ];
 
 /// The ten SUS statements. Odd ones are positive, even ones negative.
@@ -89,10 +104,20 @@ pub fn session_run(
             "Seconds per finished task",
             Unit::Number,
             Better::Lower,
-            if secs.is_empty() { Vec::new() } else { vec![crate::stats::mean(&secs)] },
+            if secs.is_empty() {
+                Vec::new()
+            } else {
+                vec![crate::stats::mean(&secs)]
+            },
         ),
-        Metric::values("sus", "SUS score", Unit::Number, Better::Higher, vec![score])
-            .map(|m| m.with_note("0 to 100; 68 is the usual average")),
+        Metric::values(
+            "sus",
+            "SUS score",
+            Unit::Number,
+            Better::Higher,
+            vec![score],
+        )
+        .map(|m| m.with_note("0 to 100; 68 is the usual average")),
     ]
     .into_iter()
     .flatten()
@@ -148,10 +173,27 @@ mod tests {
     #[test]
     fn a_session_is_a_human_run() {
         let tasks = vec![
-            TaskResult { id: "ask".into(), done: true, seconds: 40.0, note: String::new() },
-            TaskResult { id: "quiz".into(), done: false, seconds: 90.0, note: "could not find Quiz".into() },
+            TaskResult {
+                id: "ask".into(),
+                done: true,
+                seconds: 40.0,
+                note: String::new(),
+            },
+            TaskResult {
+                id: "quiz".into(),
+                done: false,
+                seconds: 90.0,
+                note: "could not find Quiz".into(),
+            },
         ];
-        let run = session_run("u1".into(), "2026-10-23T00:00:00Z".into(), "P1", &tasks, &[4, 2, 4, 2, 4, 2, 4, 2, 4, 2]).unwrap();
+        let run = session_run(
+            "u1".into(),
+            "2026-10-23T00:00:00Z".into(),
+            "P1",
+            &tasks,
+            &[4, 2, 4, 2, 4, 2, 4, 2, 4, 2],
+        )
+        .unwrap();
         let s = &run.suites[0];
         assert_eq!(s.metric("sus").unwrap().mean, 75.0);
         assert_eq!(s.metric("task_success").unwrap().mean, 0.5);

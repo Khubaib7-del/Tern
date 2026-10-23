@@ -7598,6 +7598,7 @@ dependencies = [
  "tern-core",
  "tern-crawl",
  "tern-decision",
+ "tern-eval",
  "tern-platform",
  "tern-providers",
  "tern-research",

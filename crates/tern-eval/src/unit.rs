@@ -25,7 +25,10 @@ pub fn parse_cargo_test(output: &str) -> (u64, u64, Vec<String>) {
                     }
                 }
             }
-        } else if let Some(name) = l.strip_prefix("test ").and_then(|r| r.strip_suffix(" ... FAILED")) {
+        } else if let Some(name) = l
+            .strip_prefix("test ")
+            .and_then(|r| r.strip_suffix(" ... FAILED"))
+        {
             names.push(name.to_owned());
         }
     }
@@ -62,9 +65,14 @@ pub fn unit_run(id: String, started: String, seconds: f64, output: &str) -> Eval
             skipped: 0,
             skip_reason: String::new(),
             headline: "tests_passed".into(),
-            metrics: Metric::ratio("tests_passed", "Tests passed", Better::Higher, &[(passed, total)])
-                .into_iter()
-                .collect(),
+            metrics: Metric::ratio(
+                "tests_passed",
+                "Tests passed",
+                Better::Higher,
+                &[(passed, total)],
+            )
+            .into_iter()
+            .collect(),
             failures: names
                 .into_iter()
                 .map(|n| Failure {

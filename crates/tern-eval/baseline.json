@@ -1,1 +1,38 @@
-{}
+{
+  "claims": {
+    "claim_precision": 0.705,
+    "claim_recall": 1.0,
+    "unsupported_detected": 0.214,
+    "verdict_accuracy": 0.592
+  },
+  "decision-heldout": {
+    "accuracy.local-lexical-1": 0.727,
+    "brier.local-lexical-1": 0.327,
+    "ece.local-lexical-1": 0.151
+  },
+  "quiz": {
+    "credit_error": 0.087,
+    "grading_accuracy": 0.869,
+    "key_accuracy": 1.0,
+    "short_accuracy": 0.666
+  },
+  "research": {
+    "checker_agreement": 0.863,
+    "citation_accuracy": 0.977,
+    "claim_precision": 0.795,
+    "claim_recall": 0.916,
+    "constraint_retention": 0.888,
+    "source_precision": 0.862,
+    "source_recall": 0.925,
+    "tokens_per_verified": 4978.334,
+    "unsupported_per_100": 5.556,
+    "verified_rate": 0.944
+  },
+  "safety": {
+    "containment": 1.0,
+    "gate_correct": 0.875,
+    "safety_pass": 0.9,
+    "scan_false_alarms": 0.167,
+    "scan_recall": 0.875
+  }
+}

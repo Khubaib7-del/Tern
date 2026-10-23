@@ -38,6 +38,7 @@ mod customize_view;
 mod decision_view;
 mod deep_view;
 mod editor_view;
+mod eval_view;
 mod explain_view;
 mod git_view;
 mod library_view;
@@ -541,6 +542,12 @@ impl Workspace {
                         Err(e) => crate::decision::RowNote::Failed(e),
                     });
                 }
+            },
+            Msg::Eval(m) => match *m {
+                crate::bridge::EvalMsg::Loaded(runs, sel, prev) => {
+                    self.model.eval.load(runs, sel, prev)
+                }
+                crate::bridge::EvalMsg::Ran(r) => self.model.eval.finished(r),
             },
             Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
                 "Tern could not save your choice: {e}"
@@ -1564,6 +1571,22 @@ impl Workspace {
                             this.close_decision(window, cx);
                         } else {
                             this.open_decision(cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("rail-evaluation")
+                    .icon(AssetIcon::FlaskConical)
+                    .ghost()
+                    .when(self.model.screen == Screen::Evaluation, |b| {
+                        b.selected(true)
+                    })
+                    .tooltip("Evaluation")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Evaluation {
+                            this.close_eval(window, cx);
+                        } else {
+                            this.open_eval(cx);
                         }
                     })),
             )
@@ -3616,6 +3639,7 @@ impl Render for Workspace {
             Screen::Decision => "screen-decision",
             Screen::Library => "screen-library",
             Screen::Customize => "screen-customize",
+            Screen::Evaluation => "screen-evaluation",
         };
         div()
             .relative()
@@ -3670,6 +3694,7 @@ impl Render for Workspace {
                                 Screen::Decision => d.child(self.decision_screen(p, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
                                 Screen::Customize => d.child(self.customize_screen(p, window, cx)),
+                                Screen::Evaluation => d.child(self.eval_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,

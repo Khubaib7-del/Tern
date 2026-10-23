@@ -89,11 +89,21 @@ impl Metric {
     }
 
     /// A value per trial (tokens, error, a rate per 100 runs).
-    pub fn values(key: &str, label: &str, unit: Unit, better: Better, trials: Vec<f64>) -> Option<Self> {
+    pub fn values(
+        key: &str,
+        label: &str,
+        unit: Unit,
+        better: Better,
+        trials: Vec<f64>,
+    ) -> Option<Self> {
         if trials.is_empty() || trials.iter().any(|x| !x.is_finite()) {
             return None;
         }
-        let (low, high) = t_interval(&trials);
+        let (mut low, high) = t_interval(&trials);
+        // Counts, costs, rates, and errors cannot go below zero.
+        if trials.iter().all(|x| *x >= 0.0) {
+            low = low.max(0.0);
+        }
         Some(Self {
             key: key.into(),
             label: label.into(),
@@ -301,7 +311,11 @@ impl EvalRun {
                 } else {
                     format!("{} ({})", m.label, m.note)
                 };
-                out.push_str(&format!("| {label} | {} | {} |\n", m.line(), per.join(", ")));
+                out.push_str(&format!(
+                    "| {label} | {} | {} |\n",
+                    m.line(),
+                    per.join(", ")
+                ));
             }
             if s.input_tokens + s.output_tokens > 0 {
                 out.push_str(&format!(

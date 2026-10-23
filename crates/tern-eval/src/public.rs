@@ -41,7 +41,12 @@ struct SciDoc {
 
 /// Reads SciFact's claims and corpus (JSON lines) into a claim suite.
 /// `limit` keeps the first N labelled claims.
-pub fn scifact(claims_jsonl: &str, corpus_jsonl: &str, name: &str, limit: Option<usize>) -> Result<Suite, String> {
+pub fn scifact(
+    claims_jsonl: &str,
+    corpus_jsonl: &str,
+    name: &str,
+    limit: Option<usize>,
+) -> Result<Suite, String> {
     let mut corpus = BTreeMap::new();
     for (i, line) in corpus_jsonl.lines().enumerate() {
         if line.trim().is_empty() {
@@ -137,13 +142,18 @@ mod tests {
     #[test]
     fn reads_scifact_shaped_files() {
         let s = scifact(CLAIMS, CORPUS, "dev", None).unwrap();
-        let Cases::Claims(cs) = &s.cases else { panic!() };
+        let Cases::Claims(cs) = &s.cases else {
+            panic!()
+        };
         assert_eq!(cs.len(), 3);
         assert_eq!(cs[0].gold, Verdict::Supported);
         assert_eq!(cs[1].gold, Verdict::NotSupported);
         assert_eq!(cs[2].tags, vec!["not enough info".to_owned()]);
         assert_eq!(s.level, Level::Public);
-        assert_eq!(scifact(CLAIMS, CORPUS, "dev", Some(1)).unwrap().cases.len(), 1);
+        assert_eq!(
+            scifact(CLAIMS, CORPUS, "dev", Some(1)).unwrap().cases.len(),
+            1
+        );
         assert!(scifact("", CORPUS, "dev", None).is_err());
     }
 }

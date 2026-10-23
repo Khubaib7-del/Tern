@@ -59,7 +59,9 @@ impl Level {
     /// The one command that runs this rung.
     pub fn command(self) -> &'static str {
         match self {
-            Self::Unit => "tern eval run --level unit   (runs cargo test --workspace in a source checkout)",
+            Self::Unit => {
+                "tern eval run --level unit   (runs cargo test --workspace in a source checkout)"
+            }
             Self::Synthetic => "tern eval run --level synthetic",
             Self::Pinned => "tern eval run --level pinned --live",
             Self::Public => "tern eval run --level public --scifact <folder>",
@@ -73,7 +75,9 @@ impl Level {
             Self::Unit => "a source checkout and cargo",
             Self::Synthetic => "nothing: offline and deterministic",
             Self::Pinned => "a model provider and the network",
-            Self::Public => "the SciFact files (claims_*.jsonl and corpus.jsonl); a model for judged runs",
+            Self::Public => {
+                "the SciFact files (claims_*.jsonl and corpus.jsonl); a model for judged runs"
+            }
             Self::Human => "a person at the keyboard",
         }
     }
@@ -219,7 +223,6 @@ pub struct ClaimCase {
     #[serde(default)]
     pub tags: Vec<String>,
 }
-
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuizCase {
@@ -388,10 +391,7 @@ impl Suite {
         if f.id.trim().is_empty() || f.id.contains(char::is_whitespace) {
             return Err(format!("{from}: the suite id must be one word"));
         }
-        fn each<T: serde::de::DeserializeOwned>(
-            v: &[Value],
-            from: &str,
-        ) -> Result<Vec<T>, String> {
+        fn each<T: serde::de::DeserializeOwned>(v: &[Value], from: &str) -> Result<Vec<T>, String> {
             v.iter()
                 .enumerate()
                 .map(|(i, c)| {
@@ -459,10 +459,7 @@ impl Suite {
                         if !r.labels.is_empty() && r.labels.len() != cited {
                             return bad(
                                 &c.id,
-                                format!(
-                                    "{} labels for {cited} cited sentences",
-                                    r.labels.len()
-                                ),
+                                format!("{} labels for {cited} cited sentences", r.labels.len()),
                             );
                         }
                     }
