@@ -537,7 +537,7 @@ impl Workspace {
                 self.scroll.scroll_to_bottom();
             }
             Msg::Providers(rows, prefs, keychain) => {
-                self.model.providers.load(rows, prefs, keychain);
+                self.model.providers.load(rows, *prefs, keychain);
                 self.refresh_models();
             }
             Msg::Checked(kind, id, result) => {

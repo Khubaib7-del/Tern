@@ -64,7 +64,7 @@ pub enum Msg {
         Vec<SessionSummary>,
     ),
     /// The Providers screen's rows, the saved choices, and a keychain error.
-    Providers(Vec<ServiceRow>, Preferences, Option<String>),
+    Providers(Vec<ServiceRow>, Box<Preferences>, Option<String>),
     /// A key (new or saved) was tried against its service.
     Checked(Kind, &'static str, Result<String, String>),
     Removed(Kind, &'static str, Result<bool, String>),
@@ -753,7 +753,7 @@ impl Bridge {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let rows = rows_from(setup::list(secrets), search::list(secrets));
-            let _ = tx.send(Msg::Providers(rows, Preferences::load(), keychain.err()));
+            let _ = tx.send(Msg::Providers(rows, Box::new(Preferences::load()), keychain.err()));
         });
     }
 
