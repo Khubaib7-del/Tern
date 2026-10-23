@@ -449,12 +449,13 @@ mod tests {
 
     #[test]
     fn refuses_paths_that_leave() {
-        let (d, w) = ws();
+        let (_d, w) = ws();
         for bad in ["../x", "/etc/passwd", "src/../../x"] {
             assert!(w.resolve(bad).is_err(), "{bad}");
         }
         #[cfg(unix)]
         {
+            let d = &_d;
             let outside = tempfile::tempdir().unwrap();
             std::fs::write(outside.path().join("o.txt"), "out").unwrap();
             std::os::unix::fs::symlink(outside.path().join("o.txt"), d.path().join("link.txt"))
