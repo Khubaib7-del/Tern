@@ -8,6 +8,7 @@
 mod cards;
 mod continuity;
 mod decide;
+mod extend;
 mod research;
 mod runs;
 mod study;
@@ -286,6 +287,40 @@ enum Command {
     /// Ask the decision model a fixed-choice question, set it up (off,
     /// local, or a remote provider with your own key), or benchmark it.
     Decide(decide::DecideArgs),
+    /// MCP servers: add, review (trust preview), switch on and off, check
+    /// health, remove.
+    #[command(subcommand)]
+    Mcp(extend::McpCmd),
+    /// Run Tern as an agent inside an editor that speaks the Agent Client
+    /// Protocol (Zed and others), over stdin and stdout.
+    Acp(ChatArgs),
+    /// Skills: SKILL.md folders loaded on demand. List, install, switch,
+    /// show, remove.
+    #[command(subcommand)]
+    Skills(extend::SkillsCmd),
+    /// Exactly what the model is told: Tern's prompt, TERN.md rules,
+    /// skills, tools, and MCP tools, piece by piece.
+    Instructions {
+        /// A project by name (its linked folder's rules and skills).
+        #[arg(long)]
+        project: Option<String>,
+        /// A folder to read TERN.md and .tern/skills from (default: here).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Leave MCP servers out (they are started to list their tools).
+        #[arg(long)]
+        no_mcp: bool,
+        #[arg(long)]
+        json: bool,
+        /// Print the system prompt exactly as sent, without headings.
+        #[arg(long)]
+        raw: bool,
+        #[command(flatten)]
+        chat: ChatArgs,
+    },
+    /// Project folders: new, list, mv (file a chat), rename, root, rm.
+    #[command(subcommand)]
+    Project(extend::ProjectCmd),
     /// Add, test, and remove model providers (bring your own key).
     #[command(subcommand)]
     Provider(ProviderCmd),
@@ -428,6 +463,18 @@ fn main() -> ExitCode {
             json,
         )),
         Command::Search(cmd) => block_on(run_search(cmd)),
+        Command::Mcp(cmd) => block_on(extend::mcp(cmd)),
+        Command::Acp(args) => block_on(extend::acp(args)),
+        Command::Skills(cmd) => plain(extend::skills_cmd(cmd)),
+        Command::Instructions {
+            project,
+            root,
+            no_mcp,
+            json,
+            raw,
+            chat,
+        } => block_on(extend::instructions(project, root, no_mcp, json, raw, chat)),
+        Command::Project(cmd) => plain(extend::project(cmd)),
         Command::Resume {
             chat,
             list,
@@ -521,6 +568,16 @@ fn main() -> ExitCode {
 }
 
 fn sync(r: Result<(), String>) -> ExitCode {
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn plain(r: Result<(), String>) -> ExitCode {
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {

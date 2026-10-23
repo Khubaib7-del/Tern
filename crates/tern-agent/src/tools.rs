@@ -114,10 +114,23 @@ impl ToolRegistry {
         self.tools.keys().copied()
     }
 
-    /// The tool list as the model sees it in the system prompt.
+    /// The tool list as the model sees it in the system prompt: Tern's
+    /// own tools, then MCP tools.
     pub fn describe(&self) -> String {
-        self.tools
-            .values()
+        let (mcp, own): (Vec<&str>, Vec<&str>) =
+            self.names().partition(|n| n.starts_with("mcp__"));
+        [self.describe_only(&own), self.describe_only(&mcp)]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The listed tools' entries, in the order given.
+    pub fn describe_only(&self, names: &[&str]) -> String {
+        names
+            .iter()
+            .filter_map(|n| self.tools.get(n))
             .map(|t| {
                 format!(
                     "- {} (v{}, {}): {}\n  input schema: {}",

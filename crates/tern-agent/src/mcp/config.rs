@@ -225,7 +225,8 @@ pub fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-pub(crate) fn data_dir() -> Result<PathBuf, String> {
+/// The app data folder (`TERN_HOME` or the OS convention).
+pub fn data_dir() -> Result<PathBuf, String> {
     tern_platform::AppPaths::discover()
         .map(|p| p.data_dir)
         .map_err(|e| e.to_string())
