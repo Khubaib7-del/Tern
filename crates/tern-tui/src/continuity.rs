@@ -28,6 +28,16 @@ fn chat_of(store: &Store, which: &str) -> Result<SessionId, String> {
     if let Some((s, _)) = refs::parse_link(which) {
         return Ok(s);
     }
+    // `last` is the newest top-level chat, not one of its sub-sessions.
+    if which.trim().is_empty() || which.trim().eq_ignore_ascii_case("last") {
+        return store
+            .recent_sessions(500)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|s| s.parent.is_none())
+            .map(|s| s.id)
+            .ok_or_else(|| "There are no chats yet.".to_owned());
+    }
     tern_agent::report::find_session(store, which)
 }
 
@@ -245,7 +255,7 @@ pub(crate) async fn sub_cmd(cmd: SubCmd) -> Result<(), String> {
             println!("↳ {}  {}", made.id, made.title);
             if made.plan.is_some() {
                 println!(
-                    "Planned. `tern sub run {} ` runs it and reports back to Q{}.",
+                    "Planned. `tern sub run {}` runs it and reports back to Q{}.",
                     made.id, r.number
                 );
             }
