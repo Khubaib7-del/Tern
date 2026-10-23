@@ -89,6 +89,9 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<&'static str, Box<dyn Tool>>,
+    /// The turn's mode: tools it does not allow are hidden. `None` shows
+    /// every tool.
+    mode: Option<crate::workspace::TurnMode>,
 }
 
 impl ToolRegistry {
@@ -107,16 +110,32 @@ impl ToolRegistry {
         self.tools.remove(name).is_some()
     }
 
+    /// Hides the tools `mode` does not allow (see
+    /// [`crate::workspace::TurnMode`]).
+    pub fn set_mode(&mut self, mode: crate::workspace::TurnMode) {
+        self.mode = Some(mode);
+    }
+
+    fn shown(&self, t: &dyn Tool) -> bool {
+        self.mode.is_none_or(|m| m.allows(t.effect()))
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|t| t.as_ref())
+        self.tools
+            .get(name)
+            .map(|t| t.as_ref())
+            .filter(|t| self.shown(*t))
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.names().next().is_none()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.tools.keys().copied()
+        self.tools
+            .iter()
+            .filter(|(_, t)| self.shown(t.as_ref()))
+            .map(|(n, _)| *n)
     }
 
     /// The tool list as the model sees it in the system prompt: Tern's
@@ -134,7 +153,7 @@ impl ToolRegistry {
     pub fn describe_only(&self, names: &[&str]) -> String {
         names
             .iter()
-            .filter_map(|n| self.tools.get(n))
+            .filter_map(|n| self.get(n))
             .map(|t| {
                 format!(
                     "- {} (v{}, {}): {}\n  input schema: {}",

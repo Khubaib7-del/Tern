@@ -64,17 +64,19 @@ pub mod study;
 pub mod sub;
 pub mod tools;
 pub mod transcript;
+pub mod trash;
 pub mod untrusted;
 pub mod vault;
 pub mod verify;
 pub mod watch;
 pub mod web;
+pub mod workspace;
 
 pub use ask::{AskOptions, AskReport, Source};
 pub use attach::{Attachment, Chip, Role};
 pub use chat::{
-    ChatOptions, ChatSession, ContextUse, Usage, archive_session, chat_to_reopen, clean_title,
-    pick_reopen, recent_sessions, remember_chat, rename_session, title_from,
+    ChatOptions, ChatSession, ContextUse, ReasoningSink, Usage, archive_session, chat_to_reopen,
+    clean_title, pick_reopen, recent_sessions, remember_chat, rename_session, title_from,
 };
 pub use checkpoint::{
     CheckpointDir, CheckpointSink, OfferKind, RunCheckpoint, RunMode, RunOffer, Stage, WorkerCounts,
@@ -93,9 +95,10 @@ pub use run::{
 };
 pub use sources::PageRef;
 pub use steer::Steering;
-pub use tern_providers::ImageInput;
+pub use tern_providers::{Delta, Effort, ImageInput, Thinking, thinking_support};
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, ProjectSummary, SessionSummary, Store};
+pub use workspace::{TurnMode, Workspace};
 
 /// OS details the front ends need, from `tern-platform` (front ends depend
 /// on `tern-agent` and `tern-core` only).

@@ -562,6 +562,29 @@ pub fn local_label(rfc3339: &str, offset_secs: Option<i64>) -> String {
 }
 
 /// The local clock's offset from UTC in seconds, when the platform says.
+/// A short clock label for a message's hover time: `9:31 PM` when it is
+/// the same local day as `now`, else `Fri 23 Oct, 9:31 PM`.
+pub fn clock_label(rfc3339: &str, now: &str, offset_secs: Option<i64>) -> String {
+    use time::format_description::well_known::Rfc3339;
+    let off = offset_secs
+        .and_then(|o| i32::try_from(o).ok())
+        .and_then(|o| time::UtcOffset::from_whole_seconds(o).ok())
+        .unwrap_or(time::UtcOffset::UTC);
+    let (Ok(t), Ok(n)) = (
+        time::OffsetDateTime::parse(rfc3339, &Rfc3339),
+        time::OffsetDateTime::parse(now, &Rfc3339),
+    ) else {
+        return String::new();
+    };
+    let (t, n) = (t.to_offset(off), n.to_offset(off));
+    let clock = time::macros::format_description!("[hour repr:12 padding:none]:[minute] [period]");
+    let full = time::macros::format_description!(
+        "[weekday repr:short] [day padding:none] [month repr:short], [hour repr:12 padding:none]:[minute] [period]"
+    );
+    let f = if t.date() == n.date() { clock } else { full };
+    t.format(&f).unwrap_or_default()
+}
+
 pub fn local_offset() -> Option<i64> {
     time::UtcOffset::current_local_offset()
         .ok()
@@ -577,6 +600,20 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_labels_say_the_day_only_when_it_differs() {
+        let at = "2026-10-23T16:31:00Z";
+        assert_eq!(
+            clock_label(at, "2026-10-23T18:00:00Z", Some(5 * 3600)),
+            "9:31 PM"
+        );
+        assert_eq!(
+            clock_label(at, "2026-10-24T18:00:00Z", Some(5 * 3600)),
+            "Fri 23 Oct, 9:31 PM"
+        );
+        assert_eq!(clock_label("bad", at, None), "");
+    }
 
     fn sample() -> RunCheckpoint {
         RunCheckpoint {

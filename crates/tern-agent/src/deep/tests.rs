@@ -1375,3 +1375,28 @@ async fn failed_workers_name_the_search_error_and_run_again_on_retry() {
         "three notes calls and the answer, no plan"
     );
 }
+
+#[tokio::test]
+async fn pause_holds_until_unpaused_and_cancel_releases_it() {
+    let control = DeepControl::new(CancelFlag::default());
+    assert!(
+        control.hold(Some(1)).await < Duration::from_millis(5),
+        "not paused: no wait"
+    );
+    control.pause();
+    assert!(control.is_paused());
+    let c = control.clone();
+    let un = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        c.unpause();
+    });
+    let held = control.hold(Some(1)).await;
+    un.await.unwrap();
+    assert!(held >= Duration::from_millis(100), "held {held:?}");
+    assert!(!control.is_paused());
+    // A cancelled worker stops holding at once.
+    control.pause();
+    control.cancel_worker(2);
+    assert!(control.hold(Some(2)).await < Duration::from_millis(100));
+    control.unpause();
+}

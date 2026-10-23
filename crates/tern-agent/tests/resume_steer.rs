@@ -210,6 +210,7 @@ async fn a_steer_lands_before_the_next_model_call() {
             checkpoints: Some(&saved),
             steering: Some(&steer),
             resume: None,
+            ..RunHooks::default()
         },
         Vec::new(),
     )

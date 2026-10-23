@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{StoreError, StoreResult};
 
 /// Bumped with every migration. Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const V1: &str = "
 CREATE TABLE projects (
@@ -78,6 +78,30 @@ ALTER TABLE projects ADD COLUMN root_path TEXT;
 ALTER TABLE projects ADD COLUMN position INTEGER;
 ";
 
+/// Deleting chats (ADR 0009). A deleted chat first gets a tombstone
+/// (`deleted_at`): it leaves every list but can be restored. Emptying the
+/// trash purges it: one row goes into `purges` (append-only, kept for
+/// ever), and only then may the chat's events be deleted. The event log
+/// stays append-only for every chat that has not been purged.
+const V5: &str = "
+ALTER TABLE sessions ADD COLUMN deleted_at TEXT;
+CREATE TABLE purges (
+    session_id  TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    events      INTEGER NOT NULL,
+    deleted_at  TEXT NOT NULL,
+    purged_at   TEXT NOT NULL
+);
+CREATE TRIGGER purges_no_update BEFORE UPDATE ON purges
+BEGIN SELECT RAISE(ABORT, 'purge records are append-only'); END;
+CREATE TRIGGER purges_no_delete BEFORE DELETE ON purges
+BEGIN SELECT RAISE(ABORT, 'purge records are append-only'); END;
+DROP TRIGGER events_no_delete;
+CREATE TRIGGER events_no_delete BEFORE DELETE ON events
+WHEN NOT EXISTS (SELECT 1 FROM purges p WHERE p.session_id = OLD.session_id)
+BEGIN SELECT RAISE(ABORT, 'the event log is append-only'); END;
+";
+
 pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -98,5 +122,20 @@ pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     if found < 4 {
         conn.execute_batch(&format!("BEGIN; {V4} PRAGMA user_version = 4; COMMIT;"))?;
     }
+    if found < 5 {
+        conn.execute_batch(&format!("BEGIN; {V5} PRAGMA user_version = 5; COMMIT;"))?;
+    }
     Ok(())
+}
+
+/// The SQL of one migration step, for upgrade tests.
+#[cfg(test)]
+pub(crate) fn tests_v(n: u8) -> &'static str {
+    match n {
+        1 => V1,
+        2 => V2,
+        3 => V3,
+        4 => V4,
+        _ => V5,
+    }
 }

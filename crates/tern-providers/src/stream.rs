@@ -87,6 +87,10 @@ impl SseParser {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Piece {
     pub text: String,
+    /// Reasoning to show in the Thinking section, never part of the answer
+    /// (Anthropic `thinking_delta`, Gemini thought parts, `reasoning_content`
+    /// / `reasoning` deltas, Mistral thinking chunks).
+    pub reasoning: String,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub finish_reason: Option<String>,
@@ -128,11 +132,25 @@ fn error_text(v: &Value) -> Option<String> {
 
 fn openai(v: &Value) -> Piece {
     let choice = v.get("choices").and_then(|c| c.get(0));
+    let delta = choice.and_then(|c| c.get("delta"));
+    let (text, mut reasoning) = match delta.and_then(|d| d.get("content")) {
+        Some(Value::String(t)) => (t.clone(), String::new()),
+        // Mistral's reasoning models send content as chunks: `text`
+        // chunks are the answer, `thinking` chunks hold the reasoning.
+        Some(Value::Array(chunks)) => mistral_chunks(chunks),
+        _ => (String::new(), String::new()),
+    };
+    if let Some(d) = delta {
+        for key in ["reasoning_content", "reasoning"] {
+            if let Some(r) = d.get(key).and_then(Value::as_str) {
+                reasoning.push_str(r);
+                break;
+            }
+        }
+    }
     Piece {
-        text: choice
-            .and_then(|c| str_at(c, &["delta", "content"]))
-            .unwrap_or_default()
-            .to_owned(),
+        text,
+        reasoning,
         input_tokens: u64_at(v, &["usage", "prompt_tokens"]),
         output_tokens: u64_at(v, &["usage", "completion_tokens"]),
         finish_reason: choice
@@ -144,6 +162,30 @@ fn openai(v: &Value) -> Piece {
     }
 }
 
+fn mistral_chunks(chunks: &[Value]) -> (String, String) {
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    for c in chunks {
+        match c.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                text.push_str(c.get("text").and_then(Value::as_str).unwrap_or_default())
+            }
+            Some("thinking") => match c.get("thinking") {
+                Some(Value::Array(parts)) => {
+                    for p in parts {
+                        reasoning
+                            .push_str(p.get("text").and_then(Value::as_str).unwrap_or_default());
+                    }
+                }
+                Some(Value::String(t)) => reasoning.push_str(t),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    (text, reasoning)
+}
+
 fn anthropic(event: Option<&str>, v: &Value) -> Piece {
     let kind = event.or_else(|| str_at(v, &["type"])).unwrap_or_default();
     let mut p = Piece::default();
@@ -153,11 +195,17 @@ fn anthropic(event: Option<&str>, v: &Value) -> Piece {
             p.output_tokens = u64_at(v, &["message", "usage", "output_tokens"]);
             p.model = str_at(v, &["message", "model"]).map(str::to_owned);
         }
-        "content_block_delta" => {
-            if str_at(v, &["delta", "type"]) == Some("text_delta") {
+        "content_block_delta" => match str_at(v, &["delta", "type"]) {
+            Some("text_delta") => {
                 p.text = str_at(v, &["delta", "text"]).unwrap_or_default().to_owned();
             }
-        }
+            Some("thinking_delta") => {
+                p.reasoning = str_at(v, &["delta", "thinking"])
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+            _ => {}
+        },
         "message_delta" => {
             p.output_tokens = u64_at(v, &["usage", "output_tokens"]);
             p.finish_reason = str_at(v, &["delta", "stop_reason"]).map(str::to_owned);
@@ -171,20 +219,26 @@ fn anthropic(event: Option<&str>, v: &Value) -> Piece {
 
 fn gemini(v: &Value) -> Piece {
     let cand = v.get("candidates").and_then(|c| c.get(0));
-    let text = cand
+    let parts = cand
         .and_then(|c| c.pointer("/content/parts"))
-        .and_then(Value::as_array)
-        .map(|parts| {
-            parts
-                .iter()
-                // Thought summaries are not part of the answer.
-                .filter(|p| p.get("thought").and_then(Value::as_bool) != Some(true))
-                .filter_map(|p| p.get("text").and_then(Value::as_str))
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+        .and_then(Value::as_array);
+    let pick = |thought: bool| {
+        parts
+            .map(|parts| {
+                parts
+                    .iter()
+                    // Thought summaries are not part of the answer.
+                    .filter(|p| {
+                        (p.get("thought").and_then(Value::as_bool) == Some(true)) == thought
+                    })
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    };
     Piece {
-        text,
+        text: pick(false),
+        reasoning: pick(true),
         input_tokens: u64_at(v, &["usageMetadata", "promptTokenCount"]),
         output_tokens: u64_at(v, &["usageMetadata", "candidatesTokenCount"]),
         finish_reason: cand
@@ -200,6 +254,7 @@ fn gemini(v: &Value) -> Piece {
 #[derive(Debug, Default)]
 pub struct Assembler {
     text: String,
+    reasoning: String,
     input: Option<u64>,
     output: Option<u64>,
     finish: Option<String>,
@@ -211,6 +266,7 @@ impl Assembler {
     /// providers send running totals.
     pub fn add(&mut self, p: &Piece) {
         self.text.push_str(&p.text);
+        self.reasoning.push_str(&p.reasoning);
         if p.input_tokens.is_some() {
             self.input = p.input_tokens;
         }
@@ -227,6 +283,11 @@ impl Assembler {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The reasoning streamed so far.
+    pub fn reasoning(&self) -> &str {
+        &self.reasoning
     }
 
     pub fn finish(self, req: &ChatRequest, stopped: bool) -> ChatResponse {
@@ -252,6 +313,73 @@ mod tests {
     use super::*;
     use crate::ChatMessage;
     use tern_core::Measure;
+
+    fn reasoning_of(wire: Wire, raw: &str) -> (String, String) {
+        let mut parser = SseParser::default();
+        let mut events = parser.push(raw.as_bytes());
+        events.extend(parser.finish());
+        let mut asm = Assembler::default();
+        for e in &events {
+            asm.add(&decode(wire, e));
+        }
+        (asm.reasoning().to_owned(), asm.text().to_owned())
+    }
+
+    #[test]
+    fn anthropic_thinking_deltas_are_reasoning() {
+        let raw = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Two plus \"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"two.\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"EqQB\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"4\"}}\n\n",
+        );
+        assert_eq!(
+            reasoning_of(Wire::Anthropic, raw),
+            ("Two plus two.".into(), "4".into())
+        );
+    }
+
+    #[test]
+    fn openai_style_reasoning_fields() {
+        // DeepSeek, xAI: reasoning_content. OpenRouter, Groq parsed, Ollama: reasoning.
+        let raw = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Think\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"ing.\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Done.\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        assert_eq!(
+            reasoning_of(Wire::OpenAiCompatible, raw),
+            ("Thinking.".into(), "Done.".into())
+        );
+    }
+
+    #[test]
+    fn mistral_thinking_chunks() {
+        let raw = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"Hmm, \"}]}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"paging.\"}]}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"Paging maps \"}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"pages.\"}}]}\n\n",
+        );
+        assert_eq!(
+            reasoning_of(Wire::OpenAiCompatible, raw),
+            ("Hmm, paging.".into(), "Paging maps pages.".into())
+        );
+    }
+
+    #[test]
+    fn gemini_thought_parts_are_reasoning() {
+        let raw = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"**Planning** the reply\",\"thought\":true}]}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Paris.\"}]}}]}\n\n",
+        );
+        assert_eq!(
+            reasoning_of(Wire::Gemini, raw),
+            ("**Planning** the reply".into(), "Paris.".into())
+        );
+    }
 
     fn run(wire: Wire, raw: &str, chunk: usize) -> (ChatResponse, Vec<String>) {
         let mut parser = SseParser::default();

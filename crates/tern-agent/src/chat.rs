@@ -100,6 +100,29 @@ pub struct ChatSession {
     mcp_notes: Vec<String>,
     /// MCP prompts and resources the active servers offer.
     mcp_offers: Vec<crate::mcp::MenuItem>,
+    /// How hard the model thinks, for models that can.
+    effort: Option<tern_providers::Effort>,
+    /// Receives reasoning as it streams.
+    on_reasoning: Option<ReasoningSink>,
+    /// What the next turns may do. `None` offers every tool.
+    turn_mode: Option<crate::workspace::TurnMode>,
+    /// The folder or file this chat works in.
+    workspace: Option<Arc<crate::workspace::Workspace>>,
+    /// The open workspace is in the log (a draft logs it with its first turn).
+    workspace_logged: bool,
+}
+
+/// Where a front end takes a reply's reasoning as it streams: the model
+/// call's number in the turn and the new text.
+pub type ReasoningSink = Arc<dyn Fn(u32, &str) + Send + Sync>;
+
+/// The path of the last `session.workspace` event, unless it closed it.
+pub fn last_workspace(events: &[EventEnvelope]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "session.workspace")
+        .and_then(|e| e.payload["path"].as_str().map(str::to_owned))
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -420,6 +443,15 @@ impl ChatSession {
         let turns = live_turns(&events);
         let mut s = Self::open_inner(opts, secrets, store, Some(session)).await?;
         s.history = history_of(&turns, trailing_context(&events).as_deref());
+        // The workspace the chat last had open, if it still exists.
+        if let Some(path) = last_workspace(&events)
+            && let Ok(ws) = crate::workspace::Workspace::open(std::path::Path::new(&path))
+        {
+            let ws = Arc::new(ws);
+            ws.register(&mut s.tools);
+            s.workspace = Some(ws);
+            s.workspace_logged = true;
+        }
         Ok((s, turns))
     }
 
@@ -562,6 +594,11 @@ impl ChatSession {
             untrusted,
             mcp_notes,
             mcp_offers,
+            effort: None,
+            on_reasoning: None,
+            turn_mode: None,
+            workspace: None,
+            workspace_logged: false,
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
@@ -622,6 +659,11 @@ impl ChatSession {
         self.provider.spec().name
     }
 
+    /// The provider's catalog id (`openai`).
+    pub fn provider_id(&self) -> &'static str {
+        self.provider.spec().id
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -635,6 +677,79 @@ impl ChatSession {
     /// no row in the chat list.
     pub fn is_draft(&self) -> bool {
         self.sink.is_draft(self.session)
+    }
+
+    /// Sets how hard the model thinks on the next turns. Models without a
+    /// thinking knob ignore it.
+    pub fn set_effort(&mut self, effort: Option<tern_providers::Effort>) {
+        self.effort = effort;
+    }
+
+    pub fn effort(&self) -> Option<tern_providers::Effort> {
+        self.effort
+    }
+
+    /// What the current model offers for thinking.
+    pub fn thinking(&self) -> tern_providers::Thinking {
+        tern_providers::thinking_support(self.provider.spec().id, &self.model)
+    }
+
+    /// Sends the model's reasoning to `sink` as it streams, on every turn
+    /// until changed.
+    pub fn set_reasoning_sink(&mut self, sink: Option<ReasoningSink>) {
+        self.on_reasoning = sink;
+    }
+
+    /// Chat, Plan, or Act: which tools the next turns may use, and the
+    /// line the model is told.
+    pub fn set_turn_mode(&mut self, mode: crate::workspace::TurnMode) {
+        self.turn_mode = Some(mode);
+        self.tools.set_mode(mode);
+    }
+
+    pub fn turn_mode(&self) -> Option<crate::workspace::TurnMode> {
+        self.turn_mode
+    }
+
+    /// Opens a folder or file as this chat's workspace: the file tools are
+    /// scoped to it, and the choice is logged so a reopened chat keeps it.
+    /// `None` closes it.
+    pub fn set_workspace(&mut self, path: Option<&std::path::Path>) -> Result<(), String> {
+        crate::workspace::Workspace::unregister(&mut self.tools);
+        self.workspace = None;
+        if let Some(p) = path {
+            let ws = Arc::new(crate::workspace::Workspace::open(p)?);
+            ws.register(&mut self.tools);
+            self.workspace = Some(ws);
+        }
+        self.workspace_logged = false;
+        if !self.is_draft() {
+            self.log_workspace();
+            self.workspace_logged = true;
+        }
+        Ok(())
+    }
+
+    fn log_workspace(&self) {
+        let path = self
+            .workspace
+            .as_ref()
+            .map(|w| w.path().display().to_string());
+        let _ = self.sink.record(EventEnvelope::new(
+            self.session,
+            "session.workspace",
+            EffectClass::Analysis,
+            match &path {
+                Some(p) => format!("Workspace: {p}"),
+                None => "Workspace closed".into(),
+            },
+            serde_json::json!({"path": path}),
+        ));
+    }
+
+    /// The chat's workspace, if one is open.
+    pub fn workspace(&self) -> Option<&crate::workspace::Workspace> {
+        self.workspace.as_deref()
     }
 
     /// The most output tokens an answer may use.
@@ -772,7 +887,19 @@ impl ChatSession {
     /// The harness's instructions with the project's rules, skills, and
     /// the untrusted-data rule, as the turn loop gets them.
     fn instructions(&self, harness: Option<&str>) -> Option<String> {
-        crate::rules::instructions(harness, &self.project, self.untrusted)
+        let mut extra: Vec<String> = harness.map(str::to_owned).into_iter().collect();
+        if let Some(line) = self.turn_mode.and_then(|m| m.instructions()) {
+            extra.push(line.to_owned());
+        }
+        if let Some(ws) = &self.workspace {
+            extra.push(format!(
+                "The user opened {} `{}` as this chat's workspace. Use files_list, file_read and file_search to look at it; paths are relative to it.",
+                if ws.is_file() { "the file" } else { "the folder" },
+                ws.name()
+            ));
+        }
+        let joined = (!extra.is_empty()).then(|| extra.join("\n\n"));
+        crate::rules::instructions(joined.as_deref(), &self.project, self.untrusted)
     }
 
     /// Exactly what the model is told on this chat's next turn, piece by
@@ -888,6 +1015,8 @@ impl ChatSession {
                 .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
             steering: Some(&self.steering),
             resume: None,
+            effort: self.effort,
+            on_reasoning: self.on_reasoning.as_deref(),
         };
         let out = TurnLoop {
             session: self.session,
@@ -910,6 +1039,10 @@ impl ChatSession {
             ChatMessage::user(text).with_images(images.clone()),
         )
         .await;
+        if self.workspace.is_some() && !self.workspace_logged && !self.is_draft() {
+            self.log_workspace();
+            self.workspace_logged = true;
+        }
         if !self.titled {
             self.titled = true;
             let title = title_from(text);
@@ -1083,6 +1216,8 @@ impl ChatSession {
                     checkpoints: sink,
                     steering: Some(&self.steering),
                     resume: Some(&ck),
+                    effort: self.effort,
+                    on_reasoning: self.on_reasoning.as_deref(),
                 };
                 TurnLoop {
                     session: self.session,
