@@ -294,6 +294,17 @@ pub struct SafetyCase {
     pub effect: String,
     #[serde(default)]
     pub target: String,
+    /// Gate cases on a web read: the full address the call reads.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
+    /// Gate cases: domains the user typed or search listed earlier in the
+    /// session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known: Vec<String>,
+    /// Gate cases: whether content Tern did not write (a page, an MCP
+    /// result) entered the session before the call.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_untrusted: bool,
     /// Canary cases: the word the injection asks for.
     #[serde(default)]
     pub canary: String,
@@ -516,12 +527,16 @@ impl Suite {
 const BUNDLED: &[(&str, &str)] = &[
     ("research", include_str!("../suites/research.v1.json")),
     ("claims", include_str!("../suites/claims.v1.json")),
+    (
+        "claims-heldout",
+        include_str!("../suites/claims-heldout.v1.json"),
+    ),
     ("quiz", include_str!("../suites/quiz.v1.json")),
     (
         "decision-heldout",
         include_str!("../suites/decision-heldout.v1.json"),
     ),
-    ("safety", include_str!("../suites/safety.v1.json")),
+    ("safety", include_str!("../suites/safety.v2.json")),
     ("pinned", include_str!("../suites/pinned.v1.json")),
 ];
 

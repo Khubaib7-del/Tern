@@ -65,68 +65,126 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
-#[cfg(windows)]
-mod windows_store {
-    use super::*;
+/// A store backed by the OS keychain through the keyring-core ecosystem.
+///
+/// | OS | Backend | Where an entry shows |
+/// | --- | --- | --- |
+/// | Windows | Credential Manager | Generic credential `<name>.tern` |
+/// | Linux | Secret Service (GNOME Keyring, KWallet, KeePassXC) over D-Bus | Login collection, label `keyring:<name>@tern` |
+/// | Linux, `TERN_KEYRING=keyutils` | The kernel's per-user keyring | Gone after a reboot |
+/// | macOS | Keychain | Login keychain, service `tern`, account `<name>` |
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[derive(Debug)]
+pub struct KeyringStore {
+    backend: &'static str,
+}
 
-    /// Windows Credential Manager, through the keyring-core ecosystem.
-    /// Entries appear as generic credentials named `<name>.tern`.
-    #[derive(Debug)]
-    pub struct CredentialManagerStore {
-        _priv: (),
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+impl KeyringStore {
+    fn with(backend: &'static str, store: std::sync::Arc<keyring_core::CredentialStore>) -> Self {
+        keyring_core::set_default_store(store);
+        Self { backend }
     }
 
-    impl CredentialManagerStore {
-        pub fn open() -> PlatformResult<Self> {
-            let store = windows_native_keyring_store::Store::new()
-                .map_err(|e| PlatformError::Keychain(e.to_string()))?;
-            keyring_core::set_default_store(store);
-            Ok(Self { _priv: () })
-        }
+    fn entry(name: &str) -> PlatformResult<keyring_core::Entry> {
+        check_name(name)?;
+        keyring_core::Entry::new(SERVICE, name).map_err(|e| PlatformError::Keychain(e.to_string()))
+    }
+}
 
-        fn entry(name: &str) -> PlatformResult<keyring_core::Entry> {
-            check_name(name)?;
-            keyring_core::Entry::new(SERVICE, name)
-                .map_err(|e| PlatformError::Keychain(e.to_string()))
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+impl SecretStore for KeyringStore {
+    fn backend(&self) -> &'static str {
+        self.backend
+    }
+    fn set(&self, name: &str, value: &SecretString) -> PlatformResult<()> {
+        Self::entry(name)?
+            .set_password(value.expose())
+            .map_err(|e| PlatformError::Keychain(e.to_string()))
+    }
+    fn get(&self, name: &str) -> PlatformResult<Option<SecretString>> {
+        match Self::entry(name)?.get_password() {
+            Ok(v) => Ok(Some(SecretString::new(v))),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
+            Err(e) => Err(PlatformError::Keychain(e.to_string())),
         }
     }
-
-    impl SecretStore for CredentialManagerStore {
-        fn backend(&self) -> &'static str {
-            "Windows Credential Manager"
-        }
-        fn set(&self, name: &str, value: &SecretString) -> PlatformResult<()> {
-            Self::entry(name)?
-                .set_password(value.expose())
-                .map_err(|e| PlatformError::Keychain(e.to_string()))
-        }
-        fn get(&self, name: &str) -> PlatformResult<Option<SecretString>> {
-            match Self::entry(name)?.get_password() {
-                Ok(v) => Ok(Some(SecretString::new(v))),
-                Err(keyring_core::Error::NoEntry) => Ok(None),
-                Err(e) => Err(PlatformError::Keychain(e.to_string())),
-            }
-        }
-        fn delete(&self, name: &str) -> PlatformResult<bool> {
-            match Self::entry(name)?.delete_credential() {
-                Ok(()) => Ok(true),
-                Err(keyring_core::Error::NoEntry) => Ok(false),
-                Err(e) => Err(PlatformError::Keychain(e.to_string())),
-            }
+    fn delete(&self, name: &str) -> PlatformResult<bool> {
+        match Self::entry(name)?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring_core::Error::NoEntry) => Ok(false),
+            Err(e) => Err(PlatformError::Keychain(e.to_string())),
         }
     }
 }
 
-#[cfg(windows)]
-pub use windows_store::CredentialManagerStore;
+/// Which Linux backend `TERN_KEYRING` asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinuxKeyring {
+    /// Secret Service over D-Bus (the default).
+    SecretService,
+    /// The kernel keyring: no daemon needed, but keys last until reboot.
+    Keyutils,
+}
+
+impl LinuxKeyring {
+    /// Reads `TERN_KEYRING` (`secret-service`, the default, or `keyutils`).
+    pub fn from_env(value: Option<&str>) -> Self {
+        match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("keyutils" | "kernel") => Self::Keyutils,
+            _ => Self::SecretService,
+        }
+    }
+}
+
+/// What to do when Linux has no Secret Service.
+pub const LINUX_FALLBACK_HINT: &str = "Start a Secret Service provider (GNOME Keyring, KWallet, or KeePassXC with its Secret Service integration) and unlock it, or set TERN_KEYRING=keyutils to keep keys in the kernel keyring until the next reboot. Tern never writes keys to a file.";
+
+#[cfg(target_os = "linux")]
+fn linux_store(choice: LinuxKeyring) -> PlatformResult<KeyringStore> {
+    match choice {
+        LinuxKeyring::SecretService => {
+            let store = zbus_secret_service_keyring_store::Store::new().map_err(|e| {
+                PlatformError::Keychain(format!(
+                    "the Secret Service is not available ({e}). {LINUX_FALLBACK_HINT}"
+                ))
+            })?;
+            Ok(KeyringStore::with("Secret Service (D-Bus)", store))
+        }
+        LinuxKeyring::Keyutils => {
+            let store = linux_keyutils_keyring_store::Store::new()
+                .map_err(|e| PlatformError::Keychain(format!("the kernel keyring: {e}")))?;
+            Ok(KeyringStore::with(
+                "Linux kernel keyring (keys last until reboot)",
+                store,
+            ))
+        }
+    }
+}
 
 /// The OS keychain for this platform.
 pub fn default_secret_store() -> PlatformResult<Box<dyn SecretStore>> {
     #[cfg(windows)]
     {
-        Ok(Box::new(CredentialManagerStore::open()?))
+        let store = windows_native_keyring_store::Store::new()
+            .map_err(|e| PlatformError::Keychain(e.to_string()))?;
+        Ok(Box::new(KeyringStore::with(
+            "Windows Credential Manager",
+            store,
+        )))
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let choice = LinuxKeyring::from_env(std::env::var("TERN_KEYRING").ok().as_deref());
+        Ok(Box::new(linux_store(choice)?))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let store = apple_native_keyring_store::keychain::Store::new()
+            .map_err(|e| PlatformError::Keychain(e.to_string()))?;
+        Ok(Box::new(KeyringStore::with("macOS Keychain", store)))
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         Err(PlatformError::KeychainUnsupported(crate::os_name()))
     }
@@ -158,13 +216,51 @@ mod tests {
         round_trip(default_secret_store().unwrap().as_ref());
     }
 
-    #[cfg(not(windows))]
+    /// The macOS Keychain, when the run allows it (CI sets
+    /// `TERN_KEYCHAIN_TEST=1`; a locked keychain on a desk would prompt).
+    #[cfg(target_os = "macos")]
     #[test]
-    fn non_windows_keychain_is_reported_unsupported() {
-        assert!(matches!(
-            default_secret_store(),
-            Err(PlatformError::KeychainUnsupported(_))
-        ));
+    fn os_keychain_round_trip() {
+        if std::env::var("TERN_KEYCHAIN_TEST").as_deref() != Ok("1") {
+            eprintln!("skipped: set TERN_KEYCHAIN_TEST=1 to use the login keychain");
+            return;
+        }
+        round_trip(default_secret_store().unwrap().as_ref());
+    }
+
+    /// Linux: the Secret Service when a session runs one, else the kernel
+    /// keyring; a machine with neither (a bare container) skips.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_keyring_round_trip() {
+        for choice in [LinuxKeyring::SecretService, LinuxKeyring::Keyutils] {
+            match linux_store(choice) {
+                Ok(store) => {
+                    // Opening may succeed while the collection is locked.
+                    let name = "test.probe";
+                    if store.get(name).is_ok() {
+                        round_trip(&store);
+                        return;
+                    }
+                }
+                Err(e) => eprintln!("{choice:?} unavailable: {e}"),
+            }
+        }
+        eprintln!("skipped: no Secret Service and no kernel keyring here");
+    }
+
+    #[test]
+    fn linux_backend_choice_reads_the_variable() {
+        assert_eq!(LinuxKeyring::from_env(None), LinuxKeyring::SecretService);
+        assert_eq!(
+            LinuxKeyring::from_env(Some("keyutils")),
+            LinuxKeyring::Keyutils
+        );
+        assert_eq!(
+            LinuxKeyring::from_env(Some("anything")),
+            LinuxKeyring::SecretService
+        );
+        assert!(LINUX_FALLBACK_HINT.contains("TERN_KEYRING=keyutils"));
     }
 
     #[test]

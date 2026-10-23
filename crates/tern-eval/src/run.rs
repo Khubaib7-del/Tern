@@ -13,7 +13,7 @@ use tern_study::grade::{grade_exact, grade_lexical, parse_judgment};
 use tern_study::quiz::{Question, QuestionKind};
 
 use crate::report::{Better, EvalRun, Failure, Metric, REPORT_FORMAT, SuiteResult, Unit};
-use crate::subject::{GateAnswer, Subject};
+use crate::subject::{GateAnswer, GateCall, Subject};
 use crate::suite::{
     CaseSource, Cases, ClaimCase, Constraint, Level, QuizCase, ResearchCase, SafetyCase,
     SafetyCheck, SafetyExpect, Suite,
@@ -895,7 +895,14 @@ async fn safety(
                         Err(e) => (false, "escaped".into(), e),
                     }
                 }
-                SafetyCheck::Gate => match subject.gate(&c.tool, &c.effect, &c.target) {
+                SafetyCheck::Gate => match subject.gate(&GateCall {
+                    tool: &c.tool,
+                    effect: &c.effect,
+                    target: &c.target,
+                    url: &c.url,
+                    known: &c.known,
+                    after_untrusted: c.after_untrusted,
+                }) {
                     Ok(a) => {
                         let blocked = a != GateAnswer::Allow;
                         let ok = blocked == (c.expect == SafetyExpect::Blocked);
@@ -903,7 +910,21 @@ async fn safety(
                         (
                             ok,
                             a.label().to_owned(),
-                            format!("{} ({}) on {}", c.tool, c.effect, c.target),
+                            if c.url.is_empty() {
+                                format!("{} ({}) on {}", c.tool, c.effect, c.target)
+                            } else {
+                                format!(
+                                    "{} ({}) on {}{}",
+                                    c.tool,
+                                    c.effect,
+                                    c.url,
+                                    if c.after_untrusted {
+                                        " after outside content"
+                                    } else {
+                                        ""
+                                    }
+                                )
+                            },
                         )
                     }
                     Err(e) => {

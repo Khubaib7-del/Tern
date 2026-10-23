@@ -19,7 +19,7 @@ use tern_providers::{ChatMessage, ChatRequest};
 pub use tern_eval::report::{Better, Change, Comparison, Delta, Failure, Metric, Unit};
 pub use tern_eval::suite::{Level, Suite, SuiteKind};
 pub use tern_eval::usability::{SUS, TASKS, TaskResult, sus_score};
-use tern_eval::{BoxFuture, Completion, GateAnswer, Subject};
+use tern_eval::{BoxFuture, Completion, GateAnswer, GateCall, Subject};
 pub use tern_eval::{EvalRun, MIN_TRIALS, RunSummary, SuiteResult, check_baseline, compare};
 
 use crate::engine::Model;
@@ -158,15 +158,26 @@ impl Subject for TernSubject {
         crate::untrusted::RULE.to_owned()
     }
 
-    fn gate(&self, tool: &str, effect_name: &str, target: &str) -> Result<GateAnswer, String> {
-        let args = json!({});
+    fn gate(&self, c: &GateCall<'_>) -> Result<GateAnswer, String> {
+        let args = if c.url.is_empty() {
+            json!({})
+        } else {
+            json!({"url": c.url})
+        };
         let call = CallView {
-            tool,
-            effect: effect(effect_name)?,
-            target: (!target.is_empty()).then_some(target),
+            tool: c.tool,
+            effect: effect(c.effect)?,
+            target: (!c.target.is_empty()).then_some(c.target),
             args: &args,
         };
-        Ok(match PolicyGate::default().check(&call) {
+        let mut gate = PolicyGate::default();
+        for k in c.known {
+            gate.know_host(k);
+        }
+        if c.after_untrusted {
+            gate.saw_untrusted();
+        }
+        Ok(match gate.check(&call) {
             Decision::Allow { .. } => GateAnswer::Allow,
             Decision::Ask => GateAnswer::Ask,
             Decision::Deny { .. } => GateAnswer::Deny,
@@ -466,13 +477,57 @@ mod tests {
     #[test]
     fn gate_reads_effect_names() {
         let s = TernSubject::offline();
-        assert_eq!(s.gate("t", "read", "").unwrap(), GateAnswer::Allow);
+        let g = |tool, effect, target| {
+            s.gate(&GateCall {
+                tool,
+                effect,
+                target,
+                ..GateCall::default()
+            })
+        };
+        assert_eq!(g("t", "read", "").unwrap(), GateAnswer::Allow);
         assert_eq!(
-            s.gate("t", "external side effect", "x").unwrap(),
+            g("t", "external side effect", "x").unwrap(),
             GateAnswer::Ask
         );
-        assert_eq!(s.gate("t", "destructive", "x").unwrap(), GateAnswer::Ask);
-        assert!(s.gate("t", "teleport", "x").is_err());
+        assert_eq!(g("t", "destructive", "x").unwrap(), GateAnswer::Ask);
+        assert!(g("t", "teleport", "x").is_err());
+    }
+
+    #[test]
+    fn gate_sees_where_an_address_came_from() {
+        let s = TernSubject::offline();
+        let known = vec!["arxiv.org".to_owned()];
+        let read = |url, after_untrusted| {
+            s.gate(&GateCall {
+                tool: "read_url",
+                effect: "network",
+                target: "x",
+                url,
+                known: &known,
+                after_untrusted,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            read("https://collector.example.xyz/c?d=notes", false),
+            GateAnswer::Allow
+        );
+        assert_eq!(
+            read("https://collector.example.xyz/c?d=notes", true),
+            GateAnswer::Ask
+        );
+        assert_eq!(
+            read("https://arxiv.org/abs/1706.03762", true),
+            GateAnswer::Allow
+        );
+        assert_eq!(
+            read(
+                "https://collector.example.xyz/c?k=sk-test1234567890abcdef",
+                true
+            ),
+            GateAnswer::Deny
+        );
     }
 
     #[tokio::test]
@@ -483,7 +538,7 @@ mod tests {
         let (a, path) = run(&store, &req, &TernSubject::offline()).await.unwrap();
         assert!(path.exists() && path.with_extension("md").exists());
         assert_eq!(a.trials, 3);
-        assert_eq!(a.suites.len(), 5);
+        assert_eq!(a.suites.len(), 6);
         // The bundled baseline holds for an offline run of this build.
         let broken = check_baseline(&a, &baseline());
         assert!(broken.is_empty(), "{broken:#?}");

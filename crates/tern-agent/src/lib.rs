@@ -95,6 +95,14 @@ pub use tern_providers::ImageInput;
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, ProjectSummary, SessionSummary, Store};
 
+/// OS details the front ends need, from `tern-platform` (front ends depend
+/// on `tern-agent` and `tern-core` only).
+pub mod platform {
+    pub use tern_platform::motion::os_reduces_motion;
+    pub use tern_platform::open::{file_url, open};
+    pub use tern_platform::os_name;
+}
+
 /// Opens the user's database, creating the data folder if needed.
 pub fn open_store() -> Result<Store, String> {
     let paths = tern_platform::AppPaths::discover().map_err(|e| e.to_string())?;

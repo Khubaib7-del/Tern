@@ -1,18 +1,28 @@
 //! OS integration behind small traits, so ports stay small.
 //!
-//! Windows is implemented first (Credential Manager for keys). Linux and macOS
-//! keychains are planned for roadmap phase 12; until then the default secret
-//! store reports itself as unsupported there instead of falling back to
-//! anything less safe.
+//! | Piece | Windows | Linux | macOS |
+//! | --- | --- | --- | --- |
+//! | Keys ([`secrets`]) | Credential Manager | Secret Service; kernel keyring with `TERN_KEYRING=keyutils` | Keychain |
+//! | Folders ([`paths`]) | `%LOCALAPPDATA%\Tern\data` | XDG data, config, and cache | Application Support and Caches |
+//! | Reduced motion ([`motion`]) | Not read yet | GNOME and KDE settings | Accessibility setting |
+//! | Opener ([`open`]) | `explorer` | `xdg-open` | `open` |
+//!
+//! Where an OS has no keychain Tern can reach, the default secret store
+//! reports an error with what to do instead of falling back to anything less
+//! safe: keys are never written to a file.
 
 #![forbid(unsafe_code)]
 
 pub mod disk;
+pub mod motion;
+pub mod open;
 pub mod paths;
 pub mod secrets;
 
 pub use disk::DiskSpace;
 pub use paths::AppPaths;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub use secrets::KeyringStore;
 pub use secrets::{MemorySecretStore, SecretStore, SecretString, default_secret_store};
 
 use thiserror::Error;
@@ -21,7 +31,7 @@ use thiserror::Error;
 pub enum PlatformError {
     #[error("no home directory found for this user")]
     NoHome,
-    #[error("the OS keychain is not supported on {0} yet (planned for roadmap phase 12)")]
+    #[error("the OS keychain is not supported on {0}")]
     KeychainUnsupported(&'static str),
     #[error("keychain error: {0}")]
     Keychain(String),

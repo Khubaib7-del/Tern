@@ -1,0 +1,193 @@
+{
+  "format": 1,
+  "id": "claims-heldout",
+  "version": 1,
+  "title": "Claim verdicts, held out",
+  "kind": "claims",
+  "level": "synthetic",
+  "origin": "synthetic, held out: written for Tern's tests before the offline claim check was changed in PR #43, and never used to tune it; the pages are not real sites",
+  "cases": [
+    {
+      "id": "h-pop-number",
+      "claim": "The city had 2.4 million residents in the 2020 census.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The city had a population of 2.1 million in the 2020 census."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "h-pop-paraphrase",
+      "claim": "The 2020 census counted 2.1 million people in the city.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The city had a population of 2.1 million in the 2020 census."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase"
+      ]
+    },
+    {
+      "id": "h-trial-role",
+      "claim": "In the trial, patients taking a placebo had fewer migraines than patients taking the drug.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "In the trial, patients taking the drug had fewer migraines than patients taking a placebo."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "role swap"
+      ]
+    },
+    {
+      "id": "h-author-swap",
+      "claim": "The theory of general relativity was published by Niels Bohr in 1915.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The theory of general relativity was published by Albert Einstein in 1915."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "entity swap"
+      ]
+    },
+    {
+      "id": "h-temp-antonym",
+      "claim": "Average winter temperatures in the region fell by 2 degrees over the last century.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "Average winter temperatures in the region rose by 2 degrees over the last century."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "antonym"
+      ]
+    },
+    {
+      "id": "h-library-partly",
+      "claim": "The library opened in 1902 and holds 40,000 books and 300 maps.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The library opened in 1902 and holds 40,000 books."
+        }
+      ],
+      "gold": "partly",
+      "tags": [
+        "half supported"
+      ]
+    },
+    {
+      "id": "h-marathon-ok",
+      "claim": "A marathon is 42.195 kilometres long.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The marathon distance is 42.195 kilometres."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "paraphrase",
+        "number"
+      ]
+    },
+    {
+      "id": "h-caffeine-negation",
+      "claim": "Caffeine had no effect on memory in the study.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The study did not find any effect of caffeine on memory."
+        }
+      ],
+      "gold": "supported",
+      "tags": [
+        "negation kept"
+      ]
+    },
+    {
+      "id": "h-water-number",
+      "claim": "About 61 percent of the Earth's surface is covered by water.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "About 71 percent of the Earth's surface is covered by water."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "number"
+      ]
+    },
+    {
+      "id": "h-capital-swap",
+      "claim": "Sydney is the capital of Australia.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "Canberra is the capital of Australia; Sydney is its largest city."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "entity swap"
+      ]
+    },
+    {
+      "id": "h-founded-partly",
+      "claim": "The company was founded in Helsinki in 1998.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "The company was founded in Helsinki."
+        }
+      ],
+      "gold": "partly",
+      "tags": [
+        "half supported",
+        "number"
+      ]
+    },
+    {
+      "id": "h-octopus-unrelated",
+      "claim": "Octopuses can change colour in milliseconds.",
+      "sources": [
+        {
+          "url": "https://heldout.test/a",
+          "title": "Held-out page",
+          "text": "Octopuses have three hearts."
+        }
+      ],
+      "gold": "not_supported",
+      "tags": [
+        "unrelated"
+      ]
+    }
+  ]
+}

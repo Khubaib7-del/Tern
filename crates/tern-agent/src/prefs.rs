@@ -61,14 +61,19 @@ impl Preferences {
         }
     }
 
-    /// Whether motion is off, from the saved choice or the environment.
+    /// Whether motion is off: the saved choice, `TERN_REDUCED_MOTION`, or
+    /// the operating system's own setting (see
+    /// [`tern_platform::motion::os_reduces_motion`]).
     pub fn wants_reduced_motion(&self) -> bool {
         self.reduced_motion
             || std::env::var("TERN_REDUCED_MOTION").is_ok_and(|v| v == "1" || v == "true")
+            || tern_platform::motion::os_reduces_motion()
     }
 
+    /// In the settings folder: the data folder on Windows and macOS,
+    /// `$XDG_CONFIG_HOME/tern` on Linux.
     pub fn path(paths: &AppPaths) -> PathBuf {
-        paths.data_dir.join(FILE)
+        paths.config_dir.join(FILE)
     }
 
     /// Reads the saved choices. Anything missing or malformed reads as none.

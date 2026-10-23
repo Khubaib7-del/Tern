@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Tern
+GenericName=Research and study
+Comment=Research and study with cited, checked answers
+Exec=tern-desktop
+Icon=io.github.khubaib7_del.Tern
+Terminal=false
+Categories=Education;Science;Office;
+Keywords=research;study;citations;flashcards;quiz;
+StartupWMClass=io.github.khubaib7_del.Tern
+StartupNotify=true

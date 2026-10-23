@@ -3383,8 +3383,9 @@ impl Workspace {
                 })
         });
         let files = run.report.clone().map(|f| {
-            let md = f.markdown.to_string_lossy().to_string();
-            let json = f.json.to_string_lossy().to_string();
+            // A bare path is not a link on Linux or macOS.
+            let md = tern_agent::platform::file_url(&f.markdown.to_string_lossy());
+            let json = tern_agent::platform::file_url(&f.json.to_string_lossy());
             div()
                 .flex()
                 .flex_col()

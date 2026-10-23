@@ -739,6 +739,7 @@ impl Workspace {
         let options = gpui_kit::WindowOptions {
             window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
             window_min_size: Some(gpui_kit::size(px(320.), px(360.))),
+            app_id: Some(crate::APP_ID.into()),
             ..gpui_kit::component::TitleBar::window_options()
         };
         match gpui_kit::open_window(options, cx, move |window, cx| {

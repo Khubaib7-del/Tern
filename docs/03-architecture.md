@@ -1,6 +1,6 @@
 # 03 · Architecture
 
-> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). Since PR #39 continuity is built: schema v3 in `tern-store` (sub-sessions and the Library index) and, in `tern-agent`, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, highlights, and the side chat (section 5.1). Since PR #42 a twelfth crate, `tern-eval`, holds the evaluation harness (section 5.3, [evaluation.md](evaluation.md)). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
+> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). Since PR #39 continuity is built: schema v3 in `tern-store` (sub-sessions and the Library index) and, in `tern-agent`, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, highlights, and the side chat (section 5.1). Since PR #42 a twelfth crate, `tern-eval`, holds the evaluation harness (section 5.3, [evaluation.md](evaluation.md)). Since PR #43 `tern-platform` covers Linux (Secret Service through `zbus-secret-service-keyring-store`, the kernel keyring through `linux-keyutils-keyring-store`, XDG folders) and macOS (Keychain through `apple-native-keyring-store`, Application Support and Caches), plus the OS reduced-motion setting and the file opener (section 7). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
 
 ## 1. Shape
 
@@ -42,7 +42,7 @@ One Rust workspace. A headless core owns state, execution, and security. The TUI
 | `tern-eval` | The evaluation harness: versioned task suites (JSON, bundled and the user's own), runners for each suite kind against a `Subject` over N trials, metrics with 95% intervals (Wilson for proportions, t over trials), every failure, JSON and Markdown reports, run comparison, the CI baseline, the SciFact reader, SUS scoring. No I/O, no clock, no UI, no HTTP library; `tern_agent::eval` supplies Tern as the subject and keeps `<data>/evals/` | `serde`, `serde_json`; `tern-research`, `tern-study`, `tern-decision` |
 | `tern-tui` | The `tern` binary: CLI commands (`tern ask`, `tern doctor`, `tern run --json`), the ratatui TUI, terminal capability probing | `clap`, `ratatui`, `crossterm` |
 | `tern-desktop` | The GPUI desktop app: shell, sessions, transcript, right rail, vault editor, Scout | `gpui` via a pinned component kit |
-| `tern-platform` | OS integration behind traits so ports stay small: keychain, app data paths, file dialogs, notifications, process spawning. Windows implementation first | `keyring`, `directories`, `windows` |
+| `tern-platform` | OS integration behind traits so ports stay small: keychains (Credential Manager, Secret Service or the kernel keyring, Keychain), data, settings, and cache folders, disk checks, the OS reduced-motion setting, the file opener. Front ends reach it through `tern_agent::platform` | `keyring-core` and its Windows, Secret Service, keyutils, and Apple stores, `directories`, `fs4`, `url` |
 
 ## 3. Dependency rules
 
@@ -157,18 +157,20 @@ Compaction thresholds are per model. The log is persisted first, the summary is 
 | Location | Contents |
 | --- | --- |
 | OS keychain | Provider and search API keys |
-| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, crawl cache, checkpoints, run reports (`runs/`), handoff packets (`handoffs/`), the Library trash (`trash/`), evaluation runs and the user's suites (`evals/`) |
+| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, checkpoints, run reports (`runs/`), handoff packets (`handoffs/`), the Library trash (`trash/`), evaluation runs and the user's suites (`evals/`) |
+| Settings directory (the data directory on Windows and macOS; `$XDG_CONFIG_HOME/tern` on Linux) | `preferences.json`, `mcp.json` |
+| Cache directory (`<data>/cache` on Windows; `$XDG_CACHE_HOME/tern` on Linux; `~/Library/Caches/Tern` on macOS) | The crawl cache (`crawl/`) |
 | Vault directory (user-chosen) | Plain Markdown notes and reports, Obsidian-compatible; optional git-backed history |
 
 ## 7. Platform order
 
 | Order | Platform | Notes |
 | --- | --- | --- |
-| 1 | Windows 10 and 11 | First target for the TUI and desktop app. Windows Terminal is the reference terminal. Credential Manager for keys |
-| 2 | Linux | Secret Service for keys; X11 and Wayland for GPUI |
-| 3 | macOS | Keychain; GPUI's most mature backend |
+| 1 | Windows 10 and 11 | First target for the TUI and desktop app. Windows Terminal is the reference terminal. Credential Manager for keys; one folder, `%LOCALAPPDATA%\Tern\data`. CI: fmt, clippy, tests, `tern doctor`, offline evaluation, `tern-windows-x64` |
+| 2 | Linux (x64 in CI) | Secret Service for keys (`TERN_KEYRING=keyutils` for the kernel keyring); XDG data, config, and cache folders; X11 and Wayland for GPUI, drawn with Vulkan; reduced motion from GNOME or KDE. CI: fmt, clippy, tests, `tern doctor`, offline evaluation, `tern-linux-x64` (both programs, `.desktop` entry, icon). See [linux.md](linux.md) |
+| 3 | macOS (arm64 in CI) | Keychain; Application Support and Caches; GPUI on Metal with shaders compiled at run time; a menu bar and Cmd keys; reduced motion from the Accessibility setting. CI: clippy, tests (Keychain round trip), offline evaluation, `tern-macos-arm64` (unsigned `Tern.app`). See [macos.md](macos.md) |
 
-Porting cost is kept small by putting every OS difference behind `tern-platform` traits and testing path, shell, and line-ending assumptions on Windows first.
+Every OS difference sits in `tern-platform` (`cfg` code included); the desktop app's only OS-specific parts are its window options (the app id), its menu and keys (`app_menu.rs`), and the packaging files under `crates/tern-desktop/packaging/`, which CI uses to build the test archives.
 
 ## 8. Design references, not dependencies
 

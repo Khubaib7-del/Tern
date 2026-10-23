@@ -18,7 +18,7 @@
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Mostly built (PR #39); a model-written handoff summary remains |
 | 10 | Extensibility | MCP client, ACP server, skills, project rules | Mostly built (PR #40: MCP client, ACP server, skills, `TERN.md` and effective instructions, project folders, the Customize page); MCP prompts and resources remain |
 | 11 | Evaluation | Benchmarks for citation accuracy, cost, and reliability | Mostly built (PR #42: the five-rung ladder, versioned suites, metrics with intervals over three trials, published failures, run comparison, the CI baseline, the Evaluation page); live, pinned, and public scores need a key and have not been run |
-| 12 | Linux and macOS | Ports through `tern-platform` | Planned |
+| 12 | Linux and macOS | Ports through `tern-platform` | Built (PR #43: Secret Service and Keychain, XDG and Application Support folders, OS reduced motion, the macOS menu and Cmd keys, CI jobs and test builds per OS); not yet tried by hand on a Linux desktop or a Mac |
 
 Distribution (installers, releases, auto-update, a website) is deliberately not on this list. It will be planned after phase 12, or earlier only if the owner decides.
 
@@ -161,6 +161,8 @@ Built in PR #42 ([evaluation.md](evaluation.md)): a twelfth crate, `tern-eval`, 
 | --- | --- |
 | `tern-platform` for Linux (Secret Service, XDG paths) | CI green on Linux |
 | `tern-platform` for macOS (Keychain) | CI green on macOS |
+
+Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in the Secret Service over D-Bus (GNOME Keyring, KWallet, KeePassXC; pure-Rust D-Bus, no system library), with `TERN_KEYRING=keyutils` for the kernel keyring on machines without one (keys last until reboot; nothing is ever written to a file); data, settings, and cache in the XDG folders; reduced motion read from GNOME or KDE; links and saved reports opened through the portal or `xdg-open` as `file://` links; the desktop app on X11 or Wayland through GPUI, with the window's app id matching a bundled `.desktop` entry; Ctrl+Q quits. **macOS**: keys in the login Keychain; data and settings in Application Support, the cache in Caches; reduced motion read from the Accessibility setting; the title bar leaves room for the traffic lights and keeps its controls out of the drag region (`occlude`); a menu bar (Tern, Window) and Cmd+Q, Cmd+W, Cmd+M, Cmd+H. **Windows** keeps its single-folder layout; its reduced-motion setting is still not read (it needs an `unsafe` system call, which `tern-platform` forbids). **CI**: a Linux job (fmt, clippy, tests, `tern doctor` on the kernel keyring, the offline evaluation with the baseline check, a release build, and the `tern-linux-x64` archive with both programs, the `.desktop` entry, and the icon) and a macOS arm64 job (clippy, tests including a Keychain round trip, the offline evaluation, a release build, and `tern-macos-arm64`, an unsigned `Tern.app` with `Info.plist` and icon, zipped with the CLI). The same PR fixed the two weak spots the evaluation found: the policy gate now tracks where web addresses came from, and the offline claim check catches wrong numbers, negations, antonyms, and swapped entities and roles ([evaluation.md](evaluation.md)). Not yet: hand testing on a Linux desktop and a Mac, signed or notarized builds, and packages (distribution comes after this phase).
 
 ## Later and parked
 
