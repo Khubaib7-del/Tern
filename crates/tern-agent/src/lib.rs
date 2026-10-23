@@ -11,6 +11,10 @@
 //! ([`study`]) keeps the user's materials, topics, and mastery, and runs
 //! the tutor, quizzes, and viva practice. The decision model ([`decide`])
 //! ranks sources, hints the next tool, pre-scores claims, and orders work.
+//! Continuity: message IDs and sub-IDs ([`refs`]), cleaning a chat by ID
+//! range ([`range`]), sub-sessions that report back ([`sub`]), handoff
+//! packets ([`handoff`]), the Library of everything ([`library`]), the
+//! throwaway side chat ([`side`]), and highlight actions ([`highlight`]).
 
 #![forbid(unsafe_code)]
 
@@ -27,19 +31,26 @@ pub mod doctor;
 pub mod engine;
 pub mod explain;
 pub mod git;
+pub mod handoff;
+pub mod highlight;
 pub mod ledger;
+pub mod library;
 pub mod mention;
 pub mod policy;
 pub mod prefs;
 pub mod protocol;
 pub mod providers;
+pub mod range;
+pub mod refs;
 pub mod reply;
 pub mod report;
 pub mod run;
 pub mod search;
+pub mod side;
 pub mod sources;
 pub mod steer;
 pub mod study;
+pub mod sub;
 pub mod tools;
 pub mod transcript;
 pub mod vault;
@@ -72,5 +83,5 @@ pub use tern_providers::ImageInput;
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, SessionSummary};
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
-pub use transcript::{PastTurn, past_turns};
+pub use transcript::{PastTurn, SubReport, live_turns, past_turns};
 pub use verify::{CheckClaims, ClaimCheck, Tally, Verdict};

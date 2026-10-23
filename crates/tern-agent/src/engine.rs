@@ -148,6 +148,15 @@ impl StoreSink {
         Ok(f(&guard))
     }
 
+    /// [`StoreSink::with_store`] for writes.
+    pub fn with_store_mut<T>(&self, f: impl FnOnce(&mut Store) -> T) -> Result<T, String> {
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| "the store lock was poisoned".to_owned())?;
+        Ok(f(&mut guard))
+    }
+
     pub fn into_inner(self) -> Store {
         self.0.into_inner().expect("store lock")
     }

@@ -19,7 +19,7 @@ use crate::policy::PolicyGate;
 use crate::providers::{self, SecretStore, SetupError};
 use crate::search;
 use crate::tools::ToolRegistry;
-use crate::transcript::{PastTurn, past_turns};
+use crate::transcript::{PastTurn, live_turns, past_turns, trailing_context};
 use crate::web::{ReadUrlTool, WebSearchTool};
 
 /// The project quick chats are filed under until projects have a UI.
@@ -189,6 +189,46 @@ pub async fn connect_chat_model(
     Ok((p, m))
 }
 
+/// The model's history for a reopened chat: carried-over context, each
+/// finished exchange, and sub-sessions' reports back, in order. Turns
+/// removed by ID range are not in `turns` (see [`live_turns`]).
+pub fn history_of(turns: &[PastTurn], trailing: Option<&str>) -> Vec<ChatMessage> {
+    let mut out = Vec::new();
+    let context = |out: &mut Vec<ChatMessage>, c: &str| {
+        out.push(ChatMessage::user(format!(
+            "Context carried over from an earlier session:\n\n{c}"
+        )));
+        out.push(ChatMessage::assistant(
+            "Understood. I will continue from this context.",
+        ));
+    };
+    for t in turns {
+        if let Some(c) = &t.context {
+            context(&mut out, c);
+        }
+        if let Some((m, a)) = t.exchange() {
+            out.push(ChatMessage::user(m));
+            out.push(ChatMessage::assistant(a));
+        }
+        for r in &t.reports {
+            out.push(ChatMessage::user(format!(
+                "Sub-session {} reported back on: {}\n\n{}",
+                r.refs
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("(sub-session)"),
+                r.question,
+                r.summary
+            )));
+            out.push(ChatMessage::assistant("Noted."));
+        }
+    }
+    if let Some(c) = trailing {
+        context(&mut out, c);
+    }
+    out
+}
+
 /// Forwards each stored event to the front end as well.
 struct Tee<'a> {
     inner: &'a StoreSink,
@@ -239,13 +279,20 @@ impl ChatSession {
             return Err("That chat is no longer in the database.".into());
         }
         let events = store.replay(session, 0).map_err(|e| e.to_string())?;
-        let turns = past_turns(&events);
+        let turns = live_turns(&events);
         let mut s = Self::open_inner(opts, secrets, store, Some(session)).await?;
-        for (m, a) in turns.iter().filter_map(PastTurn::exchange) {
-            s.history.push(ChatMessage::user(m));
-            s.history.push(ChatMessage::assistant(a));
-        }
+        s.history = history_of(&turns, trailing_context(&events).as_deref());
         Ok((s, turns))
+    }
+
+    /// Reads the chat's database (for sub-sessions, ranges, the Library).
+    pub fn with_store<T>(&self, f: impl FnOnce(&Store) -> T) -> Result<T, String> {
+        self.sink.with_store(f)
+    }
+
+    /// Writes to the chat's database.
+    pub fn with_store_mut<T>(&self, f: impl FnOnce(&mut Store) -> T) -> Result<T, String> {
+        self.sink.with_store_mut(f)
     }
 
     /// Hides a chat from the list. Its log stays.
@@ -458,6 +505,18 @@ impl ChatSession {
         on_text: Option<crate::OnText<'_>>,
     ) -> TurnOutcome {
         let images = std::mem::take(&mut self.next_images);
+        // `@Q12` and `@Q12.3` quote those messages for the model.
+        let with_refs;
+        let text = if text.contains("@Q") || text.contains("@q") {
+            let extra = self
+                .sink
+                .with_store(|s| crate::refs::mention_attachments(s, self.session, text))
+                .unwrap_or_default();
+            with_refs = crate::attach::append(text, &extra);
+            with_refs.as_str()
+        } else {
+            text
+        };
         let tee = Tee {
             inner: &self.sink,
             observer,

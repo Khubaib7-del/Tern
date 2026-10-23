@@ -1,6 +1,15 @@
 //! Rebuilds a chat's transcript from its event log, so a past chat can be
 //! reopened. Since schema v2 the log keeps each turn's message and answer;
 //! older turns come back without their text.
+//!
+//! Each turn has a stable number (`Q3` is the third turn the log shows
+//! starting). Removing messages by ID range appends `range.removed` and
+//! never touches the log's earlier events, so [`live_turns`] is what the
+//! transcript and the model's history read, and the numbers of the turns
+//! that stay never change. A sub-session's report back (`sub.reported`)
+//! joins the turn it branched from, and carried-over context
+//! (`session.context`, from a range move or a handoff packet) joins the
+//! first turn after it.
 
 use std::time::Duration;
 
@@ -22,6 +31,25 @@ pub struct PastTurn {
     /// Pages the turn read, in order, without repeats.
     pub pages: Vec<PageRef>,
     pub took: Duration,
+    /// Its stable number in this session: 1 for the first turn logged.
+    pub number: u32,
+    /// Removed by ID range (in the trash, restorable).
+    pub removed: bool,
+    /// Sub-sessions that branched from this turn and reported back.
+    pub reports: Vec<SubReport>,
+    /// Context carried over just before this turn (a range move or a
+    /// handoff packet), as Markdown.
+    pub context: Option<String>,
+}
+
+/// A sub-session's summary posted back to its parent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubReport {
+    pub session: String,
+    /// The sub-session's message ids, `Q12.1`, ….
+    pub refs: Vec<String>,
+    pub question: String,
+    pub summary: String,
 }
 
 impl PastTurn {
@@ -41,6 +69,110 @@ const ENDS: [&str; 3] = ["turn.finished", "run.cancelled", "budget.exceeded"];
 /// Groups a session's events into turns, oldest first. A turn the log shows
 /// starting but never ending (the app closed mid-turn) is kept with a note.
 pub fn past_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
+    let mut out = group(events);
+    for (i, t) in out.iter_mut().enumerate() {
+        t.number = i as u32 + 1;
+    }
+    let removed = removed_numbers(events);
+    let mut context: Option<String> = None;
+    let mut started = 0u32;
+    for e in events {
+        match e.kind.as_str() {
+            "turn.started" => {
+                started += 1;
+                if let Some(c) = context.take()
+                    && let Some(t) = out.get_mut(started as usize - 1)
+                {
+                    t.context = Some(c);
+                }
+            }
+            "session.context" => {
+                context = text_at(&e.payload, "markdown");
+            }
+            "sub.reported" => {
+                let anchor = e.payload["anchor"].as_u64().unwrap_or_default() as usize;
+                if let Some(t) = anchor.checked_sub(1).and_then(|i| out.get_mut(i)) {
+                    t.reports.push(SubReport {
+                        session: text_at(&e.payload, "session").unwrap_or_default(),
+                        refs: e.payload["refs"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|r| r.as_str().map(str::to_owned))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        question: text_at(&e.payload, "question").unwrap_or_default(),
+                        summary: text_at(&e.payload, "summary").unwrap_or_default(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    for t in &mut out {
+        t.removed = removed.contains(&t.number);
+    }
+    out
+}
+
+/// The turns the transcript shows and the model reads: [`past_turns`]
+/// without the ones removed by ID range.
+pub fn live_turns(events: &[EventEnvelope]) -> Vec<PastTurn> {
+    past_turns(events)
+        .into_iter()
+        .filter(|t| !t.removed)
+        .collect()
+}
+
+/// Context carried into the session (`session.context`) that no turn
+/// follows yet, such as a session started from a handoff packet.
+pub fn trailing_context(events: &[EventEnvelope]) -> Option<String> {
+    let mut context = None;
+    for e in events {
+        match e.kind.as_str() {
+            "turn.started" => context = None,
+            "session.context" => context = text_at(&e.payload, "markdown"),
+            _ => {}
+        }
+    }
+    context
+}
+
+/// Turn numbers removed by ID range and not restored, in the order the
+/// log removed them.
+pub fn removed_numbers(events: &[EventEnvelope]) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    for e in events {
+        let nums = || {
+            e.payload["numbers"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|n| n.as_u64().map(|n| n as u32))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        match e.kind.as_str() {
+            "range.removed" => {
+                for n in nums() {
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+            }
+            "range.restored" => {
+                let back = nums();
+                out.retain(|n| !back.contains(n));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
     let mut out = Vec::new();
     let mut open: Option<(PastTurn, time::OffsetDateTime)> = None;
     // Decisions made just before a turn starts (the first-tool hint)
@@ -186,5 +318,59 @@ mod tests {
             (None, None)
         );
         assert_eq!(t[3].stop.as_deref(), Some("This turn did not finish."));
+        assert_eq!(t.iter().map(|t| t.number).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn removed_turns_keep_the_others_numbers_and_come_back() {
+        let s = SessionId::new();
+        let mut events = Vec::new();
+        for q in ["a", "b", "c"] {
+            events.push(ev(s, "turn.started", "Started", json!({ "message": q })));
+            events.push(ev(
+                s,
+                "turn.finished",
+                "Answered",
+                json!({"state": "completed", "answer": q}),
+            ));
+        }
+        events.push(ev(
+            s,
+            "range.removed",
+            "Removed Q2",
+            json!({"numbers": [2], "reason": "removed"}),
+        ));
+        events.push(ev(
+            s,
+            "sub.reported",
+            "Q3.1 reported back",
+            json!({"anchor": 3, "session": "ses_x", "refs": ["Q3.1"], "question": "q", "summary": "s"}),
+        ));
+        let live = live_turns(&events);
+        assert_eq!(live.iter().map(|t| t.number).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(live[1].reports[0].refs, ["Q3.1"]);
+        assert_eq!(removed_numbers(&events), [2]);
+        events.push(ev(
+            s,
+            "range.restored",
+            "Restored Q2",
+            json!({"numbers": [2]}),
+        ));
+        assert_eq!(live_turns(&events).len(), 3);
+        assert!(removed_numbers(&events).is_empty());
+        let mut with_context = vec![ev(
+            s,
+            "session.context",
+            "Carried over",
+            json!({"markdown": "# Context"}),
+        )];
+        assert_eq!(
+            trailing_context(&with_context).as_deref(),
+            Some("# Context")
+        );
+        with_context.extend(events);
+        let t = past_turns(&with_context);
+        assert_eq!(t[0].context.as_deref(), Some("# Context"));
+        assert_eq!(trailing_context(&with_context), None);
     }
 }
