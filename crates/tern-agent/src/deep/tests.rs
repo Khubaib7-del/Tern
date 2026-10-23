@@ -853,7 +853,11 @@ async fn a_killed_run_resumes_without_repeating_paid_work() {
     )
     .await;
     assert!(killed.is_err(), "the first run never finishes");
-    assert_eq!(search.queries().len(), 3);
+    assert_eq!(
+        search.queries().len(),
+        4,
+        "the preflight and one per worker"
+    );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 9);
     let ck = saved.latest().expect("a checkpoint");
     assert_eq!(ck.version, crate::checkpoint::CHECKPOINT_VERSION);
@@ -1228,7 +1232,6 @@ async fn the_ledger_lists_every_url_and_what_each_worker_used() {
     assert_eq!(run.model_calls, 2, "the plan and the answer");
 }
 
-
 /// A search service that is down: every query fails, except the first
 /// `ok_first` (the preflight), until it is switched back on.
 struct DownSearch {
@@ -1318,7 +1321,10 @@ async fn failed_workers_name_the_search_error_and_run_again_on_retry() {
     .await;
     assert_eq!(out.state, TurnState::Failed);
     let why = out.reason.clone().unwrap();
-    assert!(why.starts_with("No search service answered: SearXNG at http://localhost:8080"), "{why}");
+    assert!(
+        why.starts_with("No search service answered: SearXNG at http://localhost:8080"),
+        "{why}"
+    );
     assert!(!why.contains("found nothing"), "{why}");
     let notes: Vec<String> = sink
         .events()
@@ -1327,7 +1333,10 @@ async fn failed_workers_name_the_search_error_and_run_again_on_retry() {
         .map(|e| e.payload["note"].as_str().unwrap_or_default().to_owned())
         .collect();
     assert_eq!(notes.len(), 3);
-    assert!(notes.iter().all(|n| n.starts_with(SEARCH_FAILED)), "{notes:?}");
+    assert!(
+        notes.iter().all(|n| n.starts_with(SEARCH_FAILED)),
+        "{notes:?}"
+    );
 
     let ck = saved.latest().expect("a checkpoint");
     assert_eq!(ck.progress(), "Deep research · 0 of 3 done · 3 failed");
@@ -1360,5 +1369,9 @@ async fn failed_workers_name_the_search_error_and_run_again_on_retry() {
         .filter(|e| e.kind == "worker.started")
         .count();
     assert_eq!(started, 3, "every failed worker ran again");
-    assert_eq!(model2.calls(), 3 + 1, "three notes calls and the answer, no plan");
+    assert_eq!(
+        model2.calls(),
+        3 + 1,
+        "three notes calls and the answer, no plan"
+    );
 }

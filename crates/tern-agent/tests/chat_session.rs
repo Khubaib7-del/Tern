@@ -35,6 +35,7 @@ async fn opens_picks_a_chat_model_and_keeps_history() {
     let opts = ChatOptions {
         provider: Some("ollama".into()),
         base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
         ..Default::default()
     };
     let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
@@ -108,6 +109,7 @@ async fn reopened_chat_brings_back_turns_and_history() {
     let opts = || ChatOptions {
         provider: Some("ollama".into()),
         base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
         ..Default::default()
     };
     let observer = |_: &tern_core::EventEnvelope| {};
@@ -185,7 +187,9 @@ async fn a_new_chat_is_a_draft_until_its_first_message() {
         .unwrap();
     assert!(chat.is_draft(), "opening a chat writes nothing");
     assert!(chat.recent_sessions(5).unwrap().is_empty());
-    let n = chat.with_store(|st| st.all_sessions(10).unwrap().len()).unwrap();
+    let n = chat
+        .with_store(|st| st.all_sessions(10).unwrap().len())
+        .unwrap();
     assert_eq!(n, 0, "no empty row in the Library either");
     let observer = |_: &tern_core::EventEnvelope| {};
     chat.send("hi", &DenyAll, CancelFlag::default(), &observer)
@@ -229,7 +233,10 @@ async fn changing_the_model_keeps_the_chat_and_its_history() {
         .await;
     let reqs = s.received_requests().await.unwrap();
     let last: serde_json::Value = reqs.last().unwrap().body_json().unwrap();
-    assert_eq!(last["model"], "llama3.2-vision", "the next answer comes from the new model");
+    assert_eq!(
+        last["model"], "llama3.2-vision",
+        "the next answer comes from the new model"
+    );
     let contents: Vec<_> = last["messages"]
         .as_array()
         .unwrap()
@@ -246,7 +253,11 @@ async fn changing_the_model_keeps_the_chat_and_its_history() {
         .filter(|e| e.kind == "session.model_changed")
         .count();
     assert_eq!(changes, 3);
-    assert_eq!(chat.max_output_tokens(), 8192, "answers get room by default");
+    assert_eq!(
+        chat.max_output_tokens(),
+        8192,
+        "answers get room by default"
+    );
 }
 
 #[tokio::test]

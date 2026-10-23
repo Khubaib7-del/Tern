@@ -521,6 +521,34 @@ mod tests {
     }
 
     #[test]
+    fn a_chat_that_was_only_opened_is_hidden_everywhere() {
+        let (mut s, ses) = setup();
+        let p = s.ensure_project("Inbox").unwrap();
+        let draft = SessionId::new();
+        s.create_session_with_id(draft, p, Harness::Research, "New chat")
+            .unwrap();
+        // Writing the same id again is harmless.
+        s.create_session_with_id(draft, p, Harness::Research, "New chat")
+            .unwrap();
+        s.append(&ev(draft, "session.opened")).unwrap();
+        s.append(&ev(draft, "session.resumed")).unwrap();
+        assert!(s.recent_sessions(10).unwrap().is_empty());
+        assert!(
+            s.all_sessions(10).unwrap().iter().all(|r| r.id != draft),
+            "no empty row in the Library"
+        );
+        s.append(&ev(draft, "turn.started")).unwrap();
+        let rows = s.recent_sessions(10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, draft);
+        assert_ne!(rows[0].id, ses);
+        assert!(
+            s.create_session_with_id(SessionId::new(), ProjectId::new(), Harness::Study, "x")
+                .is_err()
+        );
+    }
+
+    #[test]
     fn archived_sessions_leave_the_list_but_keep_their_events() {
         let (mut s, ses) = setup();
         s.append(&ev(ses, "turn.started")).unwrap();

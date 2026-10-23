@@ -2467,8 +2467,8 @@ mod tests {
 
     #[test]
     fn a_failed_deep_run_offers_retry_with_an_honest_status() {
-        use tern_agent::checkpoint::{DeepState, RunCheckpoint, RunMode, Stage, WorkerCheckpoint};
         use tern_agent::WorkerStatus;
+        use tern_agent::checkpoint::{DeepState, RunCheckpoint, RunMode, Stage, WorkerCheckpoint};
         let mut m = ready();
         let ck = RunCheckpoint {
             session: "ses_1".into(),
@@ -2491,11 +2491,17 @@ mod tests {
         };
         m.set_resume_offer(
             Some(&ck),
-            Some((TurnState::Failed, Some("No search service answered: SearXNG did not answer"))),
+            Some((
+                TurnState::Failed,
+                Some("No search service answered: SearXNG did not answer"),
+            )),
         );
         let o = m.resume_offer.clone().unwrap();
         assert_eq!(o.action(), "Retry failed workers");
-        assert!(o.headline.starts_with("Run failed: No search service answered"));
+        assert!(
+            o.headline
+                .starts_with("Run failed: No search service answered")
+        );
         assert_eq!(o.progress, "Deep research · 0 of 5 done · 5 failed");
         assert!(!o.progress.contains("running") && !o.saved_at.contains('T'));
         assert!(o.about_search);
@@ -2519,7 +2525,11 @@ mod tests {
             serde_json::json!({"finish_reason": "length", "model": "m", "chars": 9000}),
         ));
         m.finish_turn(
-            &outcome(TurnState::Completed, Some("A GPU is … specific part ("), None),
+            &outcome(
+                TurnState::Completed,
+                Some("A GPU is … specific part ("),
+                None,
+            ),
             ctx(0, 0),
         );
         assert!(m.continue_offer);
@@ -2531,7 +2541,10 @@ mod tests {
             "replied",
             serde_json::json!({"finish_reason": "stop"}),
         ));
-        m.finish_turn(&outcome(TurnState::Completed, Some("the rest."), None), ctx(0, 0));
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("the rest."), None),
+            ctx(0, 0),
+        );
         assert!(!m.continue_offer);
     }
 
