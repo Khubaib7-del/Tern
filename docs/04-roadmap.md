@@ -15,8 +15,8 @@
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
 | 7 | Study harness | Tutor, flashcards, quizzes, viva practice | In progress (PR #36: materials, topics, mastery, tutor, quizzes, viva); flashcards with Anki export and Explain in 3D next |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Mostly built (PR #38: local scorer, Jev, SubQ Snap, and Voyage adapters, wiring, `tern decide bench`); the reasoning-model and remote benchmark rows need keys |
-| 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Planned |
-| 10 | Extensibility | MCP client, ACP server, skills, project rules | Planned |
+| 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Mostly built (PR #39); a model-written handoff summary remains |
+| 10 | Extensibility | MCP client, ACP server, skills, project rules | Mostly built (PR #40: MCP client, ACP server, skills, `TERN.md` and effective instructions, project folders, the Customize page); MCP prompts and resources remain |
 | 11 | Evaluation | Benchmarks for citation accuracy, cost, and reliability | Planned |
 | 12 | Linux and macOS | Ports through `tern-platform` | Planned |
 
@@ -133,15 +133,17 @@ Built in PR #36: study materials (files, folders, PDFs with page anchors, vault 
 | Library of everything; bulk delete | Thousands of items remain responsive (built, PR #39: one index in `tern_store::library` over reports, sources, notes, decks, files, Explain-in-3D scenes, and sessions, with search, filter, sort, and paging in SQLite; bulk delete to a restorable trash, empty-trash. A 5,000-item test indexes, queries three ways, and bulk-moves in well under the bounds; the desktop page reads 60 rows at a time) |
 | Highlight actions and throwaway side chat | Side chat writes nothing back (built, PR #39: Explain, Verify claim, Add to notes, Make flashcard, and Ask in side chat on selected answer text; `tern_agent::side` reads the thread and keeps its exchanges in memory. Tested: the parent's log and title are unchanged after side questions) |
 
-Built in PR #39: message IDs on the transcript with multi-select, range actions with Confirm and Undo, a `Branch ▾` menu (new sub-session from here, run the composer text in a background branch, move to a sub-session), a sidebar sub-session tree, handoff, the Library page and trash, the highlight popover, and the side chat docked or popped out. Folders inside Projects in the sidebar (projects are still one Inbox) and a model-written handoff summary remain.
+Built in PR #39: message IDs on the transcript with multi-select, range actions with Confirm and Undo, a `Branch ▾` menu (new sub-session from here, run the composer text in a background branch, move to a sub-session), a sidebar sub-session tree, handoff, the Library page and trash, the highlight popover, and the side chat docked or popped out. Project folders in the sidebar came in PR #40; a model-written handoff summary remains.
 
 ### Phase 10 · Extensibility
 
 | Deliverable | Exit check |
 | --- | --- |
-| MCP client with trust preview and health checks | MCP output treated as untrusted data |
-| ACP server so Tern runs inside compatible editors | Session round-trip works |
-| Skills loaded on demand; project rules in `TERN.md` | Effective instructions visible to the user |
+| MCP client with trust preview and health checks | MCP output treated as untrusted data (built, PR #40: `tern_agent::mcp`, stdio and Streamable HTTP, spec `2026-07-28` with the `initialize` fallback for `2025-11-25` back to `2024-11-05`; servers start off until their trust preview is read; per-tool switches and approvals behind the policy gate; results wrapped by `tern_agent::untrusted`; health checks time start, ping, and list. Tested in `tests/mcp.rs` against a mock server over stdio, modern and legacy, and HTTP, including a poisoned tool description and gated, wrapped output) |
+| ACP server so Tern runs inside compatible editors | Session round-trip works (built, PR #40: `tern acp`, ACP v1 over stdio; `tests/acp.rs` makes a session, prompts it, reads the streamed updates, and loads it again. Setup for Zed: [docs/zed.md](zed.md)) |
+| Skills loaded on demand; project rules in `TERN.md` | Effective instructions visible to the user (built, PR #40: `SKILL.md` folders loaded with `load_skill`; `TERN.md` merged global, parents, project; `tern instructions` and the desktop Customize page's Instructions tab show the exact prompt) |
+
+Built in PR #40: project folders in the store (schema v4) with chats and sub-sessions filed under them and an optional linked folder on disk; the sidebar's project tree (Projects, then chats, then `↳` sub-sessions, the Inbox, drag a chat onto a folder or Move to…, collapse saved); the **Customize** rail item (Skills, MCP servers with trust preview and health dots, Providers, Instructions); `tern mcp`, `tern acp`, `tern skills`, `tern instructions`, `tern project`. Left out: MCP prompts and resources (tools only), and the model-written handoff summary.
 
 ### Phase 11 · Evaluation
 

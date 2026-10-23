@@ -9,7 +9,10 @@
 
 pub mod anki;
 pub mod library;
+mod projects;
 mod schema;
+
+pub use projects::{INBOX, ProjectSummary};
 
 use std::path::Path;
 
@@ -29,6 +32,9 @@ pub enum StoreError {
     UnknownSession(SessionId),
     #[error("unknown project {0}")]
     UnknownProject(ProjectId),
+    /// A request the store refuses, worded for the user.
+    #[error("{0}")]
+    Invalid(String),
     #[error("database schema version {found} is newer than this build supports ({supported})")]
     TooNew { found: i64, supported: i64 },
 }
@@ -71,12 +77,15 @@ pub struct SessionSummary {
     /// A planned sub-session's question, until it runs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// The project folder the session is filed under.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
 }
 
 /// The Tern database.
 #[derive(Debug)]
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     redactor: Redactor,
 }
 
@@ -317,7 +326,7 @@ impl Store {
     ) -> StoreResult<Vec<SessionSummary>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT s.id, s.title, s.harness, s.created_at, COUNT(e.seq) AS n,
-                    s.parent_id, s.anchor, s.plan
+                    s.parent_id, s.anchor, s.plan, s.project_id
              FROM sessions s {join} events e ON e.session_id = s.id
              {filter}
              GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC LIMIT ?2"
@@ -335,12 +344,13 @@ impl Store {
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<i64>>(6)?,
                     r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
                 ),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let ((id, title, harness, created_at, n), (parent, anchor, plan)) = row?;
+            let ((id, title, harness, created_at, n), (parent, anchor, plan, project)) = row?;
             let Ok(id) = id.parse() else { continue };
             out.push(SessionSummary {
                 id,
@@ -355,6 +365,7 @@ impl Store {
                 parent: parent.and_then(|p| p.parse().ok()),
                 anchor: anchor.map(|a| a as u32),
                 plan,
+                project: project.and_then(|p| p.parse().ok()),
             });
         }
         Ok(out)

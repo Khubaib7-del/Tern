@@ -33,6 +33,7 @@ mod appearance_view;
 mod browser_view;
 mod cards_view;
 mod continuity_view;
+mod customize_view;
 mod decision_view;
 mod deep_view;
 mod editor_view;
@@ -129,6 +130,8 @@ pub struct Workspace {
     library_input: Entity<InputState>,
     /// The popped-out side chat window.
     side_window: Option<gpui_kit::AnyWindowHandle>,
+    /// Customize's and the project tree's text fields.
+    ext_inputs: customize_view::ExtInputs,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -286,6 +289,12 @@ impl Workspace {
         let mut model = Model::new();
         model.study = crate::study::StudyState::from_prefs(&tern_agent::Preferences::load());
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
+        let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
+        model.projects.collapsed = tern_agent::Preferences::load()
+            .collapsed_projects
+            .into_iter()
+            .collect();
+        bridge.projects(crate::bridge::ProjectChange::Reload);
         if let Ok(v) = tern_agent::vault::Vault::open_default() {
             let root = v.root().to_path_buf();
             model.editor.attach(v);
@@ -339,6 +348,7 @@ impl Workspace {
             side_input,
             library_input,
             side_window: None,
+            ext_inputs,
             _subscriptions: {
                 let mut subs = vec![
                     sub,
@@ -350,6 +360,7 @@ impl Workspace {
                     library_sub,
                 ];
                 subs.extend(study_subs);
+                subs.extend(ext_subs);
                 subs
             },
         }
@@ -403,6 +414,7 @@ impl Workspace {
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
             Msg::Cont(m) => self.on_cont(*m, window, cx),
+            Msg::Ext(m) => self.on_ext(*m, cx),
             Msg::Notice(text) => {
                 self.model.entries.push(Entry::Notice(text));
                 // A chat that would not reopen leaves no session; open a
@@ -1142,6 +1154,7 @@ impl Workspace {
             return;
         }
         let had_messages = !self.model.entries.is_empty();
+        self.model.projects.new_in = None;
         self.model.new_chat();
         self.open_sources.clear();
         if had_messages || self.session.is_none() {
@@ -1485,6 +1498,20 @@ impl Workspace {
                     ),
             )
             .child(
+                Button::new("rail-customize")
+                    .icon(AssetIcon::Blocks)
+                    .ghost()
+                    .when(self.model.screen == Screen::Customize, |b| b.selected(true))
+                    .tooltip("Customize: skills, MCP servers, providers, instructions")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Customize {
+                            this.close_customize(window, cx);
+                        } else {
+                            this.open_customize(cx);
+                        }
+                    })),
+            )
+            .child(
                 Button::new("rail-appearance")
                     .icon(IconName::Palette)
                     .ghost()
@@ -1558,149 +1585,173 @@ impl Workspace {
             )
     }
 
-    fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    /// One chat or sub-session row in the sidebar's project tree.
+    fn chat_row(&self, ix: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.model.is_busy();
-        let order = crate::continuity::tree(&self.model.sessions);
-        let rows: Vec<_> = order
-            .into_iter()
-            .filter_map(|ix| self.model.sessions.get(ix).map(|s| (ix, s)))
-            .map(|(ix, s)| {
-                let current = Some(s.id) == self.current;
-                let id = s.id;
-                let sub = s.parent.is_some();
-                let planned = s.plan.is_some();
-                let running = self.model.cont.background.contains(&id);
-                if self.renaming == Some(id) {
-                    return div()
-                        .id(("chat", ix))
-                        .px_1()
-                        .py(px(2.))
-                        .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
-                            if e.keystroke.key == "escape" {
-                                cx.stop_propagation();
-                                this.cancel_rename(cx);
-                            }
-                        }))
-                        .child(Input::new(&self.rename_input).small())
-                        .into_any_element();
-                }
+        let s = &self.model.sessions[ix];
+        let current = Some(s.id) == self.current;
+        let id = s.id;
+        let sub = s.parent.is_some();
+        let planned = s.plan.is_some();
+        let running = self.model.cont.background.contains(&id);
+        if self.renaming == Some(id) {
+            return div()
+                .id(("chat", ix))
+                .px_1()
+                .py(px(2.))
+                .on_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                    if e.keystroke.key == "escape" {
+                        cx.stop_propagation();
+                        this.cancel_rename(cx);
+                    }
+                }))
+                .child(Input::new(&self.rename_input).small())
+                .into_any_element();
+        }
+        div()
+            .id(("chat", ix))
+            .group("chat-row")
+            .on_drag(
+                customize_view::DraggedChat {
+                    id,
+                    title: s.title.clone(),
+                    palette: p,
+                },
+                |d, _, _, cx| cx.new(|_| d.clone()),
+            )
+            .flex()
+            .items_center()
+            .gap_1()
+            .pl(px(if sub { 34. } else { 22. }))
+            .pr_1()
+            .py(px(3.))
+            .rounded_md()
+            .text_sm()
+            .text_color(if current { p.text } else { p.muted })
+            .when(current, |d| d.bg(p.hover))
+            .when(!current && !busy, |d| {
+                d.cursor_pointer()
+                    .hover(|d| d.bg(p.hover).text_color(p.text))
+            })
+            .on_click(
+                cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| {
+                    if e.click_count() >= 2 {
+                        this.start_rename(id, window, cx);
+                    } else {
+                        this.open_chat(id, cx);
+                    }
+                }),
+            )
+            .when(sub, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_color(p.faint)
+                        .child(SharedString::from(match s.anchor {
+                            Some(a) => format!("↳ Q{a}"),
+                            None => "↳".to_owned(),
+                        })),
+                )
+            })
+            .child(
                 div()
-                    .id(("chat", ix))
-                    .group("chat-row")
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .pl_2()
-                    .when(sub, |d| d.pl(px(16.)))
-                    .pr_1()
+                    .flex_1()
+                    .min_w_0()
                     .py(px(3.))
-                    .rounded_md()
-                    .text_sm()
-                    .text_color(if current { p.text } else { p.muted })
-                    .when(current, |d| d.bg(p.hover))
-                    .when(!current && !busy, |d| {
-                        d.cursor_pointer()
-                            .hover(|d| d.bg(p.hover).text_color(p.text))
-                    })
-                    .on_click(
-                        cx.listener(move |this, e: &gpui_kit::ClickEvent, window, cx| {
-                            if e.click_count() >= 2 {
-                                this.start_rename(id, window, cx);
-                            } else {
-                                this.open_chat(id, cx);
-                            }
-                        }),
-                    )
-                    .when(sub, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_color(p.faint)
-                                .child(SharedString::from(match s.anchor {
-                                    Some(a) => format!("↳ Q{a}"),
-                                    None => "↳".to_owned(),
-                                })),
-                        )
-                    })
+                    .truncate()
+                    .child(SharedString::from(s.title.clone())),
+            )
+            .when(running, |d| d.child(Spinner::new().xsmall()))
+            .when(planned && !running, |d| {
+                d.child(
+                    Button::new(("run-sub", ix))
+                        .icon(AssetIcon::Play)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Planned: run it in the background; it reports back")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.bridge.sub_run(id);
+                            this.model.cont.background.push(id);
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .opacity(0.)
+                    .group_hover("chat-row", |d| d.opacity(1.))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .py(px(3.))
-                            .truncate()
-                            .child(SharedString::from(s.title.clone())),
+                        Button::new(("rename", ix))
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Rename chat")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.start_rename(id, window, cx);
+                            })),
                     )
-                    .when(running, |d| d.child(Spinner::new().xsmall()))
-                    .when(planned && !running, |d| {
+                    .when(!sub, |d| {
                         d.child(
-                            Button::new(("run-sub", ix))
-                                .icon(AssetIcon::Play)
+                            Button::new(("move-to", ix))
+                                .icon(AssetIcon::FolderInput)
                                 .ghost()
                                 .xsmall()
-                                .tooltip("Planned: run it in the background; it reports back")
+                                .tooltip("Move to a project…")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    this.bridge.sub_run(id);
-                                    this.model.cont.background.push(id);
-                                    cx.notify();
+                                    this.toggle_move_menu(id, cx);
                                 })),
                         )
                     })
                     .child(
-                        div()
-                            .flex()
-                            .opacity(0.)
-                            .group_hover("chat-row", |d| d.opacity(1.))
-                            .child(
-                                Button::new(("rename", ix))
-                                    .icon(gpui_kit::assets::IconName::Pencil)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Rename chat")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.start_rename(id, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("open-tab", ix))
-                                    .icon(gpui_kit::assets::IconName::SquarePlus)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Open in new tab")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.open_in_tab(id, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("handoff", ix))
-                                    .icon(AssetIcon::FileOutput)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip(
-                                        "Hand off: write a packet and start a new session from it",
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.hand_off(id, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new(("archive", ix))
-                                    .icon(gpui_kit::assets::IconName::Archive)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Archive chat")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.archive_chat(id, window, cx);
-                                    })),
-                            ),
+                        Button::new(("open-tab", ix))
+                            .icon(gpui_kit::assets::IconName::SquarePlus)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Open in new tab")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.open_in_tab(id, window, cx);
+                            })),
                     )
-                    .into_any_element()
-            })
-            .collect();
+                    .child(
+                        Button::new(("handoff", ix))
+                            .icon(AssetIcon::FileOutput)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Hand off: write a packet and start a new session from it")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.hand_off(id, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("archive", ix))
+                            .icon(gpui_kit::assets::IconName::Archive)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Archive chat")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.archive_chat(id, window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let order = crate::continuity::tree(&self.model.sessions);
+        let rows = self
+            .model
+            .projects
+            .rows(&self.model.sessions, &order)
+            .into_iter()
+            .flat_map(|r| self.tree_row(r, p, cx))
+            .collect::<Vec<_>>();
         div()
             .w(px(SIDEBAR_W))
             .h_full()
@@ -1709,15 +1760,8 @@ impl Workspace {
             .bg(p.sidebar)
             .border_r_1()
             .border_color(p.border)
-            .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_2()
-                    .text_xs()
-                    .text_color(p.faint)
-                    .child("Chats"),
-            )
+            .child(self.projects_header(p, cx))
+            .children(self.project_name_field(None, p))
             .child(
                 div()
                     .id("chat-list")
@@ -3541,6 +3585,7 @@ impl Render for Workspace {
             Screen::Study => "screen-study",
             Screen::Decision => "screen-decision",
             Screen::Library => "screen-library",
+            Screen::Customize => "screen-customize",
         };
         div()
             .relative()
@@ -3594,6 +3639,7 @@ impl Render for Workspace {
                                 Screen::Study => d.child(self.study_screen(p, window, cx)),
                                 Screen::Decision => d.child(self.decision_screen(p, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
+                                Screen::Customize => d.child(self.customize_screen(p, window, cx)),
                             })
                             .with_animation(
                                 screen_id,

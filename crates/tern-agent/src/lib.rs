@@ -15,9 +15,15 @@
 //! range ([`range`]), sub-sessions that report back ([`sub`]), handoff
 //! packets ([`handoff`]), the Library of everything ([`library`]), the
 //! throwaway side chat ([`side`]), and highlight actions ([`highlight`]).
+//! Extensibility: MCP servers with a trust preview and health checks
+//! ([`mcp`]), their output kept in an untrusted data channel
+//! ([`untrusted`]); the ACP server for editors ([`acp`]); skills loaded on
+//! demand ([`skills`]); `TERN.md` project rules and the effective
+//! instructions ([`rules`]); and project folders ([`projects`]).
 
 #![forbid(unsafe_code)]
 
+pub mod acp;
 pub mod ask;
 pub mod attach;
 pub mod branch;
@@ -35,24 +41,29 @@ pub mod handoff;
 pub mod highlight;
 pub mod ledger;
 pub mod library;
+pub mod mcp;
 pub mod mention;
 pub mod policy;
 pub mod prefs;
+pub mod projects;
 pub mod protocol;
 pub mod providers;
 pub mod range;
 pub mod refs;
 pub mod reply;
 pub mod report;
+pub mod rules;
 pub mod run;
 pub mod search;
 pub mod side;
+pub mod skills;
 pub mod sources;
 pub mod steer;
 pub mod study;
 pub mod sub;
 pub mod tools;
 pub mod transcript;
+pub mod untrusted;
 pub mod vault;
 pub mod verify;
 pub mod watch;
@@ -81,7 +92,7 @@ pub use sources::PageRef;
 pub use steer::Steering;
 pub use tern_providers::ImageInput;
 pub use tern_research::deep::WorkerStatus;
-pub use tern_store::{Harness, SessionSummary, Store};
+pub use tern_store::{Harness, ProjectSummary, SessionSummary, Store};
 
 /// Opens the user's database, creating the data folder if needed.
 pub fn open_store() -> Result<Store, String> {

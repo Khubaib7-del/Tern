@@ -10,6 +10,7 @@ Tern is pre-alpha. These documents describe what is planned; nothing in them is 
 | [03 · Architecture](03-architecture.md) | Planned crates, dependency rules, event and tool contracts, memory, platform order |
 | [04 · Roadmap](04-roadmap.md) | Phases 0 to 12 with deliverables and exit checks |
 | [05 · Security model](05-security-model.md) | Assets, threats, controls, trust order, effect classes, data handling |
+| [Using Tern in Zed](zed.md) | Running Tern as an ACP agent inside Zed |
 
 ## Decisions
 

@@ -22,8 +22,8 @@ use crate::tools::ToolRegistry;
 use crate::transcript::{PastTurn, live_turns, past_turns, trailing_context};
 use crate::web::{ReadUrlTool, WebSearchTool};
 
-/// The project quick chats are filed under until projects have a UI.
-pub const INBOX: &str = "Inbox";
+/// The project chats with no project are filed under.
+pub use tern_store::INBOX;
 
 /// What to open.
 #[derive(Clone, Debug, Default)]
@@ -45,6 +45,14 @@ pub struct ChatOptions {
     pub check_claims: crate::verify::CheckClaims,
     /// The decision model the chat asks (see [`crate::decide`]).
     pub decision: crate::decide::DecisionPrefs,
+    /// The project a new chat is filed under (by name; made if missing).
+    /// `None` files it in the Inbox.
+    pub project: Option<String>,
+    /// The folder whose `TERN.md` and `.tern/skills` apply. `None` uses
+    /// the project's linked folder, if it has one.
+    pub project_root: Option<std::path::PathBuf>,
+    /// Leave MCP servers out of this chat.
+    pub no_mcp: bool,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -77,6 +85,13 @@ pub struct ChatSession {
     steering: crate::steer::Steering,
     /// Ranks sources, hints the first tool, pre-scores claims, and orders work.
     decider: Arc<crate::decide::Decider>,
+    /// The project's rules and skills.
+    project: crate::rules::ProjectContext,
+    /// Some tools return outside text (MCP), so the prompt carries the
+    /// untrusted-data rule.
+    untrusted: bool,
+    /// MCP servers that were left out, and why.
+    mcp_notes: Vec<String>,
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -229,6 +244,56 @@ pub fn history_of(turns: &[PastTurn], trailing: Option<&str>) -> Vec<ChatMessage
     out
 }
 
+/// The effective instructions a chat opened with `opts` would get, without
+/// opening a provider or a session: the same tools (web, vault, skills,
+/// MCP), rules, and skills, and the same prompt builder. For
+/// `tern instructions` and the desktop panel before a chat is open.
+pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Effective, String> {
+    let keychain = providers::keychain();
+    let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let mut tools = ToolRegistry::new();
+    let search = search::connect(opts.search.as_deref(), secrets, opts.search_url.as_deref()).ok();
+    let web = search.is_some();
+    if let Some(c) = search {
+        tools.register(WebSearchTool(Arc::new(c), None));
+        tools.register(ReadUrlTool::default());
+    }
+    if let Some(root) = &opts.vault {
+        let v = crate::vault::Vault::at(root);
+        if v.ensure().is_ok() {
+            crate::vault::register(&mut tools, Arc::new(v));
+        }
+    }
+    let root = match &opts.project_root {
+        Some(r) => Some(r.clone()),
+        None => match opts.project.as_deref() {
+            Some(name) => {
+                let store = crate::open_store()?;
+                crate::projects::find(&store, name)?.root
+            }
+            None => None,
+        },
+    };
+    let project = crate::rules::ProjectContext::load(root.as_deref());
+    project.register(&mut tools);
+    let mut gate = PolicyGate::default();
+    let mut notes = Vec::new();
+    if !opts.no_mcp {
+        match crate::mcp::McpConfig::load() {
+            Ok(cfg) if cfg.servers.values().any(|s| s.active()) => {
+                notes = crate::mcp::attach(&cfg, &mut tools, &mut gate).await.notes;
+            }
+            Ok(_) => {}
+            Err(e) => notes.push(e),
+        }
+    }
+    let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
+    let mut e =
+        crate::rules::effective(web.then_some(WEB_INSTRUCTIONS), &project, &tools, untrusted);
+    e.notes.extend(notes);
+    Ok(e)
+}
+
 /// Forwards each stored event to the front end as well.
 struct Tee<'a> {
     inner: &'a StoreSink,
@@ -342,12 +407,47 @@ impl ChatSession {
         let session = match resume {
             Some(id) => id,
             None => {
-                let project = store.ensure_project(INBOX).map_err(|e| e.to_string())?;
+                let name = opts
+                    .project
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(INBOX);
+                let project = match store.project_named(name).map_err(|e| e.to_string())? {
+                    Some(p) => p,
+                    None => store.ensure_project(name).map_err(|e| e.to_string())?,
+                };
                 store
                     .create_session(project, Harness::Research, "Chat")
                     .map_err(|e| e.to_string())?
             }
         };
+        // The project's folder gives the chat its TERN.md rules and skills.
+        let root = opts.project_root.clone().or_else(|| {
+            store
+                .session_project(session)
+                .ok()
+                .flatten()
+                .and_then(|p| store.project(p).ok().flatten())
+                .and_then(|p| p.root)
+        });
+        let project = crate::rules::ProjectContext::load(root.as_deref());
+        project.register(&mut tools);
+        let mut gate = PolicyGate::default();
+        let mut mcp_notes = Vec::new();
+        let mut mcp_servers = Vec::new();
+        if !opts.no_mcp {
+            match crate::mcp::McpConfig::load() {
+                Ok(cfg) if cfg.servers.values().any(|s| s.active()) => {
+                    let a = crate::mcp::attach(&cfg, &mut tools, &mut gate).await;
+                    mcp_notes = a.notes;
+                    mcp_servers = a.servers;
+                }
+                Ok(_) => {}
+                Err(e) => mcp_notes.push(e),
+            }
+        }
+        let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
         let paths = AppPaths::discover().ok();
         let checkpoints = paths
             .as_ref()
@@ -367,7 +467,10 @@ impl ChatSession {
             context_window,
             session,
             sink: StoreSink::new(store),
-            gate: PolicyGate::default(),
+            gate,
+            project,
+            untrusted,
+            mcp_notes,
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
@@ -401,7 +504,15 @@ impl ChatSession {
                 s.model,
                 s.provider.spec().name
             ),
-            json!({"provider": s.provider.spec().id, "model": s.model}),
+            json!({
+                "provider": s.provider.spec().id,
+                "model": s.model,
+                "project_root": s.project.root,
+                "rules": s.project.rules.iter().map(|r| r.path.display().to_string()).collect::<Vec<_>>(),
+                "skills": s.project.skills.enabled().map(|k| k.name.clone()).collect::<Vec<_>>(),
+                "mcp": mcp_servers,
+                "mcp_notes": s.mcp_notes,
+            }),
         ))?;
         Ok(s)
     }
@@ -447,10 +558,12 @@ impl ChatSession {
                 ..base
             },
             None => {
-                let mut chars: usize = self.history.iter().map(|m| m.content.len()).sum();
-                if self.search_name.is_some() {
-                    chars += WEB_INSTRUCTIONS.len();
-                }
+                let chars: usize = self.history.iter().map(|m| m.content.len()).sum::<usize>()
+                    + crate::protocol::system_prompt(
+                        self.instructions(None).as_deref(),
+                        &self.tools,
+                    )
+                    .len();
                 ContextUse {
                     prompt: Usage::estimated(chars, 0).input_tokens,
                     estimated: true,
@@ -475,6 +588,36 @@ impl ChatSession {
 
     pub fn tools_mut(&mut self) -> &mut ToolRegistry {
         &mut self.tools
+    }
+
+    /// The harness's instructions with the project's rules, skills, and
+    /// the untrusted-data rule, as the turn loop gets them.
+    fn instructions(&self, harness: Option<&str>) -> Option<String> {
+        crate::rules::instructions(harness, &self.project, self.untrusted)
+    }
+
+    /// Exactly what the model is told on this chat's next turn, piece by
+    /// piece (see [`crate::rules::effective`]).
+    pub fn effective_instructions(&self) -> crate::rules::Effective {
+        let harness = self.search_name.map(|_| WEB_INSTRUCTIONS);
+        let mut e = crate::rules::effective(harness, &self.project, &self.tools, self.untrusted);
+        e.notes.extend(self.mcp_notes.iter().cloned());
+        if self.decider.is_on() {
+            e.notes.push(
+                "The decision model may add a one-line hint about the first tool to each turn's instructions.".into(),
+            );
+        }
+        e
+    }
+
+    /// The project folder this chat reads rules and skills from.
+    pub fn project_root(&self) -> Option<&std::path::Path> {
+        self.project.root.as_deref()
+    }
+
+    /// MCP servers left out of this chat, and why.
+    pub fn mcp_notes(&self) -> &[String] {
+        &self.mcp_notes
     }
 
     /// Runs one turn. Completed exchanges join the history for the next turn.
@@ -524,7 +667,7 @@ impl ChatSession {
         self.steering.clear();
         // The decision model's hint for the first step, logged just before
         // the turn starts (the run picks it up with the turn).
-        let mut instructions = self.search_name.map(|_| WEB_INSTRUCTIONS.to_owned());
+        let mut harness = self.search_name.map(|_| WEB_INSTRUCTIONS.to_owned());
         let names: Vec<&str> = self.tools.names().collect();
         let (_, question) = crate::reply::split(text);
         let attachments = images.len() + question.matches("<attachment ").count();
@@ -540,12 +683,13 @@ impl ChatSession {
         {
             let _ = tee.record(crate::decide::event(self.session, None, &d));
             if let Some(h) = hint {
-                instructions = Some(match instructions {
+                harness = Some(match harness {
                     Some(i) => format!("{i}\n\n{h}"),
                     None => h,
                 });
             }
         }
+        let instructions = self.instructions(harness.as_deref());
         let hooks = crate::engine::RunHooks {
             checkpoints: self
                 .checkpoints
@@ -739,6 +883,7 @@ impl ChatSession {
                 crate::deep::resume_deep(deps, ck, opts, control).await
             }
             RunMode::Quick => {
+                let instructions = self.instructions(self.search_name.map(|_| WEB_INSTRUCTIONS));
                 let hooks = crate::engine::RunHooks {
                     checkpoints: sink,
                     steering: Some(&self.steering),
@@ -755,7 +900,7 @@ impl ChatSession {
                     ledger: &self.ledger,
                     budget: self.budget,
                     cancel: control.flag(),
-                    instructions: self.search_name.map(|_| WEB_INSTRUCTIONS),
+                    instructions: instructions.as_deref(),
                     max_output_tokens: self.max_output_tokens,
                     on_text,
                     hooks,

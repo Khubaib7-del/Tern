@@ -126,7 +126,10 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!(turns.len(), 1);
     let ctx = again.context();
     assert!(ctx.estimated, "no call yet in the reopened window");
-    assert_eq!((ctx.prompt, ctx.calls), (8, 0), "32 chars of history");
+    // 32 characters of history and the 97-character system prompt, at
+    // four characters a token.
+    assert_eq!(tern_agent::protocol::BASE.len(), 97);
+    assert_eq!((ctx.prompt, ctx.calls), (33, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))
