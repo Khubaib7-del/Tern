@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{StoreError, StoreResult};
 
 /// Bumped with every migration. Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const V1: &str = "
 CREATE TABLE projects (
@@ -71,6 +71,13 @@ CREATE INDEX library_by_state_time ON library(state, updated_at DESC);
 CREATE INDEX library_by_state_title ON library(state, title COLLATE NOCASE);
 ";
 
+/// Project folders: an optional root folder on disk (where `TERN.md` and
+/// `.tern/skills` live) and a sidebar position.
+const V4: &str = "
+ALTER TABLE projects ADD COLUMN root_path TEXT;
+ALTER TABLE projects ADD COLUMN position INTEGER;
+";
+
 pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if found > SCHEMA_VERSION {
@@ -87,6 +94,9 @@ pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
     }
     if found < 3 {
         conn.execute_batch(&format!("BEGIN; {V3} PRAGMA user_version = 3; COMMIT;"))?;
+    }
+    if found < 4 {
+        conn.execute_batch(&format!("BEGIN; {V4} PRAGMA user_version = 4; COMMIT;"))?;
     }
     Ok(())
 }

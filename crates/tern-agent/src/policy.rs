@@ -78,6 +78,10 @@ pub struct PolicyConfig {
     pub modes: BTreeMap<EffectClass, Mode>,
     /// How long a session grant lasts.
     pub session_grant_minutes: i64,
+    /// Per-tool modes that override the tool's effect class (an MCP tool
+    /// the user set to always ask, allow, or refuse). Keyed by tool name.
+    #[serde(default)]
+    pub tool_modes: BTreeMap<String, Mode>,
 }
 
 impl Default for PolicyConfig {
@@ -98,6 +102,7 @@ impl Default for PolicyConfig {
         Self {
             modes,
             session_grant_minutes: 30,
+            tool_modes: BTreeMap::new(),
         }
     }
 }
@@ -110,6 +115,14 @@ impl PolicyConfig {
     pub fn with_mode(mut self, class: EffectClass, mode: Mode) -> Self {
         self.modes.insert(class, mode);
         self
+    }
+
+    /// The mode for one call: the tool's own setting, else its class's.
+    pub fn mode_for(&self, tool: &str, class: EffectClass) -> Mode {
+        self.tool_modes
+            .get(tool)
+            .copied()
+            .unwrap_or_else(|| self.mode(class))
     }
 }
 
@@ -148,17 +161,29 @@ impl PolicyGate {
         &self.config
     }
 
+    /// Sets one tool's own mode (MCP tools), overriding its class.
+    pub fn set_tool_mode(&mut self, tool: &str, mode: Mode) {
+        self.config.tool_modes.insert(tool.to_owned(), mode);
+    }
+
     /// Decides one call. Pure apart from dropping expired grants.
     pub fn check(&mut self, call: &CallView<'_>) -> Decision {
         let now = (self.clock)();
         self.grants.retain(|g| g.expires.is_none_or(|t| t > now));
-        match self.config.mode(call.effect) {
+        let own = self.config.tool_modes.contains_key(call.tool);
+        match self.config.mode_for(call.tool, call.effect) {
+            Mode::Deny if own => Decision::Deny {
+                reason: format!("Your settings refuse `{}`, so it did not run.", call.tool),
+            },
             Mode::Deny => Decision::Deny {
                 reason: format!(
                     "Your settings refuse {} steps, so `{}` did not run.",
                     call.effect.label(),
                     call.tool
                 ),
+            },
+            Mode::Allow if own => Decision::Allow {
+                because: format!("you allowed `{}`", call.tool),
             },
             Mode::Allow => Decision::Allow {
                 because: format!("{} steps are allowed", call.effect.label()),
@@ -255,6 +280,21 @@ mod tests {
             target,
             args,
         }
+    }
+
+    #[test]
+    fn a_tool_mode_overrides_its_class() {
+        let mut g = PolicyGate::default();
+        let a = json!({});
+        let c = call("mcp__notes__search", EffectClass::ExternalSideEffect, None, &a);
+        assert_eq!(g.check(&c), Decision::Ask);
+        g.set_tool_mode("mcp__notes__search", Mode::Allow);
+        assert!(matches!(g.check(&c), Decision::Allow { because } if because.contains("you allowed")));
+        g.set_tool_mode("mcp__notes__search", Mode::Deny);
+        assert!(matches!(g.check(&c), Decision::Deny { .. }));
+        // Other tools of the class are untouched.
+        let other = call("mcp__x__y", EffectClass::ExternalSideEffect, None, &a);
+        assert_eq!(g.check(&other), Decision::Ask);
     }
 
     #[test]
