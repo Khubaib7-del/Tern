@@ -1144,20 +1144,40 @@ impl Workspace {
                         "Research modes"
                     }),
             )
-            .children(
-                Mode::for_harness(harness)
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &m)| {
+            .child({
+                // The current mode's highlight slides to a newly picked row.
+                const ROW_H: f32 = 44.;
+                let modes = Mode::for_harness(harness);
+                let at = self.glide(
+                    "mode-menu",
+                    modes.iter().position(|&m| m == current).unwrap_or(0) as f32,
+                );
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(at * ROW_H))
+                            .h(px(ROW_H))
+                            .rounded_md()
+                            .bg(p.hover),
+                    )
+                    .children(modes.iter().enumerate().map(|(i, &m)| {
                         Self::menu_row(
                             ("mode-item", i),
                             icon(mode_icon(m), p.muted),
                             m.name().into(),
                             m.line().into(),
-                            m == current,
+                            false,
                             true,
                             p,
                         )
+                        .h(px(ROW_H))
+                        .when(m == current, |d| d.child(icon(AssetIcon::Check, p.text)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let chat = this
                                 .session
@@ -1167,8 +1187,8 @@ impl Workspace {
                             this.model.set_mode(m, chat.as_deref());
                             cx.notify();
                         }))
-                    }),
-            )
+                    }))
+            })
             .into_any_element()
     }
 

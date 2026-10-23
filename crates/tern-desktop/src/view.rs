@@ -1555,35 +1555,38 @@ impl Workspace {
 
     fn title_bar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let harness = self.model.harness;
-        let pill = |id: &'static str, label: &'static str, h: Harness, cx: &mut Context<Self>| {
-            let selected = harness == h;
-            div()
-                .id(id)
-                .px_3()
-                .py(px(3.))
-                .rounded_md()
-                .text_sm()
-                .cursor_pointer()
-                .text_color(if selected { p.text } else { p.muted })
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .when(selected, |d| d.bg(p.hover))
-                .hover(|d| d.text_color(p.text))
-                .when(selected, |d| {
-                    let glyph = if h == Harness::Study {
-                        "study"
-                    } else {
-                        "research"
-                    };
-                    d.children(
-                        assets::glyph(glyph)
-                            .map(|path| svg().path(path).size(px(12.)).text_color(p.accent)),
-                    )
-                })
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.choose_harness(h, cx)))
-        };
+        let hs = [Harness::Research, Harness::Study];
+        let segs: Vec<segmented::Segment> = hs
+            .iter()
+            .map(|&h| segmented::Segment {
+                label: if h == Harness::Study {
+                    "Study"
+                } else {
+                    "Research"
+                }
+                .into(),
+                glyph: assets::glyph(if h == Harness::Study {
+                    "study"
+                } else {
+                    "research"
+                }),
+            })
+            .collect();
+        let switch = self.segmented(
+            "harness",
+            &segs,
+            hs.iter().position(|&h| h == harness).unwrap_or(0),
+            segmented::Look {
+                framed: true,
+                fill: false,
+                small: true,
+            },
+            p,
+            std::rc::Rc::new(move |this: &mut Self, i, _, cx| {
+                this.choose_harness(hs[i], cx);
+            }),
+            cx,
+        );
         TitleBar::new().child(
             div()
                 .flex()
@@ -1616,18 +1619,7 @@ impl Workspace {
                         .child(div().occlude().child(self.workspace_button(p, cx)))
                         .children(self.git_chip(p, cx)),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .gap_1()
-                        .occlude()
-                        .p(px(2.))
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(p.border)
-                        .child(pill("harness-research", "Research", Harness::Research, cx))
-                        .child(pill("harness-study", "Study", Harness::Study, cx)),
-                )
+                .child(div().occlude().child(switch))
                 .child(
                     div()
                         .flex()
