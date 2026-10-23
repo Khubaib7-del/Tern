@@ -216,7 +216,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn set_customize_tab(&mut self, tab: CustomizeTab, cx: &mut Context<Self>) {
+    pub(super) fn set_customize_tab(&mut self, tab: CustomizeTab, cx: &mut Context<Self>) {
         self.model.customize.tab = tab;
         match tab {
             CustomizeTab::Providers if !self.model.providers.loaded => self.bridge.load_providers(),
@@ -247,13 +247,17 @@ impl Workspace {
     }
 
     pub(super) fn on_ext(&mut self, m: ExtMsg, cx: &mut Context<Self>) {
-        let c = &mut self.model.customize;
         let note = |n: Option<String>| {
             n.map(|n| match n.strip_prefix("! ") {
                 Some(e) => Note::Failed(e.to_owned()),
                 None => Note::Ok(n),
             })
         };
+        if matches!(m, ExtMsg::Loaded(..)) {
+            // Servers or their switches may have changed.
+            self.bridge.mcp_menu();
+        }
+        let c = &mut self.model.customize;
         match m {
             ExtMsg::Loaded(r, n) => {
                 c.loaded = true;
@@ -269,6 +273,12 @@ impl Workspace {
                 }
                 c.skill_preview = None;
             }
+            ExtMsg::Menu(m) => {
+                self.model.mcp_offers = m.items;
+            }
+            ExtMsg::Resource(r) => self.model.resource_ready(*r),
+            // Handled with the window in `on_msg`.
+            ExtMsg::Prompt(_) => {}
             ExtMsg::Health(h) => c.checked(h),
             ExtMsg::Preview(p) => {
                 c.previewing = None;
@@ -711,7 +721,7 @@ impl Workspace {
             let detail = match health {
                 Some(h) if h.error.is_some() => h.error.clone().unwrap_or_default(),
                 Some(h) => format!(
-                    "{} · start {} · ping {} · {} tools{}",
+                    "{} · start {} · ping {} · {} tools · {} prompts · {} resources{}",
                     h.state.label(),
                     h.start_ms
                         .map(|v| format!("{v} ms"))
@@ -720,6 +730,8 @@ impl Workspace {
                         .map(|v| format!("{v} ms"))
                         .unwrap_or_else(|| "—".into()),
                     h.tools,
+                    h.prompts,
+                    h.resources,
                     h.protocol
                         .as_deref()
                         .map(|p| format!(" · MCP {p}"))
@@ -1032,7 +1044,7 @@ impl Workspace {
         }
         if pv.changed {
             card = card.child(flag_line(
-                "Its tools changed since you trusted it; they are off until you trust them again",
+                "Its tools, prompts, or resources changed since you trusted it; it is off until you trust it again",
                 "",
                 true,
                 p,
@@ -1081,6 +1093,109 @@ impl Workspace {
                             .child(SharedString::from(t.description.clone())),
                     )
                     .children(t.flags.iter().map(|f| {
+                        flag_line(&f.reason, &f.excerpt, f.severity == Severity::Danger, p)
+                    })),
+            );
+        }
+        if !pv.prompts.is_empty() {
+            card = card.child(
+                div()
+                    .pt_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child("Prompts (offered in the composer's / menu; you read their text before anything is sent)"),
+            );
+        }
+        for x in &pv.prompts {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_family(MONO_FONT)
+                                    .child(SharedString::from(format!("/{}", x.name))),
+                            )
+                            .when(!x.args.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(p.faint)
+                                        .child(SharedString::from(x.args.join(", "))),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(SharedString::from(x.description.clone())),
+                    )
+                    .children(x.flags.iter().map(|f| {
+                        flag_line(&f.reason, &f.excerpt, f.severity == Severity::Danger, p)
+                    })),
+            );
+        }
+        if !pv.resources.is_empty() {
+            card = card.child(
+                div()
+                    .pt_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child("Resources (attached with @ as Context, wrapped as untrusted data)"),
+            );
+        }
+        for r in &pv.resources {
+            card = card.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().child(SharedString::from(r.name.clone())))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(MONO_FONT)
+                                    .text_color(p.faint)
+                                    .child(SharedString::from(if r.template {
+                                        format!("template {}", r.uri)
+                                    } else {
+                                        r.uri.clone()
+                                    })),
+                            ),
+                    )
+                    .when(!r.description.trim().is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child(SharedString::from(r.description.clone())),
+                        )
+                    })
+                    .children(r.flags.iter().map(|f| {
                         flag_line(&f.reason, &f.excerpt, f.severity == Severity::Danger, p)
                     })),
             );
@@ -1291,6 +1406,33 @@ impl Workspace {
                         )
                     }),
             );
+        }
+        if !e.offers.is_empty() {
+            col = col
+                .child(
+                    div()
+                        .pt_2()
+                        .text_sm()
+                        .text_color(p.text)
+                        .child(SharedString::from(format!(
+                            "MCP prompts and resources ({})",
+                            e.offers.len()
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child("Not in the prompt. You add one to a message with / or @; the model sees it only then."),
+                )
+                .children(e.offers.iter().map(|o| {
+                    div()
+                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_color(p.muted)
+                        .whitespace_normal()
+                        .child(SharedString::from(o.clone()))
+                }));
         }
         for n in &e.notes {
             col = col.child(flag_line(n, "", false, p));

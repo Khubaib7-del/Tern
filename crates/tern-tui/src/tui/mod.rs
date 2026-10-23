@@ -23,9 +23,14 @@ use tokio::sync::{mpsc, oneshot};
 use app::{Action, App};
 
 enum Msg {
-    Event { kind: String, summary: String },
+    Event {
+        kind: String,
+        summary: String,
+    },
     Approval(ApprovalRequest, oneshot::Sender<ApprovalAnswer>),
     Done(Box<ChatSession>, TurnOutcome, Usage),
+    /// An MCP prompt filled in by its server, for the composer.
+    Prompt(Result<tern_agent::mcp::Inserted, String>),
 }
 
 /// Sends approval requests to the UI and waits for the key the user presses.
@@ -50,6 +55,8 @@ pub fn run(rt: &tokio::runtime::Runtime, opts: ChatOptions) -> Result<(), String
     let session = rt.block_on(ChatSession::open(opts))?;
     let mut app = App::new(session.provider_name(), session.model());
     app.search = session.search_name();
+    app.slash
+        .extend(app::SlashItem::prompts(session.mcp_offers()));
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableBracketedPaste);
     let result = event_loop(rt, &mut terminal, &mut app, session);
@@ -111,6 +118,24 @@ fn event_loop(
                     }
                     app.approval_answered();
                 }
+                Action::Prompt {
+                    server,
+                    prompt,
+                    args,
+                } => {
+                    let tx = tx.clone();
+                    rt.spawn(async move {
+                        let args = args.into_iter().collect();
+                        let r = match tern_agent::mcp::McpConfig::load() {
+                            Ok(cfg) => {
+                                tern_agent::mcp::catalog::prompt(&cfg, &server, &prompt, &args)
+                                    .await
+                            }
+                            Err(e) => Err(e),
+                        };
+                        let _ = tx.send(Msg::Prompt(r));
+                    });
+                }
                 Action::Send(text) => {
                     if let Some(mut s) = session.take() {
                         app.start_turn(text.clone());
@@ -154,6 +179,7 @@ fn event_loop(
                     app.finish_turn(&out, usage);
                     session = Some(*s);
                 }
+                Msg::Prompt(r) => app.insert_prompt(r),
             }
         }
     }

@@ -9,10 +9,17 @@
 //! first, and a reply that is not a modern JSON-RPC error means a legacy
 //! server.
 //!
-//! Tern uses tools only. It offers no client capabilities (no roots,
-//! sampling, or elicitation), so a server request for one is answered
-//! with "method not found", and a multi round-trip result asking for
-//! input is reported as an error.
+//! Tern uses tools, prompts, and resources. It offers no client
+//! capabilities (no roots, sampling, or elicitation), so a server request
+//! for one is answered with "method not found", and a multi round-trip
+//! result asking for input is reported as an error.
+//!
+//! List changes: a legacy server sends `notifications/*/list_changed` on
+//! its own; a modern stdio server sends them on a `subscriptions/listen`
+//! stream Tern opens when the server says its lists change. Either way the
+//! cached catalog ([`McpClient::catalog`]) is read again on next use. Over
+//! HTTP Tern opens no long-lived stream, so the catalog is simply re-read
+//! after a short while.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,6 +87,169 @@ pub struct ServerInfo {
     /// descriptions: shown in the trust preview, never put in the prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    /// The server offers prompts (`capabilities.prompts`).
+    pub prompts: bool,
+    /// The server offers resources (`capabilities.resources`).
+    pub resources: bool,
+    /// The server says its prompt list changes (`prompts.listChanged`).
+    pub prompts_change: bool,
+    /// The server says its resource list changes (`resources.listChanged`).
+    pub resources_change: bool,
+    /// The server says its tool list changes (`tools.listChanged`).
+    pub tools_change: bool,
+}
+
+impl ServerInfo {
+    fn read_caps(&mut self, caps: &Value) {
+        self.prompts = caps.get("prompts").is_some_and(|v| !v.is_null());
+        self.resources = caps.get("resources").is_some_and(|v| !v.is_null());
+        self.prompts_change = caps["prompts"]["listChanged"].as_bool().unwrap_or(false);
+        self.resources_change = caps["resources"]["listChanged"].as_bool().unwrap_or(false);
+        self.tools_change = caps["tools"]["listChanged"].as_bool().unwrap_or(false);
+    }
+}
+
+/// One argument a prompt takes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PromptArg {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub description: String,
+    pub required: bool,
+}
+
+/// One prompt as the server lists it. Its text is the server's: shown to
+/// the user, never sent on its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PromptInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub description: String,
+    pub arguments: Vec<PromptArg>,
+}
+
+/// A prompt filled in by the server (`prompts/get`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PromptText {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// `(role, text)` per message, in order.
+    pub messages: Vec<(String, String)>,
+}
+
+impl PromptText {
+    /// The text that goes into the composer: one user message as is;
+    /// several messages each under its role.
+    pub fn to_composer(&self) -> String {
+        match self.messages.as_slice() {
+            [] => String::new(),
+            [(role, text)] if role == "user" => text.trim().to_owned(),
+            all => all
+                .iter()
+                .map(|(r, t)| format!("[{r}]\n{}", t.trim()))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        }
+    }
+}
+
+/// One resource as the server lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ResourceInfo {
+    pub uri: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// A resource template (`file:///{path}`): an address with parts the
+/// user fills in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct TemplateInfo {
+    pub uri_template: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
+}
+
+/// One part of a read resource.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResourcePart {
+    Text {
+        uri: String,
+        mime: Option<String>,
+        text: String,
+    },
+    Blob {
+        uri: String,
+        mime: Option<String>,
+        bytes: Vec<u8>,
+    },
+}
+
+/// Everything a server offers: tools, prompts, resources, templates.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Catalog {
+    pub tools: Vec<ToolInfo>,
+    pub prompts: Vec<PromptInfo>,
+    pub resources: Vec<ResourceInfo>,
+    pub templates: Vec<TemplateInfo>,
+}
+
+/// Counters bumped by list-change notifications, so cached lists know
+/// they are stale.
+#[derive(Debug, Default)]
+pub struct Changes {
+    tools: AtomicU64,
+    prompts: AtomicU64,
+    resources: AtomicU64,
+    /// URIs a server said changed (`notifications/resources/updated`).
+    updated: std::sync::Mutex<Vec<String>>,
+}
+
+impl Changes {
+    fn note(&self, method: &str, params: &Value) {
+        match method {
+            "notifications/tools/list_changed" => {
+                self.tools.fetch_add(1, Ordering::Relaxed);
+            }
+            "notifications/prompts/list_changed" => {
+                self.prompts.fetch_add(1, Ordering::Relaxed);
+            }
+            "notifications/resources/list_changed" => {
+                self.resources.fetch_add(1, Ordering::Relaxed);
+            }
+            "notifications/resources/updated" => {
+                if let Some(u) = params["uri"].as_str() {
+                    let mut v = self.updated.lock().expect("updated");
+                    if !v.iter().any(|x| x == u) {
+                        v.push(u.to_owned());
+                    }
+                    if v.len() > 100 {
+                        v.remove(0);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// One number that moves whenever any list changes.
+    pub fn generation(&self) -> u64 {
+        self.tools.load(Ordering::Relaxed)
+            + self.prompts.load(Ordering::Relaxed)
+            + self.resources.load(Ordering::Relaxed)
+    }
 }
 
 /// One tool as the server lists it.
@@ -130,7 +300,7 @@ struct StdioWire {
 }
 
 impl StdioWire {
-    fn spawn(cfg: &ServerConfig) -> Result<Self, McpError> {
+    fn spawn(cfg: &ServerConfig, changes: Arc<Changes>) -> Result<Self, McpError> {
         let command = cfg
             .command
             .as_deref()
@@ -171,7 +341,7 @@ impl StdioWire {
                     let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
                         continue;
                     };
-                    route(&msg, &pending, |reply| {
+                    route(&msg, &pending, &changes, |reply| {
                         let stdin = stdin.clone();
                         tokio::spawn(async move {
                             let mut w = stdin.lock().await;
@@ -217,7 +387,7 @@ impl StdioWire {
 
 /// Hands a response to its waiting request, or answers a server request
 /// Tern does not support.
-fn route(msg: &Value, pending: &Pending, reply: impl Fn(Value)) {
+fn route(msg: &Value, pending: &Pending, changes: &Changes, reply: impl Fn(Value)) {
     let id = msg.get("id").filter(|v| !v.is_null());
     let is_response = msg.get("result").is_some() || msg.get("error").is_some();
     match (id, is_response, msg.get("method")) {
@@ -231,7 +401,9 @@ fn route(msg: &Value, pending: &Pending, reply: impl Fn(Value)) {
             "id": id,
             "error": {"code": -32601, "message": "Tern does not offer this to MCP servers"}
         })),
-        // Notifications (progress, logs, list changes) are not used yet.
+        // List changes mark the cached catalog stale; progress and logs
+        // are not used.
+        (None, false, Some(m)) => changes.note(m.as_str().unwrap_or_default(), &msg["params"]),
         _ => {}
     }
 }
@@ -310,10 +482,11 @@ struct HttpWire {
     version: std::sync::Mutex<Option<String>>,
     /// The legacy era's session, when the server assigned one.
     session: std::sync::Mutex<Option<String>>,
+    changes: Arc<Changes>,
 }
 
 impl HttpWire {
-    fn new(cfg: &ServerConfig) -> Result<Self, McpError> {
+    fn new(cfg: &ServerConfig, changes: Arc<Changes>) -> Result<Self, McpError> {
         let url = cfg
             .url
             .clone()
@@ -329,6 +502,7 @@ impl HttpWire {
                 .collect(),
             version: std::sync::Mutex::new(Some(LATEST.into())),
             session: std::sync::Mutex::new(None),
+            changes,
         })
     }
 
@@ -384,8 +558,12 @@ impl HttpWire {
         }
         let id = &msg["id"];
         let found = if sse {
-            sse_messages(&body)
-                .into_iter()
+            let all = sse_messages(&body);
+            for m in all.iter().filter(|m| m.get("id").is_none()) {
+                self.changes
+                    .note(m["method"].as_str().unwrap_or_default(), &m["params"]);
+            }
+            all.into_iter()
                 .find(|m| &m["id"] == id && (m.get("result").is_some() || m.get("error").is_some()))
         } else {
             serde_json::from_str::<Value>(&body).ok()
@@ -511,6 +689,11 @@ pub struct McpClient {
     timeout: Duration,
     /// When the connection was made, for health checks.
     pub started: Duration,
+    changes: Arc<Changes>,
+    /// List changes reach Tern (stdio), so the catalog cache can be kept
+    /// until one arrives.
+    pushed: bool,
+    cache: std::sync::Mutex<Option<(u64, Instant, Catalog)>>,
 }
 
 impl std::fmt::Debug for McpClient {
@@ -551,13 +734,37 @@ fn result_of(resp: Value) -> Result<Value, McpError> {
     Ok(r)
 }
 
+/// A prompt message's content block as text.
+fn content_text(c: &Value) -> Option<String> {
+    match c["type"].as_str()? {
+        "text" => c["text"].as_str().map(str::to_owned),
+        "resource" => {
+            let res = &c["resource"];
+            let uri = res["uri"].as_str().unwrap_or("");
+            Some(match res["text"].as_str() {
+                Some(t) => format!("[resource {uri}]\n{t}"),
+                None => format!("[binary resource {uri} not inserted]"),
+            })
+        }
+        "resource_link" => Some(format!(
+            "[link] {} {}",
+            c["name"].as_str().unwrap_or(""),
+            c["uri"].as_str().unwrap_or("")
+        )),
+        kind @ ("image" | "audio") => Some(format!("[{kind} in the prompt; not inserted]")),
+        _ => None,
+    }
+}
+
 impl McpClient {
     /// Starts or reaches the server and agrees on a protocol version.
     pub async fn connect(cfg: &ServerConfig) -> Result<Self, McpError> {
         let t0 = Instant::now();
-        let wire: Box<dyn Wire> = match cfg.transport().map_err(McpError::Start)? {
-            Transport::Stdio => Box::new(StdioWire::spawn(cfg)?),
-            Transport::Http => Box::new(HttpWire::new(cfg)?),
+        let changes = Arc::new(Changes::default());
+        let transport = cfg.transport().map_err(McpError::Start)?;
+        let wire: Box<dyn Wire> = match transport {
+            Transport::Stdio => Box::new(StdioWire::spawn(cfg, changes.clone())?),
+            Transport::Http => Box::new(HttpWire::new(cfg, changes.clone())?),
         };
         let mut c = Self {
             wire,
@@ -566,10 +773,14 @@ impl McpClient {
             next: AtomicU64::new(1),
             timeout: cfg.timeout(),
             started: Duration::ZERO,
+            changes,
+            pushed: transport == Transport::Stdio,
+            cache: std::sync::Mutex::new(None),
         };
         match c.handshake().await {
             Ok(()) => {
                 c.started = t0.elapsed();
+                c.listen().await;
                 Ok(c)
             }
             Err(e) => {
@@ -604,7 +815,9 @@ impl McpClient {
                             version: si["version"].as_str().unwrap_or_default().to_owned(),
                             protocol: LATEST.into(),
                             instructions: r["instructions"].as_str().map(str::to_owned),
+                            ..Default::default()
                         };
+                        self.info.read_caps(&r["capabilities"]);
                         return Ok(());
                     }
                     if versions.iter().any(|v| LEGACY.contains(v)) {
@@ -666,7 +879,9 @@ impl McpClient {
                 .to_owned(),
             protocol: v,
             instructions: r["instructions"].as_str().map(str::to_owned),
+            ..Default::default()
         };
+        self.info.read_caps(&r["capabilities"]);
         self.wire
             .notify(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
             .await
@@ -697,8 +912,9 @@ impl McpClient {
         &self.info
     }
 
-    /// Every tool, following `nextCursor` (at most 50 pages).
-    pub async fn list_tools(&self) -> Result<Vec<ToolInfo>, McpError> {
+    /// Every item of a list method, following `nextCursor` (at most 50
+    /// pages).
+    async fn list_all(&self, method: &str, key: &str) -> Result<Vec<Value>, McpError> {
         let mut out = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..50 {
@@ -706,16 +922,29 @@ impl McpClient {
                 Some(c) => json!({"cursor": c}),
                 None => json!({}),
             };
-            let r = self.rpc("tools/list", params).await?;
-            let tools = r["tools"]
+            let r = self.rpc(method, params).await?;
+            let items = r[key]
                 .as_array()
-                .ok_or_else(|| McpError::Protocol("tools/list has no `tools`".into()))?;
-            for t in tools {
-                let Some(name) = t["name"].as_str() else {
-                    continue;
-                };
+                .ok_or_else(|| McpError::Protocol(format!("{method} has no `{key}`")))?;
+            out.extend(items.iter().cloned());
+            cursor = r["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every tool.
+    pub async fn list_tools(&self) -> Result<Vec<ToolInfo>, McpError> {
+        Ok(self
+            .list_all("tools/list", "tools")
+            .await?
+            .iter()
+            .filter_map(|t| {
+                let name = t["name"].as_str()?;
                 let ann = &t["annotations"];
-                out.push(ToolInfo {
+                Some(ToolInfo {
                     name: name.to_owned(),
                     title: t["title"]
                         .as_str()
@@ -728,14 +957,234 @@ impl McpClient {
                         .unwrap_or_else(|| json!({"type": "object"})),
                     read_only: ann["readOnlyHint"].as_bool().unwrap_or(false),
                     destructive: ann["destructiveHint"].as_bool().unwrap_or(false),
+                })
+            })
+            .collect())
+    }
+
+    /// A list the server may not offer: empty when it did not declare the
+    /// capability or answers "method not found".
+    async fn optional_list(
+        &self,
+        offered: bool,
+        method: &str,
+        key: &str,
+    ) -> Result<Vec<Value>, McpError> {
+        if !offered {
+            return Ok(Vec::new());
+        }
+        match self.list_all(method, key).await {
+            Err(McpError::Rpc { code: -32601, .. }) => Ok(Vec::new()),
+            r => r,
+        }
+    }
+
+    /// Every prompt (none when the server offers no prompts).
+    pub async fn list_prompts(&self) -> Result<Vec<PromptInfo>, McpError> {
+        Ok(self
+            .optional_list(self.info.prompts, "prompts/list", "prompts")
+            .await?
+            .iter()
+            .filter_map(|p| {
+                Some(PromptInfo {
+                    name: p["name"].as_str()?.to_owned(),
+                    title: p["title"].as_str().map(str::to_owned),
+                    description: p["description"].as_str().unwrap_or_default().to_owned(),
+                    arguments: p["arguments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|a| {
+                            Some(PromptArg {
+                                name: a["name"].as_str()?.to_owned(),
+                                title: a["title"].as_str().map(str::to_owned),
+                                description: a["description"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                required: a["required"].as_bool().unwrap_or(false),
+                            })
+                        })
+                        .collect(),
+                })
+            })
+            .collect())
+    }
+
+    /// Every resource (none when the server offers no resources).
+    pub async fn list_resources(&self) -> Result<Vec<ResourceInfo>, McpError> {
+        Ok(self
+            .optional_list(self.info.resources, "resources/list", "resources")
+            .await?
+            .iter()
+            .filter_map(|r| {
+                let uri = r["uri"].as_str()?.to_owned();
+                Some(ResourceInfo {
+                    name: r["name"].as_str().unwrap_or(&uri).to_owned(),
+                    title: r["title"].as_str().map(str::to_owned),
+                    description: r["description"].as_str().unwrap_or_default().to_owned(),
+                    mime: r["mimeType"].as_str().map(str::to_owned),
+                    size: r["size"].as_u64(),
+                    uri,
+                })
+            })
+            .collect())
+    }
+
+    /// Every resource template.
+    pub async fn list_templates(&self) -> Result<Vec<TemplateInfo>, McpError> {
+        Ok(self
+            .optional_list(
+                self.info.resources,
+                "resources/templates/list",
+                "resourceTemplates",
+            )
+            .await?
+            .iter()
+            .filter_map(|t| {
+                let tpl = t["uriTemplate"].as_str()?.to_owned();
+                Some(TemplateInfo {
+                    name: t["name"].as_str().unwrap_or(&tpl).to_owned(),
+                    title: t["title"].as_str().map(str::to_owned),
+                    description: t["description"].as_str().unwrap_or_default().to_owned(),
+                    mime: t["mimeType"].as_str().map(str::to_owned),
+                    uri_template: tpl,
+                })
+            })
+            .collect())
+    }
+
+    /// Tools, prompts, resources, and templates, from the cache while no
+    /// list change has arrived (stdio) or for 30 seconds (HTTP).
+    pub async fn catalog(&self) -> Result<Catalog, McpError> {
+        let generation = self.changes.generation();
+        let ttl = if self.pushed {
+            Duration::from_secs(600)
+        } else {
+            Duration::from_secs(30)
+        };
+        if let Some((g, at, c)) = self.cache.lock().expect("cache").as_ref()
+            && *g == generation
+            && at.elapsed() < ttl
+        {
+            return Ok(c.clone());
+        }
+        let (tools, prompts, resources, templates) = futures::join!(
+            self.list_tools(),
+            self.list_prompts(),
+            self.list_resources(),
+            self.list_templates()
+        );
+        let c = Catalog {
+            tools: tools?,
+            prompts: prompts?,
+            resources: resources?,
+            templates: templates?,
+        };
+        *self.cache.lock().expect("cache") = Some((generation, Instant::now(), c.clone()));
+        Ok(c)
+    }
+
+    /// The counters list changes bump, and the URIs reported updated.
+    pub fn changes(&self) -> &Changes {
+        &self.changes
+    }
+
+    /// URIs the server said changed since the last call.
+    pub fn take_updated(&self) -> Vec<String> {
+        std::mem::take(&mut *self.changes.updated.lock().expect("updated"))
+    }
+
+    /// Fills in a prompt. Text and embedded text resources come back as
+    /// text; pictures and audio are named, not passed on.
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        args: &std::collections::BTreeMap<String, String>,
+    ) -> Result<PromptText, McpError> {
+        let r = self
+            .rpc("prompts/get", json!({"name": name, "arguments": args}))
+            .await?;
+        let messages = r["messages"]
+            .as_array()
+            .ok_or_else(|| McpError::Protocol("prompts/get has no `messages`".into()))?
+            .iter()
+            .map(|m| {
+                let role = m["role"].as_str().unwrap_or("user").to_owned();
+                // One content block per message; some servers send a list.
+                let blocks: Vec<&Value> = match &m["content"] {
+                    Value::Array(a) => a.iter().collect(),
+                    v => vec![v],
+                };
+                let text = blocks
+                    .into_iter()
+                    .filter_map(content_text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                (role, text)
+            })
+            .collect();
+        Ok(PromptText {
+            description: r["description"].as_str().map(str::to_owned),
+            messages,
+        })
+    }
+
+    /// Reads a resource: text parts as text, binary parts decoded.
+    pub async fn read_resource(&self, uri: &str) -> Result<Vec<ResourcePart>, McpError> {
+        use base64::Engine as _;
+        let r = self.rpc("resources/read", json!({"uri": uri})).await?;
+        let contents = r["contents"]
+            .as_array()
+            .ok_or_else(|| McpError::Protocol("resources/read has no `contents`".into()))?;
+        let mut out = Vec::new();
+        for c in contents {
+            let uri = c["uri"].as_str().unwrap_or(uri).to_owned();
+            let mime = c["mimeType"].as_str().map(str::to_owned);
+            if let Some(t) = c["text"].as_str() {
+                out.push(ResourcePart::Text {
+                    uri,
+                    mime,
+                    text: t.to_owned(),
                 });
-            }
-            cursor = r["nextCursor"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
+            } else if let Some(b) = c["blob"].as_str() {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b.trim())
+                    .map_err(|e| McpError::Protocol(format!("a blob is not base64: {e}")))?;
+                out.push(ResourcePart::Blob { uri, mime, bytes });
             }
         }
         Ok(out)
+    }
+
+    /// Opens the modern era's change stream on stdio, for the lists the
+    /// server says change. Its notifications arrive like any other; the
+    /// request itself is never answered while the stream is open.
+    async fn listen(&self) {
+        if self.era != Era::Modern || !self.pushed {
+            return;
+        }
+        let i = &self.info;
+        if !(i.tools_change || i.prompts_change || i.resources_change) {
+            return;
+        }
+        let id = format!("listen-{}", self.next.fetch_add(1, Ordering::Relaxed));
+        let _ = self
+            .wire
+            .notify(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "subscriptions/listen",
+                "params": {
+                    "_meta": modern_meta(),
+                    "notifications": {
+                        "toolsListChanged": i.tools_change,
+                        "promptsListChanged": i.prompts_change,
+                        "resourcesListChanged": i.resources_change,
+                    }
+                }
+            }))
+            .await;
     }
 
     /// Calls a tool. Text, resource text, and structured content come back

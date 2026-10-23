@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tern_agent::attach::{self, Attachment, Chip, Role};
+use tern_agent::mcp::ItemKind;
 use tern_agent::sources::{page_of, push_unique};
 use tern_agent::{
     ApprovalRequest, ContextUse, Harness, PageRef, PastTurn, RawFilter, ResearchPlan, Run,
@@ -145,6 +146,8 @@ pub struct MentionMenu {
 pub enum Pick {
     Attachment(usize),
     Source(PageRef),
+    /// A resource or template an MCP server offers.
+    Resource(Box<tern_agent::mcp::MenuItem>),
     /// Opens the file and folder picker.
     Browse,
 }
@@ -162,6 +165,21 @@ pub struct Candidate {
 pub struct Chosen {
     pub text: String,
     pub browse: bool,
+    /// An MCP resource to read and attach.
+    pub fetch: Option<(String, String)>,
+}
+
+/// What choosing a `/` row asks the window to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlashChosen {
+    /// Run one of Tern's commands; the composer is cleared.
+    Command(crate::commands::TernCommand),
+    /// Put this text in the composer.
+    Text(String),
+    /// Ask the server to fill in this prompt with these arguments.
+    Prompt(String, String, std::collections::BTreeMap<String, String>),
+    /// The argument form opened; the composer is cleared.
+    Form,
 }
 
 const MENU_ROWS: usize = 8;
@@ -264,6 +282,14 @@ pub struct Model {
     pub outgoing_images: Vec<tern_agent::ImageInput>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The `/` menu over the composer, while a command is being typed.
+    pub slash: Option<crate::commands::SlashMenu>,
+    /// The form a prompt's arguments or a template's parts are typed into.
+    pub arg_form: Option<crate::commands::ArgForm>,
+    /// The composer holds text an MCP server wrote.
+    pub inserted: Option<crate::commands::InsertedBanner>,
+    /// The prompts and resources the chat's MCP servers offer.
+    pub mcp_offers: Vec<tern_agent::mcp::MenuItem>,
     /// The built-in browser pane.
     pub browser: crate::browser::BrowserState,
     /// The Git screen.
@@ -351,6 +377,10 @@ impl Model {
             attachments: Vec::new(),
             outgoing_images: Vec::new(),
             mention: None,
+            slash: None,
+            arg_form: None,
+            inserted: None,
+            mcp_offers: Vec::new(),
             browser: crate::browser::BrowserState::default(),
             git: crate::git::GitState::default(),
             git_credit: false,
@@ -553,6 +583,8 @@ impl Model {
         let mut attachments = std::mem::take(&mut self.attachments);
         mention::apply(text, &mut attachments);
         self.mention = None;
+        self.slash = None;
+        self.inserted = None;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -634,8 +666,29 @@ impl Model {
             .count()
     }
 
-    /// The composer changed: opens, updates, or closes the `@` menu.
+    /// The composer changed: opens, updates, or closes the `/` and `@`
+    /// menus.
     pub fn on_composer_text(&mut self, text: &str) {
+        match crate::commands::active(text) {
+            Some(q) => {
+                let selected = match &self.slash {
+                    Some(m) if m.query == q => m.selected,
+                    _ => 0,
+                };
+                self.slash = Some(crate::commands::SlashMenu {
+                    query: q.to_owned(),
+                    selected,
+                });
+                let n = self.slash_rows().len();
+                if let Some(m) = &mut self.slash {
+                    m.selected = m.selected.min(n.saturating_sub(1));
+                }
+            }
+            None => self.slash = None,
+        }
+        if text.trim().is_empty() {
+            self.inserted = None;
+        }
         let Some(a) = mention::active(text) else {
             self.mention = None;
             return;
@@ -653,6 +706,96 @@ impl Model {
         let n = self.mention_candidates().len();
         if let Some(m) = &mut self.mention {
             m.selected = m.selected.min(n.saturating_sub(1));
+        }
+    }
+
+    /// The skills that are on, as `(name, description)`, for the `/` menu.
+    fn skill_rows(&self) -> Vec<(String, String)> {
+        self.customize
+            .skills
+            .enabled()
+            .map(|s| (s.name.clone(), s.description.clone()))
+            .collect()
+    }
+
+    /// The `/` menu's rows.
+    pub fn slash_rows(&self) -> Vec<crate::commands::SlashRow> {
+        match &self.slash {
+            Some(m) => crate::commands::rows(&m.query, &self.skill_rows(), &self.mcp_offers),
+            None => Vec::new(),
+        }
+    }
+
+    /// Moves the `/` highlight up (-1) or down (+1), wrapping.
+    pub fn move_slash(&mut self, delta: i32) {
+        let n = self.slash_rows().len() as i32;
+        if let Some(m) = &mut self.slash
+            && n > 0
+        {
+            m.selected = (m.selected as i32 + delta).rem_euclid(n) as usize;
+        }
+    }
+
+    /// Picks a `/` row (the highlighted one when `index` is `None`).
+    pub fn choose_slash(&mut self, index: Option<usize>) -> Option<SlashChosen> {
+        use crate::commands::{ArgForm, FormFor, SlashPick};
+        let m = self.slash.clone()?;
+        let row = self.slash_rows().get(index.unwrap_or(m.selected))?.clone();
+        self.slash = None;
+        Some(match row.pick {
+            SlashPick::Command(c) => SlashChosen::Command(c),
+            SlashPick::Skill(name) => SlashChosen::Text(format!("Use the {name} skill. ")),
+            SlashPick::Prompt(item) if item.args.is_empty() => {
+                SlashChosen::Prompt(item.server, item.name, Default::default())
+            }
+            SlashPick::Prompt(item) => {
+                self.arg_form = Some(ArgForm::new(*item, FormFor::Prompt));
+                SlashChosen::Form
+            }
+        })
+    }
+
+    /// A prompt came back from its server: its text replaces the composer
+    /// (the window does that) under a banner naming the server. Returns
+    /// the text, or `None` after noting why it failed.
+    pub fn prompt_ready(&mut self, r: Result<tern_agent::mcp::Inserted, String>) -> Option<String> {
+        match r {
+            Ok(ins) => {
+                let logo = self
+                    .mcp_offers
+                    .iter()
+                    .find(|i| i.server == ins.server)
+                    .map(crate::commands::server_logo)
+                    .unwrap_or(crate::commands::RowLogo::Server(
+                        crate::extensions::ServerGlyph::Terminal,
+                    ));
+                let text = ins.text.clone();
+                self.inserted = Some(crate::commands::InsertedBanner {
+                    inserted: ins,
+                    logo,
+                });
+                Some(text)
+            }
+            Err(e) => {
+                self.notice_line(format!("Tern could not get that prompt: {e}"));
+                None
+            }
+        }
+    }
+
+    /// A resource came back from its server: it joins the attachments as
+    /// Context.
+    pub fn resource_ready(&mut self, r: Result<Attachment, String>) {
+        self.attaching = self.attaching.saturating_sub(1);
+        match r {
+            Ok(a) => {
+                if !self.attachments.iter().any(|x| {
+                    x.source == attach::Source::Mcp && x.files == a.files && x.name == a.name
+                }) {
+                    self.attachments.push(a);
+                }
+            }
+            Err(e) => self.notice_line(format!("Tern could not read that resource: {e}")),
         }
     }
 
@@ -708,6 +851,32 @@ impl Model {
                 ));
             }
         }
+        for item in self
+            .mcp_offers
+            .iter()
+            .filter(|i| i.kind != ItemKind::Prompt)
+        {
+            let label = item.label().to_owned();
+            let attached = self
+                .attachments
+                .iter()
+                .any(|a| a.source == attach::Source::Mcp && a.name == label);
+            if !attached && (mention::matches(q, &label) || mention::matches(q, &item.name)) {
+                let what = if item.kind == ItemKind::Template {
+                    "template"
+                } else {
+                    "resource"
+                };
+                rows.push((
+                    mention::rank(q, &label).min(mention::rank(q, &item.name)) + 2,
+                    Candidate {
+                        pick: Pick::Resource(Box::new(item.clone())),
+                        detail: format!("{} · {what}", item.server),
+                        label,
+                    },
+                ));
+            }
+        }
         rows.sort_by_key(|(r, _)| *r);
         let mut out: Vec<Candidate> = rows
             .into_iter()
@@ -744,6 +913,26 @@ impl Model {
                 return Some(Chosen {
                     text: mention::clear_active(text),
                     browse: true,
+                    fetch: None,
+                });
+            }
+            Pick::Resource(item) if item.kind == ItemKind::Template => {
+                self.arg_form = Some(crate::commands::ArgForm::new(
+                    *item,
+                    crate::commands::FormFor::Resource,
+                ));
+                return Some(Chosen {
+                    text: mention::clear_active(text),
+                    browse: false,
+                    fetch: None,
+                });
+            }
+            Pick::Resource(item) => {
+                self.attaching += 1;
+                return Some(Chosen {
+                    text: mention::complete(text, item.label()),
+                    browse: false,
+                    fetch: Some((item.server.clone(), item.uri.clone())),
                 });
             }
             Pick::Attachment(i) => {
@@ -766,6 +955,7 @@ impl Model {
         Some(Chosen {
             text: mention::complete(text, &name),
             browse: false,
+            fetch: None,
         })
     }
 
@@ -805,7 +995,10 @@ impl Model {
 
     /// Switches an attachment between Context and Prompt.
     pub fn toggle_role(&mut self, i: usize) {
-        if let Some(a) = self.attachments.get_mut(i) {
+        // An MCP resource is the server's data: it stays Context.
+        if let Some(a) = self.attachments.get_mut(i)
+            && a.source != attach::Source::Mcp
+        {
             a.role = a.role.toggled();
         }
     }
@@ -1970,6 +2163,117 @@ mod tests {
         // Roles typed by hand apply on send.
         let msg = m.start_turn("Summarise with @context:rubric.md").unwrap();
         assert!(msg.contains(r#"name="rubric.md" role="context""#));
+    }
+
+    fn offer(kind: ItemKind, name: &str, uri: &str, args: &[&str]) -> tern_agent::mcp::MenuItem {
+        tern_agent::mcp::MenuItem {
+            server: "notes".into(),
+            kind,
+            name: name.into(),
+            title: None,
+            description: "From the notes server.".into(),
+            uri: uri.into(),
+            mime: None,
+            args: args
+                .iter()
+                .map(|a| tern_agent::mcp::PromptArg {
+                    name: (*a).into(),
+                    title: None,
+                    description: String::new(),
+                    required: true,
+                })
+                .collect(),
+            http: false,
+            target: "notes-mcp".into(),
+        }
+    }
+
+    #[test]
+    fn slash_and_at_offer_mcp_prompts_and_resources() {
+        use crate::commands::{FormFor, RowLogo};
+        let mut m = ready();
+        m.mcp_offers = vec![
+            offer(ItemKind::Prompt, "recap", "", &[]),
+            offer(ItemKind::Prompt, "review", "", &["code"]),
+            offer(ItemKind::Resource, "week-1", "notes://week-1", &[]),
+            offer(ItemKind::Template, "note", "notes://{name}", &["name"]),
+        ];
+        m.on_composer_text("/re");
+        let rows = m.slash_rows();
+        assert!(
+            rows.iter()
+                .all(|r| matches!(r.logo, RowLogo::Tern | RowLogo::Server(_)))
+        );
+        let i = rows.iter().position(|r| r.label == "/recap").unwrap();
+        assert_eq!(
+            m.choose_slash(Some(i)),
+            Some(SlashChosen::Prompt(
+                "notes".into(),
+                "recap".into(),
+                Default::default()
+            ))
+        );
+        m.on_composer_text("/review");
+        assert_eq!(m.choose_slash(None), Some(SlashChosen::Form));
+        assert_eq!(m.arg_form.as_ref().unwrap().purpose, FormFor::Prompt);
+        m.arg_form = None;
+        m.on_composer_text("/new");
+        assert_eq!(
+            m.choose_slash(None),
+            Some(SlashChosen::Command(crate::commands::TernCommand::New))
+        );
+
+        // A prompt's text goes in the composer with a banner; never sent.
+        let text = m
+            .prompt_ready(Ok(tern_agent::mcp::Inserted {
+                server: "notes".into(),
+                prompt: "recap".into(),
+                text: "Recap the week".into(),
+                description: None,
+                flags: Vec::new(),
+            }))
+            .unwrap();
+        assert_eq!(text, "Recap the week");
+        assert!(m.inserted.as_ref().unwrap().line().contains("notes"));
+        assert!(matches!(m.phase, Phase::Ready));
+
+        // @ offers resources; picking one reads it.
+        m.on_composer_text("see @week");
+        let rows = m.mention_candidates();
+        assert!(matches!(rows[0].pick, Pick::Resource(_)));
+        let chosen = m.choose_mention("see @week", Some(0)).unwrap();
+        assert_eq!(chosen.text, "see @week-1 ");
+        assert_eq!(
+            chosen.fetch,
+            Some(("notes".into(), "notes://week-1".into()))
+        );
+        assert_eq!(m.attaching, 1);
+        let parts = vec![tern_agent::mcp::ResourcePart::Text {
+            uri: "notes://week-1".into(),
+            mime: None,
+            text: "Monday: RAG.".into(),
+        }];
+        m.resource_ready(Ok(tern_agent::mcp::catalog::attachment(
+            "notes",
+            "week-1",
+            "notes://week-1",
+            &parts,
+        )));
+        assert_eq!(m.attaching, 0);
+        m.toggle_role(0);
+        assert_eq!(
+            m.attachments[0].role,
+            Role::Context,
+            "a resource stays Context"
+        );
+        m.on_composer_text("and @note");
+        let chosen = m.choose_mention("and @note", Some(0)).unwrap();
+        assert_eq!(chosen.fetch, None);
+        assert_eq!(m.arg_form.as_ref().unwrap().purpose, FormFor::Resource);
+        let msg = m.start_turn("Summarise @prompt:week-1").unwrap();
+        assert!(msg.contains(r#"name="week-1" role="context""#));
+        assert!(msg.contains("<untrusted-data source=\"mcp:notes/notes://week-1\">"));
+        assert!(m.inserted.is_none());
     }
 
     #[test]

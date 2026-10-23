@@ -31,11 +31,103 @@ pub enum Status {
     },
 }
 
+/// What a `/` command does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlashKind {
+    Help,
+    Quit,
+    /// An MCP prompt: its server, its name, and its argument names
+    /// (required ones first).
+    Prompt {
+        server: String,
+        prompt: String,
+        args: Vec<String>,
+    },
+}
+
+/// One `/` command the composer completes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlashItem {
+    /// What follows `/`: `help`, `notes:summarize`.
+    pub name: String,
+    pub detail: String,
+    /// `Tern` or the MCP server's name.
+    pub source: String,
+    pub kind: SlashKind,
+}
+
+impl SlashItem {
+    /// Tern's own commands.
+    pub fn builtins() -> Vec<Self> {
+        vec![
+            Self {
+                name: "help".into(),
+                detail: "Keyboard shortcuts".into(),
+                source: "Tern".into(),
+                kind: SlashKind::Help,
+            },
+            Self {
+                name: "quit".into(),
+                detail: "Leave the chat".into(),
+                source: "Tern".into(),
+                kind: SlashKind::Quit,
+            },
+        ]
+    }
+
+    /// The prompts the chat's MCP servers offer, as `/server:prompt`.
+    pub fn prompts(offers: &[tern_agent::mcp::MenuItem]) -> Vec<Self> {
+        offers
+            .iter()
+            .filter(|i| i.kind == tern_agent::mcp::ItemKind::Prompt)
+            .map(|i| {
+                let mut args: Vec<&tern_agent::mcp::PromptArg> = i.args.iter().collect();
+                args.sort_by_key(|a| !a.required);
+                let mut detail = i
+                    .description
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !args.is_empty() {
+                    let list: Vec<String> = args
+                        .iter()
+                        .map(|a| {
+                            if a.required {
+                                format!("{}=…", a.name)
+                            } else {
+                                format!("[{}=…]", a.name)
+                            }
+                        })
+                        .collect();
+                    detail = format!("{} {detail}", list.join(" "));
+                }
+                Self {
+                    name: format!("{}:{}", i.server, i.name),
+                    detail,
+                    source: i.server.clone(),
+                    kind: SlashKind::Prompt {
+                        server: i.server.clone(),
+                        prompt: i.name.clone(),
+                        args: args.iter().map(|a| a.name.clone()).collect(),
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
 /// What the run loop should do after a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     None,
     Send(String),
+    /// Ask an MCP server to fill in a prompt; its text goes in the
+    /// composer, never straight to the model.
+    Prompt {
+        server: String,
+        prompt: String,
+        args: Vec<(String, String)>,
+    },
     Cancel,
     Approve(ApprovalAnswer),
     Quit,
@@ -60,6 +152,8 @@ pub struct App {
     pub tick: usize,
     /// Set after Esc or Ctrl+C while working; cleared when the turn ends.
     pub stopping: bool,
+    /// The `/` commands: Tern's and the MCP servers' prompts.
+    pub slash: Vec<SlashItem>,
 }
 
 impl App {
@@ -82,6 +176,98 @@ impl App {
             show_help: false,
             tick: 0,
             stopping: false,
+            slash: SlashItem::builtins(),
+        }
+    }
+
+    /// The `/` commands matching what is typed, when the composer holds a
+    /// single `/word`.
+    pub fn slash_matches(&self) -> Vec<&SlashItem> {
+        let text = self.input_text();
+        let Some(q) = text.strip_prefix('/') else {
+            return Vec::new();
+        };
+        if q.chars().any(char::is_whitespace) {
+            return Vec::new();
+        }
+        let mut m: Vec<&SlashItem> = self
+            .slash
+            .iter()
+            .filter(|i| tern_agent::mention::matches(q, &i.name))
+            .collect();
+        m.sort_by_key(|i| tern_agent::mention::rank(q, &i.name));
+        m.truncate(6);
+        m
+    }
+
+    /// Runs a typed `/command args…` when its name is one Tern knows;
+    /// `None` means it is an ordinary message.
+    fn run_slash(&mut self, text: &str) -> Option<Action> {
+        let rest = text.strip_prefix('/')?;
+        let (name, tail) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+        let item = self.slash.iter().find(|i| i.name == name)?.clone();
+        Some(match item.kind {
+            SlashKind::Help => {
+                self.show_help = true;
+                Action::None
+            }
+            SlashKind::Quit => Action::Quit,
+            SlashKind::Prompt {
+                server,
+                prompt,
+                args,
+            } => {
+                // `k=v` pairs; the other words, joined, fill the first
+                // argument not given (required ones come first).
+                let mut out: Vec<(String, String)> = Vec::new();
+                let mut rest: Vec<&str> = Vec::new();
+                for w in tail.split_whitespace() {
+                    match w.split_once('=') {
+                        Some((k, v)) if args.iter().any(|a| a == k) => {
+                            out.push((k.to_owned(), v.to_owned()))
+                        }
+                        _ => rest.push(w),
+                    }
+                }
+                if !rest.is_empty()
+                    && let Some(a) = args.iter().find(|a| !out.iter().any(|(k, _)| k == *a))
+                {
+                    out.insert(0, (a.clone(), rest.join(" ")));
+                }
+                Action::Prompt {
+                    server,
+                    prompt,
+                    args: out,
+                }
+            }
+        })
+    }
+
+    /// A prompt came back from its server: its text goes in the composer
+    /// for the user to read and send (or not), with a note saying whose
+    /// text it is.
+    pub fn insert_prompt(&mut self, r: Result<tern_agent::mcp::Inserted, String>) {
+        match r {
+            Ok(ins) => {
+                self.entries.push(Entry::Notice(format!(
+                    "From MCP server “{}”, prompt “{}”: the server's text is in the composer. Read it, then press Enter to send it, or Ctrl+U to clear it.",
+                    ins.server, ins.prompt
+                )));
+                for f in &ins.flags {
+                    self.entries.push(Entry::Step(format!(
+                        "⚠ the prompt {}{}",
+                        f.reason,
+                        if f.excerpt.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": “{}”", f.excerpt)
+                        }
+                    )));
+                }
+                self.input = ins.text.chars().filter(|c| *c != '\r').collect();
+                self.cursor = self.input.len();
+            }
+            Err(e) => self.entries.push(Entry::Notice(e)),
         }
     }
 
@@ -166,8 +352,25 @@ impl App {
                 self.insert("\n");
                 Action::None
             }
+            KeyCode::Tab => {
+                if let Some(first) = self.slash_matches().first() {
+                    let done = format!("/{} ", first.name);
+                    self.input = done.chars().collect();
+                    self.cursor = self.input.len();
+                }
+                Action::None
+            }
             KeyCode::Enter => {
                 let text = self.input_text();
+                if text.trim_start().starts_with('/')
+                    && let Some(a) = self.run_slash(text.trim())
+                {
+                    if !matches!(a, Action::Quit) {
+                        self.input.clear();
+                        self.cursor = 0;
+                    }
+                    return a;
+                }
                 if self.is_busy() || text.trim().is_empty() {
                     return Action::None;
                 }
@@ -329,6 +532,72 @@ mod tests {
             model_calls: 1,
             tool_calls: 0,
         }
+    }
+
+    #[test]
+    fn slash_completes_and_runs_prompts_into_the_composer() {
+        use tern_agent::mcp::{ItemKind, MenuItem, PromptArg};
+        let mut app = App::new("p", "m");
+        app.slash.extend(SlashItem::prompts(&[MenuItem {
+            server: "notes".into(),
+            kind: ItemKind::Prompt,
+            name: "review".into(),
+            title: None,
+            description: "Reviews code.".into(),
+            uri: String::new(),
+            mime: None,
+            args: vec![
+                PromptArg {
+                    name: "focus".into(),
+                    title: None,
+                    description: String::new(),
+                    required: false,
+                },
+                PromptArg {
+                    name: "code".into(),
+                    title: None,
+                    description: String::new(),
+                    required: true,
+                },
+            ],
+            http: false,
+            target: "notes-mcp".into(),
+        }]));
+        typed(&mut app, "/rev");
+        assert_eq!(app.slash_matches()[0].name, "notes:review");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.input_text(), "/notes:review ");
+        typed(&mut app, "fn x() focus=names");
+        let a = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            a,
+            Action::Prompt {
+                server: "notes".into(),
+                prompt: "review".into(),
+                args: vec![
+                    ("code".into(), "fn x()".into()),
+                    ("focus".into(), "names".into())
+                ],
+            }
+        );
+        assert!(app.input.is_empty());
+        app.insert_prompt(Ok(tern_agent::mcp::Inserted {
+            server: "notes".into(),
+            prompt: "review".into(),
+            text: "Review this".into(),
+            description: None,
+            flags: Vec::new(),
+        }));
+        assert_eq!(app.input_text(), "Review this", "inserted, not sent");
+        assert!(matches!(app.entries.last(), Some(Entry::Notice(n)) if n.contains("notes")));
+        // An ordinary message starting with / is still a message.
+        app.input.clear();
+        app.cursor = 0;
+        typed(&mut app, "/etc/hosts explain");
+        assert!(matches!(app.on_key(key(KeyCode::Enter)), Action::Send(_)));
+        typed(&mut app, "/help");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.show_help);
     }
 
     #[test]

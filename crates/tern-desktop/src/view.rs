@@ -32,6 +32,7 @@ use crate::bridge::{Bridge, Msg};
 mod appearance_view;
 mod browser_view;
 mod cards_view;
+mod commands_view;
 mod continuity_view;
 mod customize_view;
 mod decision_view;
@@ -132,6 +133,9 @@ pub struct Workspace {
     side_window: Option<gpui_kit::AnyWindowHandle>,
     /// Customize's and the project tree's text fields.
     ext_inputs: customize_view::ExtInputs,
+    /// The fields of the MCP prompt or template form, one per argument.
+    arg_inputs: Vec<Entity<InputState>>,
+    arg_subs: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -154,7 +158,7 @@ impl Workspace {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
                 .placeholder(
-                    "Ask anything. @ to reference a file or source, Shift+Enter for a new line.",
+                    "Ask anything. / for commands and prompts, @ to reference a file, source, or resource.",
                 )
                 .submit_on_enter(true)
         });
@@ -163,7 +167,9 @@ impl Workspace {
             window,
             |this: &mut Self, _, event: &InputEvent, window, cx| match event {
                 InputEvent::PressEnter { shift: false, .. } => {
-                    if this.model.mention.is_some() {
+                    if this.model.slash.is_some() && !this.model.slash_rows().is_empty() {
+                        this.choose_slash(None, window, cx);
+                    } else if this.model.mention.is_some() {
                         this.choose_mention(None, window, cx);
                     } else {
                         this.submit(window, cx);
@@ -349,6 +355,8 @@ impl Workspace {
             library_input,
             side_window: None,
             ext_inputs,
+            arg_inputs: Vec::new(),
+            arg_subs: Vec::new(),
             _subscriptions: {
                 let mut subs = vec![
                     sub,
@@ -376,6 +384,11 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.sessions = recent;
+                self.model.mcp_offers = s.mcp_offers().to_vec();
+                if !self.model.customize.loaded {
+                    // Skills for the `/` menu.
+                    self.bridge.ext_load();
+                }
                 self.current = Some(s.session_id());
                 self.tabs.set_active(s.session_id(), "New chat");
                 self.model.set_resume_offer(None);
@@ -390,6 +403,7 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.model.mcp_offers = s.mcp_offers().to_vec();
                 self.model.context = s.context();
                 self.open_sources.clear();
                 self.request_icons();
@@ -414,7 +428,10 @@ impl Workspace {
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
             Msg::Cont(m) => self.on_cont(*m, window, cx),
-            Msg::Ext(m) => self.on_ext(*m, cx),
+            Msg::Ext(m) => match *m {
+                crate::bridge::ExtMsg::Prompt(r) => self.prompt_ready(*r, window, cx),
+                other => self.on_ext(other, cx),
+            },
             Msg::Notice(text) => {
                 self.model.entries.push(Entry::Notice(text));
                 // A chat that would not reopen leaves no session; open a
@@ -602,6 +619,12 @@ impl Workspace {
             if chosen.browse {
                 self.pick_attachments(cx);
             }
+            if let Some((server, uri)) = chosen.fetch {
+                self.bridge.mcp_resource(server, uri);
+            }
+            if self.model.arg_form.is_some() && self.arg_inputs.is_empty() {
+                self.open_arg_form(window, cx);
+            }
         }
         cx.notify();
     }
@@ -613,7 +636,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model.mention.is_none() {
+        if self.slash_keys(e, window, cx) || self.model.mention.is_none() {
             return;
         }
         match e.keystroke.key.as_str() {
@@ -661,10 +684,17 @@ impl Workspace {
                         .child(heading),
                 )
                 .children(rows.into_iter().enumerate().map(|(i, row)| {
-                    let icon = match &row.pick {
-                        Pick::Attachment(_) => AssetIcon::Paperclip,
-                        Pick::Source(_) => AssetIcon::Globe,
-                        Pick::Browse => AssetIcon::FolderOpen,
+                    let lead = match &row.pick {
+                        Pick::Attachment(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).small())
+                            .into_any_element(),
+                        Pick::Source(page) => self.site_icon(page, 16., p),
+                        Pick::Resource(item) => self.resource_logo(item, p),
+                        Pick::Browse => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::FolderOpen).small())
+                            .into_any_element(),
                     };
                     div()
                         .id(("mention", i))
@@ -678,11 +708,7 @@ impl Workspace {
                         .cursor_pointer()
                         .when(i == selected, |d| d.bg(p.hover))
                         .hover(move |d| d.bg(p.hover))
-                        .child(
-                            div()
-                                .text_color(p.muted)
-                                .child(gpui_kit::component::Icon::new(icon).small()),
-                        )
+                        .child(lead)
                         .child(
                             div()
                                 .flex_1()
@@ -2399,7 +2425,10 @@ impl Workspace {
                 .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
                     this.mention_keys(e, window, cx);
                 }))
+                .children(self.slash_menu(p, cx))
                 .children(self.mention_menu(p, cx))
+                .children(self.arg_form_view(p, cx))
+                .children(self.inserted_banner(p, cx))
                 .children(self.resume_banner(p, cx))
                 .children(self.reply_bar(p, cx))
                 .children(self.steer_hint(p))
@@ -2497,6 +2526,7 @@ impl Workspace {
                     AttachSource::Archive => AssetIcon::FileArchive,
                     AttachSource::Paste => AssetIcon::ClipboardPaste,
                     AttachSource::Link => AssetIcon::Link,
+                    AttachSource::Mcp => AssetIcon::Blocks,
                 };
                 let prompt = a.role == Role::Prompt;
                 div()

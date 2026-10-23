@@ -4,6 +4,19 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #41)
+
+- **MCP prompts** (`tern_agent::mcp::catalog`): `prompts/list` (paged) and `prompts/get` with arguments, checked against the prompt's list (required ones given, no unknown ones). Text, embedded text resources, and resource links come back as text; pictures and audio are named, not inserted. The result is the server's text: it is cleaned of invisible characters, scanned with the trust preview's patterns, and put in the composer under a banner naming the server and any flags. It is never sent on its own.
+- **MCP resources**: `resources/list`, `resources/templates/list`, and `resources/read` for text and base64 blobs (text-like types decoded, pictures sent as pictures, other binary parts named). A read resource becomes a Context attachment (`attach::Source::Mcp`, which stays Context) whose text is wrapped as untrusted data, exactly like tool output, and a chat that receives one carries the untrusted-data rule from then on. Templates (`notes://{name}`) are filled in first (RFC 6570 simple, `+`, `#`, `/`, `?`, `&`).
+- **List changes**: each connection caches its catalog (tools, prompts, resources, templates); a legacy server's `notifications/*/list_changed`, or on a modern stdio server the `subscriptions/listen` stream Tern opens for the lists the server says change, marks it stale. Over HTTP the cache lasts 30 seconds.
+- **Trust**: the trust preview lists every prompt (with its arguments) and every resource and template, with flags; the fingerprint now covers prompts, resource templates, and listed resources (not when the server says its resource list changes, since that list is data). A server with no prompts or resources keeps the tools-only fingerprint, so existing reviews stay valid. Health checks count prompts and resources. Only switched-on, reviewed servers offer prompts and resources.
+- **Effective instructions** list the prompts and resources on offer, marked as outside the prompt (`tern instructions`, the desktop Instructions tab).
+- Terminal: `tern mcp prompts [server]`, `tern mcp prompt <server> <name> --arg k=v` (prints the text; `--raw`, `--json`), `tern mcp resources [server]`, `tern mcp read <server> <uri> [--arg k=v] [--out FILE] [--wrapped]`. The chat TUI completes `/` commands and MCP prompts (`/server:prompt`) with Tab; a prompt's text goes into the composer for the user to send or clear.
+- Desktop: typing `/` opens a menu of Tern's commands (new, deep, library, editor, git, browser, customize, instructions, providers, appearance, decision), the skills that are on, and MCP prompts, each row with its logo on the left (the tern mark for Tern's own; the server's logo by the Customize page's rule, else a terminal or globe glyph), name, description, and source. A prompt with arguments opens a small form under the composer. `@` offers MCP resources and templates with their server's logo (sources now show their site icon). The trust sheet lists prompts and resources.
+- Tests: the mock MCP server gains prompts, resources, a template, a poisoned prompt, and list changes; tested over stdio (modern with `subscriptions/listen`, legacy with unsolicited notifications) and HTTP (the `Mcp-Name` header on `prompts/get` and `resources/read`).
+
+Not in this PR: watching single resources (`resources/subscribe`, `resourceSubscriptions`), a long-lived change stream over HTTP, and client capabilities (roots, sampling, elicitation). Evaluation (phase 11) is coming in this PR.
+
 ### Added (PR #40)
 
 - **MCP client** (`tern_agent::mcp`): servers in `<data>/mcp.json`, over stdio or Streamable HTTP, on Tern's own JSON-RPC 2.0 code (no SDK crate). Spec `2026-07-28` first, with a fallback to the `initialize` handshake for servers on `2025-11-25`, `2025-06-18`, `2025-03-26`, or `2024-11-05` (including the legacy HTTP session and its DELETE on close). Tools are listed page by page, called with timeouts, and pinged; a bad command or a stopped server says why. Connections are shared across chats in one process. MCP's HTTP transport lives in `tern-providers` (`rpc_http`), so `tern-agent` keeps no HTTP library of its own.
@@ -18,7 +31,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 - Desktop: a **Customize** rail item with Skills, MCP servers (the trust preview sheet, per-tool switches and approvals, health dots), Providers, and Instructions tabs; the sidebar's project tree (Projects, then chats, then `↳` sub-sessions, the Inbox; drag a chat onto a folder or Move to…; new, rename, and delete folders; collapse state saved in `preferences.json` as `collapsed_projects`).
 - Docs: roadmap phase 10, architecture (extensibility, and the network rule now naming `tern-decision`), [docs/zed.md](docs/zed.md) for running Tern in Zed, README.
 
-Not in this PR: MCP prompts and resources (tools only).
+Not in this PR: MCP prompts and resources (tools only; added in PR #41).
 
 ### Added (PR #39)
 

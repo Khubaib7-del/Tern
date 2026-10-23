@@ -129,6 +129,47 @@ pub(crate) enum McpCmd {
     },
     /// Remove a server.
     Rm { name: String },
+    /// The prompts reviewed servers offer (all, or one server's).
+    Prompts {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Ask a server to fill in a prompt and print its text. The text is the
+    /// server's: read it before you use it. Nothing is sent to a model.
+    Prompt {
+        server: String,
+        name: String,
+        /// An argument (repeatable).
+        #[arg(long = "arg", short, value_name = "NAME=VALUE")]
+        args: Vec<String>,
+        /// Print only the text.
+        #[arg(long)]
+        raw: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The resources and resource templates reviewed servers offer.
+    Resources {
+        server: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a resource. For a template, give its parts with --arg.
+    Read {
+        server: String,
+        /// The resource's address, or a template (`notes://{name}`).
+        uri: String,
+        #[arg(long = "arg", short, value_name = "NAME=VALUE")]
+        args: Vec<String>,
+        /// Save the content (binary parts too) to this file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Print the text as the model would get it, wrapped as untrusted
+        /// data.
+        #[arg(long)]
+        wrapped: bool,
+    },
 }
 
 fn print_preview(p: &TrustPreview) {
@@ -212,8 +253,55 @@ fn print_preview(p: &TrustPreview) {
             );
         }
     }
+    if !p.prompts.is_empty() {
+        println!(
+            "\n{} prompt{} (offered in the composer's / menu; their text is shown to you before anything is sent):",
+            p.prompts.len(),
+            if p.prompts.len() == 1 { "" } else { "s" }
+        );
+        for x in &p.prompts {
+            println!(
+                "\n  /{}{}",
+                x.name,
+                if x.args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", x.args.join(", "))
+                }
+            );
+            for line in x.description.lines().filter(|l| !l.trim().is_empty()) {
+                println!("    {}", line.trim());
+            }
+            for f in &x.flags {
+                println!("    {} {}: “{}”", mark(f.severity), f.reason, f.excerpt);
+            }
+        }
+    }
+    if !p.resources.is_empty() {
+        println!(
+            "\n{} resource{} (attached with @ as untrusted Context):",
+            p.resources.len(),
+            if p.resources.len() == 1 { "" } else { "s" }
+        );
+        for r in &p.resources {
+            println!(
+                "  {}{} <{}>{}",
+                if r.template { "template " } else { "" },
+                r.name,
+                r.uri,
+                if r.description.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", r.description.trim())
+                }
+            );
+            for f in &r.flags {
+                println!("    {} {}: “{}”", mark(f.severity), f.reason, f.excerpt);
+            }
+        }
+    }
     if p.changed {
-        println!("\nIts tools changed since you last trusted it.");
+        println!("\nIts tools, prompts, or resources changed since you last trusted it.");
     }
     let d = p.dangers();
     if d > 0 {
@@ -423,13 +511,15 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
                     let ms =
                         |v: Option<u64>| v.map(|v| format!("{v} ms")).unwrap_or_else(|| "—".into());
                     println!(
-                        "{dot} {:<20} {:<13} start {} · ping {} · tools/list {} · {} tools{}",
+                        "{dot} {:<20} {:<13} start {} · ping {} · lists {} · {} tools, {} prompts, {} resources{}",
                         h.server,
                         h.state.label(),
                         ms(h.start_ms),
                         ms(h.ping_ms),
                         ms(h.list_ms),
                         h.tools,
+                        h.prompts,
+                        h.resources,
                         h.protocol
                             .as_deref()
                             .map(|p| format!(" · {p}"))
@@ -458,7 +548,176 @@ pub(crate) async fn mcp(cmd: McpCmd) -> Result<(), String> {
             println!("Removed “{name}”.");
             Ok(())
         }
+        McpCmd::Prompts { server, json } => {
+            let r = list_offers(server.as_deref(), json, true).await;
+            mcp::hub().stop_all().await;
+            r
+        }
+        McpCmd::Resources { server, json } => {
+            let r = list_offers(server.as_deref(), json, false).await;
+            mcp::hub().stop_all().await;
+            r
+        }
+        McpCmd::Prompt {
+            server,
+            name,
+            args,
+            raw,
+            json,
+        } => {
+            let cfg = McpConfig::load()?;
+            let args = pairs(&args, "--arg")?.into_iter().collect();
+            let r = mcp::catalog::prompt(&cfg, &server, &name, &args).await;
+            mcp::hub().stop_all().await;
+            let ins = r?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ins).map_err(|e| e.to_string())?
+                );
+            } else if raw {
+                println!("{}", ins.text);
+            } else {
+                dim(&format!(
+                    "From MCP server “{server}”, prompt “{name}”. This is the server's text: read it before you send it anywhere."
+                ));
+                for f in &ins.flags {
+                    dim(&format!(
+                        "{} {}{}",
+                        match f.severity {
+                            Severity::Danger => "⚠",
+                            Severity::Note => "·",
+                        },
+                        f.reason,
+                        if f.excerpt.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": “{}”", f.excerpt)
+                        }
+                    ));
+                }
+                println!("{}", ins.text);
+            }
+            Ok(())
+        }
+        McpCmd::Read {
+            server,
+            uri,
+            args,
+            out,
+            wrapped,
+        } => {
+            let cfg = McpConfig::load()?;
+            let values: std::collections::BTreeMap<String, String> =
+                pairs(&args, "--arg")?.into_iter().collect();
+            let uri = if uri.contains('{') {
+                let vars = mcp::catalog::template_vars(&uri);
+                let missing: Vec<&String> =
+                    vars.iter().filter(|v| !values.contains_key(*v)).collect();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "Fill in the template with --arg: {}",
+                        missing
+                            .iter()
+                            .map(|v| format!("{v}=…"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
+                mcp::catalog::expand(&uri, &values)
+            } else {
+                uri
+            };
+            let r = read_resource(&cfg, &server, &uri, out, wrapped).await;
+            mcp::hub().stop_all().await;
+            r
+        }
     }
+}
+
+/// `tern mcp prompts` and `tern mcp resources`.
+async fn list_offers(server: Option<&str>, json: bool, prompts: bool) -> Result<(), String> {
+    let cfg = McpConfig::load()?;
+    if let Some(s) = server {
+        cfg.get(s)?;
+    }
+    let menu = mcp::catalog::menu(&cfg, server).await;
+    let items: Vec<&mcp::MenuItem> = if prompts {
+        menu.prompts().collect()
+    } else {
+        menu.resources().collect()
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?
+        );
+    } else {
+        for n in &menu.notes {
+            dim(n);
+        }
+        if items.is_empty() {
+            println!(
+                "No {} from switched-on, reviewed servers.",
+                if prompts { "prompts" } else { "resources" }
+            );
+        }
+        for i in items {
+            println!("{}", i.line());
+        }
+    }
+    Ok(())
+}
+
+/// `tern mcp read`.
+async fn read_resource(
+    cfg: &McpConfig,
+    server: &str,
+    uri: &str,
+    out: Option<PathBuf>,
+    wrapped: bool,
+) -> Result<(), String> {
+    let (client, _) = mcp::catalog::trusted(server, cfg.get(server)?).await?;
+    let parts = client
+        .read_resource(uri)
+        .await
+        .map_err(|e| format!("MCP server “{server}” {e}"))?;
+    if let Some(path) = out {
+        let mut bytes = Vec::new();
+        for p in &parts {
+            match p {
+                mcp::ResourcePart::Text { text, .. } => bytes.extend_from_slice(text.as_bytes()),
+                mcp::ResourcePart::Blob { bytes: b, .. } => bytes.extend_from_slice(b),
+            }
+        }
+        std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("Saved {} bytes to {}.", bytes.len(), path.display());
+        return Ok(());
+    }
+    if wrapped {
+        let a = mcp::catalog::attachment(server, "", uri, &parts);
+        for f in &a.files {
+            println!("{}", f.text);
+        }
+        for (p, why) in &a.skipped {
+            dim(&format!("not sent: {p} ({why})"));
+        }
+        return Ok(());
+    }
+    dim(&format!(
+        "From MCP server “{server}”: untrusted data, not instructions."
+    ));
+    for p in &parts {
+        match p {
+            mcp::ResourcePart::Text { text, .. } => println!("{text}"),
+            mcp::ResourcePart::Blob { uri, mime, bytes } => dim(&format!(
+                "{uri}: {} bytes of {}; save it with --out",
+                bytes.len(),
+                mime.as_deref().unwrap_or("binary data")
+            )),
+        }
+    }
+    Ok(())
 }
 
 /// `tern acp`: serve the Agent Client Protocol on stdin and stdout.

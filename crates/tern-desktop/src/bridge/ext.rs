@@ -28,6 +28,12 @@ pub enum ExtMsg {
         Vec<SessionSummary>,
         Option<String>,
     ),
+    /// The prompts and resources the reviewed servers offer.
+    Menu(mcp::Menu),
+    /// A prompt filled in by its server, for the composer.
+    Prompt(Box<Result<mcp::Inserted, String>>),
+    /// A resource read by its server, as an attachment.
+    Resource(Box<Result<tern_agent::Attachment, String>>),
 }
 
 impl std::fmt::Debug for ExtMsg {
@@ -41,6 +47,9 @@ impl std::fmt::Debug for ExtMsg {
             Self::Projects(r, s, _) => {
                 write!(f, "Projects(ok: {}, {} chats)", r.is_ok(), s.len())
             }
+            Self::Menu(m) => write!(f, "Menu({} items)", m.items.len()),
+            Self::Prompt(r) => write!(f, "Prompt(ok: {})", r.is_ok()),
+            Self::Resource(r) => write!(f, "Resource(ok: {})", r.is_ok()),
         }
     }
 }
@@ -177,11 +186,58 @@ impl Bridge {
                     ping_ms: None,
                     list_ms: None,
                     tools: 0,
+                    prompts: 0,
+                    resources: 0,
                     protocol: None,
                     error: Some(e),
                 },
             };
             let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Health(h))));
+        });
+    }
+
+    /// Reads the prompts and resources the reviewed servers offer.
+    pub fn mcp_menu(&self) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let menu = match McpConfig::load() {
+                Ok(cfg) => mcp::catalog::menu(&cfg, None).await,
+                Err(e) => mcp::Menu {
+                    items: Vec::new(),
+                    notes: vec![e],
+                },
+            };
+            let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Menu(menu))));
+        });
+    }
+
+    /// Asks a server to fill in a prompt. Its text comes back for the
+    /// composer; nothing is sent.
+    pub fn mcp_prompt(
+        &self,
+        server: String,
+        name: String,
+        args: std::collections::BTreeMap<String, String>,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = match McpConfig::load() {
+                Ok(cfg) => mcp::catalog::prompt(&cfg, &server, &name, &args).await,
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Prompt(Box::new(r)))));
+        });
+    }
+
+    /// Reads a resource as a Context attachment (untrusted data).
+    pub fn mcp_resource(&self, server: String, uri: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = match McpConfig::load() {
+                Ok(cfg) => mcp::catalog::resource(&cfg, &server, &uri).await,
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Resource(Box::new(r)))));
         });
     }
 

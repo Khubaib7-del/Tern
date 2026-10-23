@@ -2,12 +2,14 @@
 //! client over stdio and Streamable HTTP ([`client`]), the trust preview a
 //! user reads before any server's tools reach a chat ([`trust`]), MCP
 //! tools in the typed registry with their output treated as untrusted
-//! data ([`tool`]), and health checks.
+//! data ([`tool`]), prompts and resources for the composer ([`catalog`]),
+//! and health checks.
 //!
 //! Connections are shared across chats in one process ([`hub`]): a stdio
 //! server starts once, on first use, and is restarted by a health check
 //! or by the user.
 
+pub mod catalog;
 pub mod client;
 pub mod config;
 pub mod tool;
@@ -19,10 +21,14 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-pub use client::{CallResult, LATEST, LEGACY, McpClient, McpError, ServerInfo, ToolInfo};
+pub use catalog::{Inserted, ItemKind, Menu, MenuItem};
+pub use client::{
+    CallResult, Catalog, LATEST, LEGACY, McpClient, McpError, PromptArg, PromptInfo, PromptText,
+    ResourceInfo, ResourcePart, ServerInfo, TemplateInfo, ToolInfo,
+};
 pub use config::{McpConfig, ServerConfig, ToolSetting, Transport};
 pub use tool::McpTool;
-pub use trust::{Flag, Severity, ToolPreview, TrustPreview};
+pub use trust::{Flag, PromptPreview, ResourcePreview, Severity, ToolPreview, TrustPreview};
 
 use crate::policy::PolicyGate;
 use crate::tools::ToolRegistry;
@@ -67,6 +73,9 @@ pub struct Health {
     /// How long listing the tools took.
     pub list_ms: Option<u64>,
     pub tools: usize,
+    /// Prompts, and resources plus templates, the server offers.
+    pub prompts: usize,
+    pub resources: usize,
     pub protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -85,6 +94,8 @@ pub async fn check(name: &str, cfg: &ServerConfig, restart: bool) -> Health {
         ping_ms: None,
         list_ms: None,
         tools: 0,
+        prompts: 0,
+        resources: 0,
         protocol: None,
         error: None,
     };
@@ -111,12 +122,14 @@ pub async fn check(name: &str, cfg: &ServerConfig, restart: bool) -> Health {
     };
     h.ping_ms = Some(ping.as_millis() as u64);
     let t0 = std::time::Instant::now();
-    match client.list_tools().await {
-        Ok(tools) => {
+    match client.catalog().await {
+        Ok(c) => {
             let list = t0.elapsed();
             h.list_ms = Some(list.as_millis() as u64);
-            h.tools = tools.len();
-            let fp = trust::fingerprint(&tools);
+            h.tools = c.tools.len();
+            h.prompts = c.prompts.len();
+            h.resources = c.resources.len() + c.templates.len();
+            let fp = trust::fingerprint_catalog(&c, client.info());
             h.state = if cfg.disabled || !cfg.tern.enabled {
                 HealthState::Off
             } else if cfg.tern.trusted.as_deref() != Some(fp.as_str()) {
@@ -219,6 +232,9 @@ fn same_launch(a: &ServerConfig, b: &ServerConfig) -> bool {
 pub struct Attached {
     /// `(server, tool names as the model sees them)`.
     pub servers: Vec<(String, Vec<String>)>,
+    /// The prompts and resources those servers offer the user. They reach
+    /// the model only when the user adds one to a message.
+    pub offers: Vec<MenuItem>,
     /// Lines for the user: servers that would not start or need review.
     pub notes: Vec<String>,
 }
@@ -232,7 +248,7 @@ pub async fn attach(cfg: &McpConfig, tools: &mut ToolRegistry, gate: &mut Policy
         cfg.servers.iter().filter(|(_, s)| s.active()).collect();
     let lists = futures::future::join_all(active.iter().map(|(name, s)| async move {
         let client = hub().client(name, s).await?;
-        let list = client.list_tools().await?;
+        let list = client.catalog().await?;
         Ok::<_, McpError>((client, list))
     }))
     .await;
@@ -242,15 +258,18 @@ pub async fn attach(cfg: &McpConfig, tools: &mut ToolRegistry, gate: &mut Policy
             Err(e) => out
                 .notes
                 .push(format!("MCP server “{name}” is not available: {e}")),
-            Ok((client, list)) => {
-                if s.tern.trusted.as_deref() != Some(trust::fingerprint(&list).as_str()) {
+            Ok((client, catalog)) => {
+                if s.tern.trusted.as_deref()
+                    != Some(trust::fingerprint_catalog(&catalog, client.info()).as_str())
+                {
                     out.notes.push(format!(
-                        "MCP server “{name}” changed its tools since you reviewed them, so they are off until you review them again (`tern mcp preview {name}`)."
+                        "MCP server “{name}” changed its tools, prompts, or resources since you reviewed them, so they are off until you review them again (`tern mcp preview {name}`)."
                     ));
                     continue;
                 }
+                out.offers.extend(catalog::items(name, s, &catalog));
                 let mut names = Vec::new();
-                for t in &list {
+                for t in &catalog.tools {
                     let setting = s.tool(&t.name);
                     if !setting.enabled {
                         continue;

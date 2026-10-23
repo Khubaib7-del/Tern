@@ -92,6 +92,8 @@ pub struct ChatSession {
     untrusted: bool,
     /// MCP servers that were left out, and why.
     mcp_notes: Vec<String>,
+    /// MCP prompts and resources the active servers offer.
+    mcp_offers: Vec<crate::mcp::MenuItem>,
 }
 
 /// A sidebar title from the first message: one line, about 60 characters.
@@ -278,10 +280,13 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
     project.register(&mut tools);
     let mut gate = PolicyGate::default();
     let mut notes = Vec::new();
+    let mut offers = Vec::new();
     if !opts.no_mcp {
         match crate::mcp::McpConfig::load() {
             Ok(cfg) if cfg.servers.values().any(|s| s.active()) => {
-                notes = crate::mcp::attach(&cfg, &mut tools, &mut gate).await.notes;
+                let a = crate::mcp::attach(&cfg, &mut tools, &mut gate).await;
+                notes = a.notes;
+                offers = crate::mcp::catalog::lines(&a.offers);
             }
             Ok(_) => {}
             Err(e) => notes.push(e),
@@ -291,6 +296,7 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
     let mut e =
         crate::rules::effective(web.then_some(WEB_INSTRUCTIONS), &project, &tools, untrusted);
     e.notes.extend(notes);
+    e.offers = offers;
     Ok(e)
 }
 
@@ -436,12 +442,14 @@ impl ChatSession {
         let mut gate = PolicyGate::default();
         let mut mcp_notes = Vec::new();
         let mut mcp_servers = Vec::new();
+        let mut mcp_offers = Vec::new();
         if !opts.no_mcp {
             match crate::mcp::McpConfig::load() {
                 Ok(cfg) if cfg.servers.values().any(|s| s.active()) => {
                     let a = crate::mcp::attach(&cfg, &mut tools, &mut gate).await;
                     mcp_notes = a.notes;
                     mcp_servers = a.servers;
+                    mcp_offers = a.offers;
                 }
                 Ok(_) => {}
                 Err(e) => mcp_notes.push(e),
@@ -471,6 +479,7 @@ impl ChatSession {
             project,
             untrusted,
             mcp_notes,
+            mcp_offers,
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
@@ -602,6 +611,7 @@ impl ChatSession {
         let harness = self.search_name.map(|_| WEB_INSTRUCTIONS);
         let mut e = crate::rules::effective(harness, &self.project, &self.tools, self.untrusted);
         e.notes.extend(self.mcp_notes.iter().cloned());
+        e.offers = crate::mcp::catalog::lines(&self.mcp_offers);
         if self.decider.is_on() {
             e.notes.push(
                 "The decision model may add a one-line hint about the first tool to each turn's instructions.".into(),
@@ -613,6 +623,12 @@ impl ChatSession {
     /// The project folder this chat reads rules and skills from.
     pub fn project_root(&self) -> Option<&std::path::Path> {
         self.project.root.as_deref()
+    }
+
+    /// MCP prompts and resources the chat's servers offer (for `/` and
+    /// `@` menus).
+    pub fn mcp_offers(&self) -> &[crate::mcp::MenuItem] {
+        &self.mcp_offers
     }
 
     /// MCP servers left out of this chat, and why.
@@ -648,6 +664,11 @@ impl ChatSession {
         on_text: Option<crate::OnText<'_>>,
     ) -> TurnOutcome {
         let images = std::mem::take(&mut self.next_images);
+        // An attached MCP resource is untrusted data: from now on the
+        // prompt carries the rule for it, as it does for MCP tools.
+        if text.contains(&format!("<{} source=", crate::untrusted::TAG)) {
+            self.untrusted = true;
+        }
         // `@Q12` and `@Q12.3` quote those messages for the model.
         let with_refs;
         let text = if text.contains("@Q") || text.contains("@q") {

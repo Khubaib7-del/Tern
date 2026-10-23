@@ -120,6 +120,8 @@ pub fn apply(text: &str, attachments: &mut [Attachment]) -> Vec<String> {
             .iter_mut()
             .find(|a| slug(&a.name).eq_ignore_ascii_case(&name));
         match (found, role) {
+            // An MCP resource is the server's data: it stays Context.
+            (Some(a), Some(_)) if a.source == Source::Mcp => {}
             (Some(a), Some(role)) => a.role = role,
             (Some(_), None) => {}
             (None, _) => unknown.push(name),

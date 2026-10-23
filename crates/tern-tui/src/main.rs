@@ -414,6 +414,19 @@ enum ProviderCmd {
 }
 
 fn main() -> ExitCode {
+    // Every command's future is laid out in one frame, and in a debug
+    // build that outgrows Windows' 1 MB main-thread stack. Run on a thread
+    // with room to spare.
+    std::thread::Builder::new()
+        .name("tern".into())
+        .stack_size(16 << 20)
+        .spawn(real_main)
+        .expect("start the main thread")
+        .join()
+        .unwrap_or(ExitCode::FAILURE)
+}
+
+fn real_main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command.unwrap_or(Command::Chat(ChatArgs::default())) {
         Command::Doctor { json } => run_doctor(json),
@@ -463,7 +476,7 @@ fn main() -> ExitCode {
             json,
         )),
         Command::Search(cmd) => block_on(run_search(cmd)),
-        Command::Mcp(cmd) => block_on(extend::mcp(cmd)),
+        Command::Mcp(cmd) => block_on(Box::pin(extend::mcp(cmd))),
         Command::Acp(args) => block_on(extend::acp(args)),
         Command::Skills(cmd) => plain(extend::skills_cmd(cmd)),
         Command::Instructions {
