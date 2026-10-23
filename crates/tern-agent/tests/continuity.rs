@@ -108,7 +108,11 @@ async fn a_new_session_starts_from_the_packet_alone() {
     )
     .await;
     let msgs = last_messages(&server).await;
-    assert_eq!(msgs.len(), 3, "the packet, its acknowledgement, the question");
+    assert_eq!(
+        msgs.len(),
+        3,
+        "the packet, its acknowledgement, the question"
+    );
     assert!(msgs[0].contains("Which vector database should my FYP use?"));
     assert!(msgs[0].contains("benchmark recall at 10"));
     assert!(msgs[0].contains("## Decisions"));
@@ -124,7 +128,12 @@ async fn a_sub_session_runs_and_reports_back_and_removed_turns_leave_history() {
         let mut store = Store::open(&db).unwrap();
         let p = store.ensure_project("Inbox").unwrap();
         let top = store.create_session(p, Harness::Research, "RAG").unwrap();
-        turn(&mut store, top, "What is RAG?", "Retrieval plus generation.");
+        turn(
+            &mut store,
+            top,
+            "What is RAG?",
+            "Retrieval plus generation.",
+        );
         turn(&mut store, top, "Off-topic tangent", "A tangent.");
         turn(&mut store, top, "Costs?", "It depends on the database.");
         let planned = sub::create(
@@ -139,9 +148,10 @@ async fn a_sub_session_runs_and_reports_back_and_removed_turns_leave_history() {
     };
 
     let server = server("Pinecone costs more than pgvector.").await;
-    let (chat, _) = ChatSession::resume_with(opts(&server), None, Store::open(&db).unwrap(), planned)
-        .await
-        .unwrap();
+    let (chat, _) =
+        ChatSession::resume_with(opts(&server), None, Store::open(&db).unwrap(), planned)
+            .await
+            .unwrap();
     let run = sub::run_in(chat, None, &DenyAll, CancelFlag::default(), &|_| {})
         .await
         .unwrap();
@@ -167,10 +177,7 @@ async fn a_sub_session_runs_and_reports_back_and_removed_turns_leave_history() {
         ChatSession::resume_with(opts(&server), None, Store::open(&db).unwrap(), top)
             .await
             .unwrap();
-    assert_eq!(
-        turns.iter().map(|t| t.number).collect::<Vec<_>>(),
-        [1, 3]
-    );
+    assert_eq!(turns.iter().map(|t| t.number).collect::<Vec<_>>(), [1, 3]);
     assert_eq!(turns[1].reports.len(), 1);
     parent
         .send(
@@ -182,7 +189,10 @@ async fn a_sub_session_runs_and_reports_back_and_removed_turns_leave_history() {
         .await;
     let msgs = last_messages(&server).await;
     assert!(!msgs.iter().any(|m| m.contains("tangent")));
-    assert!(msgs.iter().any(|m| m.contains("Sub-session Q3.1 reported back")));
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("Sub-session Q3.1 reported back"))
+    );
     let last = msgs.last().unwrap();
     assert!(last.starts_with("Summarise @Q3.1 for me"));
     assert!(last.contains("<attachment name=\"Q3.1\""));

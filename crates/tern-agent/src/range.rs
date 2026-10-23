@@ -207,7 +207,7 @@ fn pending_in(session: SessionId, events: &[EventEnvelope]) -> Option<PendingMov
 
 /// Each turn's events, by turn number: from `turn.started` through its
 /// end and the claim checks logged after it.
-pub(crate) fn turn_events(events: &[EventEnvelope]) -> Vec<Vec<&EventEnvelope>> {
+pub fn turn_events(events: &[EventEnvelope]) -> Vec<Vec<&EventEnvelope>> {
     let mut out: Vec<Vec<&EventEnvelope>> = Vec::new();
     let mut open = false;
     for e in events {
@@ -260,7 +260,7 @@ pub fn context_before(title: &str, turns: &[PastTurn], first: u32) -> String {
     md
 }
 
-pub(crate) fn clip(text: &str, max: usize) -> String {
+pub fn clip(text: &str, max: usize) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() <= max {
         return line;

@@ -217,7 +217,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(y.answer, "side answer 5");
-        let reqs = echo.0.lock().unwrap();
+        let reqs = echo.0.lock().unwrap().clone();
         assert_eq!(reqs[0].messages[0].content, "What is RAG?");
         assert!(
             reqs[0].messages[2]

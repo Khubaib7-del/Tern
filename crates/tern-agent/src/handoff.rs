@@ -193,7 +193,7 @@ pub fn draft(title: &str, turns: &[PastTurn], from: Option<SessionId>, at: i64) 
         p.ledger.tokens_out += sum.tokens_out;
     }
     p.ledger.turns = live.len();
-    p.sources.sort_by(|a, b| b.reads.cmp(&a.reads));
+    p.sources.sort_by_key(|a| std::cmp::Reverse(a.reads));
     p.sources.truncate(12);
     if let Some(last) = live.iter().rev().find_map(|t| t.answer.as_deref()) {
         for s in sentences(last) {

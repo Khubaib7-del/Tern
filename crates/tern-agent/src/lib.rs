@@ -81,7 +81,14 @@ pub use sources::PageRef;
 pub use steer::Steering;
 pub use tern_providers::ImageInput;
 pub use tern_research::deep::WorkerStatus;
-pub use tern_store::{Harness, SessionSummary};
+pub use tern_store::{Harness, SessionSummary, Store};
+
+/// Opens the user's database, creating the data folder if needed.
+pub fn open_store() -> Result<Store, String> {
+    let paths = tern_platform::AppPaths::discover().map_err(|e| e.to_string())?;
+    paths.ensure().map_err(|e| e.to_string())?;
+    Store::open(&paths.database()).map_err(|e| e.to_string())
+}
 pub use tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 pub use transcript::{PastTurn, SubReport, live_turns, past_turns};
 pub use verify::{CheckClaims, ClaimCheck, Tally, Verdict};
