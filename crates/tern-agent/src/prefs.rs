@@ -56,6 +56,11 @@ pub struct Preferences {
     pub decision: crate::decide::DecisionPrefs,
     /// Project folders collapsed in the desktop sidebar, by id.
     pub collapsed_projects: Vec<String>,
+    /// Context compaction: off, the percent of the window that starts it
+    /// (`None` means 80), and the turns kept word for word (`None` means 4).
+    pub compact_off: bool,
+    pub compact_at_percent: Option<u8>,
+    pub compact_keep_turns: Option<usize>,
     /// Thinking effort for models that can think (`none` … `max`).
     /// `None` leaves each provider's default.
     pub effort: Option<String>,
@@ -219,6 +224,11 @@ impl Preferences {
             max_output_tokens: self.max_output_tokens.unwrap_or(0),
             vault: crate::vault::default_root(self).ok(),
             decision: self.decision.clone(),
+            compaction: crate::compact::Compaction::from_prefs(
+                self.compact_off,
+                self.compact_at_percent,
+                self.compact_keep_turns,
+            ),
             ..ChatOptions::default()
         }
     }
@@ -279,8 +289,13 @@ mod tests {
             accent: Some("clay".into()),
             ui_font: Some("system".into()),
             text_size: Some("large".into()),
+            compact_off: false,
+            compact_at_percent: Some(85),
+            compact_keep_turns: Some(6),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
+        let c = p.chat_options().compaction;
+        assert!(c.auto && (c.at - 0.85).abs() < 1e-6 && c.keep_turns == 6);
         assert_eq!(p.quiz_spec(None).count, 10);
         assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);
         assert_eq!(p.viva_questions(), 15, "capped");

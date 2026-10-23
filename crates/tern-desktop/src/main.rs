@@ -26,6 +26,7 @@ mod editor;
 mod evaluation;
 mod explain;
 mod extensions;
+mod gauge;
 mod git;
 mod layout;
 mod model;

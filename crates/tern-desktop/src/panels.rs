@@ -138,6 +138,8 @@ impl Panels {
     /// runs past the window's edge. Beside the chat it leaves the centre
     /// [`CENTRE_MIN`]; floating over the chat it leaves the rail. Applied
     /// on every frame, so a resize or a restored width re-clamps at once.
+    /// [`Panels::frame`] does this now; kept for the width tests.
+    #[cfg(test)]
     pub fn right_fit(want: f32, window_w: f32, rail: f32, sidebar: f32, beside: bool) -> f32 {
         let free = (window_w - rail - if beside { sidebar } else { 0. }).max(0.);
         let max = if beside {

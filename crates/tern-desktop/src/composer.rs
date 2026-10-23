@@ -523,7 +523,9 @@ pub fn effort_chip(thinking: Thinking, effort: Option<Effort>) -> EffortChip {
 }
 
 /// The effort menu's rows: step, the provider setting it sends, and whether
-/// it can be picked.
+/// it can be picked. The slider replaced the menu; kept for the tests that
+/// pin which steps a model allows.
+#[cfg(test)]
 pub fn effort_rows(thinking: Thinking) -> Vec<(Effort, String, bool)> {
     Effort::ALL
         .into_iter()

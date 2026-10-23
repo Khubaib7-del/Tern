@@ -4,6 +4,16 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added and fixed (PR #47)
+
+Fixes and additions from testing the PR #46 build.
+
+- **Effort slider**: the thinking-effort menu is now a 300 px popover over the effort chip: the level's name and one plain line ("Thinks briefly"), a track of six rising ticks (None to Max) in the accent colour, and a round knob that glides between stops (200 ms on the house curve). Click, drag, or Left and Right move it; a reset icon goes back to Medium. Models with no thinking control show it greyed with "This model has no thinking control"; models that always think show one fixed state. No provider settings are shown. Stop snapping and keys are tested without a display (`composer::snap_stop`, `step_stop`).
+- **Right pane**: the cause of the pane looking cut off was its own header, not its width. The run panel's view tabs (Summary, Workers, Detailed, Raw, Report, Ledger, Decisions) sat in one row that could not shrink, so at the default 300 px they ran past the pane and were clipped at the window edge ("R…"). The tabs now fit the pane's width and the rest go into a **⋯** menu. The whole row (rail, sidebar, handles, chat, pane) is laid out by one function (`Panels::frame`) that counts the drag handles and floats the pane over the chat when both cannot fit. A layout test covers logical widths 1024, 1280, 1366, and 1536 px (a 1920×1080 display at 100 to 150 %) with every pane open.
+- **Sliding buttons**: segmented controls move one highlight that slides to the picked option (200 ms, `.32,.72,0,1`, off with reduced motion) instead of swapping at once: the Research/Study switch, the run panel's views, the Archived chats tabs, Appearance's theme, font, and size, and the composer's mode menu.
+- **Context gauge**: the context popover shows a segmented donut (96 px): one arc per part in its own soft colour (system slate, tools teal, attachments sand, conversation lichen, summary violet-grey), the free space as empty track, the percent in the centre coloured green, amber from 70 %, red from 90 %, and the token count under it. The arcs sweep in one after another and the number counts up when it opens (450 ms; instant with reduced motion). The composer's ring is a small version of the same donut.
+- **Context compaction** (`tern_agent::compact`, [docs/context.md](docs/context.md)): past 80 % of the window a chat folds its older turns into a pinned summary written by its own model, keeping the last four turns and turns with attachments word for word. A `session.compacted` event records it (the event log stays append-only, so every turn stays in the transcript), the chat reopens with the same summary, and the transcript shows **Compacted earlier messages · View summary**. **Compact now** sits in the context popover beside **New chat with summary**, and the popover shows the summary as its own part. Settings: `compact_off`, `compact_at_percent`, `compact_keep_turns`.
+
 ### Fixed (PR #46)
 
 Fixes from testing the PR #45 build.

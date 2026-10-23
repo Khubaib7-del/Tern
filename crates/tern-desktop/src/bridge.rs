@@ -50,6 +50,13 @@ pub enum Msg {
     /// not change (it keeps the old model then).
     Swapped(Box<ChatSession>, Option<String>),
     ConnectFailed(String),
+    /// "Compact now" finished: the session back, what it did, and the
+    /// context after.
+    Compacted(
+        Box<ChatSession>,
+        Result<Option<tern_agent::Compacted>, String>,
+        ContextUse,
+    ),
     /// An event from the running turn, as logged.
     Event(Box<tern_core::EventEnvelope>),
     /// Reply text streaming in: the model call's number and the new text.
@@ -192,6 +199,7 @@ impl std::fmt::Debug for Msg {
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
             Self::Browsed(r, p) => write!(f, "Browsed({r}, ok: {})", p.is_ok()),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
@@ -505,6 +513,20 @@ impl Bridge {
                 let _ = tx.send(Msg::Attached(result));
             });
         }
+    }
+
+    /// Folds the chat's older turns into a summary now.
+    pub fn compact(&self, mut session: Box<ChatSession>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let events = tx.clone();
+            let observer = move |e: &tern_core::EventEnvelope| {
+                let _ = events.send(Msg::Event(Box::new(e.clone())));
+            };
+            let result = session.compact(false, &observer).await;
+            let usage = session.context();
+            let _ = tx.send(Msg::Compacted(session, result, usage));
+        });
     }
 
     /// Runs one turn and hands the session back when it ends.

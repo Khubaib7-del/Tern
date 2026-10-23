@@ -8,7 +8,6 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
-use gpui_kit::component::progress::ProgressCircle;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewMotion};
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _, TitleBar};
@@ -50,8 +49,7 @@ mod study_view;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
-    Activity, Connection, ContextLevel, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon,
-    WorkingLine,
+    Activity, Connection, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon, WorkingLine,
 };
 use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
@@ -164,6 +162,8 @@ pub struct Workspace {
     /// paint, and whether the knob is being dragged.
     effort_track: std::rc::Rc<std::cell::Cell<f32>>,
     effort_drag: bool,
+    /// When the context popover opened, for its sweep-in.
+    ctx_opened: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
     /// The tab strip's "▾" menu of tabs that do not fit is open.
     tabs_menu_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -444,6 +444,7 @@ impl Workspace {
             anim_pending: Default::default(),
             effort_track: Default::default(),
             effort_drag: false,
+            ctx_opened: Default::default(),
             tabs_menu_open: false,
             _subscriptions: {
                 let mut subs = vec![
@@ -494,6 +495,7 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.model.compacted = s.compacted().cloned();
                 self.model.mcp_offers = s.mcp_offers().to_vec();
                 self.model.context = s.context();
                 self.open_sources.clear();
@@ -562,6 +564,22 @@ impl Workspace {
                 self.model.sessions = recent;
             }
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
+            Msg::Compacted(s, result, usage) => {
+                self.model.compacting = false;
+                self.model.context = usage;
+                match result {
+                    Ok(Some(_)) => self.model.show_compaction_notice(),
+                    Ok(None) => self.model.entries.push(Entry::Notice(
+                        "Nothing to compact yet: the latest turns stay word for word.".into(),
+                    )),
+                    Err(e) => self
+                        .model
+                        .entries
+                        .push(Entry::Notice(format!("Compacting failed: {e}"))),
+                }
+                self.session = Some(s);
+                self.scroll.scroll_to_bottom();
+            }
             Msg::Event(e) => {
                 self.model.on_event(&e);
                 self.request_icons();
@@ -608,6 +626,7 @@ impl Workspace {
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
             Msg::Done(s, out, usage, recent) => {
                 self.model.finish_turn(&out, usage);
+                self.model.show_compaction_notice();
                 self.model.set_resume_offer(
                     s.checkpoint().filter(|_| out.answer.is_none()).as_ref(),
                     Some((out.state, out.reason.as_deref())),
@@ -2174,6 +2193,7 @@ impl Workspace {
                     .children(self.branch_menu(i, p, cx))
                     .into_any_element()
             }
+            Entry::Notice(t) if t == crate::model::COMPACT_NOTICE => self.compact_notice(p, cx),
             Entry::Notice(t) => div()
                 .text_sm()
                 .text_color(p.muted)
@@ -2585,14 +2605,25 @@ impl Workspace {
     /// past 70% and red past 90%. Hover for exact numbers.
     fn context_ring(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let fraction = self.model.context_fraction();
-        let level_color = |l: ContextLevel| match l {
-            ContextLevel::Fine => p.accent,
-            ContextLevel::Filling => gpui_kit::hsla(38. / 360., 0.85, 0.55, 1.),
-            ContextLevel::Full => gpui_kit::hsla(0., 0.75, 0.58, 1.),
-        };
-        let color = level_color(self.model.context_level());
+        let dark = self.model.dark;
+        let level = self.model.context_level();
+        let full_color = crate::gauge::fullness(level, dark);
         let label = self.model.context_label();
         let b = self.model.context_breakdown();
+        let reduced = self.reduced_motion;
+        // The composer's ring: a mini version of the popover's donut, its
+        // used arcs in the fullness colour.
+        let mini: Vec<(f32, f32, Hsla)> = crate::gauge::arcs(
+            &b.rows
+                .iter()
+                .filter(|r| r.label != "Free")
+                .map(|r| r.share)
+                .collect::<Vec<_>>(),
+            12.,
+        )
+        .into_iter()
+        .map(|(s, w)| (s, w, full_color))
+        .collect();
         let trigger = div()
             .id("context-ring")
             .flex()
@@ -2603,13 +2634,7 @@ impl Workspace {
             .text_xs()
             .text_color(p.faint)
             .hover(|d| d.bg(p.hover).text_color(p.text))
-            .child(
-                ProgressCircle::new("context-ring-arc")
-                    .value(fraction.unwrap_or(0.) * 100.)
-                    .color(color)
-                    .accessibility_label(label.clone())
-                    .size(px(14.)),
-            )
+            .child(donut(14., 2.5, mini, p.border))
             .child(match fraction {
                 Some(f) => format!("{:.0}%", f * 100.),
                 None => label.clone(),
@@ -2621,73 +2646,92 @@ impl Workspace {
             .as_ref()
             .filter(|s| !s.is_draft())
             .map(|s| s.session_id());
+        let compacting = self.model.compacting;
+        let busy = self.model.is_busy();
         let me = cx.entity().downgrade();
-        // Segment shades, darkest first; Free is the empty track.
-        let shades = [p.text, p.muted, p.faint, color];
+        let opened = self.ctx_opened.clone();
+        let opened_set = self.ctx_opened.clone();
+        let accent = p.accent;
         HoverCard::new("context-card")
             .anchor(gpui_kit::Anchor::BottomRight)
             .open_delay(Duration::from_millis(150))
             .trigger(trigger)
-            .content(move |_, _, _| {
-                let used_rows = b.rows.iter().filter(|r| r.label != "Free");
-                div()
-                    .w(px(280.))
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .text_xs()
+            .on_open_change(move |open, _, _| {
+                opened_set.set(open.then(Instant::now));
+            })
+            .content(move |_, window, _| {
+                let t = opened
+                    .get()
+                    .map_or(crate::gauge::SWEEP, |at| at.elapsed());
+                if !reduced && t < crate::gauge::SWEEP + Duration::from_millis(30) {
+                    window.request_animation_frame();
+                }
+                let used: Vec<&crate::model::ContextRow> =
+                    b.rows.iter().filter(|r| r.label != "Free").collect();
+                let colors: Vec<Hsla> = used
+                    .iter()
+                    .map(|r| {
+                        crate::gauge::Part::of_label(r.label)
+                            .map_or(p.muted, |part| part.color(dark, accent))
+                    })
+                    .collect();
+                let shares: Vec<f32> = used.iter().map(|r| r.share).collect();
+                let n = shares.iter().filter(|s| **s > 0.).count();
+                let mut k = 0;
+                let arcs: Vec<(f32, f32, Hsla)> =
+                    crate::gauge::arcs(&shares, crate::gauge::GAP_DEG)
+                        .into_iter()
+                        .zip(colors.iter())
+                        .map(|((start, sweep), &c)| {
+                            if sweep <= 0. {
+                                return (start, 0., c);
+                            }
+                            let grow = crate::gauge::sweep_in(k, n, t, reduced);
+                            k += 1;
+                            (start, sweep * grow, c)
+                        })
+                        .collect();
+                let pct = fraction.map(|f| crate::gauge::count_up(f * 100., t, reduced));
+                let gauge = div()
+                    .relative()
+                    .size(px(crate::gauge::SIZE))
+                    .flex_none()
+                    .child(donut(
+                        crate::gauge::SIZE,
+                        crate::gauge::RING,
+                        arcs,
+                        p.border,
+                    ))
                     .child(
                         div()
+                            .absolute()
+                            .inset_0()
                             .flex()
-                            .items_baseline()
-                            .justify_between()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_lg()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.text)
-                                    .child("Context"),
+                                    .text_color(full_color)
+                                    .child(match pct {
+                                        Some(v) => format!("{v:.0}%"),
+                                        None => "–".into(),
+                                    }),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_color(p.muted)
-                                            .child(SharedString::from(b.header.clone())),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(p.text)
-                                            .child(SharedString::from(b.percent.clone())),
-                                    ),
+                                    .text_size(px(10.))
+                                    .text_color(p.muted)
+                                    .child(SharedString::from(b.header.clone())),
                             ),
-                    )
-                    .child(
-                        div()
-                            .h(px(6.))
-                            .w_full()
-                            .flex()
-                            .gap(px(1.))
-                            .rounded(px(3.))
-                            .overflow_hidden()
-                            .bg(p.border)
-                            .children(
-                                used_rows
-                                    .clone()
-                                    .enumerate()
-                                    .filter(|(_, r)| r.share > 0.)
-                                    .map(|(i, r)| {
-                                        div()
-                                            .h_full()
-                                            .w(gpui_kit::relative(r.share.max(0.01)))
-                                            .bg(shades[i.min(3)])
-                                    }),
-                            ),
-                    )
-                    .children(b.rows.iter().enumerate().map(|(i, r)| {
+                    );
+                let rows = div().flex_1().min_w_0().flex().flex_col().gap_1().children(
+                    b.rows.iter().map(|r| {
                         let free = r.label == "Free";
+                        let dot = crate::gauge::Part::of_label(r.label)
+                            .map(|part| part.color(dark, accent));
                         div()
                             .flex()
                             .items_center()
@@ -2697,16 +2741,34 @@ impl Workspace {
                                     .size(px(7.))
                                     .rounded_full()
                                     .flex_none()
-                                    .when(free, |d| d.border_1().border_color(p.faint))
-                                    .when(!free, |d| d.bg(shades[i.min(3)])),
+                                    .bg(match dot {
+                                        Some(c) => c,
+                                        None if free => p.border,
+                                        None => p.muted,
+                                    }),
                             )
-                            .child(div().flex_1().text_color(p.muted).child(r.label))
+                            .child(div().flex_1().min_w_0().truncate().text_color(p.muted).child(r.label))
                             .child(
                                 div()
                                     .text_color(p.text)
                                     .child(SharedString::from(crate::model::grouped(r.tokens))),
                             )
-                    }))
+                    }),
+                );
+                div()
+                    .w(px(320.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .text_xs()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child("Context"),
+                    )
+                    .child(div().flex().items_center().gap_3().child(gauge).child(rows))
                     .child(
                         div()
                             .text_color(p.faint)
@@ -2714,16 +2776,116 @@ impl Workspace {
                     )
                     .children(chat.map(|id| {
                         let me = me.clone();
-                        Button::new("context-handoff")
-                            .label("New chat with summary")
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Write a summary of this chat and continue in a fresh one")
-                            .on_click(move |_, _, cx| {
-                                let _ = me.update(cx, |this, cx| this.hand_off(id, cx));
-                            })
+                        let me2 = me.clone();
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .child(
+                                Button::new("context-compact")
+                                    .label(if compacting { "Compacting…" } else { "Compact now" })
+                                    .ghost()
+                                    .xsmall()
+                                    .disabled(compacting || busy)
+                                    .tooltip("Fold older turns into a summary; the last turns stay word for word")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = me2.update(cx, |this, cx| this.compact_now(cx));
+                                    }),
+                            )
+                            .child(
+                                Button::new("context-handoff")
+                                    .label("New chat with summary")
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Write a summary of this chat and continue in a fresh one")
+                                    .on_click(move |_, _, cx| {
+                                        let _ = me.update(cx, |this, cx| this.hand_off(id, cx));
+                                    }),
+                            )
                     }))
+                    .with_animation(
+                        "context-card-in",
+                        Animation::new(if reduced { Duration::ZERO } else { motion::UI })
+                            .with_easing(motion::ease),
+                        |d, t| d.opacity(t).mt(px((1. - t) * 6.)),
+                    )
             })
+    }
+
+    /// "Compact now" in the context popover.
+    pub(super) fn compact_now(&mut self, cx: &mut Context<Self>) {
+        if self.model.is_busy() || self.model.compacting {
+            return;
+        }
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        if session.is_draft() {
+            self.session = Some(session);
+            return;
+        }
+        self.model.compacting = true;
+        self.bridge.compact(session);
+        cx.notify();
+    }
+
+    /// The inline line after a compaction: "Compacted earlier messages ·
+    /// View summary", opening the summary under it.
+    fn compact_notice(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.model.compact_open;
+        let summary = self
+            .model
+            .compacted
+            .as_ref()
+            .map(|c| (c.summary.clone(), c.turns.len()));
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .py_1()
+            .text_xs()
+            .text_color(p.faint)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().flex_1().h(px(1.)).bg(p.border))
+                    .child(crate::model::COMPACT_NOTICE)
+                    .child("·")
+                    .child(
+                        div()
+                            .id("compact-view")
+                            .cursor_pointer()
+                            .text_color(p.muted)
+                            .hover(|d| d.text_color(p.text).underline())
+                            .child(if open { "Hide summary" } else { "View summary" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.model.compact_open = !this.model.compact_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().flex_1().h(px(1.)).bg(p.border)),
+            )
+            .when_some(summary.filter(|_| open), |d, (text, n)| {
+                d.child(
+                    div()
+                        .p_3()
+                        .rounded_lg()
+                        .bg(p.raised)
+                        .text_sm()
+                        .text_color(p.muted)
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_xs().text_color(p.faint).child(format!(
+                            "Earlier in this chat · {n} turns folded; they stay in the transcript"
+                        )))
+                        .child(SharedString::from(text)),
+                )
+            })
+            .into_any_element()
     }
 
     fn providers_screen(
@@ -4148,6 +4310,45 @@ fn sliding(panel: impl IntoElement, width: f32, f: f32, from_right: bool) -> imp
         .when(from_right, |d| d.justify_start())
         .when(!from_right, |d| d.justify_end())
         .child(div().flex_none().h_full().w(px(width)).child(panel))
+}
+
+/// A segmented donut `size` px across with a ring `ring` px wide: the
+/// track all the way round, then each arc (start and sweep in degrees,
+/// clockwise from twelve o'clock) in its colour (`crate::gauge`).
+fn donut(size: f32, ring: f32, arcs: Vec<(f32, f32, Hsla)>, track: Hsla) -> impl IntoElement {
+    gpui_kit::canvas(
+        |_, _, _: &mut gpui_kit::App| (),
+        move |b, _, window, _: &mut gpui_kit::App| {
+            let s = f32::from(b.size.width).min(f32::from(b.size.height));
+            let (cx, cy) = (
+                f32::from(b.origin.x) + s / 2.,
+                f32::from(b.origin.y) + s / 2.,
+            );
+            let r = (s - ring) / 2.;
+            let stroke = |start: f32, sweep: f32| {
+                let pts = crate::gauge::arc_points(cx, cy, r, start, sweep);
+                let mut pb = gpui_kit::PathBuilder::stroke(px(ring));
+                let (first, rest) = pts.split_first()?;
+                pb.move_to(gpui_kit::point(px(first.0), px(first.1)));
+                for q in rest {
+                    pb.line_to(gpui_kit::point(px(q.0), px(q.1)));
+                }
+                pb.build().ok()
+            };
+            if let Some(path) = stroke(0., 360.) {
+                window.paint_path(path, track);
+            }
+            for (start, sweep, color) in &arcs {
+                if *sweep > 0.3
+                    && let Some(path) = stroke(*start, *sweep)
+                {
+                    window.paint_path(path, *color);
+                }
+            }
+        },
+    )
+    .size(px(size))
+    .flex_none()
 }
 
 /// The live line while a turn runs: the tern mark moving with the work, a
