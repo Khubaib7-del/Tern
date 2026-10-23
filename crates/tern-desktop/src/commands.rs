@@ -120,6 +120,8 @@ pub struct SlashMenu {
 }
 
 const MENU_ROWS: usize = 9;
+/// Tern's commands shown before anything is typed after `/`.
+const EMPTY_COMMANDS: usize = 4;
 
 /// The `/` being typed: the composer holds exactly `/word`.
 pub fn active(text: &str) -> Option<&str> {
@@ -201,7 +203,21 @@ pub fn rows(query: &str, skills: &[(String, String)], offers: &[MenuItem]) -> Ve
         }
     }
     out.sort_by_key(|(r, k, _)| (*r, *k));
-    out.into_iter().map(|(_, _, r)| r).take(MENU_ROWS).collect()
+    // With nothing typed yet, a few of Tern's commands leave room for the
+    // skills and prompts below them.
+    let mut commands = 0;
+    out.into_iter()
+        .filter(|(_, k, _)| {
+            if *k == 0 && query.is_empty() {
+                commands += 1;
+                commands <= EMPTY_COMMANDS
+            } else {
+                true
+            }
+        })
+        .map(|(_, _, r)| r)
+        .take(MENU_ROWS)
+        .collect()
 }
 
 /// What the form is for.
@@ -315,6 +331,10 @@ mod tests {
             prompt("notes", "recap", &[]),
         ];
         let all = rows("", &skills, &offers);
+        assert!(
+            all.iter().any(|r| r.source == "github"),
+            "prompts show with nothing typed"
+        );
         assert!(
             all.iter()
                 .any(|r| r.label == "/new" && r.logo == RowLogo::Tern)
