@@ -8,13 +8,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px,
+};
 use tern_agent::{ChatSession, Effort, Harness, Run};
 
 use super::Workspace;
 use crate::chatflow::{self, ActionMenu, Notice, RollupView, UndoKind};
 use crate::composer::{self, Menu, Mode, PlusItem};
-use crate::model::Entry;
 use crate::providers::Kind;
 use crate::theme::Palette;
 
@@ -80,15 +81,13 @@ fn scale(label: &'static str, n: u8, p: Palette) -> AnyElement {
         .gap_2()
         .text_xs()
         .child(div().text_color(p.muted).child(label))
-        .child(
-            div().flex().gap(px(2.)).children((1..=5u8).map(|i| {
-                div()
-                    .w(px(14.))
-                    .h(px(4.))
-                    .rounded(px(2.))
-                    .bg(if i <= n { p.muted } else { p.border })
-            })),
-        )
+        .child(div().flex().gap(px(2.)).children((1..=5u8).map(|i| {
+            div()
+                .w(px(14.))
+                .h(px(4.))
+                .rounded(px(2.))
+                .bg(if i <= n { p.muted } else { p.border })
+        })))
         .into_any_element()
 }
 
@@ -121,9 +120,7 @@ impl Workspace {
         let id = (!s.is_draft()).then(|| s.session_id().to_string());
         self.model.composer.chat_opened(id.as_deref(), s.harness());
         self.model.deep_mode = self.model.composer.mode.is_deep();
-        self.model.workspace = s
-            .workspace()
-            .map(|w| (w.name(), w.path().to_path_buf()));
+        self.model.workspace = s.workspace().map(|w| (w.name(), w.path().to_path_buf()));
     }
 
     /// Saves a preference change both to disk and to the providers state
@@ -173,7 +170,8 @@ impl Workspace {
             PlusItem::Paste => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                     if !text.trim().is_empty() {
-                        self.model.attached(Ok(tern_agent::Attachment::paste(&text)));
+                        self.model
+                            .attached(Ok(tern_agent::Attachment::paste(&text)));
                     }
                 } else {
                     self.model.composer.note = Some("The clipboard has no text.".into());
@@ -228,8 +226,7 @@ impl Workspace {
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
             None => {
-                self.model.composer.note =
-                    Some("That is not a web address or a DOI.".into());
+                self.model.composer.note = Some("That is not a web address or a DOI.".into());
             }
         }
         cx.notify();
@@ -337,7 +334,11 @@ impl Workspace {
         .detach();
     }
 
-    pub(super) fn set_workspace(&mut self, path: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+    pub(super) fn set_workspace(
+        &mut self,
+        path: Option<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = self.session.as_mut() else {
             self.model
                 .notice_line("Wait for the chat to connect, then open the folder again.".into());
@@ -403,9 +404,15 @@ impl Workspace {
                         .text_xs()
                         .text_color(p.muted)
                         .child(icon(AssetIcon::FolderOpen, p.muted))
-                        .child(div().min_w_0().truncate().child(SharedString::from(name.clone())))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(name.clone())),
+                        )
                         .tooltip(move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx)
+                            gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                                .build(window, cx)
                         })
                         .child(
                             Button::new("workspace-close")
@@ -414,7 +421,9 @@ impl Workspace {
                                 .xsmall()
                                 .disabled(self.model.is_busy())
                                 .tooltip("Close the workspace")
-                                .on_click(cx.listener(|this, _, _, cx| this.set_workspace(None, cx))),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.set_workspace(None, cx)),
+                                ),
                         ),
                 )
                 .into_any_element(),
@@ -429,7 +438,11 @@ impl Workspace {
         let action = if busy {
             Button::new("stop")
                 .icon(IconName::Square)
-                .label(if self.model.stopping { "Stopping…" } else { "Stop" })
+                .label(if self.model.stopping {
+                    "Stopping…"
+                } else {
+                    "Stop"
+                })
                 .primary()
                 .small()
                 .disabled(self.model.stopping)
@@ -446,7 +459,11 @@ impl Workspace {
         let pause = deep_running.then(|| {
             let paused = self.model.paused;
             Button::new("pause")
-                .icon(if paused { AssetIcon::Play } else { AssetIcon::Pause })
+                .icon(if paused {
+                    AssetIcon::Play
+                } else {
+                    AssetIcon::Pause
+                })
                 .label(if paused { "Resume" } else { "Pause" })
                 .ghost()
                 .small()
@@ -536,9 +553,15 @@ impl Workspace {
 
     /// Esc closes a menu or stops the run; Tab queues a message while one
     /// runs; the `@` and `/` menus take their keys first.
-    fn composer_keys(&mut self, e: &gpui_kit::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn composer_keys(
+        &mut self,
+        e: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = e.keystroke.key.as_str();
-        if key == "escape" && (self.model.composer.menu.is_some() || self.model.composer.link_open) {
+        if key == "escape" && (self.model.composer.menu.is_some() || self.model.composer.link_open)
+        {
             self.model.composer.close();
             self.model.composer.link_open = false;
             cx.stop_propagation();
@@ -549,7 +572,8 @@ impl Workspace {
             let text = self.composer.read(cx).value().to_string();
             if !text.trim().is_empty() {
                 self.queued = Some(text);
-                self.composer.update(cx, |c, cx| c.set_value("", window, cx));
+                self.composer
+                    .update(cx, |c, cx| c.set_value("", window, cx));
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -575,7 +599,9 @@ impl Workspace {
                     .small()
                     .selected(open == Some(Menu::Plus))
                     .tooltip("Attach files, images, PDFs, a folder, a link, or a resource")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Plus, window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_menu(Menu::Plus, window, cx)),
+                    ),
             )
             .child(
                 Button::new("mode")
@@ -587,7 +613,9 @@ impl Workspace {
                     .selected(open == Some(Menu::Mode))
                     .disabled(busy)
                     .tooltip(mode.line())
-                    .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Mode, window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_menu(Menu::Mode, window, cx)),
+                    ),
             )
             .child(
                 Button::new("at")
@@ -595,7 +623,9 @@ impl Workspace {
                     .ghost()
                     .small()
                     .tooltip("Reference a file, source, or resource (@)")
-                    .on_click(cx.listener(|this, _, window, cx| this.insert_trigger('@', window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.insert_trigger('@', window, cx)),
+                    ),
             )
             .child(
                 Button::new("slash")
@@ -603,7 +633,9 @@ impl Workspace {
                     .ghost()
                     .small()
                     .tooltip("Commands, skills, and MCP prompts (/)")
-                    .on_click(cx.listener(|this, _, window, cx| this.insert_trigger('/', window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.insert_trigger('/', window, cx)),
+                    ),
             )
             .child(self.mic_button(p))
             .into_any_element()
@@ -642,9 +674,12 @@ impl Workspace {
                 .child(div().min_w_0().truncate().child(label))
                 .child(icon(AssetIcon::ChevronDown, p.faint))
                 .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new("Choose the model for this chat").build(window, cx)
+                    gpui_kit::component::tooltip::Tooltip::new("Choose the model for this chat")
+                        .build(window, cx)
                 })
-                .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Model, window, cx)))
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.open_menu(Menu::Model, window, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -674,7 +709,9 @@ impl Workspace {
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
-                .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)))
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -701,12 +738,22 @@ impl Workspace {
                 .text_color(if open { p.text } else { p.muted })
                 .when(open, |d| d.bg(p.hover))
                 .hover(|d| d.bg(p.hover).text_color(p.text))
-                .child(icon(if on { AssetIcon::Globe } else { AssetIcon::GlobeOff }, p.faint))
+                .child(icon(
+                    if on {
+                        AssetIcon::Globe
+                    } else {
+                        AssetIcon::GlobeOff
+                    },
+                    p.faint,
+                ))
                 .child(div().min_w_0().truncate().child(SharedString::from(label)))
                 .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new("Where web searches go").build(window, cx)
+                    gpui_kit::component::tooltip::Tooltip::new("Where web searches go")
+                        .build(window, cx)
                 })
-                .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Search, window, cx)))
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.open_menu(Menu::Search, window, cx)),
+                )
                 .into_any_element(),
         )
     }
@@ -736,7 +783,12 @@ impl Workspace {
                 .gap_2()
                 .px_1()
                 .child(icon(AssetIcon::Link, p.muted))
-                .child(div().flex_1().min_w_0().child(Input::new(&self.link_input).small()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&self.link_input).small()),
+                )
                 .child(
                     Button::new("link-add")
                         .label("Attach")
@@ -812,7 +864,9 @@ impl Workspace {
             .py_1()
             .rounded_md()
             .when(on, |d| d.bg(p.hover))
-            .when(enabled, |d| d.cursor_pointer().hover(move |d| d.bg(p.hover)))
+            .when(enabled, |d| {
+                d.cursor_pointer().hover(move |d| d.bg(p.hover))
+            })
             .when(!enabled, |d| d.opacity(0.5))
             .child(lead)
             .child(
@@ -841,7 +895,9 @@ impl Workspace {
                     true,
                     p,
                 )
-                .on_click(cx.listener(move |this, _, window, cx| this.plus_picked(item, window, cx)))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.plus_picked(item, window, cx)),
+                )
             }))
             .into_any_element()
     }
@@ -865,26 +921,31 @@ impl Workspace {
                         "Research modes"
                     }),
             )
-            .children(Mode::for_harness(harness).iter().enumerate().map(|(i, &m)| {
-                Self::menu_row(
-                    ("mode-item", i),
-                    icon(mode_icon(m), p.muted),
-                    m.name().into(),
-                    m.line().into(),
-                    m == current,
-                    true,
-                    p,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    let chat = this
-                        .session
-                        .as_ref()
-                        .filter(|s| !s.is_draft())
-                        .map(|s| s.session_id().to_string());
-                    this.model.set_mode(m, chat.as_deref());
-                    cx.notify();
-                }))
-            }))
+            .children(
+                Mode::for_harness(harness)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &m)| {
+                        Self::menu_row(
+                            ("mode-item", i),
+                            icon(mode_icon(m), p.muted),
+                            m.name().into(),
+                            m.line().into(),
+                            m == current,
+                            true,
+                            p,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let chat = this
+                                .session
+                                .as_ref()
+                                .filter(|s| !s.is_draft())
+                                .map(|s| s.session_id().to_string());
+                            this.model.set_mode(m, chat.as_deref());
+                            cx.notify();
+                        }))
+                    }),
+            )
             .into_any_element()
     }
 
@@ -895,13 +956,19 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .child(div().px_2().pt_1().pb(px(2.)).text_xs().text_color(p.faint).child(
-                if thinking.adjustable() {
-                    "Thinking effort: more thinking is slower and uses more tokens"
-                } else {
-                    "This model always thinks before it answers"
-                },
-            ))
+            .child(
+                div()
+                    .px_2()
+                    .pt_1()
+                    .pb(px(2.))
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(if thinking.adjustable() {
+                        "Thinking effort: more thinking is slower and uses more tokens"
+                    } else {
+                        "This model always thinks before it answers"
+                    }),
+            )
             .children(rows.into_iter().enumerate().map(|(i, (e, knob, ok))| {
                 let on = current == Some(e.bars()) && thinking.adjustable();
                 let row = Self::menu_row(
@@ -939,7 +1006,14 @@ impl Workspace {
                 .child("Web search for this chat"),
         );
         if !st.loaded {
-            col = col.child(div().px_2().py_1().text_xs().text_color(p.muted).child("Loading…"));
+            col = col.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child("Loading…"),
+            );
         }
         for (i, r) in st.section(Kind::Search).enumerate() {
             let id = r.id;
@@ -1089,7 +1163,8 @@ impl Workspace {
                 .overflow_y_scroll()
                 .children(models.into_iter().take(200).enumerate().map(|(i, m)| {
                     let m = m.to_owned();
-                    let on = Some(prov) == current_provider && current_model.as_deref() == Some(m.as_str());
+                    let on = Some(prov) == current_provider
+                        && current_model.as_deref() == Some(m.as_str());
                     let star = favs.iter().any(|f| *f == format!("{prov}/{m}"));
                     let pick = m.clone();
                     let hover = m.clone();
@@ -1112,20 +1187,30 @@ impl Workspace {
                                 .id(("picker-star", i))
                                 .flex_none()
                                 .text_color(if star { p.text } else { p.faint })
-                                .child(gpui_kit::component::Icon::new(if star {
-                                    AssetIcon::StarFill
-                                } else {
-                                    AssetIcon::Star
-                                }).xsmall())
+                                .child(
+                                    gpui_kit::component::Icon::new(if star {
+                                        AssetIcon::StarFill
+                                    } else {
+                                        AssetIcon::Star
+                                    })
+                                    .xsmall(),
+                                )
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    let mut favs = this.model.providers.prefs.favourite_models.clone();
+                                    let mut favs =
+                                        this.model.providers.prefs.favourite_models.clone();
                                     composer::toggle_favourite(&mut favs, prov, &fav);
                                     this.save_ui_prefs(|p| p.favourite_models = favs.clone());
                                     cx.notify();
                                 })),
                         )
-                        .child(div().flex_1().min_w_0().truncate().child(SharedString::from(m.clone())))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(m.clone())),
+                        )
                         .when(on, |d| d.child(icon(AssetIcon::Check, p.text)))
                         .on_hover(cx.listener(move |this, h: &bool, _, cx| {
                             if *h {
@@ -1273,7 +1358,13 @@ impl Workspace {
     }
 
     /// A finished answer's Thinking section, folded unless opened.
-    pub(super) fn thinking_done(&self, i: usize, th: &chatflow::Thought, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn thinking_done(
+        &self,
+        i: usize,
+        th: &chatflow::Thought,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let open = self.model.thought_open.contains(&i);
         thinking_view(
             SharedString::from(format!("thought-{i}")),
@@ -1290,7 +1381,13 @@ impl Workspace {
 
     /// The working rollup: one line for the run's tool work, opening to
     /// Summary, Detailed, or Raw inline. `i` is the answer, `None` live.
-    pub(super) fn rollup(&self, i: Option<usize>, run: &Run, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn rollup(
+        &self,
+        i: Option<usize>,
+        run: &Run,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let line = chatflow::rollup(run)?;
         let open = match i {
             Some(i) => self.model.rollup_open.contains(&i),
@@ -1330,21 +1427,24 @@ impl Workspace {
                 })),
         );
         if open {
-            let tabs = div().flex().gap_1().children(RollupView::ALL.into_iter().map(|v| {
-                Button::new(SharedString::from(format!(
-                    "rollup-view-{}-{}",
-                    v.label(),
-                    i.map_or(usize::MAX, |x| x)
-                )))
-                .label(v.label())
-                .ghost()
-                .xsmall()
-                .selected(v == view)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.model.rollup_view = v;
-                    cx.notify();
-                }))
-            }));
+            let tabs = div()
+                .flex()
+                .gap_1()
+                .children(RollupView::ALL.into_iter().map(|v| {
+                    Button::new(SharedString::from(format!(
+                        "rollup-view-{}-{}",
+                        v.label(),
+                        i.unwrap_or(usize::MAX)
+                    )))
+                    .label(v.label())
+                    .ghost()
+                    .xsmall()
+                    .selected(v == view)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.rollup_view = v;
+                        cx.notify();
+                    }))
+                }));
             let body = match view {
                 RollupView::Summary => self.run_summary(run, p, cx),
                 RollupView::Detailed => self.run_detailed(run, p),
@@ -1367,36 +1467,53 @@ impl Workspace {
         if i.is_none()
             && let Some(d) = &run.deep
         {
-            let live: Vec<_> = d.workers.iter().filter(|w| !w.status.is_finished()).collect();
+            let live: Vec<_> = d
+                .workers
+                .iter()
+                .filter(|w| !w.status.is_finished())
+                .collect();
             if !live.is_empty() {
-                col = col.child(div().flex().flex_wrap().gap_1().children(live.into_iter().map(|w| {
-                    let n = w.n;
+                col = col.child(
                     div()
                         .flex()
-                        .items_center()
+                        .flex_wrap()
                         .gap_1()
-                        .max_w(px(260.))
-                        .pl_2()
-                        .pr(px(2.))
-                        .py(px(1.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(p.border)
-                        .text_xs()
-                        .text_color(p.muted)
-                        .child(div().min_w_0().truncate().child(SharedString::from(format!("{n}. {}", w.question))))
-                        .child(
-                            Button::new(SharedString::from(format!("inline-worker-stop-{n}")))
-                                .icon(AssetIcon::X)
-                                .ghost()
-                                .xsmall()
-                                .tooltip("Stop this worker; the others carry on")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.deep_control.cancel_worker(n);
-                                    cx.notify();
-                                })),
-                        )
-                })));
+                        .children(live.into_iter().map(|w| {
+                            let n = w.n;
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .max_w(px(260.))
+                                .pl_2()
+                                .pr(px(2.))
+                                .py(px(1.))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(p.border)
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(SharedString::from(format!("{n}. {}", w.question))),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "inline-worker-stop-{n}"
+                                    )))
+                                    .icon(AssetIcon::X)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip("Stop this worker; the others carry on")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.deep_control.cancel_worker(n);
+                                        cx.notify();
+                                    })),
+                                )
+                        })),
+                );
             }
         }
         Some(col.into_any_element())
@@ -1421,7 +1538,13 @@ impl Workspace {
     }
 
     /// Copy · Reply · Branch ▾ · More ▾ on answers; Copy · Reply on messages.
-    pub(super) fn grouped_actions(&self, i: usize, answer: bool, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn grouped_actions(
+        &self,
+        i: usize,
+        answer: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let copied = self.model.copied == Some(i);
         let busy = self.model.is_busy();
         let open = self.model.action_menu;
@@ -1446,14 +1569,22 @@ impl Workspace {
             .items_center()
             .gap(px(2.))
             .child(
-                action("copy", if copied { AssetIcon::Check } else { AssetIcon::Copy }, "Copy")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(t) = this.model.entry_text(i) {
-                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t.to_owned()));
-                            this.model.copied = Some(i);
-                            cx.notify();
-                        }
-                    })),
+                action(
+                    "copy",
+                    if copied {
+                        AssetIcon::Check
+                    } else {
+                        AssetIcon::Copy
+                    },
+                    "Copy",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(t) = this.model.entry_text(i) {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(t.to_owned()));
+                        this.model.copied = Some(i);
+                        cx.notify();
+                    }
+                })),
             )
             .child(
                 action("reply", AssetIcon::Reply, "Reply").on_click(cx.listener(
@@ -1468,29 +1599,46 @@ impl Workspace {
             row = row
                 .when(!busy, |d| {
                     d.child(
-                        action("branch-menu", AssetIcon::GitBranch, "Branch: sub-session, background branch, move, copy, side chat")
-                            .when(open == Some((i, ActionMenu::Branch)), |d| d.bg(p.hover).text_color(p.text))
-                            .child(gpui_kit::component::Icon::new(AssetIcon::ChevronDown).xsmall())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model.toggle_action_menu(i, ActionMenu::Branch);
-                                cx.notify();
-                            })),
+                        action(
+                            "branch-menu",
+                            AssetIcon::GitBranch,
+                            "Branch: sub-session, background branch, move, copy, side chat",
+                        )
+                        .when(open == Some((i, ActionMenu::Branch)), |d| {
+                            d.bg(p.hover).text_color(p.text)
+                        })
+                        .child(gpui_kit::component::Icon::new(AssetIcon::ChevronDown).xsmall())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.toggle_action_menu(i, ActionMenu::Branch);
+                            cx.notify();
+                        })),
                     )
                 })
                 .child(
-                    action("more-menu", AssetIcon::Ellipsis, "More: save, watch, Explain in 3D")
-                        .when(open == Some((i, ActionMenu::More)), |d| d.bg(p.hover).text_color(p.text))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.toggle_action_menu(i, ActionMenu::More);
-                            cx.notify();
-                        })),
+                    action(
+                        "more-menu",
+                        AssetIcon::Ellipsis,
+                        "More: save, watch, Explain in 3D",
+                    )
+                    .when(open == Some((i, ActionMenu::More)), |d| {
+                        d.bg(p.hover).text_color(p.text)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.toggle_action_menu(i, ActionMenu::More);
+                        cx.notify();
+                    })),
                 );
         }
         row.into_any_element()
     }
 
     /// The open Branch ▾ or More ▾ menu under answer `i`.
-    pub(super) fn action_menu_view(&self, i: usize, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn action_menu_view(
+        &self,
+        i: usize,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let (at, which) = self.model.action_menu?;
         if at != i {
             return None;
@@ -1523,25 +1671,40 @@ impl Workspace {
             .bg(p.raised);
         let menu = match which {
             ActionMenu::Branch => menu
-                .child(item("am-sub", AssetIcon::GitBranch, "New sub-session from here".into()).on_click(
-                    cx.listener(move |this, _, _, cx| {
+                .child(
+                    item(
+                        "am-sub",
+                        AssetIcon::GitBranch,
+                        "New sub-session from here".into(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.model.action_menu = None;
                         this.model.cont.ids.branch_menu = Some(i);
                         cx.notify();
-                    }),
-                ))
-                .child(item("am-copy", AssetIcon::GitFork, "Branch into a new chat (a copy up to here)".into()).on_click(
-                    cx.listener(move |this, _, _, cx| {
+                    })),
+                )
+                .child(
+                    item(
+                        "am-copy",
+                        AssetIcon::GitFork,
+                        "Branch into a new chat (a copy up to here)".into(),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         this.model.action_menu = None;
                         this.branch_from(i, cx);
-                    }),
-                ))
-                .child(item("am-side", AssetIcon::MessageCircle, "Ask in side chat (saves nothing)".into()).on_click(
-                    cx.listener(move |this, _, window, cx| {
+                    })),
+                )
+                .child(
+                    item(
+                        "am-side",
+                        AssetIcon::MessageCircle,
+                        "Ask in side chat (saves nothing)".into(),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
                         this.model.action_menu = None;
                         this.open_side(None, window, cx);
-                    }),
-                )),
+                    })),
+                ),
             ActionMenu::More => {
                 let text = self.model.entry_text(i).unwrap_or_default();
                 let watched = self.model.watch_of(i).is_some();
@@ -1551,8 +1714,16 @@ impl Workspace {
                     m = m.child(match k {
                         "save" => item(
                             "am-save",
-                            if saved { AssetIcon::Check } else { AssetIcon::NotebookPen },
-                            if saved { "Saved to vault".into() } else { label.into() },
+                            if saved {
+                                AssetIcon::Check
+                            } else {
+                                AssetIcon::NotebookPen
+                            },
+                            if saved {
+                                "Saved to vault".into()
+                            } else {
+                                label.into()
+                            },
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.model.action_menu = None;
@@ -1560,7 +1731,11 @@ impl Workspace {
                         })),
                         "watch" => item(
                             "am-watch",
-                            if watched { AssetIcon::EyeOff } else { AssetIcon::Eye },
+                            if watched {
+                                AssetIcon::EyeOff
+                            } else {
+                                AssetIcon::Eye
+                            },
                             label.into(),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {

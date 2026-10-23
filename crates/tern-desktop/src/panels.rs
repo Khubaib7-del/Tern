@@ -66,14 +66,16 @@ impl Panels {
     /// Widths from preferences; out-of-range values are clamped.
     pub fn from_prefs(sidebar: Option<u32>, right: Option<u32>) -> Self {
         Self {
-            sidebar: sidebar.map_or(SIDEBAR_DEFAULT, |w| (w as f32).clamp(SIDEBAR_MIN, SIDEBAR_MAX)),
+            sidebar: sidebar.map_or(SIDEBAR_DEFAULT, |w| {
+                (w as f32).clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+            }),
             right: right.map_or(RIGHT_DEFAULT, |w| (w as f32).clamp(RIGHT_MIN, RIGHT_MAX)),
             ..Self::default()
         }
     }
 
     /// The widths to save; `None` for a default width.
-    pub fn to_prefs(&self) -> (Option<u32>, Option<u32>) {
+    pub fn to_prefs(self) -> (Option<u32>, Option<u32>) {
         let keep = |w: f32, d: f32| ((w - d).abs() >= 1.).then_some(w.round() as u32);
         (
             keep(self.sidebar, SIDEBAR_DEFAULT),
@@ -165,7 +167,12 @@ impl Panels {
 /// How many tabs of `widths` fit in `room` px with an overflow button of
 /// `more_w` px; the active tab is always among those shown. Returns the
 /// indices shown, in order, and the hidden ones for the ▾ menu.
-pub fn tab_overflow(widths: &[f32], room: f32, more_w: f32, active: usize) -> (Vec<usize>, Vec<usize>) {
+pub fn tab_overflow(
+    widths: &[f32],
+    room: f32,
+    more_w: f32,
+    active: usize,
+) -> (Vec<usize>, Vec<usize>) {
     let total: f32 = widths.iter().sum();
     if total <= room {
         return ((0..widths.len()).collect(), Vec::new());

@@ -419,7 +419,9 @@ impl Workspace {
                     div()
                         .flex_none()
                         .opacity(0.)
-                        .group_hover(SharedString::from(format!("watch-row-{ix}")), |d| d.opacity(1.))
+                        .group_hover(SharedString::from(format!("watch-row-{ix}")), |d| {
+                            d.opacity(1.)
+                        })
                         .child(
                             Button::new(("watch-row-rm", ix))
                                 .icon(AssetIcon::Trash)

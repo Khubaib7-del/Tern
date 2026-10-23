@@ -113,9 +113,9 @@ impl Mode {
             Self::Quiz => Some(
                 "Quiz mode: ask me 3 questions on this, one at a time, and mark each answer before the next.",
             ),
-            Self::Flashcards => Some(
-                "Flashcards mode: write 6 to 10 flashcards on this as `Q: … / A: …` pairs.",
-            ),
+            Self::Flashcards => {
+                Some("Flashcards mode: write 6 to 10 flashcards on this as `Q: … / A: …` pairs.")
+            }
             Self::Viva => Some(
                 "Viva mode: examine me orally on this. Ask one question, wait for my answer, then follow up.",
             ),
@@ -239,8 +239,22 @@ pub struct ModelHint {
 pub fn model_hint(id: &str) -> ModelHint {
     let m = id.to_ascii_lowercase();
     let has = |ks: &[&str]| ks.iter().any(|k| m.contains(k));
-    let small = has(&["nano", "mini", "lite", "flash", "haiku", "8b", "3b", "1b", "small", "instant", "tiny"]);
-    let large = has(&["opus", "pro", "large", "405b", "70b", "gpt-5", "o3", "sonnet", "grok-4", "reasoner", "magistral-medium"]);
+    let small = has(&[
+        "nano", "mini", "lite", "flash", "haiku", "8b", "3b", "1b", "small", "instant", "tiny",
+    ]);
+    let large = has(&[
+        "opus",
+        "pro",
+        "large",
+        "405b",
+        "70b",
+        "gpt-5",
+        "o3",
+        "sonnet",
+        "grok-4",
+        "reasoner",
+        "magistral-medium",
+    ]);
     let (speed, intelligence) = match (small, large) {
         (true, false) => (5, 2),
         (false, true) => (2, 5),
@@ -357,9 +371,7 @@ impl Composer {
 
     /// The provider the right column shows.
     pub fn shown_provider(&self, st: &ProvidersState) -> Option<&'static str> {
-        self.picker
-            .provider
-            .or_else(|| st.default_id(Kind::Model))
+        self.picker.provider.or_else(|| st.default_id(Kind::Model))
     }
 
     /// The models of the shown provider that match the search, favourites
@@ -500,13 +512,17 @@ mod tests {
         );
         st.models = Some(Models::Loaded(
             "mistral",
-            ["ministral-8b-latest", "magistral-medium-latest", "mistral-large-latest"]
-                .iter()
-                .map(|id| ModelChoice {
-                    id: (*id).into(),
-                    context_window: Some(128_000),
-                })
-                .collect(),
+            [
+                "ministral-8b-latest",
+                "magistral-medium-latest",
+                "mistral-large-latest",
+            ]
+            .iter()
+            .map(|id| ModelChoice {
+                id: (*id).into(),
+                context_window: Some(128_000),
+            })
+            .collect(),
         ));
         st
     }
@@ -548,7 +564,8 @@ mod tests {
     #[test]
     fn plus_menu_items_filter_what_they_ask_for() {
         assert_eq!(PlusItem::ALL.len(), 7);
-        let (kept, dropped) = PlusItem::Pdfs.keep(vec!["a.pdf".into(), "b.PDF".into(), "c.txt".into()]);
+        let (kept, dropped) =
+            PlusItem::Pdfs.keep(vec!["a.pdf".into(), "b.PDF".into(), "c.txt".into()]);
         assert_eq!(kept.len(), 2);
         assert_eq!(dropped, 1);
         let (kept, _) = PlusItem::Files.keep(vec!["c.txt".into()]);
@@ -574,29 +591,46 @@ mod tests {
         // Another provider's column waits for its list.
         c.picker.provider = Some("openai");
         assert!(c.models(&st).is_none());
-        assert_eq!(Composer::context_of(&st, "ministral-8b-latest"), Some(128_000));
+        assert_eq!(
+            Composer::context_of(&st, "ministral-8b-latest"),
+            Some(128_000)
+        );
     }
 
     #[test]
     fn favourites_go_first_and_toggle() {
         let mut st = st();
-        assert!(toggle_favourite(&mut st.prefs.favourite_models, "mistral", "mistral-large-latest"));
+        assert!(toggle_favourite(
+            &mut st.prefs.favourite_models,
+            "mistral",
+            "mistral-large-latest"
+        ));
         let c = Composer::default();
         assert_eq!(c.models(&st).unwrap()[0], "mistral-large-latest");
-        assert!(!toggle_favourite(&mut st.prefs.favourite_models, "mistral", "mistral-large-latest"));
+        assert!(!toggle_favourite(
+            &mut st.prefs.favourite_models,
+            "mistral",
+            "mistral-large-latest"
+        ));
         assert!(st.prefs.favourite_models.is_empty());
     }
 
     #[test]
     fn hints_read_size_from_the_name() {
         assert!(model_hint("gpt-4.1-nano").speed > model_hint("claude-opus-4-1").speed);
-        assert!(model_hint("claude-opus-4-1").intelligence > model_hint("gemini-2.5-flash-lite").intelligence);
+        assert!(
+            model_hint("claude-opus-4-1").intelligence
+                > model_hint("gemini-2.5-flash-lite").intelligence
+        );
     }
 
     #[test]
     fn effort_chip_follows_the_model() {
         let plain = tern_agent::thinking_support("mistral", "ministral-8b-latest");
-        assert!(effort_chip(plain, Some(Effort::High)).is_none(), "hidden on plain models");
+        assert!(
+            effort_chip(plain, Some(Effort::High)).is_none(),
+            "hidden on plain models"
+        );
         let always = tern_agent::thinking_support("mistral", "magistral-medium-latest");
         let chip = effort_chip(always, None).unwrap();
         assert!(!chip.adjustable);

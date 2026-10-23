@@ -1602,7 +1602,10 @@ impl Model {
                     run: Box::new(t.run.clone()),
                     took: t.took,
                     pages: t.pages.clone(),
-                    thought: t.run.thought().map(|(text, took)| crate::chatflow::Thought { text, took }),
+                    thought: t
+                        .run
+                        .thought()
+                        .map(|(text, took)| crate::chatflow::Thought { text, took }),
                     at: t.run.started_rfc3339(),
                 });
             }

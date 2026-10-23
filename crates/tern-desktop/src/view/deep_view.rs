@@ -5,10 +5,10 @@
 //! and a cancel button).
 
 use gpui_kit::assets::IconName as AssetIcon;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px};
 use tern_agent::deep::{PlanAnswer, PlanSource};

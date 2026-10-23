@@ -33,7 +33,6 @@ mod browser_view;
 mod cards_view;
 mod commands_view;
 mod composer_view;
-mod panels_view;
 mod continuity_view;
 mod customize_view;
 mod decision_view;
@@ -43,6 +42,7 @@ mod eval_view;
 mod explain_view;
 mod git_view;
 mod library_view;
+mod panels_view;
 mod runs_view;
 mod scout_view;
 mod study_view;
@@ -296,7 +296,8 @@ impl Workspace {
             },
         );
         let link_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("https://… or a DOI like 10.48550/arXiv.1706.03762")
+            InputState::new(window, cx)
+                .placeholder("https://… or a DOI like 10.48550/arXiv.1706.03762")
         });
         let link_sub = cx.subscribe_in(
             &link_input,
@@ -2061,12 +2062,14 @@ impl Workspace {
                     .text_color(p.faint)
                     .cursor_pointer()
                     .hover(|d| d.text_color(p.text))
-                    .child(gpui_kit::component::Icon::new(if folded {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .xsmall())
+                    .child(
+                        gpui_kit::component::Icon::new(if folded {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .xsmall(),
+                    )
                     .child(if folded { "Show answer" } else { "Fold" })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.model.toggle_fold(i);
@@ -3529,8 +3532,24 @@ impl Render for Workspace {
             div()
                 .absolute()
                 .inset_0()
-                .child(div().absolute().top_0().bottom_0().left_0().w(px(cover)).bg(old))
-                .child(div().absolute().top_0().bottom_0().right_0().w(px(cover)).bg(old))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w(px(cover))
+                        .bg(old),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(px(cover))
+                        .bg(old),
+                )
         });
         // The right pane: the browser when it is showing, else the docked
         // side chat, else the run panel.
@@ -3553,8 +3572,16 @@ impl Render for Workspace {
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
             - RAIL_W
-            - if layout.sidebar_beside { sidebar.map_or(0., |f| sidebar_w * f) } else { 0. }
-            - if layout.panel_beside { panel.map_or(0., |f| side_w * f) } else { 0. })
+            - if layout.sidebar_beside {
+                sidebar.map_or(0., |f| sidebar_w * f)
+            } else {
+                0.
+            }
+            - if layout.panel_beside {
+                panel.map_or(0., |f| side_w * f)
+            } else {
+                0.
+            })
         .max(0.);
         let side_pane = |this: &Self, cx: &mut Context<Self>| {
             if this.model.browser.visible {
@@ -3588,9 +3615,11 @@ impl Render for Workspace {
             .bg(p.canvas)
             .text_color(p.text)
             .when(panels.dragging().is_some(), |d| d.cursor_col_resize())
-            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
-                this.panel_drag_move(f32::from(e.position.x), window, cx);
-            }))
+            .on_mouse_move(
+                cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
+                    this.panel_drag_move(f32::from(e.position.x), window, cx);
+                }),
+            )
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),

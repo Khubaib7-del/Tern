@@ -14,10 +14,10 @@
 mod app_menu;
 mod assets;
 mod bridge;
-mod chatflow;
-mod composer;
 mod browser;
+mod chatflow;
 mod commands;
+mod composer;
 mod continuity;
 mod decision;
 mod editor;

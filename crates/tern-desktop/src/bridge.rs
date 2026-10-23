@@ -200,7 +200,9 @@ impl std::fmt::Debug for Msg {
             Self::Icon(site, path) => write!(f, "Icon({site}, {})", path.is_some()),
             Self::Text(call, t) => write!(f, "Text({call}, {} chars)", t.len()),
             Self::Reasoning(call, t) => write!(f, "Reasoning({call}, {} chars)", t.len()),
-            Self::Archive(a, d, _) => write!(f, "Archive({} archived, {} deleted)", a.len(), d.len()),
+            Self::Archive(a, d, _) => {
+                write!(f, "Archive({} archived, {} deleted)", a.len(), d.len())
+            }
             Self::Approval(r, _) => write!(f, "Approval({})", r.tool),
             Self::Plan(p, _) => write!(f, "Plan({} parts)", p.sub_questions.len()),
             Self::Done(_, out, ..) => write!(f, "Done({:?})", out.state),

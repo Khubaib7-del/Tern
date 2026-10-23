@@ -88,7 +88,11 @@ impl Workspace {
 
     /// Ctrl+\ maximises or restores the right pane; Ctrl+Alt+\ shows the
     /// chat alone. Returns whether the key was taken.
-    pub(super) fn panel_keys(&mut self, e: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) -> bool {
+    pub(super) fn panel_keys(
+        &mut self,
+        e: &gpui_kit::KeyDownEvent,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let k = &e.keystroke;
         if k.key != "\\" || !(k.modifiers.control || k.modifiers.platform) {
             return false;
@@ -310,7 +314,12 @@ impl Workspace {
     }
 
     /// A chat goes to the trash, with Undo.
-    pub(super) fn delete_chat(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn delete_chat(
+        &mut self,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.current == Some(id) {
             if self.model.is_busy() {
                 return;
@@ -404,20 +413,26 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .p_1()
-                .child(item("row-rename", AssetIcon::Pencil, "Rename", false).on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.model.row_menu = None;
-                        this.start_rename(id, window, cx);
-                    }),
-                ))
+                .child(
+                    item("row-rename", AssetIcon::Pencil, "Rename", false).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.model.row_menu = None;
+                            this.start_rename(id, window, cx);
+                        },
+                    )),
+                )
                 .when(!sub, |d| {
                     d.child(
-                        item("row-move", AssetIcon::FolderInput, "Move to project…", false).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.model.row_menu = None;
-                                this.toggle_move_menu(id, cx);
-                            }),
-                        ),
+                        item(
+                            "row-move",
+                            AssetIcon::FolderInput,
+                            "Move to project…",
+                            false,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.row_menu = None;
+                            this.toggle_move_menu(id, cx);
+                        })),
                     )
                 })
                 .child(
@@ -436,18 +451,22 @@ impl Workspace {
                         }),
                     ),
                 )
-                .child(item("row-archive", AssetIcon::Archive, "Archive", false).on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.model.row_menu = None;
-                        this.archive_chat(id, window, cx);
-                    }),
-                ))
-                .child(item("row-delete", AssetIcon::Trash, "Delete…", true).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.model.confirm_delete = Some(id);
-                        cx.notify();
-                    }),
-                ))
+                .child(
+                    item("row-archive", AssetIcon::Archive, "Archive", false).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.model.row_menu = None;
+                            this.archive_chat(id, window, cx);
+                        }),
+                    ),
+                )
+                .child(
+                    item("row-delete", AssetIcon::Trash, "Delete…", true).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.model.confirm_delete = Some(id);
+                            cx.notify();
+                        },
+                    )),
+                )
                 .into_any_element()
         };
         div()
@@ -469,7 +488,12 @@ impl Workspace {
     }
 
     /// The ⋯ button on a sidebar row.
-    pub(super) fn row_menu_button(&self, ix: usize, id: SessionId, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn row_menu_button(
+        &self,
+        ix: usize,
+        id: SessionId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         Button::new(("row-menu", ix))
             .icon(AssetIcon::Ellipsis)
             .ghost()
@@ -516,26 +540,27 @@ impl Workspace {
     pub(super) fn archived_screen(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let a = &self.model.archive;
         let (n_archived, n_deleted) = a.counts();
-        let tab_button = |key: &'static str, label: String, tab: ArchiveTab, cx: &mut Context<Self>| {
-            let on = a.tab == tab;
-            div()
-                .id(key)
-                .px_3()
-                .py_1()
-                .text_sm()
-                .cursor_pointer()
-                .border_b_2()
-                .border_color(if on { p.accent } else { p.canvas.opacity(0.) })
-                .text_color(if on { p.text } else { p.muted })
-                .hover(move |d| d.text_color(p.text))
-                .child(SharedString::from(label))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.model.archive.tab = tab;
-                    this.model.archive.confirm = None;
-                    this.model.archive.confirm_empty = false;
-                    cx.notify();
-                }))
-        };
+        let tab_button =
+            |key: &'static str, label: String, tab: ArchiveTab, cx: &mut Context<Self>| {
+                let on = a.tab == tab;
+                div()
+                    .id(key)
+                    .px_3()
+                    .py_1()
+                    .text_sm()
+                    .cursor_pointer()
+                    .border_b_2()
+                    .border_color(if on { p.accent } else { p.canvas.opacity(0.) })
+                    .text_color(if on { p.text } else { p.muted })
+                    .hover(move |d| d.text_color(p.text))
+                    .child(SharedString::from(label))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model.archive.tab = tab;
+                        this.model.archive.confirm = None;
+                        this.model.archive.confirm_empty = false;
+                        cx.notify();
+                    }))
+            };
         let deleted_tab = a.tab == ArchiveTab::Deleted;
         let header = div()
             .flex()
@@ -576,8 +601,18 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .child(tab_button("archive-tab-archived", n_archived, ArchiveTab::Archived, cx))
-                    .child(tab_button("archive-tab-deleted", n_deleted, ArchiveTab::Deleted, cx)),
+                    .child(tab_button(
+                        "archive-tab-archived",
+                        n_archived,
+                        ArchiveTab::Archived,
+                        cx,
+                    ))
+                    .child(tab_button(
+                        "archive-tab-deleted",
+                        n_deleted,
+                        ArchiveTab::Deleted,
+                        cx,
+                    )),
             )
             .when(deleted_tab && !a.deleted.is_empty(), |d| {
                 d.child(div().pb_1().child(if a.confirm_empty {
@@ -769,7 +804,9 @@ impl Workspace {
             })
             .collect();
         let empty = match a.tab {
-            ArchiveTab::Archived => "No archived chats. Archive one from a chat's ⋯ menu in the sidebar.",
+            ArchiveTab::Archived => {
+                "No archived chats. Archive one from a chat's ⋯ menu in the sidebar."
+            }
             ArchiveTab::Deleted => "The trash is empty.",
         };
         div()
@@ -791,7 +828,12 @@ impl Workspace {
                     .child(header)
                     .child(tabs)
                     .when_some(a.note.clone(), |d, n| {
-                        d.child(div().text_xs().text_color(p.muted).child(SharedString::from(n)))
+                        d.child(
+                            div()
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child(SharedString::from(n)),
+                        )
                     })
                     .when(!a.loaded, |d| {
                         d.child(div().text_sm().text_color(p.faint).child("Loading…"))

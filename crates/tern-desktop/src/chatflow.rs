@@ -215,7 +215,8 @@ fn stops(text: &str) -> Vec<(usize, usize)> {
             || t.starts_with("* ")
             || t.starts_with('|')
             || t.starts_with("```")
-            || t.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            || t.split_once(". ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
         let complete = line.ends_with('\n');
         if whole {
             // A heading or list item shows once its line is complete.
@@ -341,7 +342,9 @@ pub fn explain_fits(text: &str) -> bool {
     for pair in words.windows(2) {
         let w = pair[1].trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
         let prev_ends = pair[0].ends_with(['.', '!', '?', ':']);
-        let acronym = w.len() >= 2 && w.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+        let acronym = w.len() >= 2
+            && w.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
         let cap = !prev_ends && w.chars().next().is_some_and(char::is_uppercase) && w.len() > 2;
         let joined = w.contains('-') && w.len() > 4;
         if acronym || cap || joined {
@@ -491,20 +494,27 @@ mod tests {
         run.push(&ev("tool.executed", json!({"tool": "file_read"})));
         assert_eq!(rollup(&run).unwrap(), "Searched 2 · read 1 · 1 file step");
         let mut deep = Run::new();
-        deep.push(&ev("tool.executed", json!({"tool": "read_url", "worker": 1})));
+        deep.push(&ev(
+            "tool.executed",
+            json!({"tool": "read_url", "worker": 1}),
+        ));
         assert_eq!(rollup(&deep).unwrap(), "Read 1");
     }
 
     #[test]
     fn pacer_reveals_by_block_at_reading_pace() {
-        let text = "# GPUs\n\nA GPU runs many threads at once. It hides memory latency.\n- SMs\n- Warps\n";
+        let text =
+            "# GPUs\n\nA GPU runs many threads at once. It hides memory latency.\n- SMs\n- Warps\n";
         let mut p = Pacer::default();
         let n = p.advance(text, Duration::from_millis(20), false);
         assert_eq!(&text[..n], "# GPUs\n", "the heading lands whole first");
         let n = p.advance(text, Duration::from_millis(100), false);
         let shown = &text[..n];
         assert!(shown.starts_with("# GPUs\n\nA GPU"));
-        assert!(!shown.contains("Warps"), "not everything at once: {shown:?}");
+        assert!(
+            !shown.contains("Warps"),
+            "not everything at once: {shown:?}"
+        );
         // A list item never shows half.
         for ms in [10, 30, 50, 70] {
             let n = p.advance(text, Duration::from_millis(ms), false);
@@ -527,10 +537,18 @@ mod tests {
         };
         let now = "2026-10-23T17:00:00Z";
         assert_eq!(s.sent(now, Some(5 * 3600)).unwrap(), "Sent 9:31 PM");
-        assert_eq!(s.answered(now, Some(5 * 3600)).unwrap(), "9:31 PM · Worked for 32s");
+        assert_eq!(
+            s.answered(now, Some(5 * 3600)).unwrap(),
+            "9:31 PM · Worked for 32s"
+        );
         assert!(Stamp::default().sent(now, None).is_none());
         assert_eq!(
-            Stamp { at: None, took: Some(Duration::from_secs(3)) }.answered(now, None).unwrap(),
+            Stamp {
+                at: None,
+                took: Some(Duration::from_secs(3))
+            }
+            .answered(now, None)
+            .unwrap(),
             "Worked for 3s"
         );
     }
@@ -548,8 +566,16 @@ mod tests {
         assert!(explain_fits(gpu));
         let items = more_items(gpu, false);
         assert!(items.iter().any(|(k, _)| *k == "explain3d"));
-        assert!(!more_items("hello", true).iter().any(|(k, _)| *k == "explain3d"));
-        assert!(more_items("hello", true).iter().any(|(_, l)| l.starts_with("Stop watching")));
+        assert!(
+            !more_items("hello", true)
+                .iter()
+                .any(|(k, _)| *k == "explain3d")
+        );
+        assert!(
+            more_items("hello", true)
+                .iter()
+                .any(|(_, l)| l.starts_with("Stop watching"))
+        );
     }
 
     #[test]
@@ -561,13 +587,19 @@ mod tests {
 
     #[test]
     fn notices_collapse_to_one() {
-        let (shown, folded) = stack(vec![Notice::Continue, Notice::Resume, Notice::Inserted], false);
+        let (shown, folded) = stack(
+            vec![Notice::Continue, Notice::Resume, Notice::Inserted],
+            false,
+        );
         assert_eq!(shown, [Notice::Resume]);
         assert_eq!(folded, 2);
         assert_eq!(more_notices(folded), "2 more notices");
         let (shown, folded) = stack(vec![Notice::Continue, Notice::Resume], true);
         assert_eq!(shown.len(), 2);
         assert_eq!(folded, 0);
-        assert_eq!(stack(vec![Notice::Continue], false), (vec![Notice::Continue], 0));
+        assert_eq!(
+            stack(vec![Notice::Continue], false),
+            (vec![Notice::Continue], 0)
+        );
     }
 }
