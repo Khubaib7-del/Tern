@@ -330,6 +330,9 @@ pub struct Model {
     pub cut_off: bool,
     /// The last answer was cut off: the composer offers Continue.
     pub continue_offer: bool,
+    /// Web search failed the last deep run's check: the stop reason. The
+    /// banner offers Wikipedia or the address field.
+    pub search_down: Option<String>,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -475,6 +478,7 @@ impl Model {
             resume_offer: None,
             cut_off: false,
             continue_offer: false,
+            search_down: None,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -695,6 +699,7 @@ impl Model {
         self.inserted = None;
         self.cut_off = false;
         self.continue_offer = false;
+        self.search_down = None;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -1384,6 +1389,9 @@ impl Model {
     pub fn active_notices(&self) -> Vec<crate::chatflow::Notice> {
         use crate::chatflow::Notice;
         let mut v = Vec::new();
+        if self.search_down.is_some() && !self.is_busy() {
+            v.push(Notice::SearchDown);
+        }
         if self.resume_offer.is_some() && !self.is_busy() {
             v.push(Notice::Resume);
         }
@@ -1522,6 +1530,9 @@ impl Model {
         if out.state != TurnState::Completed
             && let Some(r) = &out.reason
         {
+            if crate::chatflow::is_search_failure(r) {
+                self.search_down = Some(r.clone());
+            }
             self.entries.push(Entry::Notice(r.clone()));
         }
         if self.continue_offer {
@@ -1888,48 +1899,64 @@ impl Model {
         }
     }
 
-    /// The hover card's lines, as (label, value) with exact numbers.
-    pub fn context_details(&self) -> Vec<(&'static str, String)> {
+    /// The context popover: used / total, a percent, and one row per kind
+    /// of content plus the free space, each with its share of the bar.
+    pub fn context_breakdown(&self) -> ContextBreakdown {
         let c = &self.context;
-        let mut rows = Vec::new();
-        let pct = c
-            .fraction()
-            .map(|f| format!(" ({:.1}%)", f * 100.0))
-            .unwrap_or_default();
-        let window = c
-            .window
-            .map(|w| format!(" of {}", grouped(w)))
-            .unwrap_or_default();
-        rows.push(("Context", format!("{}{window}{pct}", grouped(c.used()))));
-        if c.calls > 0 {
-            rows.push(("Last prompt", grouped(c.prompt)));
-            rows.push(("Last reply", grouped(c.reply)));
-        } else if c.used() > 0 {
-            rows.push(("History", grouped(c.prompt)));
-        }
+        let used = c.used();
+        let parts = if c.parts.total() == 0 {
+            tern_agent::ContextParts {
+                conversation: used,
+                ..Default::default()
+            }
+        } else {
+            c.parts
+        };
+        let mut rows = vec![
+            ("System + instructions", parts.system),
+            ("Tools", parts.tools),
+            ("Attachments and sources", parts.attachments),
+            ("Conversation", parts.conversation),
+        ];
         if let Some(left) = c.left() {
-            rows.push(("Free", grouped(left)));
+            rows.push(("Free", left));
         }
-        if c.calls > 0 {
-            rows.push((
-                "This chat",
-                format!(
-                    "{} tokens over {} call{}",
-                    grouped(c.session_tokens),
-                    c.calls,
-                    if c.calls == 1 { "" } else { "s" }
-                ),
-            ));
-        }
-        rows.push((
-            "Counted",
-            if c.estimated {
-                "estimated, 4 characters a token".into()
+        let whole = c.window.filter(|w| *w > 0).unwrap_or(used.max(1)) as f32;
+        let header = match c.window {
+            Some(w) => format!(
+                "{}{} / {}",
+                if c.estimated { "~" } else { "" },
+                compact(used),
+                compact(w)
+            ),
+            None => format!(
+                "{}{} used",
+                if c.estimated { "~" } else { "" },
+                compact(used)
+            ),
+        };
+        ContextBreakdown {
+            header,
+            percent: c
+                .fraction()
+                .map(|f| format!("{:.0}%", f * 100.))
+                .unwrap_or_default(),
+            rows: rows
+                .into_iter()
+                .map(|(label, tokens)| ContextRow {
+                    label,
+                    tokens,
+                    share: (tokens as f32 / whole).clamp(0., 1.),
+                })
+                .collect(),
+            note: if c.estimated {
+                "Estimated at about four characters a token; the provider has not counted yet."
+                    .into()
             } else {
-                "by the provider".into()
+                "Total counted by the provider; the split by kind is estimated.".into()
             },
-        ));
-        rows
+            level: self.context_level(),
+        }
     }
 }
 
@@ -1939,6 +1966,28 @@ pub enum ContextLevel {
     Fine,
     Filling,
     Full,
+}
+
+/// What the context popover shows (`Model::context_breakdown`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextBreakdown {
+    /// "12.4k / 128k", with "~" when estimated.
+    pub header: String,
+    /// "10%", empty when the window is unknown.
+    pub percent: String,
+    pub rows: Vec<ContextRow>,
+    /// Measured or estimated, in words.
+    pub note: String,
+    pub level: ContextLevel,
+}
+
+/// One kind of content in the context window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextRow {
+    pub label: &'static str,
+    pub tokens: u64,
+    /// Its part of the bar, 0 to 1.
+    pub share: f32,
 }
 
 /// 12,345 with thousands separators.
@@ -2211,20 +2260,55 @@ mod tests {
             estimated: false,
             session_tokens: prompt + reply,
             calls: 1,
+            parts: tern_agent::ContextParts::estimate(4_000, 8_000, 0, 1_000)
+                .scaled_to(prompt, reply),
         }
     }
 
     #[test]
-    fn context_details_are_exact() {
+    fn context_breakdown_splits_the_window() {
+        let mut m = ready();
+        m.context = ctx(90_000, 2_345);
+        let b = m.context_breakdown();
+        assert_eq!(b.header, "92.3k / 128k");
+        assert_eq!(b.percent, "72%");
+        let labels: Vec<_> = b.rows.iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            [
+                "System + instructions",
+                "Tools",
+                "Attachments and sources",
+                "Conversation",
+                "Free"
+            ]
+        );
+        let sum: u64 = b.rows.iter().map(|r| r.tokens).sum();
+        assert_eq!(sum, 128_000, "the parts and the free space fill the window");
+        assert!((b.rows.iter().map(|r| r.share).sum::<f32>() - 1.0).abs() < 0.01);
+        assert!(b.note.contains("counted by the provider"));
+        // Unknown window: no Free row, shares of what is used.
+        m.context.window = None;
+        let b = m.context_breakdown();
+        assert_eq!(b.percent, "");
+        assert!(b.rows.iter().all(|r| r.label != "Free"));
+        // Estimated.
+        m.context = ContextUse {
+            prompt: 100,
+            window: Some(128_000),
+            estimated: true,
+            parts: tern_agent::ContextParts::estimate(200, 0, 0, 200),
+            ..ContextUse::default()
+        };
+        assert!(m.context_breakdown().note.contains("Estimated"));
+    }
+
+    #[test]
+    fn context_label_and_level() {
         let mut m = ready();
         assert_eq!(m.context_label(), "0 of 128k tokens");
         m.context = ctx(90_000, 2_345);
         assert_eq!(m.context_level(), ContextLevel::Filling);
-        let d = m.context_details();
-        assert_eq!(d[0], ("Context", "92,345 of 128,000 (72.1%)".to_owned()));
-        assert_eq!(d[1], ("Last prompt", "90,000".to_owned()));
-        assert_eq!(d[3], ("Free", "35,655".to_owned()));
-        assert_eq!(d[4], ("This chat", "92,345 tokens over 1 call".to_owned()));
         m.context = ContextUse {
             prompt: 8,
             window: Some(128_000),
@@ -2232,7 +2316,6 @@ mod tests {
             ..ContextUse::default()
         };
         assert_eq!(m.context_label(), "~8 of 128k tokens");
-        assert_eq!(m.context_details()[1], ("History", "8".to_owned()));
         m.context.prompt = 120_000;
         assert_eq!(m.context_level(), ContextLevel::Full);
         assert_eq!(grouped(1_234_567), "1,234,567");

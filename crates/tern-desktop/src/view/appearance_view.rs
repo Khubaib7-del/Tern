@@ -8,6 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px, svg};
 
 use super::Workspace;
+use crate::appearance::{Accent, Choice, FontChoice, TextSize, ThemeChoice};
 use crate::assets::{self, MONO_FONT, SERIF_FONT, UI_FONT};
 use crate::model::Screen;
 use crate::scout::Mood;
@@ -60,7 +61,6 @@ impl Workspace {
                 .gap_1()
                 .py_2()
                 .rounded_md()
-                .hover(move |d| d.bg(p.hover))
                 .child(svg().path(path).size(px(18.)).text_color(p.text))
                 .child(
                     div()
@@ -69,6 +69,101 @@ impl Workspace {
                         .child(SharedString::from(label)),
                 )
         };
+
+        // The choices: each click applies at once and is saved.
+        let look = self.look;
+        let choice_row = |label: &'static str, buttons: Vec<AnyElement>| {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .py_1()
+                .child(div().w(px(96.)).text_sm().text_color(p.muted).child(label))
+                .child(div().flex().flex_wrap().gap_1().children(buttons))
+        };
+        let pick = |id: String, label: &'static str, c: Choice, cx: &mut Context<Self>| {
+            Button::new(SharedString::from(id))
+                .label(label)
+                .small()
+                .ghost()
+                .selected(look.is(c))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.set_appearance(c, window, cx);
+                }))
+                .into_any_element()
+        };
+        let themes: Vec<AnyElement> = ThemeChoice::ALL
+            .iter()
+            .map(|&t| {
+                pick(
+                    format!("look-theme-{}", t.label()),
+                    t.label(),
+                    Choice::Theme(t),
+                    cx,
+                )
+            })
+            .collect();
+        let accents: Vec<AnyElement> = Accent::ALL
+            .iter()
+            .map(|&a| {
+                let c = Choice::Accent(a);
+                let on = look.is(c);
+                let dark = self.model.dark;
+                div()
+                    .id(SharedString::from(format!("look-accent-{}", a.label())))
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .border_1()
+                    .border_color(if on { p.muted } else { p.border })
+                    .when(on, |d| d.bg(p.hover))
+                    .hover(move |d| d.bg(p.hover))
+                    .child(
+                        div()
+                            .size(px(12.))
+                            .rounded_full()
+                            .bg(gpui_kit::rgb(a.hex(dark))),
+                    )
+                    .child(div().text_sm().text_color(p.text).child(a.label()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_appearance(c, window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let fonts: Vec<AnyElement> = FontChoice::ALL
+            .iter()
+            .map(|&f| {
+                pick(
+                    format!("look-font-{}", f.label()),
+                    f.label(),
+                    Choice::Font(f),
+                    cx,
+                )
+            })
+            .collect();
+        let sizes: Vec<AnyElement> = TextSize::ALL
+            .iter()
+            .map(|&z| {
+                pick(
+                    format!("look-size-{}", z.label()),
+                    z.label(),
+                    Choice::Size(z),
+                    cx,
+                )
+            })
+            .collect();
+        let choices = div()
+            .flex()
+            .flex_col()
+            .child(choice_row("Theme", themes))
+            .child(choice_row("Accent", accents))
+            .child(choice_row("Font", fonts))
+            .child(choice_row("Text size", sizes));
 
         let current = self.scout_mood();
         let moods = div()
@@ -116,8 +211,10 @@ impl Workspace {
                         div()
                             .text_sm()
                             .text_color(p.muted)
-                            .child("Palette C, Mono & Lichen. Black and white, one quiet accent."),
+                            .child("Palette C: black and white, one quiet accent. Changes apply at once and are saved."),
                     )
+                    .child(section("Look"))
+                    .child(choices)
                     .child(section("Palette"))
                     .child(
                         div()
@@ -131,7 +228,7 @@ impl Workspace {
                             .child(swatch("Text", p.text))
                             .child(swatch("Muted", p.muted))
                             .child(swatch("Faint", p.faint))
-                            .child(swatch("Lichen", p.accent)),
+                            .child(swatch("Accent", p.accent)),
                     )
                     .child(section("Type"))
                     .child(

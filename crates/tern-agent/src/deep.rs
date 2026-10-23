@@ -347,6 +347,9 @@ struct Deep<'r> {
     redirects: Mutex<HashMap<usize, Vec<String>>>,
     /// Workers a steer dropped.
     dropped: Mutex<HashSet<usize>>,
+    /// Why each finished worker stopped, by worker number, so the failure
+    /// line can say it even when no checkpoint is kept.
+    stop_notes: Mutex<HashMap<usize, String>>,
     /// What each applied steer did.
     applied: Mutex<Vec<String>>,
 }
@@ -489,6 +492,7 @@ async fn run(
         guidance: Mutex::default(),
         redirects: Mutex::default(),
         dropped: Mutex::default(),
+        stop_notes: Mutex::default(),
         applied: Mutex::default(),
     };
     let mut fsm = TurnStateMachine::default();
@@ -1004,14 +1008,25 @@ impl Deep<'_> {
     /// One real search before the plan costs a model call: a search
     /// service that does not answer stops the run here, with its own error.
     async fn preflight(&self, question: &str) -> Result<(), Stop> {
-        let q: String = question.chars().take(200).collect();
-        let args = json!({"query": q, "preflight": true});
+        let mut q: String = question.chars().take(200).collect();
+        let mut args = json!({"query": q, "preflight": true});
         if self
             .allow("web_search", Some(self.search.id()), &args)
             .is_err()
         {
-            // The gate decides per search later; nothing to check here.
-            return Ok(());
+            // The question itself may not go out without asking, but the
+            // service can still be checked with a query that carries
+            // nothing of the user's, so a dead service never starts workers.
+            q = "Tern search check".to_owned();
+            args = json!({"query": q, "preflight": true});
+            if self
+                .allow("web_search", Some(self.search.id()), &args)
+                .is_err()
+            {
+                // Web search itself needs approval: the gate decides per
+                // search later; nothing to check here.
+                return Ok(());
+            }
         }
         let found = self
             .guard(None, None, self.search.search(&q, 1))
@@ -1051,11 +1066,18 @@ impl Deep<'_> {
     /// fix: the search service's own error when every search failed.
     fn no_sources_reason(&self, notes: &[WorkerNotes]) -> String {
         let ck = self.ck.lock().expect("checkpoint lock");
+        let kept = self
+            .stop_notes
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_default();
         let note_of = |n: usize| -> String {
             ck.as_ref()
                 .and_then(|c| c.deep.as_ref())
                 .and_then(|d| d.workers.iter().find(|w| w.n == n))
                 .map(|w| w.note.clone())
+                .filter(|t| !t.is_empty())
+                .or_else(|| kept.get(&n).cloned())
                 .unwrap_or_default()
         };
         let notes_text: Vec<(usize, String)> = notes
@@ -1634,6 +1656,9 @@ impl Deep<'_> {
             status == WorkerStatus::Cancelled && self.control.is_cancelled() && !dropped;
         if !whole_run {
             self.save_worker(&sub, budget, &st, Some((status, note.as_str())), took_ms);
+        }
+        if let Ok(mut m) = self.stop_notes.lock() {
+            m.insert(n, note.clone());
         }
         WorkerNotes {
             worker: n,

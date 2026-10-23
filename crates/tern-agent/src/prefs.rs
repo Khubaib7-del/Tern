@@ -65,6 +65,14 @@ pub struct Preferences {
     /// default width.
     pub sidebar_width: Option<u32>,
     pub right_pane_width: Option<u32>,
+    /// The desktop's Appearance choices. `None` is the default for each:
+    /// `dark` theme (`system`, `light`, `dark`), `lichen` accent (`slate`,
+    /// `clay`, `mono`), `plex` font (`system`), `default` size (`small`,
+    /// `large`).
+    pub theme: Option<String>,
+    pub accent: Option<String>,
+    pub ui_font: Option<String>,
+    pub text_size: Option<String>,
 }
 
 impl Preferences {
@@ -182,12 +190,31 @@ impl Preferences {
         opts
     }
 
+    /// The search service chats use. SearXNG with no address saved was
+    /// never set up (Tern cannot guess where it runs), so it counts as
+    /// unconfigured and chats use the keyless default instead.
+    pub fn effective_search(&self) -> Option<String> {
+        match self.search.as_deref() {
+            Some("searxng") if !self.searxng_configured() => {
+                Some(tern_crawl::KEYLESS_SEARCH.to_owned())
+            }
+            other => other.map(str::to_owned),
+        }
+    }
+
+    /// Whether a SearXNG address was ever saved.
+    pub fn searxng_configured(&self) -> bool {
+        self.search_url
+            .as_deref()
+            .is_some_and(|u| !u.trim().is_empty())
+    }
+
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
         ChatOptions {
             provider: self.provider.clone(),
             model: self.model.clone(),
-            search: self.search.clone(),
+            search: self.effective_search(),
             search_url: self.search_url.clone(),
             max_output_tokens: self.max_output_tokens.unwrap_or(0),
             vault: crate::vault::default_root(self).ok(),
@@ -200,6 +227,22 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn searxng_without_an_address_is_unconfigured() {
+        let mut p = Preferences {
+            search: Some("searxng".into()),
+            ..Preferences::default()
+        };
+        assert!(!p.searxng_configured());
+        assert_eq!(p.effective_search().as_deref(), Some("wikipedia"));
+        assert_eq!(p.chat_options().search.as_deref(), Some("wikipedia"));
+        p.search_url = Some("http://10.0.0.5:8888".into());
+        assert_eq!(p.effective_search().as_deref(), Some("searxng"));
+        p.search = Some("tavily".into());
+        p.search_url = None;
+        assert_eq!(p.effective_search().as_deref(), Some("tavily"));
+    }
 
     #[test]
     fn round_trips_and_tolerates_bad_files() {
@@ -232,6 +275,10 @@ mod tests {
             favourite_models: vec!["mistral/mistral-large-latest".into()],
             sidebar_width: Some(300),
             right_pane_width: Some(420),
+            theme: Some("light".into()),
+            accent: Some("clay".into()),
+            ui_font: Some("system".into()),
+            text_size: Some("large".into()),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         assert_eq!(p.quiz_spec(None).count, 10);

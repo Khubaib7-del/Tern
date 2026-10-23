@@ -266,7 +266,8 @@ pub(crate) async fn connect_model(
                 .await
                 .ok()
                 .and_then(|ms| ms.into_iter().find(|x| x.id == m))
-                .and_then(|x| x.context_window);
+                .and_then(|x| x.context_window)
+                .or_else(|| tern_providers::known_context_window(&m));
             (m, window)
         }
         None => {
@@ -844,26 +845,35 @@ impl ChatSession {
             calls: self.ledger.calls(),
             ..ContextUse::default()
         };
+        let instructions = self.instructions(None);
+        let system = crate::protocol::system_prompt(
+            instructions.as_deref(),
+            &crate::tools::ToolRegistry::new(),
+        )
+        .len();
+        let with_tools = crate::protocol::system_prompt(instructions.as_deref(), &self.tools).len();
+        let (mut attached, mut talk) = (0usize, 0usize);
+        for m in &self.history {
+            let a = attached_chars(&m.content);
+            attached += a;
+            talk += m.content.len().saturating_sub(a);
+        }
+        let parts =
+            ContextParts::estimate(system, with_tools.saturating_sub(system), attached, talk);
         match self.ledger.last() {
             Some(u) => ContextUse {
                 prompt: u.input_tokens,
                 reply: u.output_tokens,
                 estimated: u.measure == Measure::Estimated,
+                parts: parts.scaled_to(u.input_tokens, u.output_tokens),
                 ..base
             },
-            None => {
-                let chars: usize = self.history.iter().map(|m| m.content.len()).sum::<usize>()
-                    + crate::protocol::system_prompt(
-                        self.instructions(None).as_deref(),
-                        &self.tools,
-                    )
-                    .len();
-                ContextUse {
-                    prompt: Usage::estimated(chars, 0).input_tokens,
-                    estimated: true,
-                    ..base
-                }
-            }
+            None => ContextUse {
+                prompt: parts.total(),
+                estimated: true,
+                parts,
+                ..base
+            },
         }
     }
 
@@ -1362,6 +1372,88 @@ pub struct ContextUse {
     /// Every call in this window summed, which is what providers bill.
     pub session_tokens: u64,
     pub calls: usize,
+    /// What the context holds, split by kind. Always an estimate (four
+    /// characters a token), scaled to the provider's count when there is one.
+    pub parts: ContextParts,
+}
+
+/// The context split by kind, in tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextParts {
+    /// Tern's system prompt and the user's rules (TERN.md, project).
+    pub system: u64,
+    /// Tool descriptions and the tool protocol.
+    pub tools: u64,
+    /// Attached files, sources, and MCP resources in the history.
+    pub attachments: u64,
+    /// Messages and replies.
+    pub conversation: u64,
+}
+
+impl ContextParts {
+    /// From character counts, at four characters a token.
+    pub fn estimate(system: usize, tools: usize, attachments: usize, conversation: usize) -> Self {
+        let t = |c: usize| Usage::estimated(c, 0).input_tokens;
+        Self {
+            system: t(system),
+            tools: t(tools),
+            attachments: t(attachments),
+            conversation: t(conversation),
+        }
+    }
+
+    pub fn total(&self) -> u64 {
+        self.system + self.tools + self.attachments + self.conversation
+    }
+
+    /// The same shares of a measured prompt, with the reply added to the
+    /// conversation.
+    pub fn scaled_to(self, prompt: u64, reply: u64) -> Self {
+        let total = self.total();
+        if total == 0 {
+            return Self {
+                conversation: prompt + reply,
+                ..Self::default()
+            };
+        }
+        let share = |v: u64| ((v as u128 * prompt as u128) / total as u128) as u64;
+        let (system, tools, attachments) = (
+            share(self.system),
+            share(self.tools),
+            share(self.attachments),
+        );
+        Self {
+            system,
+            tools,
+            attachments,
+            conversation: prompt.saturating_sub(system + tools + attachments) + reply,
+        }
+    }
+}
+
+/// Characters of a message inside attachment or untrusted-data blocks.
+fn attached_chars(text: &str) -> usize {
+    let mut n = 0;
+    for (open, close) in [
+        ("<attachment", "</attachment>"),
+        ("<untrusted-data", "</untrusted-data>"),
+    ] {
+        let mut rest = text;
+        while let Some(i) = rest.find(open) {
+            let after = &rest[i..];
+            match after.find(close) {
+                Some(j) => {
+                    n += j + close.len();
+                    rest = &after[j + close.len()..];
+                }
+                None => {
+                    n += after.len();
+                    break;
+                }
+            }
+        }
+    }
+    n.min(text.len())
 }
 
 impl ContextUse {
@@ -1419,5 +1511,36 @@ mod title_tests {
         let t = title_from(long);
         assert!(t.ends_with('…'));
         assert!(t.chars().count() <= 61);
+    }
+}
+
+#[cfg(test)]
+mod context_parts_tests {
+    use super::*;
+
+    #[test]
+    fn attached_text_is_counted_apart_from_the_talk() {
+        let msg = "Summarise this <attachment name=\"a.md\">0123456789</attachment> please";
+        let a = attached_chars(msg);
+        assert_eq!(a, "<attachment name=\"a.md\">0123456789</attachment>".len());
+        assert_eq!(attached_chars("no files here"), 0);
+        // An unclosed block counts to the end.
+        assert_eq!(
+            attached_chars("x<untrusted-data src>abc"),
+            "<untrusted-data src>abc".len()
+        );
+    }
+
+    #[test]
+    fn parts_scale_to_the_provider_count() {
+        let p = ContextParts::estimate(400, 400, 800, 1_600);
+        assert_eq!(p.total(), 800);
+        let m = p.scaled_to(1_600, 50);
+        assert_eq!(m.system, 200);
+        assert_eq!(m.tools, 200);
+        assert_eq!(m.attachments, 400);
+        assert_eq!(m.conversation, 800 + 50);
+        assert_eq!(m.total(), 1_650);
+        assert_eq!(ContextParts::default().scaled_to(10, 2).conversation, 12);
     }
 }

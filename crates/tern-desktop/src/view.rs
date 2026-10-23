@@ -107,6 +107,8 @@ pub struct Workspace {
     scout_wake: Option<Task<()>>,
     scout_preview: Option<crate::scout::Mood>,
     reduced_motion: bool,
+    /// The Appearance choices, applied and saved on each click.
+    look: crate::appearance::Appearance,
     _listener: Task<()>,
     /// The built-in browser's address bar.
     address_input: Entity<InputState>,
@@ -342,6 +344,9 @@ impl Workspace {
             }
         });
         let mut model = Model::new();
+        let look = crate::appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
+        model.dark = look.is_dark(system_dark(window));
+        crate::theme::apply_kit(model.dark, &look, Some(window), cx);
         model.study = crate::study::StudyState::from_prefs(&tern_agent::Preferences::load());
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
@@ -375,6 +380,7 @@ impl Workspace {
             scout_wake: None,
             scout_preview: None,
             reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
+            look,
             model,
             bridge,
             session: None,
@@ -1377,15 +1383,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The title bar's sun and moon: flips the theme and saves it as an
+    /// explicit Light or Dark choice.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.dark = !self.model.dark;
-        if !self.reduced_motion {
+        let to = if self.model.dark {
+            crate::appearance::ThemeChoice::Light
+        } else {
+            crate::appearance::ThemeChoice::Dark
+        };
+        self.set_appearance(crate::appearance::Choice::Theme(to), window, cx);
+    }
+
+    /// One click on the Appearance screen: applied at once (theme, accent,
+    /// font, text size) and saved to preferences.
+    pub(super) fn set_appearance(
+        &mut self,
+        choice: crate::appearance::Choice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.look.apply(choice) {
+            return;
+        }
+        let dark = self.look.is_dark(system_dark(window));
+        if dark != self.model.dark && !self.reduced_motion {
             self.wipe = Some(ThemeWipe {
                 since: Instant::now(),
-                to_dark: self.model.dark,
+                to_dark: dark,
             });
         }
-        crate::theme::apply_kit(self.model.dark, Some(window), cx);
+        self.model.dark = dark;
+        crate::theme::apply_kit(dark, &self.look, Some(window), cx);
+        let look = self.look;
+        self.save_ui_prefs(move |p| look.save_to(p));
+        window.refresh();
         cx.notify();
     }
 
@@ -1621,97 +1652,100 @@ impl Workspace {
         )
     }
 
+    /// The left rail: tight groups of icons 4 px apart with a short rule
+    /// between groups (chats, work surfaces, tools), settings at the foot.
     fn rail(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let rule = || {
+            div()
+                .w(px(18.))
+                .h(px(1.))
+                .my(px(6.))
+                .bg(p.border)
+                .flex_none()
+        };
         div()
             .w(px(RAIL_W))
             .h_full()
             .flex()
             .flex_col()
             .items_center()
-            .justify_between()
+            .gap(px(crate::layout::RAIL_GAP))
             .py_2()
             .bg(p.rail)
             .border_r_1()
             .border_color(p.border)
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new("rail-new")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .tooltip("New chat")
-                            .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
-                    )
-                    .child(
-                        Button::new("rail-chats")
-                            .icon(IconName::Inbox)
-                            .ghost()
-                            .tooltip("Chats")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.model.sidebar_open = !this.model.sidebar_open;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-library")
-                            .icon(AssetIcon::Library)
-                            .ghost()
-                            .when(self.model.screen == Screen::Library, |b| b.selected(true))
-                            .tooltip("Library")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Library {
-                                    this.close_library(window, cx);
-                                } else {
-                                    this.open_library(cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-editor")
-                            .icon(IconName::FileText)
-                            .ghost()
-                            .when(self.model.screen == Screen::Editor, |b| b.selected(true))
-                            .tooltip("Editor")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Editor {
-                                    this.close_editor(window, cx);
-                                } else {
-                                    this.open_editor(window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("rail-browser")
-                            .icon(IconName::Globe)
-                            .ghost()
-                            .when(
-                                self.model.browser.visible && self.model.run_panel_open,
-                                |b| b.selected(true),
-                            )
-                            .tooltip("Browser")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("rail-git")
-                            .icon(AssetIcon::GitBranch)
-                            .ghost()
-                            .when(self.model.screen == Screen::Git, |b| b.selected(true))
-                            .tooltip("Git")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.model.screen == Screen::Git {
-                                    this.close_git(window, cx);
-                                } else {
-                                    this.open_git(window, cx);
-                                }
-                            })),
-                    ),
+                Button::new("rail-new")
+                    .icon(IconName::Plus)
+                    .ghost()
+                    .tooltip("New chat")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
             )
+            .child(
+                Button::new("rail-chats")
+                    .icon(IconName::Inbox)
+                    .ghost()
+                    .tooltip("Chats")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model.sidebar_open = !this.model.sidebar_open;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("rail-library")
+                    .icon(AssetIcon::Library)
+                    .ghost()
+                    .when(self.model.screen == Screen::Library, |b| b.selected(true))
+                    .tooltip("Library")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Library {
+                            this.close_library(window, cx);
+                        } else {
+                            this.open_library(cx);
+                        }
+                    })),
+            )
+            .child(rule())
+            .child(
+                Button::new("rail-editor")
+                    .icon(IconName::FileText)
+                    .ghost()
+                    .when(self.model.screen == Screen::Editor, |b| b.selected(true))
+                    .tooltip("Editor")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Editor {
+                            this.close_editor(window, cx);
+                        } else {
+                            this.open_editor(window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new("rail-browser")
+                    .icon(IconName::Globe)
+                    .ghost()
+                    .when(
+                        self.model.browser.visible && self.model.run_panel_open,
+                        |b| b.selected(true),
+                    )
+                    .tooltip("Browser")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))),
+            )
+            .child(
+                Button::new("rail-git")
+                    .icon(AssetIcon::GitBranch)
+                    .ghost()
+                    .when(self.model.screen == Screen::Git, |b| b.selected(true))
+                    .tooltip("Git")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.model.screen == Screen::Git {
+                            this.close_git(window, cx);
+                        } else {
+                            this.open_git(window, cx);
+                        }
+                    })),
+            )
+            .child(rule())
             .child(
                 Button::new("rail-customize")
                     .icon(AssetIcon::Blocks)
@@ -1772,6 +1806,7 @@ impl Workspace {
                         }
                     })),
             )
+            .child(div().flex_1())
             .child(
                 Button::new("rail-settings")
                     .icon(IconName::Settings)
@@ -2537,15 +2572,16 @@ impl Workspace {
 
     /// The composer's context ring: fills as the window does, turns amber
     /// past 70% and red past 90%. Hover for exact numbers.
-    fn context_ring(&self, p: Palette) -> impl IntoElement {
+    fn context_ring(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let fraction = self.model.context_fraction();
-        let color = match self.model.context_level() {
+        let level_color = |l: ContextLevel| match l {
             ContextLevel::Fine => p.accent,
             ContextLevel::Filling => gpui_kit::hsla(38. / 360., 0.85, 0.55, 1.),
             ContextLevel::Full => gpui_kit::hsla(0., 0.75, 0.58, 1.),
         };
+        let color = level_color(self.model.context_level());
         let label = self.model.context_label();
-        let details = self.model.context_details();
+        let b = self.model.context_breakdown();
         let trigger = div()
             .id("context-ring")
             .flex()
@@ -2567,28 +2603,114 @@ impl Workspace {
                 Some(f) => format!("{:.0}%", f * 100.),
                 None => label.clone(),
             });
+        // "New chat with summary": a handoff packet from this chat starts a
+        // fresh one (tern_agent::handoff), only once the chat is saved.
+        let chat = self
+            .session
+            .as_ref()
+            .filter(|s| !s.is_draft())
+            .map(|s| s.session_id());
+        let me = cx.entity().downgrade();
+        // Segment shades, darkest first; Free is the empty track.
+        let shades = [p.text, p.muted, p.faint, color];
         HoverCard::new("context-card")
             .anchor(gpui_kit::Anchor::BottomRight)
             .open_delay(Duration::from_millis(150))
             .trigger(trigger)
             .content(move |_, _, _| {
+                let used_rows = b.rows.iter().filter(|r| r.label != "Free");
                 div()
-                    .w(px(260.))
+                    .w(px(280.))
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap_2()
                     .text_xs()
-                    .children(details.iter().map(|(k, v)| {
+                    .child(
                         div()
                             .flex()
+                            .items_baseline()
                             .justify_between()
-                            .gap_3()
-                            .child(div().text_color(p.muted).child(*k))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(p.text)
+                                    .child("Context"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_color(p.muted)
+                                            .child(SharedString::from(b.header.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(p.text)
+                                            .child(SharedString::from(b.percent.clone())),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(6.))
+                            .w_full()
+                            .flex()
+                            .gap(px(1.))
+                            .rounded(px(3.))
+                            .overflow_hidden()
+                            .bg(p.border)
+                            .children(
+                                used_rows
+                                    .clone()
+                                    .enumerate()
+                                    .filter(|(_, r)| r.share > 0.)
+                                    .map(|(i, r)| {
+                                        div()
+                                            .h_full()
+                                            .w(gpui_kit::relative(r.share.max(0.01)))
+                                            .bg(shades[i.min(3)])
+                                    }),
+                            ),
+                    )
+                    .children(b.rows.iter().enumerate().map(|(i, r)| {
+                        let free = r.label == "Free";
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .flex_none()
+                                    .when(free, |d| d.border_1().border_color(p.faint))
+                                    .when(!free, |d| d.bg(shades[i.min(3)])),
+                            )
+                            .child(div().flex_1().text_color(p.muted).child(r.label))
                             .child(
                                 div()
                                     .text_color(p.text)
-                                    .child(SharedString::from(v.clone())),
+                                    .child(SharedString::from(crate::model::grouped(r.tokens))),
                             )
+                    }))
+                    .child(
+                        div()
+                            .text_color(p.faint)
+                            .child(SharedString::from(b.note.clone())),
+                    )
+                    .children(chat.map(|id| {
+                        let me = me.clone();
+                        Button::new("context-handoff")
+                            .label("New chat with summary")
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Write a summary of this chat and continue in a fresh one")
+                            .on_click(move |_, _, cx| {
+                                let _ = me.update(cx, |this, cx| this.hand_off(id, cx));
+                            })
                     }))
             })
     }
@@ -3557,17 +3679,32 @@ impl Render for Workspace {
         let viewport_w = f32::from(window.viewport_size().width);
         let panels = self.model.panels;
         let right_w = panels.right;
-        let side_w = if panels.focus == crate::panels::Focus::RightMax {
-            (viewport_w - RAIL_W).max(right_w)
-        } else if self.model.browser.visible {
-            browser_view::BROWSER_W.max(right_w)
-        } else if side_docked {
-            continuity_view::SIDE_W.max(right_w)
-        } else {
-            right_w
-        };
         let sidebar_w = panels.sidebar;
         let sidebar = sidebar.filter(|_| panels.shows_sidebar());
+        let side_w = if panels.focus == crate::panels::Focus::RightMax {
+            (viewport_w - RAIL_W).max(0.)
+        } else {
+            let want = if self.model.browser.visible {
+                browser_view::BROWSER_W.max(right_w)
+            } else if side_docked {
+                continuity_view::SIDE_W.max(right_w)
+            } else {
+                right_w
+            };
+            // Never past the window's edge, at any size or saved width.
+            let beside_sidebar = if layout.sidebar_beside {
+                sidebar.map_or(0., |f| sidebar_w * f)
+            } else {
+                0.
+            };
+            crate::panels::Panels::right_fit(
+                want,
+                viewport_w,
+                RAIL_W,
+                beside_sidebar,
+                layout.panel_beside,
+            )
+        };
         let panel = panel.filter(|_| panels.shows_right());
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
@@ -3648,6 +3785,9 @@ impl Render for Workspace {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
+                            // The chat gives way rather than pushing the
+                            // right pane off the window.
+                            .overflow_hidden()
                             .when(!panels.shows_centre(), |d| d.hidden())
                             .map(|d| match self.model.screen {
                                 Screen::Chat => match self.active_explain() {
@@ -3730,8 +3870,8 @@ impl Render for Workspace {
     }
 }
 
-/// The logo square at the start of a row. Until the service glyph set is
-/// approved, known services show their initial on a neutral tile.
+/// The logo square at the start of a provider or search row: the
+/// service's mark on a neutral tile, like a dock icon.
 fn logo_tile(r: &ServiceRow, p: Palette) -> impl IntoElement {
     div()
         .size(px(28.))
@@ -3743,10 +3883,38 @@ fn logo_tile(r: &ServiceRow, p: Palette) -> impl IntoElement {
         .border_1()
         .border_color(p.border)
         .bg(p.raised)
-        .text_sm()
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(p.muted)
-        .child(r.monogram())
+        .child(brand_logo(r.id, 16., p))
+}
+
+/// A provider's or search service's logo at `size` px: colour marks in
+/// their own colours, one-colour marks in the text colour, and the
+/// initial for a service Tern has no mark for (`crate::brands`).
+pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement {
+    match crate::brands::logo(id_or_name) {
+        crate::brands::Logo::Mark(path, crate::brands::Tint::Original) => gpui_kit::img(path)
+            .size(px(size))
+            .flex_none()
+            .into_any_element(),
+        crate::brands::Logo::Mark(path, crate::brands::Tint::Mono) => svg()
+            .path(path)
+            .size(px(size))
+            .flex_none()
+            .text_color(p.text)
+            .into_any_element(),
+        crate::brands::Logo::Initial(letter) => div()
+            .size(px(size + 2.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(p.border)
+            .text_xs()
+            .text_color(p.muted)
+            .child(SharedString::from(letter))
+            .into_any_element(),
+    }
 }
 
 /// New words fade in as they stream, a few milliseconds apart.
@@ -3865,6 +4033,14 @@ fn sent_chip(c: &tern_agent::Chip, p: Palette) -> AnyElement {
 
 /// A side panel part-way open: it keeps its full width inside a clip that
 /// grows, and fades with it, so its contents never reflow mid-slide.
+/// Whether the operating system shows this window dark.
+fn system_dark(window: &Window) -> bool {
+    matches!(
+        window.appearance(),
+        gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+    )
+}
+
 fn sliding(panel: impl IntoElement, width: f32, f: f32, from_right: bool) -> impl IntoElement {
     div()
         .flex_none()

@@ -54,20 +54,26 @@ fn plus_icon(i: PlusItem) -> AssetIcon {
     }
 }
 
-/// The effort meter: five rising bars, `lit` of them in the text colour.
+/// The effort meter: five rising square-ended bars on a baseline, `lit`
+/// of them in the text colour. Upright bars read as a level, unlike the
+/// round context ring beside it.
 pub(super) fn meter(lit: u8, p: Palette) -> AnyElement {
     div()
         .flex_none()
         .flex()
         .items_end()
-        .gap(px(1.5))
-        .h(px(11.))
+        .gap(px(1.))
+        .h(px(12.))
+        .pb(px(1.))
         .children((1..=5u8).map(|i| {
             div()
-                .w(px(2.5))
-                .h(px(3. + f32::from(i) * 1.6))
-                .rounded(px(1.))
-                .bg(if i <= lit { p.text } else { p.border })
+                .w(px(2.))
+                .h(px(2. + f32::from(i) * 2.))
+                .bg(if i <= lit {
+                    p.text
+                } else {
+                    p.faint.opacity(0.45)
+                })
         }))
         .into_any_element()
 }
@@ -88,29 +94,6 @@ fn scale(label: &'static str, n: u8, p: Palette) -> AnyElement {
                 .rounded(px(2.))
                 .bg(if i <= n { p.muted } else { p.border })
         })))
-        .into_any_element()
-}
-
-/// A provider's tile in the picker until the service logos land: its
-/// initial on a neutral square.
-fn monogram(name: &str, p: Palette) -> AnyElement {
-    let letter: String = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    div()
-        .size(px(18.))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(p.border)
-        .text_xs()
-        .text_color(p.muted)
-        .child(SharedString::from(letter))
         .into_any_element()
 }
 
@@ -543,7 +526,7 @@ impl Workspace {
                                 .children(self.model_chip(p, cx))
                                 .children(self.effort_chip(p, cx))
                                 .children(self.search_chip(p, cx))
-                                .child(self.context_ring(p))
+                                .child(self.context_ring(p, cx))
                                 .children(pause)
                                 .child(action),
                         ),
@@ -629,7 +612,7 @@ impl Workspace {
             )
             .child(
                 Button::new("slash")
-                    .icon(AssetIcon::Slash)
+                    .icon(AssetIcon::SquareSlash)
                     .ghost()
                     .small()
                     .tooltip("Commands, skills, and MCP prompts (/)")
@@ -654,42 +637,53 @@ impl Workspace {
             ),
         };
         let open = self.model.composer.menu == Some(Menu::Model);
-        Some(
-            div()
-                .id("model-chip")
-                .flex()
-                .items_center()
-                .gap_1()
-                .min_w_0()
-                .max_w(px(220.))
-                .px_1p5()
-                .py(px(3.))
-                .rounded_md()
-                .text_xs()
-                .cursor_pointer()
-                .text_color(if open { p.text } else { p.muted })
-                .when(open, |d| d.bg(p.hover))
-                .hover(|d| d.bg(p.hover).text_color(p.text))
-                .when(!provider.is_empty(), |d| d.child(monogram(&provider, p)))
-                .child(div().min_w_0().truncate().child(label))
-                .child(icon(AssetIcon::ChevronDown, p.faint))
-                .tooltip(move |window, cx| {
+        let chip = div()
+            .id("model-chip")
+            .flex()
+            .items_center()
+            .gap_1()
+            .min_w_0()
+            .max_w(px(220.))
+            .px_1p5()
+            .py(px(3.))
+            .rounded_md()
+            .text_xs()
+            .cursor_pointer()
+            .text_color(if open { p.text } else { p.muted })
+            .when(open, |d| d.bg(p.hover))
+            .hover(|d| d.bg(p.hover).text_color(p.text))
+            .when(!provider.is_empty(), |d| {
+                d.child(super::brand_logo(&provider, 14., p))
+            })
+            .child(div().min_w_0().truncate().child(label))
+            .child(icon(AssetIcon::ChevronDown, p.faint))
+            .when(!open, |d| {
+                d.tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new("Choose the model for this chat")
                         .build(window, cx)
                 })
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.open_menu(Menu::Model, window, cx)),
-                )
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Model, window, cx)));
+        // The picker hangs off the chip, drawn over the chat above it.
+        Some(
+            div()
+                .relative()
+                .min_w_0()
+                .child(chip)
+                .when(open, |d| {
+                    d.child(gpui_kit::deferred(self.model_menu(p, cx)).with_priority(1))
+                })
                 .into_any_element(),
         )
     }
 
-    /// The effort chip: a bar meter and the step, hidden when the model
-    /// cannot think.
+    /// The effort chip: a bar meter and the step. Always shown; disabled,
+    /// with a tooltip saying why, when the model has no thinking control.
     fn effort_chip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let chip = composer::effort_chip(self.thinking(), self.model.composer.effort)?;
+        let chip = composer::effort_chip(self.thinking(), self.model.composer.effort);
         let open = self.model.composer.menu == Some(Menu::Effort);
         let tip: SharedString = chip.tooltip.clone().into();
+        let enabled = chip.enabled;
         Some(
             div()
                 .id("effort-chip")
@@ -700,18 +694,23 @@ impl Workspace {
                 .py(px(3.))
                 .rounded_md()
                 .text_xs()
-                .cursor_pointer()
                 .text_color(if open { p.text } else { p.muted })
                 .when(open, |d| d.bg(p.hover))
-                .hover(|d| d.bg(p.hover).text_color(p.text))
+                .when(enabled, |d| {
+                    d.cursor_pointer()
+                        .hover(|d| d.bg(p.hover).text_color(p.text))
+                })
+                .when(!enabled, |d| d.opacity(0.5))
                 .child(meter(chip.bars, p))
                 .child(SharedString::from(chip.label))
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)),
-                )
+                .when(enabled, |d| {
+                    d.on_click(
+                        cx.listener(|this, _, window, cx| this.open_menu(Menu::Effort, window, cx)),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -738,14 +737,10 @@ impl Workspace {
                 .text_color(if open { p.text } else { p.muted })
                 .when(open, |d| d.bg(p.hover))
                 .hover(|d| d.bg(p.hover).text_color(p.text))
-                .child(icon(
-                    if on {
-                        AssetIcon::Globe
-                    } else {
-                        AssetIcon::GlobeOff
-                    },
-                    p.faint,
-                ))
+                .child(match c.search.as_deref() {
+                    Some(name) if on => super::brand_logo(name, 14., p),
+                    _ => icon(AssetIcon::GlobeOff, p.faint),
+                })
                 .child(div().min_w_0().truncate().child(SharedString::from(label)))
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new("Where web searches go")
@@ -815,11 +810,11 @@ impl Workspace {
     /// The open menu, drawn inside the composer above the text so it never
     /// leaves the window.
     fn composer_menu(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.model.composer.menu?;
+        let menu = self.model.composer.menu.filter(|m| *m != Menu::Model)?;
         let body = match menu {
             Menu::Plus => self.plus_menu(p, cx),
             Menu::Mode => self.mode_menu(p, cx),
-            Menu::Model => self.model_menu(p, cx),
+            Menu::Model => return None,
             Menu::Effort => self.effort_menu(p, cx),
             Menu::Search => self.search_menu(p, cx),
         };
@@ -951,7 +946,7 @@ impl Workspace {
 
     fn effort_menu(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let thinking = self.thinking();
-        let current = composer::effort_chip(thinking, self.model.composer.effort).map(|c| c.bars);
+        let current = Some(composer::effort_chip(thinking, self.model.composer.effort).bars);
         let rows = composer::effort_rows(thinking);
         div()
             .flex()
@@ -1021,9 +1016,9 @@ impl Workspace {
             let ok = st.can_choose(r);
             let row = Self::menu_row(
                 ("search-item", i),
-                monogram(r.name, p),
+                super::brand_logo(r.id, 16., p),
                 r.name.into(),
-                r.status().into(),
+                st.search_status(r).into(),
                 on,
                 ok,
                 p,
@@ -1064,26 +1059,29 @@ impl Workspace {
         .into_any_element()
     }
 
-    /// The model picker: providers on the left, the shown provider's
-    /// models on the right with search and favourites, a hover card below.
+    /// The model picker: a compact popover over the model chip. Providers
+    /// with their logos on the left; on the right a search field and one
+    /// line per model (tick on the current one, star on hover or when
+    /// starred, the window size muted on the right). Hovering a model shows
+    /// a small card beside the popover.
     fn model_menu(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.model.composer;
         let st = &self.model.providers;
         let shown = c.shown_provider(st);
         let current_model = self.model.connection.as_ref().map(|c| c.model.clone());
-        let current_provider = st.default_id(Kind::Model);
         let providers = c.providers(st);
+        let (w, h) = composer::picker_size(self.centre_w.max(480.), 900.);
         let left = div()
             .id("picker-providers")
-            .w(px(156.))
+            .w(px(composer::PICKER_LEFT_W))
             .flex_none()
+            .h_full()
             .flex()
             .flex_col()
             .gap(px(1.))
-            .pr_1()
+            .p_1()
             .border_r_1()
             .border_color(p.border)
-            .max_h(px(280.))
             .overflow_y_scroll()
             .children(providers.into_iter().enumerate().map(|(i, e)| {
                 let id = e.id;
@@ -1092,25 +1090,20 @@ impl Workspace {
                     .id(("picker-provider", i))
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .px_1p5()
-                    .py_1()
+                    .py(px(5.))
                     .rounded_md()
                     .cursor_pointer()
                     .text_sm()
                     .text_color(if on { p.text } else { p.muted })
                     .when(on, |d| d.bg(p.hover))
-                    .hover(move |d| d.bg(p.hover))
-                    .child(monogram(e.name, p))
+                    .hover(move |d| d.bg(p.hover).text_color(p.text))
+                    .child(super::brand_logo(e.id, 16., p))
                     .child(div().flex_1().min_w_0().truncate().child(e.name))
-                    .children(e.count.map(|n| {
-                        div()
-                            .text_xs()
-                            .text_color(p.faint)
-                            .child(SharedString::from(n.to_string()))
-                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.model.composer.picker.provider = Some(id);
+                        this.model.composer.picker.hovered = None;
                         let loaded = matches!(&this.model.providers.models,
                             Some(crate::providers::Models::Loaded(p, _)) if *p == id);
                         if !loaded {
@@ -1120,14 +1113,14 @@ impl Workspace {
                         cx.notify();
                     }))
             }))
+            .child(div().flex_1())
             .child(
                 div()
                     .id("manage-providers")
-                    .mt_1()
                     .px_1p5()
                     .py_1()
                     .text_xs()
-                    .text_color(p.muted)
+                    .text_color(p.faint)
                     .cursor_pointer()
                     .hover(|d| d.text_color(p.text))
                     .child("Manage providers…")
@@ -1136,8 +1129,8 @@ impl Workspace {
                         this.open_providers(cx);
                     })),
             );
-        let favs = st.prefs.favourite_models.clone();
-        let list: AnyElement = match (shown, c.models(st)) {
+        let hovered = c.picker.hovered.clone();
+        let list: AnyElement = match (shown, c.picker_rows(st, current_model.as_deref())) {
             (None, _) => div()
                 .p_2()
                 .text_xs()
@@ -1155,46 +1148,66 @@ impl Workspace {
                     _ => SharedString::from("Loading models…"),
                 })
                 .into_any_element(),
-            (Some(prov), Some(models)) => div()
+            (Some(_), Some(rows)) if rows.is_empty() => div()
+                .p_2()
+                .text_xs()
+                .text_color(p.muted)
+                .child("No model matches.")
+                .into_any_element(),
+            (Some(prov), Some(rows)) => div()
                 .id("picker-models")
+                .flex_1()
+                .min_h_0()
                 .flex()
                 .flex_col()
-                .max_h(px(220.))
                 .overflow_y_scroll()
-                .children(models.into_iter().take(200).enumerate().map(|(i, m)| {
-                    let m = m.to_owned();
-                    let on = Some(prov) == current_provider
-                        && current_model.as_deref() == Some(m.as_str());
-                    let star = favs.iter().any(|f| *f == format!("{prov}/{m}"));
-                    let pick = m.clone();
-                    let hover = m.clone();
-                    let fav = m.clone();
+                .children(rows.into_iter().take(300).enumerate().map(|(i, r)| {
+                    let show_star = r.favourite || hovered.as_deref() == Some(r.id.as_str());
+                    let pick = r.id.clone();
+                    let hover = r.id.clone();
+                    let fav = r.id.clone();
                     div()
                         .id(("picker-model", i))
                         .flex()
                         .items_center()
                         .gap_1p5()
                         .px_1p5()
-                        .py(px(3.))
+                        .h(px(26.))
+                        .flex_none()
                         .rounded_md()
                         .cursor_pointer()
                         .text_sm()
                         .text_color(p.text)
-                        .when(on, |d| d.bg(p.hover))
                         .hover(move |d| d.bg(p.hover))
                         .child(
                             div()
-                                .id(("picker-star", i))
+                                .w(px(14.))
                                 .flex_none()
-                                .text_color(if star { p.text } else { p.faint })
-                                .child(
-                                    gpui_kit::component::Icon::new(if star {
-                                        AssetIcon::StarFill
-                                    } else {
-                                        AssetIcon::Star
-                                    })
-                                    .xsmall(),
-                                )
+                                .when(r.current, |d| d.child(icon(AssetIcon::Check, p.text))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(r.id.clone())),
+                        )
+                        .child(
+                            div()
+                                .id(("picker-star", i))
+                                .w(px(14.))
+                                .flex_none()
+                                .text_color(if r.favourite { p.text } else { p.faint })
+                                .when(show_star, |d| {
+                                    d.child(
+                                        gpui_kit::component::Icon::new(if r.favourite {
+                                            AssetIcon::StarFill
+                                        } else {
+                                            AssetIcon::Star
+                                        })
+                                        .xsmall(),
+                                    )
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     let mut favs =
@@ -1206,17 +1219,21 @@ impl Workspace {
                         )
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(m.clone())),
+                                .w(px(36.))
+                                .flex_none()
+                                .text_xs()
+                                .text_right()
+                                .text_color(p.faint)
+                                .children(r.context.map(SharedString::from)),
                         )
-                        .when(on, |d| d.child(icon(AssetIcon::Check, p.text)))
                         .on_hover(cx.listener(move |this, h: &bool, _, cx| {
+                            let picker = &mut this.model.composer.picker;
                             if *h {
-                                this.model.composer.picker.hovered = Some(hover.clone());
-                                cx.notify();
+                                picker.hovered = Some(hover.clone());
+                            } else if picker.hovered.as_deref() == Some(hover.as_str()) {
+                                picker.hovered = None;
                             }
+                            cx.notify();
                         }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.choose_model(prov, pick.clone(), cx)
@@ -1224,63 +1241,173 @@ impl Workspace {
                 }))
                 .into_any_element(),
         };
-        let card = c.picker.hovered.clone().map(|m| {
+        // The small card beside the popover for the hovered model.
+        let card = hovered.map(|m| {
             let hint = composer::model_hint(&m);
             let ctx = composer::Composer::context_of(st, &m);
             let think = shown
                 .map(|prov| tern_agent::thinking_support(prov, &m))
                 .unwrap_or(tern_agent::Thinking::Unsupported);
             div()
-                .mt_1()
+                .absolute()
+                .bottom_0()
+                .right(px(w + 6.))
+                .w(px(220.))
                 .p_2()
                 .rounded_md()
                 .border_1()
                 .border_color(p.border)
+                .bg(p.raised)
+                .shadow_md()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .child(
                     div()
-                        .text_sm()
+                        .text_xs()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(p.text)
                         .truncate()
                         .child(SharedString::from(m.clone())),
                 )
-                .child(div().text_xs().text_color(p.muted).child(SharedString::from(match ctx {
-                    Some(n) => format!("Context {} tokens", crate::model::compact(n)),
-                    None => "Context size not listed".to_owned(),
-                })))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(SharedString::from(match ctx {
+                            Some(n) => format!("{} token window", crate::model::compact(n)),
+                            None => "Window size not known".to_owned(),
+                        })),
+                )
                 .child(scale("Speed", hint.speed, p))
                 .child(scale("Intelligence", hint.intelligence, p))
-                .child(div().text_xs().text_color(p.faint).child(SharedString::from(
-                    match (think.visible(), think.adjustable()) {
-                        (false, _) => "No thinking control",
-                        (true, false) => "Always thinks",
-                        (true, true) => "Thinking effort adjustable",
-                    },
-                )))
-                .child(div().text_xs().text_color(p.faint).child(
-                    "Speed and intelligence are a rough guide from the model's name; price not listed.",
-                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(
+                            match (think.visible(), think.adjustable()) {
+                                (false, _) => "No thinking control",
+                                (true, false) => "Always thinks",
+                                (true, true) => "Thinking effort adjustable",
+                            },
+                        )),
+                )
         });
         div()
-            .flex()
-            .gap_1()
-            .child(left)
+            .id("model-picker")
+            .absolute()
+            .bottom(px(30.))
+            .right_0()
+            .w(px(w))
+            .h(px(h))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
+                    .id("model-picker-box")
+                    .size_full()
                     .flex()
-                    .flex_col()
-                    .gap_1()
-                    .pl_1()
-                    .child(Input::new(&self.picker_input).small())
-                    .child(list)
-                    .children(card),
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.canvas)
+                    .shadow_lg()
+                    .occlude()
+                    .overflow_hidden()
+                    .child(left)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .p_1()
+                            .child(Input::new(&self.picker_input).small())
+                            .child(list),
+                    ),
             )
+            .children(card)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.model.composer.menu == Some(Menu::Model) {
+                    this.model.composer.close();
+                    cx.notify();
+                }
+            }))
             .into_any_element()
+    }
+
+    /// Web search failed its check: one line naming the service (and
+    /// SearXNG's address), with Switch to Wikipedia and Set address.
+    fn search_down_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let reason = self.model.search_down.clone()?;
+        let service = self
+            .model
+            .connection
+            .as_ref()
+            .and_then(|c| c.search.clone())
+            .unwrap_or_else(|| "Web search".into());
+        let is_searx = service.eq_ignore_ascii_case("searxng");
+        let address = self
+            .model
+            .providers
+            .prefs
+            .search_url
+            .clone()
+            .or_else(|| is_searx.then(|| "http://localhost:8080".to_owned()));
+        let line = chatflow::search_down_line(&service, address.as_deref());
+        let detail: SharedString = reason.into();
+        Some(
+            div()
+                .id("search-down")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(icon(AssetIcon::GlobeOff, p.muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(p.text)
+                        .truncate()
+                        .child(SharedString::from(line)),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
+                })
+                .child(
+                    Button::new("search-down-wiki")
+                        .label("Switch to Wikipedia")
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.search_down = None;
+                            this.choose_search(Some("wikipedia"), cx);
+                        })),
+                )
+                .child(
+                    Button::new("search-down-set")
+                        .label(if is_searx {
+                            "Set address"
+                        } else {
+                            "Manage search"
+                        })
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.search_down = None;
+                            this.open_providers(cx);
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The banners over the composer, one at a time with "N more" to open
@@ -1294,6 +1421,7 @@ impl Workspace {
         let mut col = div().flex().flex_col().gap_1();
         for n in shown {
             col = col.children(match n {
+                Notice::SearchDown => self.search_down_banner(p, cx),
                 Notice::Resume => self.resume_banner(p, cx),
                 Notice::Continue => self.continue_bar(p, cx),
                 Notice::Inserted => self.inserted_banner(p, cx),

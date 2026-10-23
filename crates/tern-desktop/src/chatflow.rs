@@ -426,12 +426,34 @@ impl Undo {
 /// A banner over the composer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Notice {
+    /// The chat's web search did not answer, so deep research stopped
+    /// before any worker started.
+    SearchDown,
     /// A run stopped and can be resumed or retried.
     Resume,
     /// The answer was cut off at the length limit.
     Continue,
     /// An MCP server wrote the composer text.
     Inserted,
+}
+
+/// Whether a run's stop reason says web search is not working (the deep
+/// run's preflight, or every worker's search failing).
+pub fn is_search_failure(reason: &str) -> bool {
+    reason.starts_with("Web search isn't working")
+        || reason.starts_with("No search service answered")
+}
+
+/// The search banner's line: SearXNG names its address; others their name.
+pub fn search_down_line(service: &str, searxng_address: Option<&str>) -> String {
+    if service.eq_ignore_ascii_case("searxng") {
+        match searxng_address {
+            Some(a) => format!("SearXNG isn't reachable at {a}"),
+            None => "SearXNG isn't set up: it has no address yet".to_owned(),
+        }
+    } else {
+        format!("{service} isn't answering web searches")
+    }
 }
 
 /// Which banners to draw: the first by priority, plus the rest when the
@@ -456,6 +478,38 @@ pub fn more_notices(n: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn search_failures_get_one_clear_banner() {
+        assert!(is_search_failure(
+            "Web search isn't working, so deep research did not start: connection refused."
+        ));
+        assert!(is_search_failure(
+            "No search service answered: timed out. Fix web search"
+        ));
+        assert!(!is_search_failure(
+            "No worker found a page to cite (1: failed)"
+        ));
+        assert_eq!(
+            search_down_line("SearXNG", Some("http://localhost:8080")),
+            "SearXNG isn't reachable at http://localhost:8080"
+        );
+        assert_eq!(
+            search_down_line("SearXNG", None),
+            "SearXNG isn't set up: it has no address yet"
+        );
+        assert_eq!(
+            search_down_line("Tavily", None),
+            "Tavily isn't answering web searches"
+        );
+        let (shown, more) = stack(vec![Notice::Resume, Notice::SearchDown], false);
+        assert_eq!(
+            shown,
+            vec![Notice::SearchDown],
+            "the search banner comes first"
+        );
+        assert_eq!(more, 1);
+    }
     use tern_core::{EffectClass, EventEnvelope, SessionId};
 
     #[test]

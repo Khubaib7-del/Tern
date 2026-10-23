@@ -167,7 +167,7 @@ pub async fn search(query: &str) -> Result<BrowsedPage, String> {
     let keychain = crate::providers::keychain();
     let secrets = keychain.as_ref().ok().map(|b| b.as_ref());
     let client = crate::search::connect(
-        prefs.search.as_deref(),
+        prefs.effective_search().as_deref(),
         secrets,
         prefs.search_url.as_deref(),
     )?;

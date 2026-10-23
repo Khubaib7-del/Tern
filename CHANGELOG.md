@@ -4,6 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #46)
+
+Fixes from testing the PR #45 build.
+
+- **macOS test flake**: each MCP test now stops only the server it started, so tests running at the same time no longer kill each other's servers.
+- **`/` button**: the composer's `/` button uses an upright slash glyph (Lucide `square-slash`).
+- **Model picker**: a compact 460×360 popover with the providers and their logos on the left and a plain list of the chosen provider's models on the right, with search.
+- **Brand logos**: providers and search services show their own coloured logos, taken from [Lobe Icons](https://github.com/lobehub/lobe-icons) (MIT) and kept in `crates/tern-desktop/assets/brands/` with a `NOTICE.md`; see [docs/assets.md](docs/assets.md).
+- **Rail**: tighter spacing between the rail buttons.
+- **Appearance**: the controls work. Theme (System, Light, Dark), accent colour (Lichen, Slate, Clay, Mono), font (IBM Plex or the system font), and text size (Small, Default, Large) apply at once and are saved in preferences.
+- **Right pane**: always fits the window. Its width is clamped so the chat keeps its minimum width; a layout test covers windows 1280, 1440, and 1920 px wide.
+- **Context window**: window sizes come from the provider's model list, or from Tern's table of known models (`tern_providers::known_context_window`) when the list has none. The context ring opens a popover showing how full the window is, split into system prompt, tools, attachments, and messages (`ContextParts`), with **New chat with summary**.
+- **Thinking effort**: the effort chip is always shown; for models that do not think it is greyed out with a tooltip saying so.
+- **Search**: SearXNG chosen without a server address counts as not set up ("Not set up" on its row), so searches fall back to Wikipedia instead of failing. Deep research runs its test search even when the question waits for approval, the failure line names each worker's stop reason, and a notice over the composer offers **Switch to Wikipedia** or **Set address** when the chosen service is down.
+
 ### Added (PR #45)
 
 - **Composer**: a **+** menu (files, images, PDFs, a folder, a link or DOI, an MCP resource, paste), a **mode** picker (Chat, Plan, Deep research, Act; Tutor, Quiz, Flashcards, Viva, Explain in Study; remembered per chat), a **model** picker across every connected provider with search and favourites (`favourite_models`), a separate **search** chip (the model and the search service are no longer one status line), `@` and `/` buttons, and Tab to queue a message while a run goes.

@@ -176,6 +176,12 @@ impl Provider {
             Wire::Gemini => wire::gemini::parse_models(&json),
         }
         .map_err(decode)?;
+        // Listings that leave the window out get Tern's table's size.
+        for m in &mut models {
+            if m.context_window.is_none() {
+                m.context_window = crate::model::known_context_window(&m.id);
+            }
+        }
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
     }

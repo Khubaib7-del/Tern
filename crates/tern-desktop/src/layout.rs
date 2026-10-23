@@ -15,6 +15,8 @@ pub const SIDEBAR_MIN_W: f32 = 900.;
 pub const PANEL_MIN_W: f32 = 1100.;
 /// Narrower than this, the title bar drops its labels.
 pub const COMPACT_W: f32 = 640.;
+/// Space between icons on the left rail; groups are split by a short rule.
+pub const RAIL_GAP: f32 = 4.;
 
 /// Where the side panels go at one window width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
