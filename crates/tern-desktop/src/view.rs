@@ -32,11 +32,13 @@ use crate::bridge::{Bridge, Msg};
 mod appearance_view;
 mod browser_view;
 mod cards_view;
+mod continuity_view;
 mod decision_view;
 mod deep_view;
 mod editor_view;
 mod explain_view;
 mod git_view;
+mod library_view;
 mod runs_view;
 mod scout_view;
 mod study_view;
@@ -121,6 +123,12 @@ pub struct Workspace {
     explain_at: Option<Instant>,
     /// Steps explainers on autoplay.
     explain_ticker: Option<Task<()>>,
+    /// The side chat's question field.
+    side_input: Entity<InputState>,
+    /// The Library's search field.
+    library_input: Entity<InputState>,
+    /// The popped-out side chat window.
+    side_window: Option<gpui_kit::AnyWindowHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -220,6 +228,30 @@ impl Workspace {
                 _ => {}
             },
         );
+        let side_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Ask about this chat"));
+        let side_sub = cx.subscribe_in(
+            &side_input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    this.side_submit(window, cx);
+                }
+            },
+        );
+        let library_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search the Library, or a message ID like Q12.3")
+        });
+        let library_sub = cx.subscribe_in(
+            &library_input,
+            window,
+            |this: &mut Self, _, event: &InputEvent, _, cx| {
+                if let InputEvent::Change = event {
+                    this.library_typed(cx);
+                }
+            },
+        );
         let listener = cx.spawn_in(window, async move |this, cx| {
             while let Some(msg) = rx.recv().await {
                 if this
@@ -304,8 +336,19 @@ impl Workspace {
             note_input,
             address_input,
             git_inputs,
+            side_input,
+            library_input,
+            side_window: None,
             _subscriptions: {
-                let mut subs = vec![sub, key_sub, rename_sub, note_sub, address_sub];
+                let mut subs = vec![
+                    sub,
+                    key_sub,
+                    rename_sub,
+                    note_sub,
+                    address_sub,
+                    side_sub,
+                    library_sub,
+                ];
                 subs.extend(study_subs);
                 subs
             },
@@ -348,10 +391,18 @@ impl Workspace {
                 self.model.sessions = recent;
                 self.current = Some(s.session_id());
                 self.model.set_resume_offer(s.checkpoint().as_ref());
+                self.model.cont.ids.anchor = self
+                    .model
+                    .sessions
+                    .iter()
+                    .find(|r| r.id == s.session_id())
+                    .and_then(|r| r.anchor);
+                self.bridge.load_ids(s.session_id());
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
             }
+            Msg::Cont(m) => self.on_cont(*m, window, cx),
             Msg::Notice(text) => {
                 self.model.entries.push(Entry::Notice(text));
                 // A chat that would not reopen leaves no session; open a
@@ -1343,13 +1394,6 @@ impl Workspace {
     }
 
     fn rail(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let later = |id: &'static str, icon: IconName, tip: &'static str| {
-            Button::new(id)
-                .icon(icon)
-                .ghost()
-                .disabled(true)
-                .tooltip(tip)
-        };
         div()
             .w(px(RAIL_W))
             .h_full()
@@ -1384,11 +1428,20 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .child(later(
-                        "rail-library",
-                        IconName::BookOpen,
-                        "Library (coming later)",
-                    ))
+                    .child(
+                        Button::new("rail-library")
+                            .icon(AssetIcon::Library)
+                            .ghost()
+                            .when(self.model.screen == Screen::Library, |b| b.selected(true))
+                            .tooltip("Library")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.model.screen == Screen::Library {
+                                    this.close_library(window, cx);
+                                } else {
+                                    this.open_library(cx);
+                                }
+                            })),
+                    )
                     .child(
                         Button::new("rail-editor")
                             .icon(IconName::FileText)
@@ -1507,14 +1560,16 @@ impl Workspace {
 
     fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let busy = self.model.is_busy();
-        let rows: Vec<_> = self
-            .model
-            .sessions
-            .iter()
-            .enumerate()
+        let order = crate::continuity::tree(&self.model.sessions);
+        let rows: Vec<_> = order
+            .into_iter()
+            .filter_map(|ix| self.model.sessions.get(ix).map(|s| (ix, s)))
             .map(|(ix, s)| {
                 let current = Some(s.id) == self.current;
                 let id = s.id;
+                let sub = s.parent.is_some();
+                let planned = s.plan.is_some();
+                let running = self.model.cont.background.contains(&id);
                 if self.renaming == Some(id) {
                     return div()
                         .id(("chat", ix))
@@ -1536,6 +1591,7 @@ impl Workspace {
                     .items_center()
                     .gap_1()
                     .pl_2()
+                    .when(sub, |d| d.pl(px(16.)))
                     .pr_1()
                     .py(px(3.))
                     .rounded_md()
@@ -1555,6 +1611,17 @@ impl Workspace {
                             }
                         }),
                     )
+                    .when(sub, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_color(p.faint)
+                                .child(SharedString::from(match s.anchor {
+                                    Some(a) => format!("↳ Q{a}"),
+                                    None => "↳".to_owned(),
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -1563,6 +1630,22 @@ impl Workspace {
                             .truncate()
                             .child(SharedString::from(s.title.clone())),
                     )
+                    .when(running, |d| d.child(Spinner::new().xsmall()))
+                    .when(planned && !running, |d| {
+                        d.child(
+                            Button::new(("run-sub", ix))
+                                .icon(AssetIcon::Play)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Planned: run it in the background; it reports back")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.bridge.sub_run(id);
+                                    this.model.cont.background.push(id);
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -1588,6 +1671,19 @@ impl Workspace {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
                                         this.open_in_tab(id, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(("handoff", ix))
+                                    .icon(AssetIcon::FileOutput)
+                                    .ghost()
+                                    .xsmall()
+                                    .tooltip(
+                                        "Hand off: write a packet and start a new session from it",
+                                    )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.hand_off(id, cx);
                                     })),
                             )
                             .child(
@@ -1686,7 +1782,14 @@ impl Workspace {
                         .bg(p.raised)
                         .child(SharedString::from(text.clone())),
                 )
-                .child(self.message_actions(i, false, p, cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(self.message_id_tag(i, p, cx))
+                        .child(self.message_actions(i, false, p, cx)),
+                )
                 .into_any_element(),
             Entry::Assistant {
                 text,
@@ -1726,10 +1829,20 @@ impl Workspace {
                     .flex_col()
                     .gap_1()
                     .child(
-                        TextView::markdown(("answer", i), with_badges(i, text, run))
-                            .on_link_click(self.link_opener(cx))
-                            .selectable(true)
-                            .motion(stream_motion()),
+                        div()
+                            .id(("answer-body", i))
+                            .on_mouse_up(
+                                gpui_kit::MouseButton::Left,
+                                cx.listener(move |this, e: &gpui_kit::MouseUpEvent, window, cx| {
+                                    this.answer_mouse_up(i, e, window, cx)
+                                }),
+                            )
+                            .child(
+                                TextView::markdown(("answer", i), with_badges(i, text, run))
+                                    .on_link_click(self.link_opener(cx))
+                                    .selectable(true)
+                                    .motion(stream_motion()),
+                            ),
                     )
                     .when(!pages.is_empty(), |d| {
                         d.child(self.sources(i, pages, p, cx))
@@ -1743,6 +1856,7 @@ impl Workspace {
                             .child(meta)
                             .child(self.message_actions(i, true, p, cx)),
                     )
+                    .children(self.branch_menu(i, p, cx))
                     .into_any_element()
             }
             Entry::Notice(t) => div()
@@ -1868,10 +1982,36 @@ impl Workspace {
                     })),
                 )
             })
+            .when(answer, |d| {
+                d.child(
+                    action(
+                        "side",
+                        AssetIcon::MessageCircle,
+                        "Ask in side chat (reads the thread, saves nothing)",
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_side(None, window, cx)
+                    })),
+                )
+            })
             .when(answer && !busy, |d| {
                 d.child(
-                    action("branch", AssetIcon::GitBranch, "Branch into a new chat")
+                    action("branch-copy", AssetIcon::GitFork, "Branch into a new chat (a copy up to here)")
                         .on_click(cx.listener(move |this, _, _, cx| this.branch_from(i, cx))),
+                )
+            })
+            .when(answer && !busy, |d| {
+                d.child(
+                    action(
+                        "branch",
+                        AssetIcon::GitBranch,
+                        "Branch ▾ New sub-session from here, background branch, or move to a sub-session",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let ids = &mut this.model.cont.ids;
+                        ids.branch_menu = if ids.branch_menu == Some(i) { None } else { Some(i) };
+                        cx.notify();
+                    })),
                 )
             })
     }
@@ -3371,15 +3511,21 @@ impl Render for Workspace {
                 .rounded_full()
                 .bg(p.text.opacity(strength * 0.25))
         });
-        // The right pane: the browser when it is showing, else the run panel.
+        // The right pane: the browser when it is showing, else the docked
+        // side chat, else the run panel.
+        let side_docked = self.model.cont.side.open && !self.model.cont.side.popped;
         let side_w = if self.model.browser.visible {
             browser_view::BROWSER_W
+        } else if side_docked {
+            continuity_view::SIDE_W
         } else {
             RUN_PANEL_W
         };
         let side_pane = |this: &Self, cx: &mut Context<Self>| {
             if this.model.browser.visible {
                 this.browser_pane(p, cx)
+            } else if side_docked {
+                this.side_panel(p, cx)
             } else {
                 this.run_panel(p, cx).into_any_element()
             }
@@ -3394,6 +3540,7 @@ impl Render for Workspace {
             Screen::Watches => "screen-watches",
             Screen::Study => "screen-study",
             Screen::Decision => "screen-decision",
+            Screen::Library => "screen-library",
         };
         div()
             .relative()
@@ -3428,6 +3575,15 @@ impl Render for Workspace {
                                     None => d
                                         .children(self.tab_strip(p, cx))
                                         .child(self.transcript(p, cx))
+                                        .children(self.range_bar(p, cx).map(|b| {
+                                            div()
+                                                .w_full()
+                                                .max_w(px(COLUMN_MAX_W))
+                                                .mx_auto()
+                                                .px_4()
+                                                .pb_1()
+                                                .child(b)
+                                        }))
                                         .child(self.composer(p, cx)),
                                 },
                                 Screen::Providers => d.child(self.providers_screen(p, window, cx)),
@@ -3437,6 +3593,7 @@ impl Render for Workspace {
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
                                 Screen::Study => d.child(self.study_screen(p, window, cx)),
                                 Screen::Decision => d.child(self.decision_screen(p, cx)),
+                                Screen::Library => d.child(self.library_screen(p, cx)),
                             })
                             .with_animation(
                                 screen_id,
@@ -3472,6 +3629,7 @@ impl Render for Workspace {
                         )
                     }),
             )
+            .children(self.highlight_popover(p, cx))
             .children(ripple)
     }
 }

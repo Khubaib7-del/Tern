@@ -1,6 +1,6 @@
 # 03 · Architecture
 
-> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
+> Status: phase 3 in progress, 21 October 2026. All eleven crates exist; `tern-core`, `tern-platform` (Windows keychain), `tern-store`, `tern-providers`, and in `tern-agent` the doctor, provider setup, bounded turn loop, policy gate, tool registry, chat session, and quick ask have code and tests; `tern-crawl` has BYOK search, the guarded reader, and source icons, as does the minimal ratatui TUI, and the rest are stubs. Chosen so far: `rusqlite` (bundled SQLite), `keyring-core` with `windows-native-keyring-store`, `directories`, `fs4`, `ulid`, `time`, `regex`, `clap`, `reqwest` (rustls), `tokio`, `rpassword`, `ratatui` 0.30 with its `crossterm` backend; own provider adapters per [ADR 0003](decisions/0003-own-provider-adapters.md); turn loop and policy gate per [ADR 0004](decisions/0004-turn-loop-and-policy-gate.md). Other library names are candidates to evaluate in the phase that needs them, not commitments. Since PR #38 `tern-decision` holds the decision model (local scorer, remote adapters, hard checks; [ADR 0007](decisions/0007-decision-model.md)). Since PR #39 continuity is built: schema v3 in `tern-store` (sub-sessions and the Library index) and, in `tern-agent`, message IDs, range cleaning, sub-sessions, handoff packets, Library sync, highlights, and the side chat (section 5.1). The founding decision is [ADR 0001](decisions/0001-rust-gpui-windows-first.md).
 
 ## 1. Shape
 
@@ -36,7 +36,7 @@ One Rust workspace. A headless core owns state, execution, and security. The TUI
 | `tern-providers` | BYOK provider layer for remote and local models: capability probing, model listing, role assignment, streaming, token accounting. No silent provider fallback | Own adapters ([ADR 0003](decisions/0003-own-provider-adapters.md)), `reqwest`, `eventsource-stream` |
 | `tern-decision` | The decision-model slot: `score(context, question, choices) → probabilities` with confidence, rationale, latency, and cost. A local lexical scorer (offline, the default), remote adapters (TypeSafe Jev and Subquadratic SubQ Snap over the System One API, Voyage rerank), a decider with timeout and local fallback, hard-check rules that always override a score, a cache, a decision log, and benchmark fixtures. Reads no keys itself; `tern-agent` hands them over ([ADR 0007](decisions/0007-decision-model.md)) | `reqwest`, `serde`, `tokio` (time); a local cross-encoder later |
 | `tern-crawl` | Tern's own reader and crawler: URL frontier, robots and rate limits, fetch with caching, SSRF and DNS-rebinding guard, content router (HTML, PDF, arXiv, DOI), headless-browser fallback for empty JS pages, readability extraction, HTML to Markdown, chunking with stable anchors, near-duplicate detection | `reqwest`, `hickory-resolver`, `scraper`, `pdfium-render`, `chromiumoxide` |
-| `tern-store` | Persistence: SQLite for projects, sessions, ledgers, and the append-only event log; full-text index; vector index; hashed artifacts; checkpoints; Anki packages (`.apkg`: an SQLite collection and media in a zip); the Markdown vault on disk | `rusqlite`, `zip`, `sha1_smol`, `tantivy`, `sqlite-vec` or LanceDB, `notify` |
+| `tern-store` | Persistence: SQLite for projects, sessions (with sub-sessions: a parent, the message they hang under, a planned question), ledgers, and the append-only event log; the Library index (one row per report, source, note, deck, file, scene, and session, with search, filter, sort, paging, and a live/trash/purged state); full-text index; vector index; hashed artifacts; checkpoints; Anki packages (`.apkg`: an SQLite collection and media in a zip); the Markdown vault on disk | `rusqlite`, `zip`, `sha1_smol`, `tantivy`, `sqlite-vec` or LanceDB, `notify` |
 | `tern-research` | The Research harness: clarify and plan, search, read, verify, write, record. Scholarly API clients, claim extraction and verification, evidence tables, citation formatting, run report, export | `hayagriva` or `citeproc`; pandoc detected, not bundled |
 | `tern-study` | The Study harness: materials and anchors, topics, mastery, tutor, flashcards with SM-2 spaced repetition, quizzes, viva practice, Explain in 3D scenes and their isometric projection and SVG, study plans; grading with the shared verdict vocabulary; CSV and Anki-ready TSV (the `.apkg` writer is in `tern-store`). Pure: no I/O and no model calls; `tern-agent` reads the files and calls the provider | `serde`, `serde_json` |
 | `tern-tui` | The `tern` binary: CLI commands (`tern ask`, `tern doctor`, `tern run --json`), the ratatui TUI, terminal capability probing | `clap`, `ratatui`, `crossterm` |
@@ -114,6 +114,19 @@ Only a worker's final report returns to the parent context.
 | Library retrieval | Full-text and vector search over sources | Untrusted content; never instructions |
 | Global profile | Cross-project preferences | Inspectable and deletable |
 
+### 5.1 Continuity
+
+The event log is append-only, so continuity is written as events and read back by replay:
+
+| Event | Written by | Read as |
+| --- | --- | --- |
+| `range.removed` / `range.restored` | `tern_agent::range` remove, confirm, restore | Turns in the chat's trash; `live_turns` leaves them out of the transcript and the model's history, and the others keep their numbers |
+| `range.move_pending` / `range.move_confirmed` / `range.move_undone` | `range::move_to`, `confirm`, `undo` | A move waiting on the user; the original is untouched until Confirm |
+| `session.context` | A range move, a new sub-session, or `handoff::start_from` | Context carried over: the first thing the model reads in that session |
+| `sub.reported` | `sub::report_back` after a sub-session run | A summary on the parent turn the sub-session hangs under, in the transcript and the model's history |
+
+Message IDs: a turn's number is its order among the log's `turn.started` events (`Q3`). A sub-session hangs under one parent message; its messages are numbered across every sub-session of that message in start order (`Q12.1`, `Q12.2`, …), so an ID never changes or repeats. `tern_agent::refs` resolves IDs for `@` mentions (quoted to the model as attachments), the CLI, `tern://chat/<id>/Q12.3` links, and Library search (session rows carry their IDs). A handoff packet (`tern_agent::handoff`) is Markdown and JSON with goal, decisions, open questions, key sources and claims, a ledger snapshot, and next steps; a session started from it has the packet as its only event. The side chat (`tern_agent::side`) reads the live turns once and keeps its own exchanges in memory; it never writes to the store. The Library (`tern_agent::library`) syncs the index from `runs/`, the event log, the vault, and the study folder; trashing a file-backed item moves its files to `<data>/trash/`, a session in the trash is archived, and empty-trash deletes the files and marks rows purged.
+
 Compaction thresholds are per model. The log is persisted first, the summary is split into verified facts, decisions, assumptions, failures, done, and next, and the user is told when it happened.
 
 ## 6. Storage layout (planned)
@@ -121,7 +134,7 @@ Compaction thresholds are per model. The log is persisted first, the summary is 
 | Location | Contents |
 | --- | --- |
 | OS keychain | Provider and search API keys |
-| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, crawl cache, checkpoints |
+| App data directory (per OS, via `tern-platform`) | SQLite database, indexes, artifact store, crawl cache, checkpoints, run reports (`runs/`), handoff packets (`handoffs/`), the Library trash (`trash/`) |
 | Vault directory (user-chosen) | Plain Markdown notes and reports, Obsidian-compatible; optional git-backed history |
 
 ## 7. Platform order

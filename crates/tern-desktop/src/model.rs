@@ -33,6 +33,8 @@ pub enum Screen {
     Study,
     /// Decision model settings: off, local, or a remote provider.
     Decision,
+    /// The Library of everything.
+    Library,
 }
 
 /// One block of the transcript.
@@ -291,6 +293,8 @@ pub struct Model {
     pub watches_running: usize,
     /// The Study harness's screen state.
     pub study: crate::study::StudyState,
+    /// Message IDs, range actions, the side chat, highlights, the Library.
+    pub cont: crate::continuity::Continuity,
 }
 
 /// A stopped run the chat can pick up again.
@@ -356,7 +360,32 @@ impl Model {
             watch_selected: None,
             watches_running: 0,
             study: crate::study::StudyState::new(),
+            cont: {
+                let mut c = crate::continuity::Continuity::default();
+                c.ids.reset();
+                c
+            },
         }
+    }
+
+    /// Which user message (0 for the first) entry `i` is or answers.
+    pub fn user_ordinal(&self, i: usize) -> Option<usize> {
+        let upto = self.entries.get(..=i)?;
+        let users = upto
+            .iter()
+            .filter(|e| matches!(e, Entry::User { .. }))
+            .count();
+        users.checked_sub(1)
+    }
+
+    /// The turn number entry `i` belongs to (its message or its answer).
+    pub fn turn_of_entry(&self, i: usize) -> Option<u32> {
+        self.cont.ids.numbers.get(self.user_ordinal(i)?).copied()
+    }
+
+    /// The ID shown on entry `i`'s turn (`Q3`, `Q12.4`).
+    pub fn label_of_entry(&self, i: usize) -> Option<String> {
+        self.cont.ids.label(self.user_ordinal(i)?)
     }
 
     /// Whether the composer sends a steering note rather than a message:
@@ -526,6 +555,8 @@ impl Model {
             chips,
             quote,
         });
+        self.cont.ids.started();
+        self.cont.highlight = None;
         self.turn_pages.clear();
         self.run_panel.pinned = None;
         self.run_panel.open.clear();
@@ -961,9 +992,20 @@ impl Model {
         self.entries.clear();
         self.run_panel.pinned = None;
         self.run_panel.open.clear();
+        self.cont.highlight = None;
         self.last_run = turns.last().map(|t| t.run.clone()).unwrap_or_default();
+        self.cont.ids.restored(
+            turns
+                .iter()
+                .filter(|t| t.message.is_some())
+                .map(|t| t.number)
+                .collect(),
+        );
         let mut missing = 0;
         for t in turns {
+            if let Some(c) = &t.context {
+                self.entries.push(Entry::Notice(carried_note(c)));
+            }
             match &t.message {
                 Some(m) => {
                     let (text, chips) = attach::split(m);
@@ -986,6 +1028,9 @@ impl Model {
             }
             if let Some(why) = &t.stop {
                 self.entries.push(Entry::Notice(why.clone()));
+            }
+            for r in &t.reports {
+                self.entries.push(Entry::Notice(report_note(r)));
             }
         }
         if missing > 0 {
@@ -1069,6 +1114,8 @@ impl Model {
         self.reply_to = None;
         self.copied = None;
         self.resume_offer = None;
+        self.cont.ids.reset();
+        self.cont.highlight = None;
         self.context = ContextUse {
             window: self.context.window,
             ..ContextUse::default()
@@ -1307,6 +1354,26 @@ pub enum ContextLevel {
 }
 
 /// 12,345 with thousands separators.
+/// The transcript line for context carried into a chat.
+pub fn carried_note(markdown: &str) -> String {
+    let first = markdown
+        .lines()
+        .map(|l| l.trim_start_matches(['#', ' ']))
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("Context carried over");
+    format!("↳ {}", tern_agent::range::clip(first, 160))
+}
+
+/// The transcript line for a sub-session's report back.
+pub fn report_note(r: &tern_agent::SubReport) -> String {
+    format!(
+        "↳ {} reported back · {}: {}",
+        r.refs.last().map(String::as_str).unwrap_or("Sub-session"),
+        tern_agent::range::clip(&r.question, 80),
+        r.summary
+    )
+}
+
 pub fn grouped(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
@@ -1476,6 +1543,9 @@ mod tests {
             harness: Harness::Research,
             created_at: String::new(),
             events: 3,
+            parent: None,
+            anchor: None,
+            plan: None,
         });
         m.rename(id, "Attention paper");
         assert_eq!(m.sessions[0].title, "Attention paper");

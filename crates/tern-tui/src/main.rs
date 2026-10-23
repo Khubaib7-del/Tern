@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod cards;
+mod continuity;
 mod decide;
 mod research;
 mod runs;
@@ -227,6 +228,61 @@ enum Command {
         #[command(flatten)]
         chat: ChatArgs,
     },
+    /// Clean a chat by message ID: remove `Q3-Q5` to the chat's trash, or
+    /// move messages with their context to a new session or sub-session
+    /// (the originals stay until you confirm).
+    #[command(subcommand)]
+    Range(continuity::RangeCmd),
+    /// Sub-sessions hung under a message (`Q12` → `Q12.1`, `Q12.2`):
+    /// make, list, and run them; a run reports back to the parent.
+    #[command(subcommand)]
+    Sub(continuity::SubCmd),
+    /// Print one message by its ID (`Q12`, `Q12.3`) or `tern://` link.
+    Show {
+        /// `Q12`, `Q12.3`, or `tern://chat/<id>/Q12.3`.
+        id: String,
+        #[arg(long, short, default_value = "last")]
+        chat: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a handoff packet for a chat: goal, decisions, open questions,
+    /// key sources and claims, a ledger snapshot, and next steps.
+    Handoff {
+        /// The chat: `last` (the default), its id, or the start of its id.
+        #[arg(default_value = "last")]
+        chat: String,
+        /// Write `FILE.md` and `FILE.json` instead of printing Markdown.
+        #[arg(long, short, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Print JSON instead of Markdown.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start a new session from a handoff packet alone, and optionally ask
+    /// its first question.
+    New {
+        /// The packet (`.md` or `.json` from `tern handoff`).
+        #[arg(long, value_name = "FILE")]
+        from_handoff: PathBuf,
+        question: Vec<String>,
+        #[command(flatten)]
+        chat: ChatArgs,
+    },
+    /// The Library of everything: list, search, bulk delete to the trash,
+    /// restore, and empty the trash.
+    #[command(subcommand)]
+    Library(continuity::LibraryCmd),
+    /// A throwaway side question about a chat: it reads the thread and
+    /// writes nothing back.
+    Side {
+        #[arg(required = true, num_args = 1..)]
+        question: Vec<String>,
+        #[arg(long, short, default_value = "last")]
+        chat: String,
+        #[command(flatten)]
+        args: ChatArgs,
+    },
     /// Ask the decision model a fixed-choice question, set it up (off,
     /// local, or a remote provider with your own key), or benchmark it.
     Decide(decide::DecideArgs),
@@ -413,6 +469,21 @@ fn main() -> ExitCode {
         } => block_on(study::viva(title, n, offline, chat)),
         Command::Cards(cmd) => block_on(cards::run(cmd)),
         Command::Decide(args) => block_on(decide::run(args)),
+        Command::Range(cmd) => sync(continuity::range_cmd(cmd)),
+        Command::Sub(cmd) => block_on(continuity::sub_cmd(cmd)),
+        Command::Show { id, chat, json } => sync(continuity::show(id, chat, json)),
+        Command::Handoff { chat, out, json } => sync(continuity::handoff_cmd(chat, out, json)),
+        Command::New {
+            from_handoff,
+            question,
+            chat,
+        } => block_on(continuity::new_cmd(from_handoff, question, chat)),
+        Command::Library(cmd) => sync(continuity::library_cmd(cmd)),
+        Command::Side {
+            question,
+            chat,
+            args,
+        } => block_on(continuity::side_cmd(question, chat, args)),
         Command::Explain3d {
             concept,
             topic,
@@ -445,6 +516,16 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+    }
+}
+
+fn sync(r: Result<(), String>) -> ExitCode {
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::FAILURE
         }
     }
 }

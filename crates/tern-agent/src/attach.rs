@@ -279,6 +279,27 @@ impl Attachment {
     }
 }
 
+/// Adds attachments to a message that may already carry a block (the
+/// `@Q12` messages a chat resolves when it sends).
+pub fn append(message: &str, extra: &[Attachment]) -> String {
+    if extra.is_empty() {
+        return message.to_owned();
+    }
+    let (body, _) = split(message);
+    if body.len() == message.len() {
+        return compose(message, extra);
+    }
+    let block = compose("x", extra);
+    let Some(start) = block.find("<attachment name=") else {
+        return message.to_owned();
+    };
+    let items = block[start..]
+        .strip_suffix(CLOSE)
+        .unwrap_or(&block[start..]);
+    let head = message.strip_suffix(CLOSE).unwrap_or(message);
+    format!("{head}{items}{CLOSE}")
+}
+
 /// The message the model reads: the user's text, then one block holding
 /// every attachment. Prompt attachments come first.
 pub fn compose(text: &str, attachments: &[Attachment]) -> String {

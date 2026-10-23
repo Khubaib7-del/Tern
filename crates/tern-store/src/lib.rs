@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anki;
+pub mod library;
 mod schema;
 
 use std::path::Path;
@@ -60,6 +61,16 @@ pub struct SessionSummary {
     pub created_at: String,
     /// Events recorded so far.
     pub events: u64,
+    /// For a sub-session: the chat it hangs under.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SessionId>,
+    /// For a sub-session: the parent's message number it branches from
+    /// (`12` for `Q12`), so its messages read `Q12.1`, `Q12.2`, ….
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<u32>,
+    /// A planned sub-session's question, until it runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 /// The Tern database.
@@ -181,10 +192,92 @@ impl Store {
         Ok(())
     }
 
+    /// Brings an archived session back to the list.
+    pub fn unarchive_session(&self, id: SessionId) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE sessions SET archived_at = NULL WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether a session is archived.
+    pub fn is_archived(&self, id: SessionId) -> StoreResult<bool> {
+        let v: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT archived_at FROM sessions WHERE id = ?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(matches!(v, Some(Some(_))))
+    }
+
+    /// Makes a sub-session of `parent` branching from its message
+    /// `anchor` (`Q<anchor>`), in the parent's project. `plan` is the
+    /// question a planned sub-session will run.
+    pub fn create_sub_session(
+        &self,
+        parent: SessionId,
+        anchor: u32,
+        title: &str,
+        plan: Option<&str>,
+    ) -> StoreResult<SessionId> {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT project_id, harness FROM sessions WHERE id = ?1",
+                [parent.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((project, harness)) = row else {
+            return Err(StoreError::UnknownSession(parent));
+        };
+        let id = SessionId::new();
+        self.conn.execute(
+            "INSERT INTO sessions (id, project_id, harness, title, created_at, parent_id, anchor, plan)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id.to_string(),
+                project,
+                harness,
+                title,
+                now(),
+                parent.to_string(),
+                anchor as i64,
+                plan
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// Sets or clears a sub-session's planned question.
+    pub fn set_session_plan(&self, id: SessionId, plan: Option<&str>) -> StoreResult<()> {
+        self.conn.execute(
+            "UPDATE sessions SET plan = ?1 WHERE id = ?2",
+            params![plan, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The sub-sessions of `parent`, oldest first, archived ones left out.
+    /// Planned sub-sessions with no events yet are included.
+    pub fn sub_sessions(&self, parent: SessionId) -> StoreResult<Vec<SessionSummary>> {
+        let mut out = self.summaries_left(
+            "WHERE s.parent_id = ?1 AND s.archived_at IS NULL",
+            &parent.to_string(),
+            10_000,
+        )?;
+        out.reverse();
+        Ok(out)
+    }
+
     /// One session's row, archived or not.
     pub fn session(&self, id: SessionId) -> StoreResult<Option<SessionSummary>> {
         Ok(self
-            .summaries("WHERE s.id = ?1", &id.to_string(), 1)?
+            .summaries_left("WHERE s.id = ?1", &id.to_string(), 1)?
             .into_iter()
             .next())
     }
@@ -195,25 +288,59 @@ impl Store {
         self.summaries("WHERE s.archived_at IS NULL AND ?1 = ?1", "", limit)
     }
 
+    /// Every session, newest first, archived or not, with or without
+    /// events (for the Library index).
+    pub fn all_sessions(&self, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        self.summaries_left("WHERE ?1 = ?1", "", limit)
+    }
+
     fn summaries(&self, filter: &str, arg: &str, limit: usize) -> StoreResult<Vec<SessionSummary>> {
+        self.summaries_with("JOIN", filter, arg, limit)
+    }
+
+    /// [`Store::summaries`] that keeps sessions with no events.
+    fn summaries_left(
+        &self,
+        filter: &str,
+        arg: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<SessionSummary>> {
+        self.summaries_with("LEFT JOIN", filter, arg, limit)
+    }
+
+    fn summaries_with(
+        &self,
+        join: &str,
+        filter: &str,
+        arg: &str,
+        limit: usize,
+    ) -> StoreResult<Vec<SessionSummary>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT s.id, s.title, s.harness, s.created_at, COUNT(e.seq) AS n
-             FROM sessions s JOIN events e ON e.session_id = s.id
+            "SELECT s.id, s.title, s.harness, s.created_at, COUNT(e.seq) AS n,
+                    s.parent_id, s.anchor, s.plan
+             FROM sessions s {join} events e ON e.session_id = s.id
              {filter}
              GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC LIMIT ?2"
         ))?;
         let rows = stmt.query_map(params![arg, limit as i64], |r| {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4)?,
+                ),
+                (
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, title, harness, created_at, n) = row?;
+            let ((id, title, harness, created_at, n), (parent, anchor, plan)) = row?;
             let Ok(id) = id.parse() else { continue };
             out.push(SessionSummary {
                 id,
@@ -225,6 +352,9 @@ impl Store {
                 },
                 created_at,
                 events: n as u64,
+                parent: parent.and_then(|p| p.parse().ok()),
+                anchor: anchor.map(|a| a as u32),
+                plan,
             });
         }
         Ok(out)
@@ -349,7 +479,34 @@ mod tests {
             "Transformers survey"
         );
         assert_eq!(s.replay(ses, 0).unwrap().len(), 1);
-        assert_eq!(s.schema_version().unwrap(), 2);
+        assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn sub_sessions_hang_under_their_parent() {
+        let (mut s, ses) = setup();
+        s.append(&ev(ses, "turn.started")).unwrap();
+        let sub = s
+            .create_sub_session(ses, 12, "Costs", Some("What does it cost?"))
+            .unwrap();
+        let subs = s.sub_sessions(ses).unwrap();
+        assert_eq!(subs.len(), 1, "planned sub-sessions show before they run");
+        assert_eq!(subs[0].id, sub);
+        assert_eq!(subs[0].parent, Some(ses));
+        assert_eq!(subs[0].anchor, Some(12));
+        assert_eq!(subs[0].plan.as_deref(), Some("What does it cost?"));
+        s.set_session_plan(sub, None).unwrap();
+        assert_eq!(s.session(sub).unwrap().unwrap().plan, None);
+        assert!(
+            s.create_sub_session(SessionId::new(), 1, "x", None)
+                .is_err()
+        );
+        s.archive_session(sub).unwrap();
+        assert!(s.is_archived(sub).unwrap());
+        assert!(s.sub_sessions(ses).unwrap().is_empty());
+        s.unarchive_session(sub).unwrap();
+        assert_eq!(s.sub_sessions(ses).unwrap().len(), 1);
+        assert_eq!(s.all_sessions(10).unwrap().len(), 2);
     }
 
     #[test]
