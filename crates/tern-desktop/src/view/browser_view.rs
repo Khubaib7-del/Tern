@@ -23,8 +23,9 @@ impl Workspace {
         if let Some((request, url)) = self.model.browser.navigate(input) {
             self.model.run_panel_open = true;
             self.bridge.browse(request, url.clone());
+            let shown = tern_agent::browse::display_address(&url);
             self.address_input
-                .update(cx, |i, cx| i.set_value(url, window, cx));
+                .update(cx, |i, cx| i.set_value(shown, window, cx));
         }
         cx.notify();
     }
@@ -37,8 +38,9 @@ impl Workspace {
     ) {
         if let Some((request, url)) = step {
             self.bridge.browse(request, url.clone());
+            let shown = tern_agent::browse::display_address(&url);
             self.address_input
-                .update(cx, |i, cx| i.set_value(url, window, cx));
+                .update(cx, |i, cx| i.set_value(shown, window, cx));
         }
         cx.notify();
     }

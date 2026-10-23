@@ -73,15 +73,17 @@ pub mod web;
 pub use ask::{AskOptions, AskReport, Source};
 pub use attach::{Attachment, Chip, Role};
 pub use chat::{
-    ChatOptions, ChatSession, ContextUse, Usage, archive_session, clean_title, recent_sessions,
-    rename_session, title_from,
+    ChatOptions, ChatSession, ContextUse, Usage, archive_session, chat_to_reopen, clean_title,
+    pick_reopen, recent_sessions, remember_chat, rename_session, title_from,
 };
-pub use checkpoint::{CheckpointDir, CheckpointSink, RunCheckpoint, RunMode, Stage};
+pub use checkpoint::{
+    CheckpointDir, CheckpointSink, OfferKind, RunCheckpoint, RunMode, RunOffer, Stage, WorkerCounts,
+};
 pub use decide::{Decider, DecisionKind, DecisionPrefs};
 pub use deep::{DeepControl, DeepOptions, PlanAnswer, PlanApprover, ResearchPlan, RunAsDrafted};
 pub use engine::{
-    ApprovalRequest, Approver, Budget, CancelFlag, DenyAll, EventSink, MemorySink, Model, OnText,
-    StoreSink, TurnLoop, TurnOutcome,
+    ApprovalRequest, Approver, Budget, CONTINUE_PROMPT, CancelFlag, DenyAll, EventSink, MemorySink,
+    Model, OnText, StoreSink, TurnLoop, TurnOutcome, is_length_stop,
 };
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;

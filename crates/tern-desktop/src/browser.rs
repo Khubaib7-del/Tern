@@ -21,9 +21,15 @@ impl BrowserState {
     /// Starts loading what was typed or clicked. Returns the request to
     /// send, or `None` (with `error` set) when it is not an address.
     pub fn navigate(&mut self, input: &str) -> Option<(u64, String)> {
-        let Some(url) = browse::normalize(input) else {
-            self.error = Some("Type a web address, like arxiv.org/abs/1706.03762.".into());
-            return None;
+        // A web address opens; other words search with the chat's search.
+        let url = match browse::target(input) {
+            Some(browse::Target::Page(url)) => url,
+            Some(browse::Target::Search(q)) => browse::search_address(&q),
+            None => {
+                self.error =
+                    Some("Type a web address, like arxiv.org, or words to search for.".into());
+                return None;
+            }
         };
         self.visible = true;
         self.history.visit(&url);
@@ -75,6 +81,7 @@ impl BrowserState {
         self.loading
             .clone()
             .or_else(|| self.page.as_ref().map(|p| p.page.url.clone()))
+            .map(|a| browse::display_address(&a))
             .unwrap_or_default()
     }
 }
@@ -102,8 +109,12 @@ mod tests {
     #[test]
     fn loads_redirects_and_drops_stale_pages() {
         let mut b = BrowserState::default();
-        assert!(b.navigate("not an address").is_none());
+        assert!(b.navigate("   ").is_none());
         assert!(b.error.is_some() && !b.visible);
+        // Words are a search, kept in history under a search address.
+        let (_, s) = b.navigate("mistral le chat").unwrap();
+        assert_eq!(s, "tern-search:mistral le chat");
+        assert_eq!(b.address(), "mistral le chat");
         let (r1, u1) = b.navigate("x.org/a").unwrap();
         assert_eq!(u1, "https://x.org/a");
         assert!(b.visible && b.error.is_none());

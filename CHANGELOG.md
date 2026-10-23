@@ -4,6 +4,25 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #44)
+
+- **Search errors are told as they are.** A deep-research worker whose every search failed says "search failed: " and the service's own error (SearXNG did not answer, refused JSON results with HTTP 403 and how to turn `json` on in `settings.yml`, a rejected key, a rate limit), and the run ends with "No search service answered: …". "Found nothing" now means only that a search succeeded with no results. The worker card reads pages read against its page budget.
+- **Search preflight**: deep research runs one test search before the plan. When it fails, the run stops with "Web search isn't working, so deep research did not start: …" and spends no model call.
+- **SearXNG address and Test**: the SearXNG row on the Providers screen has a **Server address** field and a **Test** button; **Choose** stays off until the address passes. The address is saved as `search_url` in `preferences.json` and used by every search, test, and connection (before, the desktop always used `http://localhost:8080`).
+- **Resume and Retry**: the banner is offered only when something is left to do. A stopped or interrupted run offers **Resume**; a failed run says "Run failed: <cause>" and offers **Retry failed workers**, which reruns only the failed workers and keeps the finished ones. Progress is counted from the workers ("2 of 3 done · 1 not finished", "0 of 5 done · 5 failed") and the save time is local, not UTC.
+- **Chats**: a new chat is a draft until its first message, so launching Tern, visiting Providers, or changing the model no longer leaves empty "Chat" rows in the sidebar or the Library. Launch reopens the last chat that has messages. Changing the model swaps it in place (`ChatSession::set_model_with`): same chat, same history, a `session.model_changed` event, and the next answer comes from the new model; a change that fails keeps the old model.
+- **Study has its own chat**: Study questions go to a Study session with its own composer, never into the Research chat. With no materials, a **Start here** card offers adding a PDF or notes, using the last report, or asking without materials.
+- **Stop**: a labelled **Stop** in the accent colour replaces Send while a turn runs, and Esc stops it.
+- **Answer length**: chat answers default to 8192 output tokens (lower where a model caps lower). An answer cut off at the limit shows "Cut off at the length limit" with **Continue**, which sends the rest as a new message.
+- **Browser**: words typed in the address bar search with the chat's search service and show the results in the reader; an address still opens as a page.
+
+### Added (PR #44)
+
+- **Wikipedia, a keyless search default** ([ADR 0008](docs/decisions/0008-keyless-search.md)): `wikipedia` joins Tavily, Brave, and SearXNG. With no search chosen and no key saved, Tern searches Wikipedia articles through the MediaWiki Action API, identified by a descriptive User-Agent, so a fresh install's deep research works without any setup. No search engine's result pages are scraped. `"search": "off"` turns web search off.
+- [docs/search.md](docs/search.md): choosing a search service, SearXNG with `formats: [html, json]`, and what each search error means.
+
+Not in this PR: deleting chats and an Archived view (the event log is append-only; planned for #46), a per-worker stop button, the "same failure as before" guard on a repeated failing question, sample Study material, and a session grant for pages found by a run's searches.
+
 ### Added (PR #43)
 
 - **Linux** (roadmap phase 12; [docs/linux.md](docs/linux.md)): keys in the **Secret Service** over D-Bus (GNOME Keyring, KWallet, KeePassXC), through `zbus-secret-service-keyring-store` (pure Rust, no libdbus); `TERN_KEYRING=keyutils` keeps them in the kernel's per-user keyring instead, for machines without a Secret Service (keys last until reboot). Without either, `tern doctor` and key commands say what to do; keys are never written to a file. Data in `$XDG_DATA_HOME/tern`, settings (`preferences.json`, `mcp.json`) in `$XDG_CONFIG_HOME/tern`, the crawl cache in `$XDG_CACHE_HOME/tern`. The desktop app runs on X11 and Wayland through GPUI with the window app id `io.github.khubaib7_del.Tern`, matched by a bundled `.desktop` entry; Ctrl+Q quits.

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tern_core::TurnState;
 use tern_platform::AppPaths;
 use tern_providers::ChatMessage;
 use tern_research::deep::WorkerStatus;
@@ -116,9 +117,86 @@ pub struct WorkerCheckpoint {
     pub extra_rounds: usize,
 }
 
+/// The note a worker gets when a steer drops it.
+pub const DROPPED_BY_STEER: &str = "dropped by your steer";
+
 impl WorkerCheckpoint {
     pub fn has_progress(&self) -> bool {
         self.round > 0 || self.pending_notes || !self.pages.is_empty() || self.searches > 0
+    }
+
+    /// Ended without notes worth keeping (failed, stopped by you, or out
+    /// of time with nothing written), so a resume runs it again from the
+    /// start. Done workers, and ones a steer dropped, are kept as they are.
+    pub fn retryable(&self) -> bool {
+        match self.finished {
+            None | Some(WorkerStatus::Done) => false,
+            Some(WorkerStatus::Cancelled) => self.note != DROPPED_BY_STEER,
+            Some(WorkerStatus::TimedOut | WorkerStatus::OverBudget) => self.notes.trim().is_empty(),
+            Some(WorkerStatus::Failed | WorkerStatus::Queued | WorkerStatus::Running) => true,
+        }
+    }
+
+    /// Back to a fresh start on the same sub-question and budget.
+    pub fn reset(&mut self) {
+        *self = Self {
+            n: self.n,
+            question: std::mem::take(&mut self.question),
+            budget: self.budget,
+            ..Self::default()
+        };
+    }
+}
+
+/// A deep run's workers by how they stand.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorkerCounts {
+    pub all: usize,
+    /// Finished with notes that are kept.
+    pub done: usize,
+    pub failed: usize,
+    /// Stopped by you or by their time or budget, with nothing kept.
+    pub stopped: usize,
+    /// Not finished yet.
+    pub left: usize,
+}
+
+/// What the chat offers for a run that did not answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfferKind {
+    /// Pick up where it stopped.
+    Resume,
+    /// Run the failed parts again; finished work is kept.
+    Retry,
+}
+
+/// The banner for a stopped or failed run: one line that says what
+/// happened, one with where it stands, and when it was saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunOffer {
+    pub kind: OfferKind,
+    /// "Run failed: …", "Stopped by you: …", "This run was interrupted: …".
+    pub headline: String,
+    /// "Deep research · 3 of 5 done · 2 failed".
+    pub status: String,
+    /// When it was last saved, RFC 3339 (UTC).
+    pub saved_at: String,
+    pub question: String,
+}
+
+impl RunOffer {
+    /// The button's label.
+    pub fn action(&self) -> &'static str {
+        match self.kind {
+            OfferKind::Resume => "Resume",
+            OfferKind::Retry => "Retry failed workers",
+        }
+    }
+
+    /// Whether the cause points at web search, so the banner offers to fix it.
+    pub fn about_search(&self) -> bool {
+        let h = self.headline.to_lowercase();
+        h.contains("search")
     }
 }
 
@@ -193,15 +271,64 @@ impl RunCheckpoint {
         Some((done, d.workers.len()))
     }
 
-    /// "Deep research · 2 of 3 workers done" or "Quick turn · 3 tool results".
+    /// Workers by how they stand, from their saved states.
+    pub fn worker_counts(&self) -> Option<WorkerCounts> {
+        let d = self.deep.as_ref()?;
+        let mut c = WorkerCounts {
+            all: d.workers.len(),
+            ..WorkerCounts::default()
+        };
+        for w in &d.workers {
+            match w.finished {
+                None => c.left += 1,
+                Some(WorkerStatus::Failed) => c.failed += 1,
+                Some(_) if w.retryable() => c.stopped += 1,
+                Some(_) => c.done += 1,
+            }
+        }
+        Some(c)
+    }
+
+    /// Whether a resume has anything to do: a worker unfinished or worth
+    /// running again, or only the answer left to write.
+    pub fn can_resume(&self) -> bool {
+        match self.mode {
+            RunMode::Quick => true,
+            RunMode::Deep => match &self.deep {
+                Some(d) if !d.workers.is_empty() => {
+                    self.stage == Stage::Synthesis
+                        || d.workers
+                            .iter()
+                            .any(|w| w.finished.is_none() || w.retryable())
+                }
+                // Approved, but no worker had started.
+                Some(_) => true,
+                None => false,
+            },
+        }
+    }
+
+    /// "Deep research · 3 of 5 done · 2 failed" or "Quick turn · 3 tool results",
+    /// worked out from the workers as they stand, never from a stale stage.
     pub fn progress(&self) -> String {
         match self.mode {
-            RunMode::Deep => match self.workers_done() {
-                Some((done, all)) => format!(
-                    "Deep research · {} · {done} of {all} workers done",
-                    self.stage.label()
-                ),
-                None => format!("Deep research · {}", self.stage.label()),
+            RunMode::Deep => match self.worker_counts() {
+                Some(c) if c.all > 0 => {
+                    let mut s = format!("Deep research · {} of {} done", c.done, c.all);
+                    if c.failed > 0 {
+                        s.push_str(&format!(" · {} failed", c.failed));
+                    }
+                    if c.stopped > 0 {
+                        s.push_str(&format!(" · {} stopped", c.stopped));
+                    }
+                    if c.left > 0 {
+                        s.push_str(&format!(" · {} not finished", c.left));
+                    } else if c.failed == 0 && c.stopped == 0 {
+                        s.push_str(" · the answer is left to write");
+                    }
+                    s
+                }
+                _ => format!("Deep research · {}", self.stage.label()),
             },
             RunMode::Quick => {
                 let results = self
@@ -215,6 +342,61 @@ impl RunCheckpoint {
                 )
             }
         }
+    }
+
+    /// What to offer for this run, given how it ended (`None` when the
+    /// app found it on reopening a chat, so it was interrupted). `None`
+    /// back when nothing can be picked up.
+    pub fn offer(&self, ended: Option<(TurnState, Option<&str>)>) -> Option<RunOffer> {
+        if !self.can_resume() {
+            return None;
+        }
+        let question = self.question();
+        let retry = self
+            .worker_counts()
+            .is_some_and(|c| c.failed + c.stopped > 0);
+        let (kind, headline) = match ended {
+            Some((TurnState::Failed | TurnState::Blocked, why)) => (
+                OfferKind::Retry,
+                format!(
+                    "Run failed: {}",
+                    why.map(str::trim)
+                        .filter(|w| !w.is_empty())
+                        .unwrap_or("a step could not finish")
+                ),
+            ),
+            Some((TurnState::Cancelled, _)) => {
+                (OfferKind::Resume, format!("Stopped by you: {question}"))
+            }
+            Some((TurnState::BudgetExceeded | TurnState::Paused, why)) => (
+                OfferKind::Resume,
+                format!("Run paused: {}", why.unwrap_or("it reached a limit")),
+            ),
+            Some((_, why)) => (
+                OfferKind::Resume,
+                format!("Run stopped: {}", why.unwrap_or(&question)),
+            ),
+            None => (
+                if retry {
+                    OfferKind::Retry
+                } else {
+                    OfferKind::Resume
+                },
+                format!("This run was interrupted: {question}"),
+            ),
+        };
+        let kind = if kind == OfferKind::Retry && !retry && self.mode == RunMode::Deep {
+            OfferKind::Resume
+        } else {
+            kind
+        };
+        Some(RunOffer {
+            kind,
+            headline,
+            status: self.progress(),
+            saved_at: self.saved_at.clone(),
+            question,
+        })
     }
 
     pub fn to_json(&self) -> String {
@@ -357,6 +539,35 @@ impl CheckpointSink for MemoryCheckpoints {
 }
 
 /// Now, RFC 3339.
+/// An RFC 3339 time on the local clock, like "Fri 23 Oct, 9:31 PM", given
+/// the local offset from UTC in seconds. `None` offset (the platform cannot
+/// say) keeps UTC and says so. The text as given when it is not RFC 3339.
+pub fn local_label(rfc3339: &str, offset_secs: Option<i64>) -> String {
+    use time::format_description::well_known::Rfc3339;
+    let Ok(t) = time::OffsetDateTime::parse(rfc3339, &Rfc3339) else {
+        return rfc3339.to_owned();
+    };
+    let fmt = time::macros::format_description!(
+        "[weekday repr:short] [day padding:none] [month repr:short], [hour repr:12 padding:none]:[minute] [period]"
+    );
+    let (t, utc) = match offset_secs
+        .and_then(|o| i32::try_from(o).ok())
+        .and_then(|o| time::UtcOffset::from_whole_seconds(o).ok())
+    {
+        Some(o) => (t.to_offset(o), false),
+        None => (t.to_offset(time::UtcOffset::UTC), true),
+    };
+    let s = t.format(&fmt).unwrap_or_else(|_| rfc3339.to_owned());
+    if utc { format!("{s} UTC") } else { s }
+}
+
+/// The local clock's offset from UTC in seconds, when the platform says.
+pub fn local_offset() -> Option<i64> {
+    time::UtcOffset::current_local_offset()
+        .ok()
+        .map(|o| i64::from(o.whole_seconds()))
+}
+
 pub fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
@@ -404,13 +615,113 @@ mod tests {
         store.save(&c).unwrap();
         assert_eq!(store.load("ses_01").unwrap(), Some(c.clone()));
         assert_eq!(store.list().len(), 1);
-        assert_eq!(
-            c.progress(),
-            "Deep research · workers running · 1 of 2 workers done"
-        );
+        assert_eq!(c.progress(), "Deep research · 1 of 2 done · 1 not finished");
         store.clear("ses_01").unwrap();
         store.clear("ses_01").unwrap();
         assert_eq!(store.load("ses_01").unwrap(), None);
+    }
+
+    fn worker(n: usize, finished: Option<WorkerStatus>, notes: &str) -> WorkerCheckpoint {
+        WorkerCheckpoint {
+            n,
+            question: format!("q{n}"),
+            finished,
+            notes: notes.into(),
+            searches: 2,
+            ..WorkerCheckpoint::default()
+        }
+    }
+
+    fn deep(workers: Vec<WorkerCheckpoint>) -> RunCheckpoint {
+        RunCheckpoint {
+            deep: Some(DeepState {
+                concurrency: 3,
+                workers,
+                ..DeepState::default()
+            }),
+            saved_at: "2026-10-23T16:31:00Z".into(),
+            ..sample()
+        }
+    }
+
+    #[test]
+    fn a_run_whose_workers_all_failed_offers_retry_not_resume() {
+        let c = deep(
+            (1..=5)
+                .map(|n| worker(n, Some(WorkerStatus::Failed), ""))
+                .collect(),
+        );
+        assert_eq!(c.progress(), "Deep research · 0 of 5 done · 5 failed");
+        assert!(!c.progress().contains("running"));
+        let o = c
+            .offer(Some((
+                TurnState::Failed,
+                Some("No search service answered: SearXNG at http://localhost:8080 did not answer"),
+            )))
+            .unwrap();
+        assert_eq!(o.kind, OfferKind::Retry);
+        assert_eq!(o.action(), "Retry failed workers");
+        assert!(
+            o.headline
+                .starts_with("Run failed: No search service answered")
+        );
+        assert!(o.about_search());
+    }
+
+    #[test]
+    fn a_stopped_run_offers_resume_and_a_finished_one_nothing() {
+        let c = deep(vec![
+            worker(1, Some(WorkerStatus::Done), "notes [1]"),
+            worker(2, None, ""),
+        ]);
+        let o = c.offer(Some((TurnState::Cancelled, None))).unwrap();
+        assert_eq!(o.kind, OfferKind::Resume);
+        assert_eq!(o.headline, "Stopped by you: Compare A and B");
+        let done = deep(vec![
+            worker(1, Some(WorkerStatus::Done), "a"),
+            worker(2, Some(WorkerStatus::Done), "b"),
+        ]);
+        assert!(
+            !done.can_resume(),
+            "nothing left but a stage before the answer"
+        );
+        assert_eq!(done.offer(Some((TurnState::Failed, Some("x")))), None);
+        let writing = RunCheckpoint {
+            stage: Stage::Synthesis,
+            ..done
+        };
+        assert!(writing.can_resume());
+        assert_eq!(
+            writing.progress(),
+            "Deep research · 2 of 2 done · the answer is left to write"
+        );
+    }
+
+    #[test]
+    fn retryable_workers_are_the_ones_without_kept_notes() {
+        assert!(worker(1, Some(WorkerStatus::Failed), "").retryable());
+        assert!(worker(1, Some(WorkerStatus::Cancelled), "").retryable());
+        let mut dropped = worker(1, Some(WorkerStatus::Cancelled), "");
+        dropped.note = DROPPED_BY_STEER.into();
+        assert!(!dropped.retryable());
+        assert!(!worker(1, Some(WorkerStatus::TimedOut), "some notes").retryable());
+        assert!(worker(1, Some(WorkerStatus::TimedOut), " ").retryable());
+        assert!(!worker(1, Some(WorkerStatus::Done), "n").retryable());
+        assert!(!worker(1, None, "").retryable());
+        let mut w = worker(3, Some(WorkerStatus::Failed), "x");
+        w.reset();
+        assert_eq!(
+            (w.n, w.question.as_str(), w.finished, w.searches),
+            (3, "q3", None, 0)
+        );
+    }
+
+    #[test]
+    fn saved_times_read_on_the_local_clock() {
+        let at = "2026-10-23T16:31:00Z";
+        assert_eq!(local_label(at, Some(5 * 3600)), "Fri 23 Oct, 9:31 PM");
+        assert_eq!(local_label(at, None), "Fri 23 Oct, 4:31 PM UTC");
+        assert_eq!(local_label("yesterday", Some(0)), "yesterday");
     }
 
     #[test]

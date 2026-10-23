@@ -33,6 +33,7 @@ fn opts(s: &MockServer) -> ChatOptions {
     ChatOptions {
         provider: Some("ollama".into()),
         base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
         ..Default::default()
     }
 }

@@ -777,7 +777,7 @@ async fn run_with(
     session: SessionId,
     sink: &MemorySink,
     model: &Mock,
-    search: &CountSearch,
+    search: &dyn Searcher,
     reader: &MockReader,
     checkpoints: &crate::checkpoint::MemoryCheckpoints,
     steering: Option<&Steering>,
@@ -853,7 +853,11 @@ async fn a_killed_run_resumes_without_repeating_paid_work() {
     )
     .await;
     assert!(killed.is_err(), "the first run never finishes");
-    assert_eq!(search.queries().len(), 3);
+    assert_eq!(
+        search.queries().len(),
+        4,
+        "the preflight and one per worker"
+    );
     assert_eq!(reader.reads.load(Ordering::SeqCst), 9);
     let ck = saved.latest().expect("a checkpoint");
     assert_eq!(ck.version, crate::checkpoint::CHECKPOINT_VERSION);
@@ -870,7 +874,7 @@ async fn a_killed_run_resumes_without_repeating_paid_work() {
     assert_eq!(by_n(2).pages.len(), 3);
     assert_eq!(
         ck.progress(),
-        "Deep research · workers running · 2 of 3 workers done"
+        "Deep research · 2 of 3 done · 1 not finished"
     );
 
     // Resume with fresh mocks that count everything.
@@ -1226,4 +1230,148 @@ async fn the_ledger_lists_every_url_and_what_each_worker_used() {
     assert!(w1.budget.is_some());
     let run = &l.lanes[0];
     assert_eq!(run.model_calls, 2, "the plan and the answer");
+}
+
+/// A search service that is down: every query fails, except the first
+/// `ok_first` (the preflight), until it is switched back on.
+struct DownSearch {
+    calls: AtomicUsize,
+    ok_first: usize,
+    down: std::sync::atomic::AtomicBool,
+}
+
+impl DownSearch {
+    fn new(ok_first: usize) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            ok_first,
+            down: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+}
+
+const DOWN: &str = "SearXNG at http://localhost:8080 did not answer: Connection refused (os error 111). Check that it is running, or set its server address in Providers › Search";
+
+impl Searcher for DownSearch {
+    fn id(&self) -> &str {
+        "mock-search"
+    }
+    fn search<'a>(
+        &'a self,
+        query: &'a str,
+        limit: usize,
+    ) -> BoxFuture<'a, Result<Vec<SearchHit>, String>> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n >= self.ok_first && self.down.load(Ordering::SeqCst) {
+            return Box::pin(async { Err(DOWN.to_owned()) });
+        }
+        MockSearch.search(query, limit)
+    }
+}
+
+#[tokio::test]
+async fn search_that_is_down_stops_the_run_before_the_plan() {
+    let session = SessionId::new();
+    let saved = crate::checkpoint::MemoryCheckpoints::default();
+    let model = Mock::default();
+    let search = DownSearch::new(0);
+    let sink = MemorySink::default();
+    let out = run_with(
+        session,
+        &sink,
+        &model,
+        &search,
+        &MockReader::default(),
+        &saved,
+        None,
+        None,
+        &DeepControl::default(),
+        3,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Failed);
+    let why = out.reason.unwrap();
+    assert!(why.starts_with("Web search isn't working"), "{why}");
+    assert!(why.contains("did not answer: Connection refused"), "{why}");
+    assert!(!why.contains("found nothing"), "{why}");
+    assert_eq!(model.calls(), 0, "no plan call is spent");
+    assert!(saved.latest().is_none(), "nothing to resume");
+}
+
+#[tokio::test]
+async fn failed_workers_name_the_search_error_and_run_again_on_retry() {
+    let session = SessionId::new();
+    let saved = crate::checkpoint::MemoryCheckpoints::default();
+    let model = Mock::default();
+    // The preflight passes, then the service goes down.
+    let search = DownSearch::new(1);
+    let sink = MemorySink::default();
+    let out = run_with(
+        session,
+        &sink,
+        &model,
+        &search,
+        &MockReader::default(),
+        &saved,
+        None,
+        None,
+        &DeepControl::default(),
+        3,
+    )
+    .await;
+    assert_eq!(out.state, TurnState::Failed);
+    let why = out.reason.clone().unwrap();
+    assert!(
+        why.starts_with("No search service answered: SearXNG at http://localhost:8080"),
+        "{why}"
+    );
+    assert!(!why.contains("found nothing"), "{why}");
+    let notes: Vec<String> = sink
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == "worker.finished")
+        .map(|e| e.payload["note"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(notes.len(), 3);
+    assert!(
+        notes.iter().all(|n| n.starts_with(SEARCH_FAILED)),
+        "{notes:?}"
+    );
+
+    let ck = saved.latest().expect("a checkpoint");
+    assert_eq!(ck.progress(), "Deep research · 0 of 3 done · 3 failed");
+    let offer = ck.offer(Some((out.state, out.reason.as_deref()))).unwrap();
+    assert_eq!(offer.kind, crate::checkpoint::OfferKind::Retry);
+    assert!(offer.about_search());
+
+    // Search is fixed; Retry runs the failed workers again and answers.
+    search.down.store(false, Ordering::SeqCst);
+    let model2 = Mock::default();
+    let sink2 = MemorySink::default();
+    let out2 = run_with(
+        session,
+        &sink2,
+        &model2,
+        &search,
+        &MockReader::default(),
+        &saved,
+        None,
+        Some(ck),
+        &DeepControl::default(),
+        3,
+    )
+    .await;
+    assert_eq!(out2.state, TurnState::Completed, "{:?}", out2.reason);
+    assert!(out2.answer.is_some());
+    let started = sink2
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == "worker.started")
+        .count();
+    assert_eq!(started, 3, "every failed worker ran again");
+    assert_eq!(
+        model2.calls(),
+        3 + 1,
+        "three notes calls and the answer, no plan"
+    );
 }

@@ -1,4 +1,5 @@
-//! Web search through the user's own search API key, or a self-hosted SearXNG.
+//! Web search through the user's own search API key, a self-hosted SearXNG,
+//! or the keyless Wikipedia search API (see `docs/decisions/0008-keyless-search.md`).
 
 use std::time::Duration;
 
@@ -11,11 +12,21 @@ use crate::icon::{SourceIcon, site_of};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Who is calling, with a way to reach the project, as the Wikimedia
+/// User-Agent policy asks of every API client.
+pub const USER_AGENT: &str = concat!(
+    "Tern/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/Khubaib7-del/Tern; research assistant)"
+);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Api {
     Tavily,
     Brave,
     Searxng,
+    /// The MediaWiki Action API's full-text search on Wikipedia.
+    Wikipedia,
 }
 
 /// A search service Tern can use.
@@ -25,6 +36,8 @@ pub struct SearchSpec {
     pub name: &'static str,
     pub api: Api,
     pub needs_key: bool,
+    /// Runs on the user's own server (its address can be changed).
+    pub self_hosted: bool,
     pub default_base: &'static str,
     /// Where to create a key; empty for self-hosted.
     pub key_url: &'static str,
@@ -38,6 +51,7 @@ pub static SEARCH_CATALOG: &[SearchSpec] = &[
         name: "Tavily",
         api: Api::Tavily,
         needs_key: true,
+        self_hosted: false,
         default_base: "https://api.tavily.com",
         key_url: "https://app.tavily.com",
         icon: "tavily",
@@ -47,6 +61,7 @@ pub static SEARCH_CATALOG: &[SearchSpec] = &[
         name: "Brave Search",
         api: Api::Brave,
         needs_key: true,
+        self_hosted: false,
         default_base: "https://api.search.brave.com",
         key_url: "https://api-dashboard.search.brave.com",
         icon: "brave",
@@ -56,11 +71,26 @@ pub static SEARCH_CATALOG: &[SearchSpec] = &[
         name: "SearXNG",
         api: Api::Searxng,
         needs_key: false,
+        self_hosted: true,
         default_base: "http://localhost:8080",
         key_url: "",
         icon: "searxng",
     },
+    SearchSpec {
+        id: "wikipedia",
+        name: "Wikipedia",
+        api: Api::Wikipedia,
+        needs_key: false,
+        self_hosted: false,
+        default_base: "https://en.wikipedia.org",
+        key_url: "",
+        icon: "wikipedia",
+    },
 ];
+
+/// The search Tern uses when no other is set up: free, keyless, and
+/// allowed by its operator's API terms for programs like this one.
+pub const KEYLESS_SEARCH: &str = "wikipedia";
 
 pub fn find_search(id: &str) -> Option<&'static SearchSpec> {
     SEARCH_CATALOG
@@ -80,7 +110,7 @@ pub struct SearchHit {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SearchError {
-    #[error("unknown search service `{0}`. Try tavily, brave, or searxng")]
+    #[error("unknown search service `{0}`. Try tavily, brave, searxng, or wikipedia")]
     Unknown(String),
     #[error("{0} needs an API key. Add one with `tern search add {1}`")]
     MissingKey(&'static str, &'static str),
@@ -88,8 +118,21 @@ pub enum SearchError {
     BadUrl(String),
     #[error("{0} refused the key (HTTP {1}). Check it, or add a new one")]
     BadKey(&'static str, u16),
-    #[error("{0} is rate limiting this key. Wait a minute, or check your plan")]
+    #[error("{0} is rate limiting Tern. Wait a minute and try again, or check your plan")]
     RateLimited(&'static str),
+    /// SearXNG answers, but its `settings.yml` has JSON results turned off.
+    #[error(
+        "SearXNG at {0} refused JSON results (HTTP 403). In its settings.yml, under `search:`, set `formats: [html, json]`, then restart it"
+    )]
+    JsonOff(String),
+    /// Nothing answered at the address (refused, no route, timed out).
+    #[error("{name} at {at} did not answer: {reason}. {hint}")]
+    Unreachable {
+        name: &'static str,
+        at: String,
+        reason: String,
+        hint: &'static str,
+    },
     #[error("{0} answered HTTP {1}: {2}")]
     Http(&'static str, u16, String),
     #[error("could not reach {0}: {1}")]
@@ -119,7 +162,7 @@ impl SearchClient {
         }
         let mut b = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")));
+            .user_agent(USER_AGENT);
         let local = matches!(
             base.host_str(),
             Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
@@ -139,6 +182,11 @@ impl SearchClient {
 
     pub fn spec(&self) -> &'static SearchSpec {
         self.spec
+    }
+
+    /// The address it sends queries to, without a trailing slash.
+    pub fn base(&self) -> &str {
+        self.base.as_str().trim_end_matches('/')
     }
 
     fn url(&self, path: &str) -> String {
@@ -176,13 +224,34 @@ impl SearchClient {
             Api::Searxng => self
                 .http
                 .get(self.url_with("/search", &[("q", query), ("format", "json")])),
+            Api::Wikipedia => self.http.get(self.url_with(
+                "/w/api.php",
+                &[
+                    ("action", "query"),
+                    ("list", "search"),
+                    ("srsearch", query),
+                    ("srlimit", &limit.clamp(1, 20).to_string()),
+                    ("srprop", "snippet"),
+                    ("format", "json"),
+                    ("formatversion", "2"),
+                    ("utf8", "1"),
+                ],
+            )),
         };
-        let resp = req.send().await.map_err(|e| {
-            if e.is_timeout() {
-                SearchError::Network(name, "timed out".into())
+        let hint = if self.spec.self_hosted {
+            "Check that it is running, or set its server address in Providers › Search"
+        } else {
+            "Check your internet connection"
+        };
+        let resp = req.send().await.map_err(|e| SearchError::Unreachable {
+            name,
+            at: self.base().to_owned(),
+            reason: if e.is_timeout() {
+                "timed out".into()
             } else {
-                SearchError::Network(name, root_cause(&e))
-            }
+                root_cause(&e)
+            },
+            hint,
         })?;
         let status = resp.status().as_u16();
         let body = resp
@@ -191,6 +260,9 @@ impl SearchClient {
             .map_err(|e| SearchError::Network(name, e.to_string()))?;
         match status {
             200..=299 => {}
+            403 if self.spec.api == Api::Searxng => {
+                return Err(SearchError::JsonOff(self.base().to_owned()));
+            }
             401 | 403 => return Err(SearchError::BadKey(name, status)),
             429 => return Err(SearchError::RateLimited(name)),
             _ => {
@@ -200,10 +272,13 @@ impl SearchClient {
         }
         let v: Value =
             serde_json::from_str(&body).map_err(|e| SearchError::BadReply(name, e.to_string()))?;
+        if self.spec.api == Api::Wikipedia {
+            return self.wikipedia_hits(&v, limit);
+        }
         let rows = match self.spec.api {
             Api::Tavily => v["results"].as_array(),
             Api::Brave => v["web"]["results"].as_array(),
-            Api::Searxng => v["results"].as_array(),
+            Api::Searxng | Api::Wikipedia => v["results"].as_array(),
         };
         let snippet_key = match self.spec.api {
             Api::Brave => "description",
@@ -227,6 +302,37 @@ impl SearchClient {
             if out.len() >= limit {
                 break;
             }
+        }
+        Ok(out)
+    }
+}
+
+impl SearchClient {
+    /// Wikipedia's `query.search` rows as hits: each title becomes its
+    /// article's URL on the same wiki.
+    fn wikipedia_hits(&self, v: &Value, limit: usize) -> Result<Vec<SearchHit>, SearchError> {
+        if let Some(e) = v.get("error") {
+            let info = e["info"].as_str().unwrap_or("unknown error");
+            return Err(SearchError::BadReply(self.spec.name, info.to_owned()));
+        }
+        let rows = v["query"]["search"].as_array().ok_or_else(|| {
+            SearchError::BadReply(self.spec.name, "no `query.search` in the reply".into())
+        })?;
+        let mut out = Vec::new();
+        for r in rows.iter().take(limit) {
+            let Some(title) = r["title"].as_str().filter(|t| !t.trim().is_empty()) else {
+                continue;
+            };
+            let mut u = self.base.clone();
+            u.set_query(None);
+            u.set_path(&format!("/wiki/{}", title.replace(' ', "_")));
+            out.push(SearchHit {
+                title: title.to_owned(),
+                snippet: strip_tags(r["snippet"].as_str().unwrap_or_default()),
+                site: site_of(&u),
+                icon: SourceIcon::for_url(&u),
+                url: u.to_string(),
+            });
         }
         Ok(out)
     }
@@ -285,5 +391,12 @@ mod tests {
             "Tavily needs an API key. Add one with `tern search add tavily`"
         );
         assert!(SearchClient::new(find_search("searxng").unwrap(), None, None).is_ok());
+        assert!(SearchClient::new(find_search(KEYLESS_SEARCH).unwrap(), None, None).is_ok());
+    }
+
+    #[test]
+    fn the_user_agent_says_how_to_reach_the_project() {
+        assert!(USER_AGENT.starts_with("Tern/"));
+        assert!(USER_AGENT.contains("https://github.com/Khubaib7-del/Tern"));
     }
 }

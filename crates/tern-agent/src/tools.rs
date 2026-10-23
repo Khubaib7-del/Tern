@@ -102,6 +102,11 @@ impl ToolRegistry {
         self
     }
 
+    /// Takes a tool out (a chat whose web search was turned off).
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }

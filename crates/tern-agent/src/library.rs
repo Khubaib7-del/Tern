@@ -130,18 +130,18 @@ pub fn sync(store: &mut Store, src: &Sources) -> Result<Synced, String> {
         it.location = s.id.to_string();
         it.detail = match (s.parent, s.anchor) {
             (Some(p), Some(a)) => format!(
-                "↳ from Q{a} of {} · {} messages",
+                "↳ from Q{a} of {} · {}",
                 titles.get(&p.to_string()).cloned().unwrap_or_default(),
-                refs.len()
+                count(refs.len(), "message")
             ),
             _ => format!(
-                "{} · {} messages",
+                "{} · {}",
                 if s.harness == tern_store::Harness::Study {
                     "Study"
                 } else {
                     "Research"
                 },
-                refs.len()
+                count(refs.len(), "message")
             ),
         };
         it.search = format!("{} {}", s.id, refs.join(" "));
@@ -459,11 +459,16 @@ pub fn open() -> Result<(Store, Sources), String> {
     Ok((store, src))
 }
 
+/// "1 message", "3 messages".
+pub fn count(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
+}
+
 /// `1.2 KB`, `3 MB`.
 pub fn size_label(item: &LibraryItem) -> String {
     match item.kind() {
         LibraryKind::Deck => format!("{} cards", item.size),
-        LibraryKind::Session => format!("{} events", item.size),
+        LibraryKind::Session => count(item.size as usize, "event"),
         LibraryKind::Source => format!("read {}×", item.size),
         LibraryKind::File => format!("{} chars", item.size),
         _ => {

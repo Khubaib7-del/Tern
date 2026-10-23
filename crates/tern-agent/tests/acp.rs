@@ -141,6 +141,7 @@ async fn a_session_round_trips_and_loads_again() {
             provider: Some("ollama".into()),
             base_url: Some(format!("{}/v1", m.uri())),
             no_mcp: true,
+            search: Some("off".into()),
             check_claims: tern_agent::CheckClaims::Off,
             ..Default::default()
         },

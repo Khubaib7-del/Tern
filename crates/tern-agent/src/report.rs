@@ -527,6 +527,11 @@ mod tests {
         store
             .append(&ev(id, "session.opened", "Opened", json!({})))
             .unwrap();
+        // A chat that was only opened is not listed; one with a turn is.
+        assert!(find_session(&store, "last").is_err());
+        store
+            .append(&ev(id, "turn.started", "Asked", json!({})))
+            .unwrap();
         assert_eq!(find_session(&store, "last").unwrap(), id);
         let prefix: String = id.to_string().chars().take(10).collect();
         assert_eq!(find_session(&store, &prefix).unwrap(), id);

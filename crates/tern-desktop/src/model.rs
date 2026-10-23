@@ -318,6 +318,10 @@ pub struct Model {
     pub steering: Option<tern_agent::Steering>,
     /// This chat's run that stopped and can be resumed.
     pub resume_offer: Option<ResumeOffer>,
+    /// The running turn's last model reply hit the output limit.
+    pub cut_off: bool,
+    /// The last answer was cut off: the composer offers Continue.
+    pub continue_offer: bool,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -334,21 +338,47 @@ pub struct Model {
     pub projects: crate::extensions::ProjectTree,
 }
 
-/// A stopped run the chat can pick up again.
+/// A stopped or failed run the chat can pick up again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResumeOffer {
     pub question: String,
-    /// "Deep research · workers running · 2 of 3 workers done".
+    /// "Run failed: …", "Stopped by you: …", "This run was interrupted: …".
+    pub headline: String,
+    /// "Deep research · 3 of 5 done · 2 failed", from the workers as they stand.
     pub progress: String,
+    /// When it was saved, on the local clock ("Fri 23 Oct, 9:31 PM").
     pub saved_at: String,
+    pub kind: tern_agent::OfferKind,
+    /// The cause points at web search: the banner offers to fix it.
+    pub about_search: bool,
 }
 
 impl ResumeOffer {
-    pub fn of(ck: &tern_agent::RunCheckpoint) -> Self {
-        Self {
-            question: ck.question(),
-            progress: ck.progress(),
-            saved_at: ck.saved_at.clone(),
+    /// The offer for a checkpoint, given how the run ended (`None` when the
+    /// chat was reopened and the run was found interrupted). `None` when
+    /// nothing can be picked up.
+    pub fn of(
+        ck: &tern_agent::RunCheckpoint,
+        ended: Option<(TurnState, Option<&str>)>,
+    ) -> Option<Self> {
+        let o = ck.offer(ended)?;
+        Some(Self {
+            about_search: o.about_search(),
+            question: o.question,
+            headline: o.headline,
+            progress: o.status,
+            saved_at: tern_agent::checkpoint::local_label(
+                &o.saved_at,
+                tern_agent::checkpoint::local_offset(),
+            ),
+            kind: o.kind,
+        })
+    }
+
+    pub fn action(&self) -> &'static str {
+        match self.kind {
+            tern_agent::OfferKind::Resume => "Resume",
+            tern_agent::OfferKind::Retry => "Retry failed workers",
         }
     }
 }
@@ -398,6 +428,8 @@ impl Model {
             deep_mode: false,
             steering: None,
             resume_offer: None,
+            cut_off: false,
+            continue_offer: false,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -463,9 +495,15 @@ impl Model {
         true
     }
 
-    /// Sets the chat's resume banner from its checkpoint, if it has one.
-    pub fn set_resume_offer(&mut self, ck: Option<&tern_agent::RunCheckpoint>) {
-        self.resume_offer = ck.map(ResumeOffer::of);
+    /// Sets the chat's resume banner from its checkpoint, if it has one
+    /// and something in it can be picked up. `ended` is how the run just
+    /// ended; `None` when the chat was reopened.
+    pub fn set_resume_offer(
+        &mut self,
+        ck: Option<&tern_agent::RunCheckpoint>,
+        ended: Option<(TurnState, Option<&str>)>,
+    ) {
+        self.resume_offer = ck.and_then(|c| ResumeOffer::of(c, ended));
     }
 
     /// Starts resuming the chat's stopped run. `false` when it cannot now.
@@ -591,6 +629,8 @@ impl Model {
         self.mention = None;
         self.slash = None;
         self.inserted = None;
+        self.cut_off = false;
+        self.continue_offer = false;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -1011,6 +1051,14 @@ impl Model {
 
     /// An event from the running turn.
     pub fn on_event(&mut self, e: &EventEnvelope) {
+        // The answer's own model call (not a plan or a worker's notes):
+        // did it stop at the output limit?
+        if e.kind == "model.replied"
+            && !matches!(e.payload["purpose"].as_str(), Some("plan" | "notes"))
+            && e.payload.get("worker").is_none()
+        {
+            self.cut_off = tern_agent::is_length_stop(e.payload["finish_reason"].as_str());
+        }
         if let Some(p) = page_of(&e.kind, &e.payload)
             && self.is_busy()
         {
@@ -1166,6 +1214,8 @@ impl Model {
         self.context = context;
         self.stopping = false;
         self.steering = None;
+        self.continue_offer = std::mem::take(&mut self.cut_off)
+            && out.answer.as_deref().is_some_and(|a| !a.is_empty());
         match &out.answer {
             Some(a) if !a.is_empty() => self.entries.push(Entry::Assistant {
                 text: a.clone(),
@@ -1180,10 +1230,26 @@ impl Model {
         {
             self.entries.push(Entry::Notice(r.clone()));
         }
+        if self.continue_offer {
+            self.entries.push(Entry::Notice(
+                "Cut off at the length limit. Continue asks for the rest.".into(),
+            ));
+        }
     }
 
     /// Switching harness. Study opens the Study screen (materials, topics,
     /// tutor, quizzes, viva); Research goes back to the chat.
+    /// A chat of `harness` was opened (from the list, or on switching):
+    /// the window takes that harness, keeping the chat screen.
+    pub fn harness_of_chat(&mut self, harness: Harness) {
+        if self.harness != harness {
+            self.harness = harness;
+            if harness == Harness::Study {
+                self.deep_mode = false;
+            }
+        }
+    }
+
     pub fn choose_harness(&mut self, harness: Harness) {
         self.harness = harness;
         match harness {
@@ -2400,6 +2466,89 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_deep_run_offers_retry_with_an_honest_status() {
+        use tern_agent::WorkerStatus;
+        use tern_agent::checkpoint::{DeepState, RunCheckpoint, RunMode, Stage, WorkerCheckpoint};
+        let mut m = ready();
+        let ck = RunCheckpoint {
+            session: "ses_1".into(),
+            mode: RunMode::Deep,
+            message: "What is gpu".into(),
+            stage: Stage::Workers,
+            saved_at: "2026-10-23T16:31:00Z".into(),
+            deep: Some(DeepState {
+                concurrency: 3,
+                workers: (1..=5)
+                    .map(|n| WorkerCheckpoint {
+                        n,
+                        finished: Some(WorkerStatus::Failed),
+                        ..WorkerCheckpoint::default()
+                    })
+                    .collect(),
+                ..DeepState::default()
+            }),
+            ..RunCheckpoint::default()
+        };
+        m.set_resume_offer(
+            Some(&ck),
+            Some((
+                TurnState::Failed,
+                Some("No search service answered: SearXNG did not answer"),
+            )),
+        );
+        let o = m.resume_offer.clone().unwrap();
+        assert_eq!(o.action(), "Retry failed workers");
+        assert!(
+            o.headline
+                .starts_with("Run failed: No search service answered")
+        );
+        assert_eq!(o.progress, "Deep research · 0 of 5 done · 5 failed");
+        assert!(!o.progress.contains("running") && !o.saved_at.contains('T'));
+        assert!(o.about_search);
+        // A run with nothing left to do offers nothing.
+        let mut done = ck.clone();
+        for w in &mut done.deep.as_mut().unwrap().workers {
+            w.finished = Some(WorkerStatus::Done);
+            w.notes = "n".into();
+        }
+        m.set_resume_offer(Some(&done), Some((TurnState::Failed, Some("x"))));
+        assert!(m.resume_offer.is_none());
+    }
+
+    #[test]
+    fn an_answer_cut_off_at_the_limit_offers_continue() {
+        let mut m = ready();
+        assert!(m.start_turn("Explain GPUs at length").is_some());
+        m.on_event(&ev(
+            "model.replied",
+            "replied",
+            serde_json::json!({"finish_reason": "length", "model": "m", "chars": 9000}),
+        ));
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("A GPU is … specific part ("),
+                None,
+            ),
+            ctx(0, 0),
+        );
+        assert!(m.continue_offer);
+        assert!(matches!(m.entries.last(), Some(Entry::Notice(n)) if n.contains("length limit")));
+        assert!(m.start_turn(tern_agent::CONTINUE_PROMPT).is_some());
+        assert!(!m.continue_offer, "sending clears it");
+        m.on_event(&ev(
+            "model.replied",
+            "replied",
+            serde_json::json!({"finish_reason": "stop"}),
+        ));
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("the rest."), None),
+            ctx(0, 0),
+        );
+        assert!(!m.continue_offer);
+    }
+
+    #[test]
     fn a_stopped_run_offers_resume_once() {
         use tern_agent::checkpoint::{RunCheckpoint, RunMode, Stage};
         let mut m = ready();
@@ -2411,9 +2560,11 @@ mod tests {
             saved_at: "2026-10-22T10:00:00Z".into(),
             ..RunCheckpoint::default()
         };
-        m.set_resume_offer(Some(&ck));
+        m.set_resume_offer(Some(&ck), Some((TurnState::Cancelled, None)));
         let offer = m.resume_offer.clone().unwrap();
         assert_eq!(offer.question, "What is a tern?");
+        assert_eq!(offer.headline, "Stopped by you: What is a tern?");
+        assert_eq!(offer.action(), "Resume");
         assert_eq!(offer.progress, "Quick turn · 0 tool results");
         assert!(m.start_resume());
         assert!(m.is_busy() && m.resume_offer.is_none());
@@ -2422,7 +2573,7 @@ mod tests {
             &outcome(TurnState::Completed, Some("Seabirds."), None),
             ctx(0, 0),
         );
-        m.set_resume_offer(Some(&ck));
+        m.set_resume_offer(Some(&ck), None);
         m.new_chat();
         assert!(m.resume_offer.is_none(), "a new chat has nothing to resume");
     }

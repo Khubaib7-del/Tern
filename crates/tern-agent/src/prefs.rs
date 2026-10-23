@@ -21,8 +21,15 @@ pub struct Preferences {
     pub provider: Option<String>,
     /// Model id for that provider. `None` means its first chat model.
     pub model: Option<String>,
-    /// Search service id (`tavily`). `None` means the first with a key.
+    /// Search service id (`tavily`). `None` means the first with a key,
+    /// else the keyless default (Wikipedia). `off` turns web search off.
     pub search: Option<String>,
+    /// The self-hosted SearXNG's address. `None` means `http://localhost:8080`.
+    pub search_url: Option<String>,
+    /// Most output tokens per answer. `None` picks one per model (8192,
+    /// or less where a model caps lower).
+    pub max_output_tokens: Option<u32>,
+
     /// Turns motion off: the mark stays still, panels appear without
     /// sliding, and the theme switches at once. `TERN_REDUCED_MOTION=1`
     /// does the same.
@@ -165,6 +172,8 @@ impl Preferences {
             provider: self.provider.clone(),
             model: self.model.clone(),
             search: self.search.clone(),
+            search_url: self.search_url.clone(),
+            max_output_tokens: self.max_output_tokens.unwrap_or(0),
             vault: crate::vault::default_root(self).ok(),
             decision: self.decision.clone(),
             ..ChatOptions::default()
@@ -185,6 +194,8 @@ mod tests {
             provider: Some("groq".into()),
             model: Some("llama-3.3-70b-versatile".into()),
             search: Some("tavily".into()),
+            search_url: Some("http://10.0.0.5:8888".into()),
+            max_output_tokens: Some(4000),
             reduced_motion: true,
             vault: Some("D:/Notes".into()),
             git_name: Some("Khubaib".into()),
@@ -244,6 +255,16 @@ mod tests {
         assert_eq!(o.provider.as_deref(), Some("groq"));
         assert_eq!(o.model.as_deref(), Some("m"));
         assert_eq!(o.search, None);
+        assert_eq!(o.max_output_tokens, 0, "0 picks a length per model");
+        let q = Preferences {
+            search: Some("searxng".into()),
+            search_url: Some("http://10.0.0.5:8888".into()),
+            max_output_tokens: Some(4000),
+            ..Preferences::default()
+        };
+        let o = q.chat_options();
+        assert_eq!(o.search_url.as_deref(), Some("http://10.0.0.5:8888"));
+        assert_eq!(o.max_output_tokens, 4000);
     }
 
     #[test]
