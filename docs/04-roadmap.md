@@ -127,11 +127,13 @@ Built in PR #36: study materials (files, folders, PDFs with page anchors, vault 
 
 | Deliverable | Exit check |
 | --- | --- |
-| Clean a chat by ID range: remove, or move to a new session with context | Context carries over; original preserved until confirmed |
-| Planned sub-sessions; background branching that reports back | Sub-IDs (`Q12.3`) resolve everywhere |
-| Session handoff packets | New session starts from the packet alone |
-| Library of everything; bulk delete | Thousands of items remain responsive |
-| Highlight actions and throwaway side chat | Side chat writes nothing back |
+| Clean a chat by ID range: remove, or move to a new session with context | Context carries over; original preserved until confirmed (built, PR #39: `tern_agent::range`. Remove appends `range.removed` and the turns go to the chat's trash, restorable; a move copies the turns into a new session or a sub-session with a `session.context` summary of the turns before them, and the original is untouched until Confirm (the originals then go to the chat's trash) or Undo (the copy is archived). The log stays append-only and the turns that stay keep their numbers. Tested in `range.rs`) |
+| Planned sub-sessions; background branching that reports back | Sub-IDs (`Q12.3`) resolve everywhere (built, PR #39: schema v3 adds a session's parent, anchor message, and planned question; `tern_agent::sub` makes, lists, and runs sub-sessions and posts a summary back to the parent as `sub.reported`, which the parent's transcript shows and its model reads; `tern_agent::refs` numbers sub-session messages across all sub-sessions of one parent message in start order and resolves IDs in `@` mentions, the CLI, `tern://chat/<id>/Q12.3` links, and Library search. Tested in `refs.rs`, `sub.rs`, and `tests/continuity.rs`) |
+| Session handoff packets | New session starts from the packet alone (built, PR #39: `tern_agent::handoff` drafts goal, decisions, open questions, key sources and claims, a ledger snapshot, and next steps as Markdown and JSON; `tern new --from-handoff` starts a session whose only event is the packet. `tests/continuity.rs` starts one in a fresh database from the Markdown alone and checks the model reads the packet and nothing of the old chat) |
+| Library of everything; bulk delete | Thousands of items remain responsive (built, PR #39: one index in `tern_store::library` over reports, sources, notes, decks, files, Explain-in-3D scenes, and sessions, with search, filter, sort, and paging in SQLite; bulk delete to a restorable trash, empty-trash. A 5,000-item test indexes, queries three ways, and bulk-moves in well under the bounds; the desktop page reads 60 rows at a time) |
+| Highlight actions and throwaway side chat | Side chat writes nothing back (built, PR #39: Explain, Verify claim, Add to notes, Make flashcard, and Ask in side chat on selected answer text; `tern_agent::side` reads the thread and keeps its exchanges in memory. Tested: the parent's log and title are unchanged after side questions) |
+
+Built in PR #39: message IDs on the transcript with multi-select, range actions with Confirm and Undo, a `Branch ▾` menu (new sub-session from here, run the composer text in a background branch, move to a sub-session), a sidebar sub-session tree, handoff, the Library page and trash, the highlight popover, and the side chat docked or popped out. Folders inside Projects in the sidebar (projects are still one Inbox) and a model-written handoff summary remain.
 
 ### Phase 10 · Extensibility
 
