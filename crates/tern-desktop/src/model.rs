@@ -2466,6 +2466,76 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_deep_run_offers_retry_with_an_honest_status() {
+        use tern_agent::checkpoint::{DeepState, RunCheckpoint, RunMode, Stage, WorkerCheckpoint};
+        use tern_agent::WorkerStatus;
+        let mut m = ready();
+        let ck = RunCheckpoint {
+            session: "ses_1".into(),
+            mode: RunMode::Deep,
+            message: "What is gpu".into(),
+            stage: Stage::Workers,
+            saved_at: "2026-10-23T16:31:00Z".into(),
+            deep: Some(DeepState {
+                concurrency: 3,
+                workers: (1..=5)
+                    .map(|n| WorkerCheckpoint {
+                        n,
+                        finished: Some(WorkerStatus::Failed),
+                        ..WorkerCheckpoint::default()
+                    })
+                    .collect(),
+                ..DeepState::default()
+            }),
+            ..RunCheckpoint::default()
+        };
+        m.set_resume_offer(
+            Some(&ck),
+            Some((TurnState::Failed, Some("No search service answered: SearXNG did not answer"))),
+        );
+        let o = m.resume_offer.clone().unwrap();
+        assert_eq!(o.action(), "Retry failed workers");
+        assert!(o.headline.starts_with("Run failed: No search service answered"));
+        assert_eq!(o.progress, "Deep research · 0 of 5 done · 5 failed");
+        assert!(!o.progress.contains("running") && !o.saved_at.contains('T'));
+        assert!(o.about_search);
+        // A run with nothing left to do offers nothing.
+        let mut done = ck.clone();
+        for w in &mut done.deep.as_mut().unwrap().workers {
+            w.finished = Some(WorkerStatus::Done);
+            w.notes = "n".into();
+        }
+        m.set_resume_offer(Some(&done), Some((TurnState::Failed, Some("x"))));
+        assert!(m.resume_offer.is_none());
+    }
+
+    #[test]
+    fn an_answer_cut_off_at_the_limit_offers_continue() {
+        let mut m = ready();
+        assert!(m.start_turn("Explain GPUs at length").is_some());
+        m.on_event(&ev(
+            "model.replied",
+            "replied",
+            serde_json::json!({"finish_reason": "length", "model": "m", "chars": 9000}),
+        ));
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("A GPU is … specific part ("), None),
+            ctx(0, 0),
+        );
+        assert!(m.continue_offer);
+        assert!(matches!(m.entries.last(), Some(Entry::Notice(n)) if n.contains("length limit")));
+        assert!(m.start_turn(tern_agent::CONTINUE_PROMPT).is_some());
+        assert!(!m.continue_offer, "sending clears it");
+        m.on_event(&ev(
+            "model.replied",
+            "replied",
+            serde_json::json!({"finish_reason": "stop"}),
+        ));
+        m.finish_turn(&outcome(TurnState::Completed, Some("the rest."), None), ctx(0, 0));
+        assert!(!m.continue_offer);
+    }
+
+    #[test]
     fn a_stopped_run_offers_resume_once() {
         use tern_agent::checkpoint::{RunCheckpoint, RunMode, Stage};
         let mut m = ready();
