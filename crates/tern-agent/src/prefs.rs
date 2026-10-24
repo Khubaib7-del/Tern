@@ -14,6 +14,22 @@ use crate::ChatOptions;
 
 const FILE: &str = "preferences.json";
 
+/// Where one harness was left in the desktop app.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastChat {
+    /// The chat's id; `None` for a fresh, unsaved one.
+    pub chat: Option<String>,
+    /// Text typed in the composer and not sent.
+    pub draft: String,
+    /// How far the transcript was scrolled, in pixels from the top.
+    pub scroll: i64,
+    /// The right panel was open.
+    pub side_open: bool,
+    /// The browser was open.
+    pub browser_open: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -56,6 +72,10 @@ pub struct Preferences {
     pub decision: crate::decide::DecisionPrefs,
     /// Project folders collapsed in the desktop sidebar, by id.
     pub collapsed_projects: Vec<String>,
+    /// Where each harness was left in the desktop app (`research`,
+    /// `study`): its last chat, draft, scroll and panels, so switching
+    /// back, or reopening the app, returns to the same place.
+    pub last_chats: std::collections::BTreeMap<String, LastChat>,
     /// Context compaction: off, the percent of the window that starts it
     /// (`None` means 80), and the turns kept word for word (`None` means 4).
     pub compact_off: bool,

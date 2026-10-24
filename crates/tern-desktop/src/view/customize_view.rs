@@ -281,7 +281,7 @@ impl Workspace {
                     Err(e) => self.model.customize.note = Some(Note::Failed(e)),
                 }
                 if !recent.is_empty() {
-                    self.model.sessions = recent;
+                    self.model.set_sessions(recent);
                 }
                 if let Some(n) = note(n) {
                     self.model.notice_line(match n {

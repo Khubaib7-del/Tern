@@ -160,8 +160,64 @@ fn mark_glyph(mark: Mark) -> &'static str {
 }
 
 impl Workspace {
-    /// The harness pills: Study opens its screen and loads the library.
+    /// The harness switcher: Study opens its screen and loads the library.
+    /// Each harness comes back to the chat it was left on.
     pub(super) fn choose_harness(&mut self, h: Harness, cx: &mut Context<Self>) {
+        self.switch_harness(h, None, cx);
+    }
+
+    /// Where the open harness is now: its chat, the unsent draft, the
+    /// transcript's scroll and the panels.
+    fn current_place(&self, cx: &mut Context<Self>) -> tern_agent::prefs::LastChat {
+        tern_agent::prefs::LastChat {
+            chat: self
+                .session
+                .as_ref()
+                .filter(|s| !s.is_draft())
+                .map(|s| s.session_id())
+                .or(self.current)
+                .map(|id| id.to_string()),
+            draft: self.composer.read(cx).value().to_string(),
+            scroll: -(f32::from(self.scroll.offset().y)).round() as i64,
+            side_open: self.model.cont.side.open,
+            browser_open: self.model.browser.visible,
+        }
+    }
+
+    /// Puts back the draft, scroll and panels of the harness just opened,
+    /// once its chat is on screen.
+    pub(super) fn apply_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((h, last)) = self.pending_restore.take() else {
+            return;
+        };
+        if h != self.model.harness {
+            return;
+        }
+        let here = self.current.map(|id| id.to_string());
+        if last.chat.is_some() && last.chat != here {
+            return;
+        }
+        let draft = last.draft.clone();
+        self.composer
+            .update(cx, |c, cx| c.set_value(draft, window, cx));
+        if last.scroll > 0 {
+            self.scroll
+                .set_offset(gpui_kit::point(px(0.), px(-(last.scroll as f32))));
+        }
+        self.model.cont.side.open = last.side_open;
+        self.model.browser.visible = last.browser_open && self.model.browser.page.is_some();
+        cx.notify();
+    }
+
+    /// Switches to harness `h`, opening `open` there (a chat of that
+    /// harness picked from somewhere else) or the chat it was left on.
+    pub(super) fn switch_harness(
+        &mut self,
+        h: Harness,
+        open: Option<tern_core::SessionId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.switcher = None;
         let from = self.model.harness;
         if h != from {
             if self.model.is_busy() {
@@ -179,6 +235,26 @@ impl Workspace {
             {
                 self.parked.insert(from, s.session_id());
             }
+            let place = self.current_place(cx);
+            self.harness_memory.record(from, place);
+            let memory = self.harness_memory.clone();
+            self.save_ui_prefs(|p| memory.save_into(p));
+            let target = open
+                .or_else(|| self.harness_memory.chat(h))
+                .or_else(|| self.parked.get(&h).copied());
+            // A chat picked from elsewhere opens clean; otherwise the
+            // harness's own place comes back. Either way the old harness's
+            // draft never follows into this one.
+            self.pending_restore = Some(match open {
+                Some(id) => (
+                    h,
+                    tern_agent::prefs::LastChat {
+                        chat: Some(id.to_string()),
+                        ..Default::default()
+                    },
+                ),
+                None => (h, self.harness_memory.get(h).clone()),
+            });
             // The right pane belongs to the chat it was opened from.
             self.model.cont.side.open = false;
             self.model.browser.visible = false;
@@ -187,7 +263,7 @@ impl Workspace {
             self.model.new_chat();
             self.model.phase = crate::model::Phase::Connecting;
             self.tabs.reset_active();
-            self.bridge.launch(h, self.parked.get(&h).copied());
+            self.bridge.launch(h, target);
         }
         self.model.choose_harness(h);
         // The composer keeps its mode only if it belongs to this harness.

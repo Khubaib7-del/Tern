@@ -105,20 +105,163 @@ fn has_attachment(t: &PastTurn) -> bool {
         .is_some_and(|m| m.contains("<attachment") || m.contains("<untrusted-data"))
 }
 
+/// The share of the model's window the verbatim tail may take: the most
+/// recent turns stay word for word only while they fit in this much, so a
+/// small window (4k) still has older turns to fold even in a short chat.
+pub const TAIL_SHARE: f32 = 0.35;
+
+/// How full a known window must be before a compaction folds every turn
+/// but the newest when that is what it takes to free room.
+pub const PRESSURE: f32 = 0.5;
+
+/// The tokens the verbatim tail may take in a window of `window` tokens.
+pub fn tail_budget(window: Option<u64>) -> Option<u64> {
+    window.map(|w| ((w as f32) * TAIL_SHARE) as u64)
+}
+
+/// A turn's size as the model sees it, at four characters a token (the
+/// same estimate the context ring uses before the provider counts).
+pub fn turn_tokens(t: &PastTurn) -> u64 {
+    let chars = t.message.as_deref().map_or(0, str::len)
+        + t.answer.as_deref().map_or(0, str::len)
+        + t.context.as_deref().map_or(0, str::len);
+    (chars as u64).div_ceil(4)
+}
+
+/// Why a compaction found nothing to fold, in words the user reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Skip {
+    /// No finished exchange yet.
+    NoTurns,
+    /// Every earlier turn is already in the summary; only the last is left.
+    OnlyLast,
+    /// Every unsummarised turn is in the recent tail and fits.
+    AllFit,
+    /// The older turns carry attachments that fit and stay word for word.
+    Attachments,
+}
+
+impl Skip {
+    /// The toast. `overhead` is the share of the window Tern's own
+    /// instructions and tools take, when known: when they fill most of a
+    /// small window, folding the chat cannot free much, and the user should
+    /// know why the ring stays high.
+    pub fn message(self, overhead: Option<f32>) -> String {
+        let base = match self {
+            Self::NoTurns => "Nothing to compact yet: this chat has no finished turns.",
+            Self::OnlyLast => {
+                "Nothing to compact: only your last message is left, and it already fits."
+            }
+            Self::AllFit => "Nothing to compact yet: your recent turns already fit word for word.",
+            Self::Attachments => {
+                "Nothing to compact: the older turns hold attachments, and they still fit word for word."
+            }
+        };
+        match overhead {
+            Some(o) if o >= 0.5 => format!(
+                "{base} Tern's instructions and tools take about {}% of this model's window; \
+                 a model with a larger window leaves more room.",
+                (o * 100.).round() as u32
+            ),
+            _ => base.to_owned(),
+        }
+    }
+}
+
+/// What one compaction folds, and how many turns stay word for word.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Turns to fold now, oldest first.
+    pub fold: Vec<u32>,
+    /// Turns kept word for word at the end (the recent tail).
+    pub kept: usize,
+    /// Why nothing folds, when `fold` is empty.
+    pub skip: Option<Skip>,
+}
+
 /// The turns to fold now: finished exchanges not yet summarised, except
-/// the last `keep` and those that carry attachments (kept verbatim).
-pub fn plan(turns: &[PastTurn], prior: Option<&Compacted>, keep: usize) -> Vec<u32> {
+/// a recent tail kept word for word and attachments that still fit.
+///
+/// The tail is bounded twice: at most `keep` turns, and at most
+/// [`tail_budget`] tokens of the model's `window` when it is known. The
+/// newest turn always stays. Under `pressure` (the context is at least
+/// [`PRESSURE`] of a known window, or the threshold started it) and with
+/// two or more turns unsummarised, the tail never takes them all, so a
+/// compaction always frees something in a short chat on a small window.
+/// Without a known window it is the turn count alone, as before.
+pub fn plan_for(
+    turns: &[PastTurn],
+    prior: Option<&Compacted>,
+    keep: usize,
+    window: Option<u64>,
+    pressure: bool,
+) -> Plan {
     let done = |n: u32| prior.is_some_and(|c| c.turns.contains(&n));
     let live: Vec<&PastTurn> = turns
         .iter()
         .filter(|t| !t.removed && t.exchange().is_some() && !done(t.number))
         .collect();
-    let cut = live.len().saturating_sub(keep);
-    live[..cut]
-        .iter()
-        .filter(|t| !has_attachment(t))
-        .map(|t| t.number)
-        .collect()
+    if live.is_empty() {
+        let skip = if prior.is_some_and(|c| !c.turns.is_empty()) {
+            Skip::OnlyLast
+        } else {
+            Skip::NoTurns
+        };
+        return Plan {
+            skip: Some(skip),
+            ..Plan::default()
+        };
+    }
+    let budget = tail_budget(window);
+    let cap = if pressure && budget.is_some() {
+        keep.max(1).min(live.len().saturating_sub(1).max(1))
+    } else {
+        keep.max(1)
+    };
+    // The tail, newest first: the newest always, then while it fits.
+    let mut used = 0u64;
+    let mut kept = 0usize;
+    for t in live.iter().rev() {
+        let tok = turn_tokens(t);
+        let fits = budget.is_none_or(|b| used + tok <= b);
+        if kept == 0 || (kept < cap && fits) {
+            used += tok;
+            kept += 1;
+        } else {
+            break;
+        }
+    }
+    let cut = live.len() - kept;
+    // Older turns with attachments stay while they fit too (newest first).
+    let mut fold: Vec<u32> = Vec::new();
+    let mut held = false;
+    for t in live[..cut].iter().rev() {
+        if has_attachment(t) {
+            let tok = turn_tokens(t);
+            if budget.is_none_or(|b| used + tok <= b) {
+                used += tok;
+                held = true;
+                continue;
+            }
+        }
+        fold.push(t.number);
+    }
+    fold.reverse();
+    let skip = if !fold.is_empty() {
+        None
+    } else if held {
+        Some(Skip::Attachments)
+    } else if live.len() == 1 {
+        Some(Skip::OnlyLast)
+    } else {
+        Some(Skip::AllFit)
+    };
+    Plan { fold, kept, skip }
+}
+
+/// [`plan_for`] by turn count alone (no known window).
+pub fn plan(turns: &[PastTurn], prior: Option<&Compacted>, keep: usize) -> Vec<u32> {
+    plan_for(turns, prior, keep, None, false).fold
 }
 
 /// The pinned pair the model sees in place of the folded turns.
@@ -233,6 +376,79 @@ mod tests {
             "nothing new to fold"
         );
         assert_eq!(merged(Some(&prior), &[6, 1]), [1, 4, 5, 6]);
+    }
+
+    fn long_turn(n: u32, chars: usize) -> PastTurn {
+        PastTurn {
+            message: Some("q".repeat(chars / 2)),
+            answer: Some("a".repeat(chars / 2)),
+            number: n,
+            ..PastTurn::default()
+        }
+    }
+
+    #[test]
+    fn a_4k_window_keeps_the_tail_by_tokens_not_turns() {
+        // allam-2-7b: 4,096 tokens. The tail may take 35 %: 1,433 tokens.
+        let w = Some(4096);
+        assert_eq!(tail_budget(w), Some(1433));
+        // Four turns of ~500 tokens each. Keep-4 by count would keep them
+        // all; by tokens only two fit.
+        let turns: Vec<PastTurn> = (1..=4).map(|n| long_turn(n, 2000)).collect();
+        let p = plan_for(&turns, None, 4, w, false);
+        assert_eq!(p.fold, [1, 2]);
+        assert_eq!(p.kept, 2);
+        assert_eq!(p.skip, None);
+        // A last turn over the budget on its own still stays, and
+        // everything before it folds.
+        let mut turns = turns;
+        turns[3] = long_turn(4, 8000);
+        assert_eq!(plan_for(&turns, None, 4, w, false).fold, [1, 2, 3]);
+    }
+
+    #[test]
+    fn a_short_chat_on_a_full_small_window_still_frees_room() {
+        // Three short turns fit the 4k tail budget; at 77 % of the window
+        // a press must still fold the older ones.
+        let turns: Vec<PastTurn> = (1..=3).map(|n| turn(n, &format!("q{n}"))).collect();
+        let w = Some(4096);
+        let calm = plan_for(&turns, None, 4, w, false);
+        assert!(calm.fold.is_empty());
+        assert_eq!(calm.skip, Some(Skip::AllFit));
+        let p = plan_for(&turns, None, 4, w, true);
+        assert_eq!(p.fold, [1, 2]);
+        assert_eq!(p.kept, 1);
+        // Only the newest left: nothing to fold, and it says why.
+        let prior = Compacted {
+            turns: vec![1, 2],
+            ..Default::default()
+        };
+        let p = plan_for(&turns, Some(&prior), 4, w, true);
+        assert!(p.fold.is_empty());
+        assert_eq!(p.skip, Some(Skip::OnlyLast));
+        assert!(
+            Skip::OnlyLast
+                .message(None)
+                .contains("only your last message")
+        );
+        // When Tern's own prompt fills most of the window, it says so.
+        let m = Skip::OnlyLast.message(Some(0.7));
+        assert!(m.contains("70%") && m.contains("larger window"), "{m}");
+        assert_eq!(plan_for(&[], None, 4, w, true).skip, Some(Skip::NoTurns));
+    }
+
+    #[test]
+    fn attachments_stay_only_while_they_fit_a_small_window() {
+        let mut turns: Vec<PastTurn> = (1..=4).map(|n| turn(n, &format!("q{n}"))).collect();
+        let big = format!(
+            "<attachment name=\"a.pdf\">{}</attachment>",
+            "x".repeat(20_000)
+        );
+        turns[0].message = Some(big);
+        // Unknown window: kept word for word, as before.
+        assert_eq!(plan_for(&turns, None, 2, None, false).fold, [2]);
+        // 4k window: ~5,000 tokens cannot stay; it folds.
+        assert_eq!(plan_for(&turns, None, 2, Some(4096), false).fold, [1, 2]);
     }
 
     #[test]

@@ -280,7 +280,10 @@ pub struct Model {
     /// How full the model's context window is.
     pub context: ContextUse,
     pub harness: Harness,
+    /// The active harness's chats, as the sidebar lists them.
     pub sessions: Vec<SessionSummary>,
+    /// Every chat, both harnesses (see `crate::harness`).
+    pub all_sessions: Vec<SessionSummary>,
     pub sidebar_open: bool,
     pub run_panel_open: bool,
     pub run_panel: RunPanel,
@@ -466,6 +469,7 @@ impl Model {
             context: ContextUse::default(),
             harness: Harness::Research,
             sessions: Vec::new(),
+            all_sessions: Vec::new(),
             sidebar_open: true,
             run_panel_open: false,
             run_panel: RunPanel::default(),
@@ -1421,6 +1425,8 @@ impl Model {
     /// A chat went to the trash: it leaves the list, with Undo.
     pub fn chat_deleted(&mut self, id: tern_core::SessionId) {
         self.sessions.retain(|s| s.id != id && s.parent != Some(id));
+        self.all_sessions
+            .retain(|s| s.id != id && s.parent != Some(id));
         self.row_menu = None;
         self.confirm_delete = None;
         self.undo = Some(crate::chatflow::Undo::new(
@@ -1603,10 +1609,23 @@ impl Model {
                 self.deep_mode = false;
             }
         }
+        self.refilter_sessions();
+    }
+
+    /// The chat list arrived (both harnesses): the sidebar keeps only the
+    /// active harness's chats.
+    pub fn set_sessions(&mut self, all: Vec<SessionSummary>) {
+        self.all_sessions = all;
+        self.refilter_sessions();
+    }
+
+    fn refilter_sessions(&mut self) {
+        self.sessions = crate::harness::only(&self.all_sessions, self.harness);
     }
 
     pub fn choose_harness(&mut self, harness: Harness) {
         self.harness = harness;
+        self.refilter_sessions();
         match harness {
             Harness::Research => {
                 if self.screen == Screen::Study {
@@ -1647,6 +1666,7 @@ impl Model {
             match &t.message {
                 Some(m) => {
                     let (text, chips) = attach::split(m);
+                    let text = crate::composer::Mode::strip_study_prefix(text);
                     let (quote, text) = reply::split(text);
                     self.entries.push(Entry::User {
                         text: text.to_owned(),

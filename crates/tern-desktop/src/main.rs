@@ -29,6 +29,7 @@ mod explain;
 mod extensions;
 mod gauge;
 mod git;
+mod harness;
 mod layout;
 mod model;
 mod motion;

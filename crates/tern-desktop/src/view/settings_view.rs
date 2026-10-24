@@ -783,6 +783,9 @@ impl Workspace {
                     .border_1()
                     .border_color(p.border)
                     .overflow_hidden()
+                    // The wheel over the box is the list's alone: it scrolls
+                    // the models and never chains to the page, at the ends
+                    // too, so the page does not lurch when the list stops.
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(
                         uniform_list(
@@ -795,7 +798,10 @@ impl Workspace {
                         .size_full()
                         .track_scroll(&self.settings_inputs.provider_models_scroll),
                     )
-                    .vertical_scrollbar(&self.settings_inputs.provider_models_scroll)
+                    .child(super::inner_list_bar(
+                        "provider-models-bar",
+                        &self.settings_inputs.provider_models_scroll,
+                    ))
                     .into_any_element()
             }
         };
@@ -1003,10 +1009,13 @@ impl Workspace {
         } else {
             div()
                 .relative()
+                .id("model-catalogue-box")
                 .h(px((n as f32 * LIST_ROW_H).min(440.)))
                 .rounded_xl()
                 .border_1()
                 .border_color(p.border)
+                .overflow_hidden()
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(
                     uniform_list(
                         "model-catalogue",
@@ -1018,6 +1027,10 @@ impl Workspace {
                     .size_full()
                     .track_scroll(&self.settings_inputs.catalog_scroll),
                 )
+                .child(super::inner_list_bar(
+                    "model-catalogue-bar",
+                    &self.settings_inputs.catalog_scroll,
+                ))
                 .vertical_scrollbar(&self.settings_inputs.catalog_scroll)
                 .into_any_element()
         };
@@ -1079,10 +1092,12 @@ impl Workspace {
         // Automatic first, except for chat, which always has a model.
         let n = choices.len() + usize::from(role != Role::Chat);
         div()
+            .id("role-choices-box")
             .relative()
             .mx_3()
             .mb_2()
             .h(px((n as f32 * LIST_ROW_H).min(220.)))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 uniform_list(
                     "role-choices",
@@ -1094,7 +1109,10 @@ impl Workspace {
                 .size_full()
                 .track_scroll(&self.settings_inputs.role_scroll),
             )
-            .vertical_scrollbar(&self.settings_inputs.role_scroll)
+            .child(super::inner_list_bar(
+                "role-choices-bar",
+                &self.settings_inputs.role_scroll,
+            ))
             .into_any_element()
     }
 
