@@ -238,7 +238,7 @@ impl Workspace {
             .absolute()
             .top(px(SEGMENT_PAD))
             .bottom(px(SEGMENT_PAD))
-            .rounded_md()
+            .rounded_full()
             .bg(p.hover)
             .map(|d| {
                 if look.fill {
@@ -253,7 +253,7 @@ impl Workspace {
             .flex()
             .items_center()
             .p(px(SEGMENT_PAD))
-            .rounded_lg()
+            .rounded_full()
             .when(look.framed, |d| d.border_1().border_color(p.border))
             .map(|d| if look.fill { d.w_full() } else { d.flex_none() })
             // The pill's track is the padding box, so fractions line up.
@@ -269,8 +269,9 @@ impl Workspace {
             .children(options.iter().enumerate().map(|(i, o)| {
                 let on = i == selected;
                 let pick = on_pick.clone();
-                div()
-                    .id(SharedString::from(format!("{key}-{i}")))
+                let id = SharedString::from(format!("{key}-{i}"));
+                let seg = div()
+                    .id(id.clone())
                     .relative()
                     .flex()
                     .items_center()
@@ -300,7 +301,8 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         pick(this, i, window, cx);
                         cx.notify();
-                    }))
+                    }));
+                self.press(id, seg)
             }))
             .into_any_element()
     }

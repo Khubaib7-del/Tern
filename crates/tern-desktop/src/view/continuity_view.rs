@@ -18,6 +18,7 @@ use tern_agent::highlight::Action;
 use tern_core::SessionId;
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets;
 use crate::bridge::ContMsg;
 use crate::continuity::Highlight;
@@ -370,6 +371,7 @@ impl Workspace {
                     )))
                     .child(
                         Button::new("range-confirm")
+                            .capsule()
                             .label("Confirm move")
                             .small()
                             .disabled(busy)
@@ -380,6 +382,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("range-undo")
+                            .capsule()
                             .label("Undo")
                             .ghost()
                             .small()
@@ -407,6 +410,7 @@ impl Workspace {
                     .when(!in_sub, |d| {
                         d.child(
                             Button::new("range-to-sub")
+                                .capsule()
                                 .label("Move to sub-session")
                                 .small()
                                 .disabled(busy)
@@ -418,6 +422,7 @@ impl Workspace {
                     })
                     .child(
                         Button::new("range-to-new")
+                            .capsule()
                             .label("Move to new session")
                             .small()
                             .disabled(busy)
@@ -428,6 +433,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("range-remove")
+                            .capsule()
                             .icon(AssetIcon::Trash)
                             .label("Remove")
                             .ghost()
@@ -440,6 +446,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("range-clear")
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()
@@ -484,6 +491,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("chat-trash-restore")
+                            .capsule()
                             .label("Restore all")
                             .ghost()
                             .xsmall()
@@ -656,6 +664,7 @@ impl Workspace {
                         }))
                         .child(
                             Button::new("hl-close")
+                                .capsule()
                                 .icon(AssetIcon::X)
                                 .ghost()
                                 .xsmall()
@@ -856,6 +865,7 @@ impl Workspace {
                     .child(div().text_xs().text_color(p.faint).child("not saved"))
                     .child(
                         Button::new("side-pop")
+                            .capsule()
                             .icon(AssetIcon::PictureInPicture2)
                             .ghost()
                             .xsmall()
@@ -864,6 +874,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("side-close")
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()
@@ -974,6 +985,7 @@ impl Render for SidePopout {
                     .child(div().text_xs().text_color(p.faint).child("not saved"))
                     .child(
                         Button::new("popout-dock")
+                            .capsule()
                             .icon(AssetIcon::PanelRightClose)
                             .ghost()
                             .xsmall()

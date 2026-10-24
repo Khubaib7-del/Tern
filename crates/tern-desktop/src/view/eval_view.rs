@@ -13,6 +13,7 @@ use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div, px, svg};
 use tern_agent::eval::{Change, EvalRun, Metric, RunSummary, SuiteKind, SuiteResult};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets;
 use crate::evaluation::short_time;
 use crate::theme::Palette;
@@ -118,7 +119,7 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .child(
-                        Button::new("eval-run")
+                        Button::new("eval-run").capsule()
                             .icon(AssetIcon::Play)
                             .label("Run offline suites")
                             .small()
@@ -448,6 +449,7 @@ impl Workspace {
             card = card.child(
                 div().px_3().pb_2().child(
                     Button::new(SharedString::from(format!("eval-fail-{}", s.id)))
+                        .capsule()
                         .icon(AssetIcon::TriangleAlert)
                         .label(SharedString::from(format!(
                             "{} {} failure{}",

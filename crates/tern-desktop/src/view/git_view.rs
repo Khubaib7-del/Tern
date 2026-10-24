@@ -12,6 +12,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Window, div, px};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::git::GitOp;
 use crate::model::Screen;
 use crate::theme::Palette;
@@ -180,6 +181,7 @@ impl Workspace {
             )
             .child(
                 Button::new("git-refresh")
+                    .capsule()
                     .icon(AssetIcon::RotateCw)
                     .ghost()
                     .small()
@@ -227,7 +229,7 @@ impl Workspace {
                         .text_sm()
                         .child("Git isn't installed on this computer. Tern uses your own git, so pushes use your GitHub sign-in.")
                         .child(
-                            Button::new("git-install")
+                            Button::new("git-install").capsule()
                                 .label("Get Git")
                                 .small()
                                 .on_click(|_, _, cx| cx.open_url("https://git-scm.com/downloads")),
@@ -245,7 +247,7 @@ impl Workspace {
                         .text_sm()
                         .child("Make the vault a repository to save checkpoints of your notes, work on branches, and push them to GitHub.")
                         .child(
-                            Button::new("git-init")
+                            Button::new("git-init").capsule()
                                 .label("Make the vault a repository")
                                 .primary()
                                 .small()
@@ -322,6 +324,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("git-commit")
+                                .capsule()
                                 .label("Save checkpoint")
                                 .primary()
                                 .small()
@@ -344,6 +347,7 @@ impl Workspace {
                     s.branches.iter().enumerate().map(|(ix, b)| {
                         let name = b.clone();
                         Button::new(("git-branch", ix))
+                            .capsule()
                             .label(SharedString::from(b.clone()))
                             .ghost()
                             .xsmall()
@@ -364,6 +368,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("git-switch")
+                                .capsule()
                                 .label("Switch or create")
                                 .small()
                                 .disabled(busy)
@@ -387,6 +392,7 @@ impl Workspace {
                         .flex_wrap()
                         .child(
                             Button::new("git-pull")
+                                .capsule()
                                 .label("Pull")
                                 .icon(AssetIcon::ArrowDown)
                                 .small()
@@ -397,6 +403,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("git-push")
+                                .capsule()
                                 .label("Push")
                                 .icon(AssetIcon::ArrowUp)
                                 .small()
@@ -408,6 +415,7 @@ impl Workspace {
                         .when_some(pr, |d, url| {
                             d.child(
                                 Button::new("git-pr")
+                                    .capsule()
                                     .label("Open pull request")
                                     .icon(AssetIcon::GitPullRequest)
                                     .small()
@@ -417,6 +425,7 @@ impl Workspace {
                         .when_some(page, |d, url| {
                             d.child(
                                 Button::new("git-page")
+                                    .capsule()
                                     .label("Open on GitHub")
                                     .icon(AssetIcon::Github)
                                     .ghost()
@@ -435,6 +444,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("git-remote")
+                                .capsule()
                                 .label("Save remote")
                                 .small()
                                 .disabled(busy)
@@ -457,6 +467,7 @@ impl Workspace {
                     row()
                         .child(
                             Button::new("git-baselines")
+                                .capsule()
                                 .label("Add README, LICENSE, SECURITY, CONTRIBUTING")
                                 .small()
                                 .disabled(busy)
@@ -527,6 +538,7 @@ impl Workspace {
                         .pt_2()
                         .child(
                             Button::new("git-credit")
+                                .capsule()
                                 .label("Credit Tern as co-author")
                                 .icon(if credit {
                                     AssetIcon::SquareCheck
@@ -542,6 +554,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("git-identity")
+                                .capsule()
                                 .label("Save")
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| this.save_identity(cx))),

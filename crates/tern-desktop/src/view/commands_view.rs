@@ -13,6 +13,7 @@ use gpui_kit::{
 };
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets;
 use crate::commands::{FormFor, RowLogo, TernCommand};
 use crate::extensions::ServerGlyph;
@@ -380,6 +381,7 @@ impl Workspace {
                         .gap_2()
                         .child(
                             Button::new("arg-cancel")
+                                .capsule()
                                 .label("Cancel")
                                 .ghost()
                                 .small()
@@ -387,7 +389,7 @@ impl Workspace {
                                     this.close_arg_form(window, cx)
                                 })),
                         )
-                        .child(Button::new("arg-go").label(go).small().on_click(
+                        .child(Button::new("arg-go").capsule().label(go).small().on_click(
                             cx.listener(|this, _, window, cx| this.submit_arg_form(window, cx)),
                         )),
                 )
@@ -450,6 +452,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("inserted-dismiss")
+                                .capsule()
                                 .icon(AssetIcon::X)
                                 .ghost()
                                 .xsmall()

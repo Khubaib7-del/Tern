@@ -43,6 +43,7 @@ use tern_agent::explain::labels::Rank;
 use tern_agent::explain::{Drawing, Edge, FaceKind, Fit, ink_amount};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::study_view::serif;
 use crate::explain::{ExplainState, KeyDid, LINK_FADED, MARGIN};
 use crate::model::Screen;
@@ -720,6 +721,7 @@ impl Workspace {
                     .gap_1()
                     .child(
                         Button::new(("x3d-save", key as usize))
+                            .capsule()
                             .icon(AssetIcon::Save)
                             .label("Save")
                             .ghost()
@@ -737,6 +739,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(("x3d-vault", key as usize))
+                            .capsule()
                             .icon(AssetIcon::NotebookPen)
                             .label("Save to vault")
                             .ghost()
@@ -756,6 +759,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(("x3d-svg", key as usize))
+                            .capsule()
                             .icon(AssetIcon::Download)
                             .label("SVG")
                             .ghost()
@@ -833,6 +837,7 @@ impl Workspace {
                             d.child(
                                 div().flex().gap_2().child(
                                     Button::new(("x3d-retry", key as usize))
+                                        .capsule()
                                         .icon(AssetIcon::RefreshCw)
                                         .label("Try again")
                                         .small()
@@ -874,6 +879,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(("x3d-cancel", key as usize))
+                                .capsule()
                                 .icon(AssetIcon::X)
                                 .label("Cancel")
                                 .ghost()
@@ -1017,6 +1023,7 @@ impl Workspace {
         });
         let reset = div().absolute().top(px(8.)).right(px(8.)).child(
             Button::new(("x3d-reset", key as usize))
+                .capsule()
                 .icon(AssetIcon::RotateCcw)
                 .label("Reset view")
                 .ghost()
@@ -1339,6 +1346,7 @@ impl Workspace {
             .gap_2()
             .child(
                 Button::new(("x3d-prev", key as usize))
+                    .capsule()
                     .icon(AssetIcon::ChevronLeft)
                     .label("Prev")
                     .ghost()
@@ -1353,6 +1361,7 @@ impl Workspace {
             )
             .child(
                 Button::new(("x3d-play", key as usize))
+                    .capsule()
                     .icon(if s.autoplay {
                         AssetIcon::Pause
                     } else {
@@ -1374,6 +1383,7 @@ impl Workspace {
             )
             .child(
                 Button::new(("x3d-next", key as usize))
+                    .capsule()
                     .icon(AssetIcon::ChevronRight)
                     .label("Next")
                     .ghost()
@@ -1402,7 +1412,7 @@ impl Workspace {
             .child(stage)
             .children(side);
         // How to drive the camera, behind a "?" instead of a long line.
-        let help = Button::new(("x3d-help", key as usize))
+        let help = Button::new(("x3d-help", key as usize)).capsule()
             .icon(AssetIcon::CircleQuestionMark)
             .ghost()
             .xsmall()

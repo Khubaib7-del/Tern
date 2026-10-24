@@ -102,6 +102,12 @@ impl SpringSpec {
         stiffness: 170.0,
         damping_ratio: 1.0,
     };
+    /// A pressed control: quick, and underdamped so the release jiggles
+    /// a little past rest before it settles (`view/press.rs`).
+    pub const PRESS: SpringSpec = SpringSpec {
+        stiffness: 900.0,
+        damping_ratio: 0.42,
+    };
     /// Scout's body between moods: slower, slightly bouncy, alive.
     pub const SCOUT: SpringSpec = SpringSpec {
         stiffness: 110.0,

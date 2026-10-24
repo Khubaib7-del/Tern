@@ -15,6 +15,7 @@ use gpui_kit::{
 use tern_agent::{ChatSession, Effort, Harness, Run};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::chatflow::{self, ActionMenu, Notice, RollupView, UndoKind};
 use crate::composer::{self, Menu, Mode, PlusItem};
 use crate::providers::Kind;
@@ -442,7 +443,7 @@ impl Workspace {
         div()
             .occlude()
             .child(
-                Button::new("open-workspace")
+                Button::new("open-workspace").capsule()
                     .icon(AssetIcon::FolderOpen)
                     .label(label)
                     .ghost()
@@ -495,6 +496,7 @@ impl Workspace {
                         })
                         .child(
                             Button::new("workspace-close")
+                                .capsule()
                                 .icon(IconName::Close)
                                 .ghost()
                                 .xsmall()
@@ -516,6 +518,7 @@ impl Workspace {
         let deep_running = busy && self.model.deep_mode;
         let action = if busy {
             Button::new("stop")
+                .capsule()
                 .icon(IconName::Square)
                 .label(if self.model.stopping {
                     "Stopping…"
@@ -529,15 +532,18 @@ impl Workspace {
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
             Button::new("send")
+                .capsule()
                 .icon(IconName::ArrowUp)
                 .small()
                 .disabled(!self.model.can_send())
                 .tooltip("Send (Enter)")
                 .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
         };
+        let action = self.press(if busy { "stop" } else { "send" }, action);
         let pause = deep_running.then(|| {
             let paused = self.model.paused;
             Button::new("pause")
+                .capsule()
                 .icon(if paused {
                     AssetIcon::Play
                 } else {
@@ -712,6 +718,7 @@ impl Workspace {
             .min_w_0()
             .child(
                 Button::new("plus")
+                    .capsule()
                     .icon(AssetIcon::Plus)
                     .ghost()
                     .small()
@@ -723,6 +730,7 @@ impl Workspace {
             )
             .child(
                 Button::new("mode")
+                    .capsule()
                     .icon(mode_icon(mode))
                     .label(if crate::layout::composer_compact(self.centre_w) {
                         ""
@@ -741,6 +749,7 @@ impl Workspace {
             )
             .child(
                 Button::new("at")
+                    .capsule()
                     .icon(AssetIcon::AtSign)
                     .ghost()
                     .small()
@@ -751,6 +760,7 @@ impl Workspace {
             )
             .child(
                 Button::new("slash")
+                    .capsule()
                     .icon(AssetIcon::SquareSlash)
                     .ghost()
                     .small()
@@ -1047,6 +1057,7 @@ impl Workspace {
             .child(track)
             .when(!live, |d| d.opacity(0.55));
         let reset = Button::new("effort-reset")
+            .capsule()
             .icon(AssetIcon::Undo2)
             .ghost()
             .xsmall()
@@ -1201,6 +1212,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("link-add")
+                        .capsule()
                         .label("Attach")
                         .small()
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1210,6 +1222,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("link-cancel")
+                        .capsule()
                         .icon(IconName::Close)
                         .ghost()
                         .xsmall()
@@ -1552,6 +1565,7 @@ impl Workspace {
                     .child(SharedString::from(format!("Could not list models: {e}")))
                     .child(
                         Button::new("picker-retry")
+                            .capsule()
                             .label("Retry")
                             .xsmall()
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1791,6 +1805,7 @@ impl Workspace {
                 })
                 .child(
                     Button::new("search-down-wiki")
+                        .capsule()
                         .label("Switch to Wikipedia")
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1800,6 +1815,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("search-down-set")
+                        .capsule()
                         .label(if is_searx {
                             "Set address"
                         } else {
@@ -1970,6 +1986,7 @@ impl Workspace {
                         v.label(),
                         i.unwrap_or(usize::MAX)
                     )))
+                    .capsule()
                     .label(v.label())
                     .ghost()
                     .xsmall()
@@ -2037,6 +2054,7 @@ impl Workspace {
                                     Button::new(SharedString::from(format!(
                                         "inline-worker-stop-{n}"
                                     )))
+                                    .capsule()
                                     .icon(AssetIcon::X)
                                     .ghost()
                                     .xsmall()
@@ -2392,6 +2410,7 @@ impl Workspace {
                         .child(SharedString::from(u.label.clone()))
                         .child(
                             Button::new("undo")
+                                .capsule()
                                 .icon(AssetIcon::Undo2)
                                 .label("Undo")
                                 .ghost()

@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::segmented::{Look, OnPick, Segment};
 use crate::assets;
 use crate::model::Screen;
@@ -325,6 +326,7 @@ impl Workspace {
                     .justify_center()
                     .child(
                         Button::new(SharedString::from(format!("settings-nav-{}", s.id())))
+                            .capsule()
                             .icon(section_icon(s))
                             .ghost()
                             .small()
@@ -432,6 +434,7 @@ impl Workspace {
                     .gap_1()
                     .child(
                         Button::new("settings-back")
+                            .capsule()
                             .icon(AssetIcon::ArrowLeft)
                             .ghost()
                             .small()
@@ -533,6 +536,7 @@ impl Workspace {
                 .gap_1()
                 .children(hits.into_iter().take(8).enumerate().map(|(i, hit)| {
                     Button::new(("settings-hit-narrow", i))
+                        .capsule()
                         .label(SharedString::from(format!(
                             "{} · {}",
                             hit.label,
@@ -703,12 +707,14 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("base-url-save-{id}")))
+                            .capsule()
                             .label("Save")
                             .small()
                             .on_click(cx.listener(|this, _, _, cx| this.save_base_url(cx))),
                     )
                     .child(
                         Button::new(SharedString::from(format!("base-url-cancel-{id}")))
+                            .capsule()
                             .label("Cancel")
                             .ghost()
                             .small()
@@ -906,6 +912,7 @@ impl Workspace {
                 let open = st.role_open == Some(role);
                 let control: AnyElement = if role == Role::Decision {
                     Button::new("role-decision")
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -931,6 +938,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(SharedString::from(format!("role-{}", role.label())))
+                                .capsule()
                                 .label(if open { "Done" } else { "Change" })
                                 .ghost()
                                 .small()
@@ -971,6 +979,7 @@ impl Workspace {
             .gap_1()
             .child(
                 Button::new("group-all")
+                    .capsule()
                     .label("All")
                     .ghost()
                     .xsmall()
@@ -982,6 +991,7 @@ impl Workspace {
             )
             .children(present.into_iter().map(|g| {
                 Button::new(SharedString::from(format!("group-{}", g.label())))
+                    .capsule()
                     .label(g.label())
                     .ghost()
                     .xsmall()
@@ -1003,6 +1013,7 @@ impl Workspace {
                 .child("No models listed yet. Add a provider's key, or list again.")
                 .child(
                     Button::new("catalog-refresh")
+                        .capsule()
                         .label("List models")
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1470,7 +1481,7 @@ impl Workspace {
                         .unwrap_or_else(|| "no cache folder".into())
                 )),
                 Some(
-                    Button::new("crawl-clear")
+                    Button::new("crawl-clear").capsule()
                         .label(if confirm { "Click again to clear" } else { "Clear" })
                         .ghost()
                         .small()
@@ -1543,6 +1554,7 @@ impl Workspace {
                     .unwrap_or_else(|| "Not set".into());
                 let control = path.map(|path| {
                     Button::new(("storage-open", i))
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -1557,6 +1569,7 @@ impl Workspace {
         let confirm = self.model.settings.confirm;
         let danger = |id: &'static str, label: &'static str, again: &'static str| {
             Button::new(id)
+                .capsule()
                 .label(if confirm == Some(id) { again } else { label })
                 .ghost()
                 .small()
@@ -1680,6 +1693,7 @@ impl Workspace {
                 "github.com/Khubaib7-del/Tern",
                 Some(
                     Button::new("about-github")
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -1693,6 +1707,7 @@ impl Workspace {
                 "Provider, key, model, search, and theme, one step each.",
                 Some(
                     Button::new("about-onboarding")
+                        .capsule()
                         .label("Run it again")
                         .small()
                         .on_click(

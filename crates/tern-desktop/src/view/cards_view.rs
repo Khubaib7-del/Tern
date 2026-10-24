@@ -16,6 +16,7 @@ use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_agent::cards::{self as cards, Card, CardKind, CardSpec, Format, Rating};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::study_view::{PILL, serif};
 use crate::bridge::CardChange;
 use crate::study::{ReviewRun, StudyView};
@@ -240,6 +241,7 @@ impl Workspace {
                                 .pt_2()
                                 .child(
                                     Button::new("review-home")
+                                        .capsule()
                                         .label("Back to Study")
                                         .small()
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -249,6 +251,7 @@ impl Workspace {
                                 )
                                 .child(
                                     Button::new("review-deck")
+                                        .capsule()
                                         .icon(AssetIcon::WalletCards)
                                         .label("Open the deck")
                                         .ghost()
@@ -321,6 +324,7 @@ impl Workspace {
             col = col.child(
                 div().flex().justify_center().child(
                     Button::new("show-answer")
+                        .capsule()
                         .label("Show answer  (Space)")
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| this.flip_card(cx))),
@@ -330,6 +334,7 @@ impl Workspace {
             let hints = cards::button_hints(card, now_i);
             let buttons = Rating::ALL.into_iter().zip(hints).map(|(r, h)| {
                 Button::new(SharedString::from(format!("rate-{}", r.key())))
+                    .capsule()
                     .label(SharedString::from(format!(
                         "{}  {} · {h}",
                         r.key(),
@@ -372,6 +377,7 @@ impl Workspace {
         // Filter chips: every topic with cards.
         let mut chips = vec![
             Button::new("deck-all")
+                .capsule()
                 .label("All")
                 .ghost()
                 .xsmall()
@@ -389,6 +395,7 @@ impl Workspace {
             let id = t.id.clone();
             chips.push(
                 Button::new(SharedString::from(format!("deck-topic-{i}")))
+                    .capsule()
                     .label(SharedString::from(format!(
                         "{} · {n}",
                         tern_agent::study::clip(&t.title, 24)
@@ -410,7 +417,7 @@ impl Workspace {
             .flex_wrap()
             .gap_1()
             .child(
-                Button::new("deck-review")
+                Button::new("deck-review").capsule()
                     .icon(AssetIcon::Play)
                     .label(SharedString::from(format!(
                         "Review {}",
@@ -423,7 +430,7 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("deck-gen")
+                Button::new("deck-gen").capsule()
                     .icon(AssetIcon::Plus)
                     .label("Write cards")
                     .ghost()
@@ -435,7 +442,7 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("deck-import")
+                Button::new("deck-import").capsule()
                     .icon(AssetIcon::Import)
                     .label("Import")
                     .ghost()
@@ -451,7 +458,7 @@ impl Workspace {
                     (Format::Tsv, "TSV"),
                 ]
                 .map(|(f, label)| {
-                    Button::new(SharedString::from(format!("deck-export-{label}")))
+                    Button::new(SharedString::from(format!("deck-export-{label}"))).capsule()
                         .icon(AssetIcon::Download)
                         .label(label)
                         .ghost()
@@ -501,12 +508,14 @@ impl Workspace {
                                 .gap_1()
                                 .child(
                                     Button::new("card-save")
+                                        .capsule()
                                         .label("Save")
                                         .small()
                                         .on_click(cx.listener(|this, _, _, cx| this.save_card(cx))),
                                 )
                                 .child(
                                     Button::new("card-cancel")
+                                        .capsule()
                                         .label("Cancel")
                                         .ghost()
                                         .small()
@@ -552,6 +561,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-edit-{id}")))
+                            .capsule()
                             .icon(AssetIcon::Pencil)
                             .ghost()
                             .xsmall()
@@ -562,6 +572,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-susp-{id}")))
+                            .capsule()
                             .icon(if suspended {
                                 AssetIcon::Eye
                             } else {
@@ -581,6 +592,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-del-{id}")))
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()

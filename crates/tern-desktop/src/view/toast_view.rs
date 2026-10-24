@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::theme::Palette;
 use crate::toast::{Level, Retry};
 
@@ -130,6 +131,7 @@ impl Workspace {
                 )
                 .children(retry.map(|r| {
                     Button::new(("toast-retry", id as usize))
+                        .capsule()
                         .label("Retry")
                         .ghost()
                         .xsmall()
@@ -141,6 +143,7 @@ impl Workspace {
                 }))
                 .child(
                     Button::new(("toast-dismiss", id as usize))
+                        .capsule()
                         .icon(IconName::Close)
                         .ghost()
                         .xsmall()

@@ -15,6 +15,7 @@ use tern_agent::run::compact;
 use tern_agent::watch::{ChangedSource, Watch};
 use tern_agent::{PageRef, Run};
 
+use super::press::Capsule as _;
 use super::{Workspace, verdict_badge};
 use crate::assets;
 use crate::model::Screen;
@@ -148,6 +149,7 @@ impl Workspace {
                         .when(about_search, |d| {
                             d.child(
                                 Button::new("resume-fix-search")
+                                    .capsule()
                                     .label("Fix search")
                                     .ghost()
                                     .small()
@@ -159,6 +161,7 @@ impl Workspace {
                         })
                         .child(
                             Button::new("resume-dismiss")
+                                .capsule()
                                 .label("Dismiss")
                                 .ghost()
                                 .small()
@@ -173,6 +176,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("resume-run")
+                                .capsule()
                                 .label(action)
                                 .primary()
                                 .small()
@@ -425,6 +429,7 @@ impl Workspace {
                         })
                         .child(
                             Button::new(("watch-row-rm", ix))
+                                .capsule()
                                 .icon(AssetIcon::Trash)
                                 .ghost()
                                 .xsmall()
@@ -511,7 +516,7 @@ impl Workspace {
                     )),
             )
             .child(
-                Button::new("watch-run-due")
+                Button::new("watch-run-due").capsule()
                     .label(if running { "Running…" } else { "Run due now" })
                     .ghost()
                     .small()
@@ -572,6 +577,7 @@ impl Workspace {
         let every = EVERY.iter().map(|&(hours, label)| {
             let id = id.clone();
             Button::new(SharedString::from(format!("watch-every-{}-{hours}", w.id)))
+                .capsule()
                 .label(label)
                 .ghost()
                 .xsmall()
@@ -632,6 +638,7 @@ impl Workspace {
                     .children(every)
                     .child(
                         Button::new(SharedString::from(format!("watch-run-{}", w.id)))
+                            .capsule()
                             .label("Run now")
                             .ghost()
                             .xsmall()
@@ -646,6 +653,7 @@ impl Workspace {
                     .when_some(session, |d, s| {
                         d.child(
                             Button::new(SharedString::from(format!("watch-open-{}", w.id)))
+                                .capsule()
                                 .label("Open last run")
                                 .ghost()
                                 .xsmall()
@@ -658,6 +666,7 @@ impl Workspace {
                     .child(
                         div().ml_auto().child(
                             Button::new(SharedString::from(format!("watch-rm-{}", w.id)))
+                                .capsule()
                                 .icon(AssetIcon::Trash)
                                 .label("Remove")
                                 .ghost()

@@ -17,6 +17,7 @@ use tern_agent::decide::{DecisionKind, Job, Mode};
 use tern_core::SecretString;
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::segmented::{Look, OnPick, Segment};
 use crate::assets;
 use crate::decision::{RowNote, RowView};
@@ -251,6 +252,7 @@ impl Workspace {
             .gap_3()
             .child(
                 Button::new("decision-test")
+                    .capsule()
                     .label("Test")
                     .small()
                     .disabled(mode == Mode::Off || matches!(st.test, Some(RowNote::Working(_))))
@@ -407,23 +409,34 @@ impl Workspace {
             actions = actions.child(Spinner::new().small().color(p.muted));
         } else if !r.key_saved {
             if !editing {
-                actions = actions.child(Button::new(bid("add")).label("Add").small().on_click(
-                    cx.listener(move |this, _, window, cx| this.edit_decision_key(id, window, cx)),
-                ));
+                actions = actions.child(
+                    Button::new(bid("add"))
+                        .capsule()
+                        .label("Add")
+                        .small()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.edit_decision_key(id, window, cx)
+                        })),
+                );
             }
         } else {
             if !chosen {
-                actions = actions.child(Button::new(bid("use")).label("Use").small().on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.model.decision.use_provider(id);
-                        this.save_decision_prefs();
-                        cx.notify();
-                    }),
-                ));
+                actions = actions.child(
+                    Button::new(bid("use"))
+                        .capsule()
+                        .label("Use")
+                        .small()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.decision.use_provider(id);
+                            this.save_decision_prefs();
+                            cx.notify();
+                        })),
+                );
             }
             actions = actions
                 .child(
                     Button::new(bid("test"))
+                        .capsule()
                         .label("Test")
                         .ghost()
                         .small()
@@ -437,6 +450,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new(bid("remove"))
+                        .capsule()
                         .label("Remove")
                         .ghost()
                         .small()
@@ -480,6 +494,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("save"))
+                            .capsule()
                             .label("Save")
                             .small()
                             .disabled(working)
@@ -489,6 +504,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("get"))
+                            .capsule()
                             .label("Get a key")
                             .ghost()
                             .small()
@@ -496,6 +512,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("cancel"))
+                            .capsule()
                             .label("Cancel")
                             .ghost()
                             .small()

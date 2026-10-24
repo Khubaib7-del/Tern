@@ -21,6 +21,7 @@ use tern_agent::skill_author;
 use tern_core::SecretString;
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets;
 use crate::bridge::{McpChange, SetupMsg, SkillChange};
 use crate::providers::Kind;
@@ -380,6 +381,7 @@ impl Workspace {
             .gap_2()
             .child(
                 Button::new("custom-add")
+                    .capsule()
                     .icon(AssetIcon::Plus)
                     .label("Add custom provider")
                     .small()
@@ -393,6 +395,7 @@ impl Workspace {
             )
             .child(
                 Button::new("custom-paste")
+                    .capsule()
                     .icon(AssetIcon::ClipboardPaste)
                     .label("Paste config")
                     .ghost()
@@ -418,6 +421,7 @@ impl Workspace {
             let wire = st.custom_wire;
             let wire_btn = |w: CustomWire, cx: &mut Context<Self>| {
                 Button::new(SharedString::from(format!("custom-wire-{w:?}")))
+                    .capsule()
                     .label(w.label())
                     .ghost()
                     .xsmall()
@@ -448,13 +452,13 @@ impl Workspace {
                             .items_center()
                             .gap_2()
                             .child(
-                                Button::new("custom-save")
+                                Button::new("custom-save").capsule()
                                     .label("Save and test")
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.save_custom(cx))),
                             )
                             .child(
-                                Button::new("custom-cancel")
+                                Button::new("custom-cancel").capsule()
                                     .label("Cancel")
                                     .ghost()
                                     .small()
@@ -484,12 +488,14 @@ impl Workspace {
                             .gap_2()
                             .child(
                                 Button::new("custom-paste-go")
+                                    .capsule()
                                     .label("Check and add")
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.paste_custom(cx))),
                             )
                             .child(
                                 Button::new("custom-paste-cancel")
+                                    .capsule()
                                     .label("Cancel")
                                     .ghost()
                                     .small()
@@ -591,6 +597,7 @@ impl Workspace {
                 if c.takes_key() && !editing {
                     actions = actions.child(
                         Button::new(bid("key"))
+                            .capsule()
                             .label(if has_key { "Replace key" } else { "Add key" })
                             .ghost()
                             .small()
@@ -607,6 +614,7 @@ impl Workspace {
                 if has_key {
                     actions = actions.child(
                         Button::new(bid("rmkey"))
+                            .capsule()
                             .label("Remove key")
                             .ghost()
                             .small()
@@ -622,6 +630,7 @@ impl Workspace {
                 actions = actions
                     .child(
                         Button::new(bid("test"))
+                            .capsule()
                             .label("Test")
                             .ghost()
                             .small()
@@ -637,6 +646,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("default"))
+                            .capsule()
                             .label("Default")
                             .ghost()
                             .small()
@@ -732,6 +742,7 @@ impl Workspace {
                                 ))
                                 .child(
                                     Button::new(bid("save"))
+                                        .capsule()
                                         .label("Test and save")
                                         .small()
                                         .on_click(cx.listener(|this, _, window, cx| {
@@ -741,6 +752,7 @@ impl Workspace {
                                 .when(!key_url.is_empty(), |d| {
                                     d.child(
                                         Button::new(bid("get"))
+                                            .capsule()
                                             .label("Get a key")
                                             .ghost()
                                             .small()
@@ -749,6 +761,7 @@ impl Workspace {
                                 })
                                 .child(
                                     Button::new(bid("cancel"))
+                                        .capsule()
                                         .label("Cancel")
                                         .ghost()
                                         .small()
@@ -858,6 +871,7 @@ impl Workspace {
                                         "prompt-save-{}",
                                         scope.key()
                                     )))
+                                    .capsule()
                                     .label("Save")
                                     .small()
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -869,6 +883,7 @@ impl Workspace {
                                         "prompt-reset-{}",
                                         scope.key()
                                     )))
+                                    .capsule()
                                     .label("Reset to default")
                                     .ghost()
                                     .small()
@@ -917,6 +932,7 @@ impl Workspace {
                                         "builtin-copy-{}-{k}",
                                         scope.key()
                                     )))
+                                    .capsule()
                                     .icon(AssetIcon::Copy)
                                     .label("Copy")
                                     .ghost()
@@ -957,7 +973,7 @@ impl Workspace {
                 "Yours are added after Tern's own prompt, never instead of it. A project's TERN.md and its instructions still apply on top. The full text a chat sends is under MCP & Skills › Instructions.",
             ))
             .child(
-                Button::new("instructions-effective")
+                Button::new("instructions-effective").capsule()
                     .label("See what is sent")
                     .ghost()
                     .small()
@@ -1150,6 +1166,7 @@ impl Workspace {
             .child(
                 div().flex().gap_2().child(
                     Button::new("mcp-paste")
+                        .capsule()
                         .icon(AssetIcon::ClipboardPaste)
                         .label("Paste JSON")
                         .ghost()
@@ -1205,12 +1222,17 @@ impl Workspace {
                             .flex()
                             .gap_2()
                             .child(
-                                Button::new("mcp-tpl-add").label("Add").small().on_click(
-                                    cx.listener(|this, _, _, cx| this.add_mcp_template(cx)),
-                                ),
+                                Button::new("mcp-tpl-add")
+                                    .capsule()
+                                    .label("Add")
+                                    .small()
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.add_mcp_template(cx)),
+                                    ),
                             )
                             .child(
                                 Button::new("mcp-tpl-docs")
+                                    .capsule()
                                     .label("Docs")
                                     .ghost()
                                     .small()
@@ -1231,7 +1253,7 @@ impl Workspace {
                     .child(Textarea::new(&self.setup_inputs.mcp_pairs))
                     .children(errors_view(&st.mcp_errors, p))
                     .child(
-                        Button::new("mcp-add-go")
+                        Button::new("mcp-add-go").capsule()
                             .label("Add")
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.add_mcp_form(window, cx))),
@@ -1249,6 +1271,7 @@ impl Workspace {
                     .children(errors_view(&st.mcp_errors, p))
                     .child(
                         Button::new("mcp-paste-go")
+                            .capsule()
                             .label("Check and add")
                             .small()
                             .on_click(
@@ -1339,6 +1362,7 @@ impl Workspace {
             .gap_2()
             .child(
                 Button::new("skill-new")
+                    .capsule()
                     .icon(AssetIcon::Plus)
                     .label("New skill")
                     .small()
@@ -1353,6 +1377,7 @@ impl Workspace {
             )
             .child(
                 Button::new("skill-github")
+                    .capsule()
                     .icon(AssetIcon::Github)
                     .label("Import from GitHub")
                     .ghost()
@@ -1374,6 +1399,7 @@ impl Workspace {
             .child(label("Start from:", p))
             .children(skill_author::TEMPLATES.iter().enumerate().map(|(k, t)| {
                 Button::new(("skill-tpl", k))
+                    .capsule()
                     .label(t.name)
                     .ghost()
                     .xsmall()
@@ -1399,7 +1425,7 @@ impl Workspace {
                             .flex()
                             .gap_2()
                             .child(
-                                Button::new("skill-new-save")
+                                Button::new("skill-new-save").capsule()
                                     .label("Save skill")
                                     .small()
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1407,7 +1433,7 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                Button::new("skill-new-cancel")
+                                Button::new("skill-new-cancel").capsule()
                                     .label("Cancel")
                                     .ghost()
                                     .small()
@@ -1429,7 +1455,7 @@ impl Workspace {
                     .child(Input::new(&self.setup_inputs.skill_github).small())
                     .children(errors_view(&st.skill_errors, p))
                     .child(
-                        Button::new("skill-github-go")
+                        Button::new("skill-github-go").capsule()
                             .label("Import")
                             .small()
                             .on_click(cx.listener(|this, _, window, cx| this.import_skill(window, cx))),

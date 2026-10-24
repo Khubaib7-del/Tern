@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+use press::Capsule as _;
 mod appearance_view;
 mod browser_view;
 mod cards_view;
@@ -46,6 +47,7 @@ mod library_view;
 mod onboarding_view;
 mod panels_view;
 mod pet_view;
+mod press;
 mod runmap_view;
 mod runs_view;
 mod scout_view;
@@ -144,6 +146,8 @@ pub struct Workspace {
     pet_preview_anim: std::cell::RefCell<crate::pet::Animator>,
     scout_hidden: bool,
     scout_variant: Option<String>,
+    /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
+    presses: press::Presses,
     /// Wakes Settings › Scout for the preview's next strip frame.
     pet_preview_wake: Option<Task<()>>,
     /// The approved plan's step count and its fold spring.
@@ -555,6 +559,7 @@ impl Workspace {
             scout_hidden: tern_agent::Preferences::load().scout_hidden,
             scout_variant: tern_agent::Preferences::load().scout_variant,
             pet_preview_wake: None,
+            presses: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
             view_id: cx.entity_id(),
@@ -2316,6 +2321,7 @@ impl Workspace {
                         .child(
                             div().occlude().child(
                                 Button::new("toggle-sidebar")
+                                    .capsule()
                                     .icon(IconName::PanelLeft)
                                     .ghost()
                                     .small()
@@ -2338,6 +2344,7 @@ impl Workspace {
                         .occlude()
                         .child(
                             Button::new("toggle-theme")
+                                .capsule()
                                 .icon(if self.model.dark {
                                     IconName::Sun
                                 } else {
@@ -2354,6 +2361,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("toggle-run")
+                                .capsule()
                                 .icon(IconName::PanelRight)
                                 .ghost()
                                 .small()
@@ -2440,6 +2448,7 @@ impl Workspace {
             .border_color(p.border)
             .child(
                 Button::new("rail-new")
+                    .capsule()
                     .icon(IconName::Plus)
                     .ghost()
                     .tooltip("New chat")
@@ -2448,6 +2457,7 @@ impl Workspace {
             .child(measured(
                 0,
                 Button::new("rail-chats")
+                    .capsule()
                     .icon(IconName::Inbox)
                     .ghost()
                     .tooltip("Chats")
@@ -2460,6 +2470,7 @@ impl Workspace {
             .child(measured(
                 1,
                 Button::new("rail-library")
+                    .capsule()
                     .icon(AssetIcon::Library)
                     .ghost()
                     .when(self.model.screen == Screen::Library, |b| b.selected(true))
@@ -2477,6 +2488,7 @@ impl Workspace {
             .child(measured(
                 2,
                 Button::new("rail-editor")
+                    .capsule()
                     .icon(IconName::FileText)
                     .ghost()
                     .when(self.model.screen == Screen::Editor, |b| b.selected(true))
@@ -2493,6 +2505,7 @@ impl Workspace {
             .child(measured(
                 3,
                 Button::new("rail-browser")
+                    .capsule()
                     .icon(IconName::Globe)
                     .ghost()
                     .when(
@@ -2506,6 +2519,7 @@ impl Workspace {
             .child(measured(
                 4,
                 Button::new("rail-git")
+                    .capsule()
                     .icon(AssetIcon::GitBranch)
                     .ghost()
                     .when(self.model.screen == Screen::Git, |b| b.selected(true))
@@ -2523,6 +2537,7 @@ impl Workspace {
             .child(measured(
                 5,
                 Button::new("rail-settings")
+                    .capsule()
                     .icon(IconName::Settings)
                     .ghost()
                     .when(self.model.screen == Screen::Settings, |b| b.selected(true))
@@ -2703,6 +2718,7 @@ impl Workspace {
             .when(planned && !running, |d| {
                 d.child(
                     Button::new(("run-sub", ix))
+                        .capsule()
                         .icon(AssetIcon::Play)
                         .ghost()
                         .xsmall()
@@ -3136,6 +3152,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("cancel-reply")
+                        .capsule()
                         .icon(IconName::Close)
                         .ghost()
                         .xsmall()
@@ -3184,6 +3201,7 @@ impl Workspace {
                         .gap_2()
                         .child(
                             Button::new("allow-once")
+                                .capsule()
                                 .label("Allow once")
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -3192,15 +3210,23 @@ impl Workspace {
                         )
                         .child(
                             Button::new("allow-session")
+                                .capsule()
                                 .label("Allow for this chat")
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.answer(ApprovalAnswer::AllowForSession, cx)
                                 })),
                         )
-                        .child(Button::new("deny").label("Deny").ghost().small().on_click(
-                            cx.listener(|this, _, _, cx| this.answer(ApprovalAnswer::Deny, cx)),
-                        )),
+                        .child(
+                            Button::new("deny")
+                                .capsule()
+                                .label("Deny")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalAnswer::Deny, cx)
+                                })),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -3254,6 +3280,7 @@ impl Workspace {
                 d.child(
                     div().pt_2().child(
                         Button::new("open-providers")
+                            .capsule()
                             .label("Set up a provider")
                             .small()
                             .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
@@ -3358,6 +3385,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new("continue-dismiss")
+                                .capsule()
                                 .label("Dismiss")
                                 .ghost()
                                 .small()
@@ -3368,6 +3396,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("continue-answer")
+                                .capsule()
                                 .label("Continue")
                                 .primary()
                                 .small()
@@ -3479,7 +3508,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new(("attach-remove", i))
+                        Button::new(("attach-remove", i)).capsule()
                             .icon(IconName::Close)
                             .ghost()
                             .xsmall()
@@ -3525,6 +3554,7 @@ impl Workspace {
             ),
         };
         Button::new("mic")
+            .capsule()
             .icon(icon)
             .ghost()
             .small()
@@ -3716,7 +3746,7 @@ impl Workspace {
                             .flex_wrap()
                             .gap_1()
                             .child(
-                                Button::new("context-compact")
+                                Button::new("context-compact").capsule()
                                     .label(if compacting { "Compacting…" } else { "Compact now" })
                                     .ghost()
                                     .xsmall()
@@ -3727,7 +3757,7 @@ impl Workspace {
                                     }),
                             )
                             .child(
-                                Button::new("context-handoff")
+                                Button::new("context-handoff").capsule()
                                     .label("New chat with summary")
                                     .ghost()
                                     .xsmall()
@@ -3913,15 +3943,22 @@ impl Workspace {
             actions = actions.child(Spinner::new().small().color(p.muted));
         } else if r.needs_key() && !r.key_saved {
             if !editing {
-                actions = actions.child(Button::new(bid("add")).label("Add").small().on_click(
-                    cx.listener(move |this, _, window, cx| this.edit_key(kind, id, window, cx)),
-                ));
+                actions = actions.child(
+                    Button::new(bid("add"))
+                        .capsule()
+                        .label("Add")
+                        .small()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.edit_key(kind, id, window, cx)
+                        })),
+                );
             }
         } else {
             let can_choose = st.can_choose(&r);
             if !is_default {
                 actions = actions.child(
                     Button::new(bid("use"))
+                        .capsule()
                         .label("Use")
                         .small()
                         .disabled(busy_turn || !can_choose)
@@ -3938,6 +3975,7 @@ impl Workspace {
             }
             actions = actions.child(
                 Button::new(bid("test"))
+                    .capsule()
                     .label("Test")
                     .ghost()
                     .small()
@@ -3958,6 +3996,7 @@ impl Workspace {
             if kind == Kind::Model {
                 actions = actions.child(
                     Button::new(bid("address"))
+                        .capsule()
                         .label("Address")
                         .ghost()
                         .small()
@@ -3972,6 +4011,7 @@ impl Workspace {
                 let confirm = self.model.settings.confirm == Some(id);
                 actions = actions.child(
                     Button::new(bid("delete"))
+                        .capsule()
                         .label(if confirm {
                             "Click again to delete"
                         } else {
@@ -3992,6 +4032,7 @@ impl Workspace {
             } else if r.key_saved {
                 actions = actions.child(
                     Button::new(bid("remove"))
+                        .capsule()
                         .label("Remove")
                         .ghost()
                         .small()
@@ -4051,6 +4092,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("save"))
+                            .capsule()
                             .label("Save")
                             .small()
                             .disabled(working)
@@ -4059,6 +4101,7 @@ impl Workspace {
                     .when(!key_url.is_empty(), |d| {
                         d.child(
                             Button::new(bid("get"))
+                                .capsule()
                                 .label("Get a key")
                                 .ghost()
                                 .small()
@@ -4067,6 +4110,7 @@ impl Workspace {
                     })
                     .child(
                         Button::new(bid("cancel"))
+                            .capsule()
                             .label("Cancel")
                             .ghost()
                             .small()
@@ -4125,6 +4169,7 @@ impl Workspace {
                 .flex_none()
                 .child(
                     Button::new("run-views-more")
+                        .capsule()
                         .icon(IconName::Ellipsis)
                         .ghost()
                         .xsmall()
@@ -4500,6 +4545,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new("report-open-md")
+                                .capsule()
                                 .label("Open report")
                                 .ghost()
                                 .xsmall()
@@ -4508,6 +4554,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("report-open-json")
+                                .capsule()
                                 .label("JSON")
                                 .ghost()
                                 .xsmall()

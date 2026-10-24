@@ -21,6 +21,7 @@ use tern_agent::policy::Mode;
 use tern_core::{ProjectId, SessionId};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets::MONO_FONT;
 use crate::bridge::{ExtMsg, McpChange, ProjectChange, SkillChange};
 use crate::extensions::{CustomizeTab, Note, ServerGlyph, TreeRow, server_glyph};
@@ -364,6 +365,7 @@ impl Workspace {
                 .filter(|t| *t != CustomizeTab::Providers)
                 .map(|t| {
                     Button::new(SharedString::from(format!("customize-tab-{}", t.label())))
+                        .capsule()
                         .label(t.label())
                         .ghost()
                         .small()
@@ -440,7 +442,7 @@ impl Workspace {
                     p,
                 ))
                 .child(
-                    Button::new("skill-install")
+                    Button::new("skill-install").capsule()
                         .icon(AssetIcon::FolderInput)
                         .label("Install from folder…")
                         .small()
@@ -487,6 +489,7 @@ impl Workspace {
                             .gap_2()
                             .child(
                                 Button::new("skill-install-go")
+                                    .capsule()
                                     .label("Install")
                                     .small()
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -497,6 +500,7 @@ impl Workspace {
                             )
                             .child(
                                 Button::new("skill-install-cancel")
+                                    .capsule()
                                     .label("Cancel")
                                     .ghost()
                                     .small()
@@ -569,6 +573,7 @@ impl Workspace {
                     .when(user, |d| {
                         d.child(
                             Button::new(("skill-rm", i))
+                                .capsule()
                                 .icon(AssetIcon::Trash)
                                 .ghost()
                                 .xsmall()
@@ -599,7 +604,7 @@ impl Workspace {
                     p,
                 ))
                 .child(
-                    Button::new("mcp-add")
+                    Button::new("mcp-add").capsule()
                         .icon(AssetIcon::Plus)
                         .label("Add server")
                         .small()
@@ -686,6 +691,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new(("mcp-review", i))
+                        .capsule()
                         .label(if trusted { "Review" } else { "Review…" })
                         .ghost()
                         .xsmall()
@@ -698,6 +704,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new(("mcp-check", i))
+                        .capsule()
                         .icon(AssetIcon::Activity)
                         .ghost()
                         .xsmall()
@@ -710,6 +717,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new(("mcp-restart", i))
+                        .capsule()
                         .icon(AssetIcon::RotateCw)
                         .ghost()
                         .xsmall()
@@ -741,6 +749,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new(("mcp-rm", i))
+                        .capsule()
                         .icon(AssetIcon::Trash)
                         .ghost()
                         .xsmall()
@@ -763,6 +772,7 @@ impl Workspace {
                                 "mcp-tool-{i}-{j}-{}",
                                 mode_label(m)
                             )))
+                            .capsule()
                             .label(mode_label(m))
                             .ghost()
                             .xsmall()
@@ -784,6 +794,7 @@ impl Workspace {
                         let off = {
                             let (server, tool) = (server.clone(), tool.clone());
                             Button::new(SharedString::from(format!("mcp-tool-{i}-{j}-off")))
+                                .capsule()
                                 .label("Off")
                                 .ghost()
                                 .xsmall()
@@ -1130,7 +1141,7 @@ impl Workspace {
                         .flex()
                         .gap_2()
                         .child(
-                            Button::new("trust-cancel")
+                            Button::new("trust-cancel").capsule()
                                 .label("Not now")
                                 .ghost()
                                 .small()
@@ -1141,7 +1152,7 @@ impl Workspace {
                                 })),
                         )
                         .child(
-                            Button::new("trust-go")
+                            Button::new("trust-go").capsule()
                                 .label("Trust and switch on")
                                 .small()
                                 .disabled(!can_trust)
@@ -1198,6 +1209,7 @@ impl Workspace {
                     .gap_1()
                     .child(
                         Button::new("instr-copy")
+                            .capsule()
                             .icon(AssetIcon::Copy)
                             .label("Copy prompt")
                             .ghost()
@@ -1213,6 +1225,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("instr-refresh")
+                            .capsule()
                             .icon(AssetIcon::RefreshCw)
                             .ghost()
                             .small()
@@ -1363,6 +1376,7 @@ impl Workspace {
             .child(div().text_xs().text_color(p.faint).child("Projects"))
             .child(
                 Button::new("project-new")
+                    .capsule()
                     .icon(AssetIcon::FolderPlus)
                     .ghost()
                     .xsmall()
@@ -1571,6 +1585,7 @@ impl Workspace {
                             .group_hover("project-row", |d| d.opacity(1.))
                             .child(
                                 Button::new(SharedString::from(format!("project-chat-{id}")))
+                                    .capsule()
                                     .icon(AssetIcon::MessageSquarePlus)
                                     .ghost()
                                     .xsmall()
@@ -1583,6 +1598,7 @@ impl Workspace {
                             .when(!inbox, |d| {
                                 d.child(
                                     Button::new(SharedString::from(format!("project-root-{id}")))
+                                        .capsule()
                                         .icon(AssetIcon::FolderInput)
                                         .ghost()
                                         .xsmall()
@@ -1596,6 +1612,7 @@ impl Workspace {
                                 )
                                 .child(
                                     Button::new(SharedString::from(format!("project-rename-{id}")))
+                                        .capsule()
                                         .icon(AssetIcon::Pencil)
                                         .ghost()
                                         .xsmall()
@@ -1607,6 +1624,7 @@ impl Workspace {
                                 )
                                 .child(
                                     Button::new(SharedString::from(format!("project-rm-{id}")))
+                                        .capsule()
                                         .icon(AssetIcon::Trash)
                                         .ghost()
                                         .xsmall()
