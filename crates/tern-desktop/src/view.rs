@@ -62,7 +62,8 @@ pub use pet_view::Shell;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
-    Activity, Connection, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon, WorkingLine,
+    Activity, Connection, Entry, Model, Phase, Pick, RailTab, RunView, Screen, SiteIcon,
+    WorkingLine,
 };
 use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
@@ -72,6 +73,8 @@ use crate::theme::Palette;
 /// Browser, Git, Settings).
 const RAIL_SLOTS: usize = 6;
 pub(crate) const RAIL_W: f32 = 52.;
+/// The right rail's width while it shows the run map.
+const GRAPH_W: f32 = 440.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
 pub const NO_VOICE_MODEL: &str = "No voice model available — add Groq, OpenAI or Mistral";
@@ -272,6 +275,8 @@ pub struct Workspace {
     /// The timeline tick under the pointer, and a smooth scroll in flight
     /// (from, to, started).
     rail_hover: Option<usize>,
+    /// The rail already opened by itself for the run under way.
+    rail_auto: bool,
     rail_scroll: Option<(f32, f32, Instant)>,
     /// A chat that was shown but whose model could not be reached: picking
     /// a model reopens it instead of starting a new chat.
@@ -655,6 +660,7 @@ impl Workspace {
             dictation_task: None,
             toast_wake: None,
             rail_hover: None,
+            rail_auto: false,
             rail_scroll: None,
             resume_retry: None,
             rail_base: Default::default(),
@@ -4218,19 +4224,27 @@ impl Workspace {
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
-        // The views as a sliding segmented control sized to the pane: what
-        // does not fit goes in a ⋯ menu, so nothing runs past the edge.
-        let views = RunView::for_run(run);
-        let labels: Vec<&str> = views.iter().map(|v| v.label()).collect();
-        let active = views.iter().position(|&v| v == view).unwrap_or(0);
+        // The rail's tabs (v2 s05) as a sliding segmented control sized to
+        // the pane: what does not fit goes in a ⋯ menu, so nothing runs
+        // past the edge. Plan and Sources hold several views each; a
+        // second, smaller switch picks between them.
+        let tab = RailTab::of(view);
+        let titles: Vec<String> = RailTab::ALL.iter().map(|t| t.title(run)).collect();
+        let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
+        let active = RailTab::ALL.iter().position(|&t| t == tab).unwrap_or(0);
         let (show_label, shown, hidden) =
             crate::panels::run_header_fit(&labels, self.side_w, active);
         let segs: Vec<segmented::Segment> = shown
             .iter()
-            .map(|&i| segmented::Segment::text(labels[i]))
+            .map(|&i| segmented::Segment::text(titles[i].clone()))
             .collect();
         let picked = shown.iter().position(|&i| i == active).unwrap_or(0);
-        let shown_views: Vec<RunView> = shown.iter().map(|&i| views[i]).collect();
+        let shown_tabs: Vec<RailTab> = shown.iter().map(|&i| RailTab::ALL[i]).collect();
+        let first_views: Vec<RunView> = RailTab::ALL
+            .iter()
+            .map(|t| t.views(run).first().copied().unwrap_or(RunView::Summary))
+            .collect();
+        let shown_first: Vec<RunView> = shown.iter().map(|&i| first_views[i]).collect();
         let tabs = self.segmented(
             "run-views",
             &segs,
@@ -4238,15 +4252,45 @@ impl Workspace {
             segmented::Look::default(),
             p,
             std::rc::Rc::new(move |this: &mut Self, i, _, _| {
-                if let Some(&v) = shown_views.get(i) {
-                    this.model.set_run_view(v);
+                if let (Some(&t), Some(&v)) = (shown_tabs.get(i), shown_first.get(i)) {
+                    if RailTab::of(this.model.run_panel.view) != t {
+                        this.model.set_run_view(v);
+                    }
                     this.run_more_open = false;
                 }
             }),
             cx,
         );
+        let subs = tab.views(run);
+        let sub_switch = (subs.len() > 1).then(|| {
+            let sub_segs: Vec<segmented::Segment> = subs
+                .iter()
+                .map(|v| segmented::Segment::text(v.label()))
+                .collect();
+            let sub_at = subs.iter().position(|&v| v == view).unwrap_or(0);
+            let sub_views = subs.clone();
+            self.segmented(
+                "run-subviews",
+                &sub_segs,
+                sub_at,
+                segmented::Look {
+                    small: true,
+                    ..Default::default()
+                },
+                p,
+                std::rc::Rc::new(move |this: &mut Self, i, _, _| {
+                    if let Some(&v) = sub_views.get(i) {
+                        this.model.set_run_view(v);
+                    }
+                }),
+                cx,
+            )
+        });
+        let hidden_first: Vec<(RailTab, RunView)> = hidden
+            .iter()
+            .map(|&i| (RailTab::ALL[i], first_views[i]))
+            .collect();
         let more = (!hidden.is_empty()).then(|| {
-            let hidden_views: Vec<RunView> = hidden.iter().map(|&i| views[i]).collect();
             div()
                 .relative()
                 .flex_none()
@@ -4281,11 +4325,11 @@ impl Workspace {
                                 .bg(p.canvas)
                                 .shadow_lg()
                                 .occlude()
-                                .children(hidden_views.into_iter().map(|v| {
+                                .children(hidden_first.into_iter().map(|(t, v)| {
                                     div()
                                         .id(SharedString::from(format!(
                                             "run-view-more-{}",
-                                            v.label()
+                                            t.label()
                                         )))
                                         .px_2()
                                         .py_1()
@@ -4294,7 +4338,7 @@ impl Workspace {
                                         .cursor_pointer()
                                         .text_color(p.muted)
                                         .hover(|d| d.bg(p.hover).text_color(p.text))
-                                        .child(v.label())
+                                        .child(t.label())
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.model.set_run_view(v);
                                             this.run_more_open = false;
@@ -4378,7 +4422,9 @@ impl Workspace {
                     cx.notify();
                 }))
         });
-        let body: AnyElement = if run.is_empty() {
+        let body: AnyElement = if view == RunView::Context {
+            self.run_context(p)
+        } else if run.is_empty() {
             div()
                 .text_sm()
                 .text_color(p.faint)
@@ -4394,6 +4440,7 @@ impl Workspace {
                 RunView::Ledger => self.run_ledger(run, p, cx),
                 RunView::Decisions => self.run_decisions(run, p),
                 RunView::Graph => self.run_graph(run, p, cx),
+                RunView::Context => self.run_context(p),
             }
         };
         div()
@@ -4407,6 +4454,7 @@ impl Workspace {
             .border_l_1()
             .border_color(p.border)
             .child(header)
+            .children(sub_switch)
             .children(pinned)
             .children(status)
             .child(
@@ -4423,6 +4471,58 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(self.model.context_label()),
             )
+    }
+
+    /// The Context tab: what fills the window, one bar per kind of
+    /// content, with how it was counted.
+    fn run_context(&self, p: Palette) -> AnyElement {
+        let b = self.model.context_breakdown();
+        let fill = crate::gauge::fullness(b.level, self.model.dark);
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .child(div().text_sm().text_color(p.text).child(b.header.clone()))
+                    .child(div().text_xs().text_color(p.muted).child(b.percent.clone())),
+            )
+            .children(b.rows.iter().map(|r| {
+                let free = r.label == "Free";
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(r.label)
+                            .child(crate::model::compact(r.tokens)),
+                    )
+                    .child(
+                        div().h(px(4.)).w_full().rounded_full().bg(p.border).child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(gpui_kit::relative(r.share.clamp(0., 1.)))
+                                .bg(if free { p.faint } else { fill }),
+                        ),
+                    )
+            }))
+            .child(
+                div()
+                    .pt_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(b.note.clone()),
+            )
+            .into_any_element()
     }
 
     /// The rollup line, the pages read, and anything that went wrong.
@@ -4823,6 +4923,18 @@ impl Render for Workspace {
         if self.last_layout.is_some_and(|l| l.panel_beside) && !layout.panel_beside {
             self.model.run_panel_open = false;
         }
+        // The rail opens by itself once a run has something to show
+        // (sources, checked claims), once per run, and only where it fits
+        // beside the chat; closing it keeps it closed for that run.
+        if !self.model.is_busy() {
+            self.rail_auto = false;
+        } else if !self.rail_auto && layout.panel_beside && self.model.screen == Screen::Chat {
+            let run = self.model.panel_run();
+            if !run.checks.is_empty() || !run.ledger().sources.is_empty() {
+                self.rail_auto = true;
+                self.model.run_panel_open = true;
+            }
+        }
         self.last_layout = Some(layout);
         let reduced = self.reduced_motion;
         if self.wipe.is_some_and(|w| w.done(now)) {
@@ -4896,6 +5008,10 @@ impl Render for Workspace {
             browser_view::BROWSER_W.max(right_w)
         } else if side_docked {
             continuity_view::SIDE_W.max(right_w)
+        } else if self.model.run_panel.view == RunView::Graph && self.model.screen != Screen::Study
+        {
+            // The run map needs room: the rail widens for Graph (v2 s05).
+            GRAPH_W.max(right_w)
         } else {
             right_w
         };

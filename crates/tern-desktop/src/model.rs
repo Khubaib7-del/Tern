@@ -207,6 +207,8 @@ pub enum RunView {
     /// FIG 1 · RUN MAP: the run as an isometric figure, and spend over
     /// time (`crate::runmap`).
     Graph,
+    /// What fills the context window, by kind.
+    Context,
 }
 
 impl RunView {
@@ -226,6 +228,7 @@ impl RunView {
         if !run.decisions.is_empty() {
             v.push(Self::Decisions);
         }
+        v.push(Self::Context);
         v
     }
 
@@ -239,6 +242,77 @@ impl RunView {
             Self::Ledger => "Ledger",
             Self::Decisions => "Decisions",
             Self::Graph => "Graph",
+            Self::Context => "Context",
+        }
+    }
+}
+
+/// The right rail's tabs (v2 s05): Plan, Sources, Report, Graph and
+/// Context. Each holds one or more of the run views; Plan and Sources
+/// show a second, smaller switch between theirs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RailTab {
+    Plan,
+    Sources,
+    Report,
+    Graph,
+    Context,
+}
+
+impl RailTab {
+    pub const ALL: [RailTab; 5] = [
+        Self::Plan,
+        Self::Sources,
+        Self::Report,
+        Self::Graph,
+        Self::Context,
+    ];
+
+    /// The tab a view sits in.
+    pub fn of(view: RunView) -> Self {
+        match view {
+            RunView::Summary | RunView::Detailed | RunView::Workers | RunView::Decisions => {
+                Self::Plan
+            }
+            RunView::Ledger | RunView::Raw => Self::Sources,
+            RunView::Report => Self::Report,
+            RunView::Graph => Self::Graph,
+            RunView::Context => Self::Context,
+        }
+    }
+
+    /// The views this tab offers for `run`, its default first.
+    pub fn views(self, run: &Run) -> Vec<RunView> {
+        match self {
+            Self::Sources => vec![RunView::Ledger, RunView::Raw],
+            _ => RunView::for_run(run)
+                .into_iter()
+                .filter(|v| Self::of(*v) == self)
+                .collect(),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plan => "Plan",
+            Self::Sources => "Sources",
+            Self::Report => "Report",
+            Self::Graph => "Graph",
+            Self::Context => "Context",
+        }
+    }
+
+    /// The tab's label with its count: sources found, claims checked.
+    pub fn title(self, run: &Run) -> String {
+        let n = match self {
+            Self::Sources => run.ledger().sources.len(),
+            Self::Report => run.checks.len(),
+            _ => 0,
+        };
+        if n > 0 {
+            format!("{} {n}", self.label())
+        } else {
+            self.label().to_string()
         }
     }
 }
@@ -2577,7 +2651,7 @@ mod tests {
         let run = m.panel_run();
         assert_eq!(RunView::for_run(run)[1], RunView::Workers);
         assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
-        assert_eq!(RunView::for_run(&Run::new()).len(), 6);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 7);
         // A normal turn after a deep one goes back to the summary.
         m.finish_turn(
             &outcome(TurnState::Completed, Some("A [1]."), None),
@@ -3183,5 +3257,12 @@ mod tests {
         );
         assert_eq!(m.question_before(1).as_deref(), Some("EU AI rules"));
         assert_eq!(RunView::Ledger.label(), "Ledger");
+        assert_eq!(RailTab::of(RunView::Raw), RailTab::Sources);
+        assert_eq!(RailTab::of(RunView::Workers), RailTab::Plan);
+        let run = Run::new();
+        assert_eq!(RailTab::Sources.views(&run)[0], RunView::Ledger);
+        assert_eq!(RailTab::Plan.views(&run)[0], RunView::Summary);
+        assert_eq!(RailTab::Context.views(&run), vec![RunView::Context]);
+        assert_eq!(RailTab::Report.title(&run), "Report");
     }
 }
