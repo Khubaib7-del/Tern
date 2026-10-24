@@ -6,7 +6,10 @@
 use serde::Serialize;
 use tern_core::SecretString;
 pub use tern_platform::SecretStore;
-pub use tern_providers::{CATALOG, ModelInfo, ModelKind, ProbeReport, ProviderError, ProviderSpec};
+pub use tern_providers::{
+    CATALOG, Capability, Category, Lifecycle, ModelInfo, ModelKind, ProbeReport, ProviderError,
+    ProviderSpec,
+};
 use tern_providers::{Provider, find};
 
 /// One catalog row with whether this machine has a key for it.

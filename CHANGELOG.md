@@ -4,6 +4,19 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #48)
+
+- **Full model catalogue** (`tern_providers::model`): every model a key can use is listed, nothing filtered for rate limits or plans. Anthropic pages are followed (`limit=1000`, `after_id`), Gemini's `nextPageToken` is followed, OpenRouter is asked for `output_modalities=all`, OpenAI-style `has_more` pages are followed, and Together's bare-array listing is read. Deprecated and retired models are kept and marked (`Lifecycle`).
+- **Capabilities**: `Capability` (Chat, Vision, Tools, Reasoning, SpeechToText, TextToSpeech, Ocr, ImageGen, Embedding, Moderation, Rerank) and `Category` (Chat, Vision, Speech, OCR, Image, Embeddings, Safety, Other) per model, from the provider's metadata first (Mistral capability flags, Anthropic capabilities, OpenRouter and xAI modalities, Gemini generation methods, Ollama `/api/tags` capabilities, LM Studio `/api/v0/models` types, Together types) and a maintained pattern table second. Mistral alias cards fold into the dated model; Mistral's dated ids get their names ("Mistral Small 4" is `mistral-small-2603`).
+- **Provider errors**: refused keys and rate limits carry the provider's own message ("The provider said: ...").
+- **Speech to text and OCR** (`Provider::transcribe`, `Provider::ocr`): multipart `POST /audio/transcriptions` (Groq, OpenAI, Mistral Voxtral, compatible servers) and Mistral `POST /v1/ocr`.
+- **Routing** (`tern_agent::media`): a catalogue across every usable provider, automatic picks per job, and the preferences `default_stt_model`, `default_vision_model`, `default_ocr_model`. Pictures for a chat model that cannot see are described by a vision model or read by OCR and passed on as untrusted data with a notice; when nothing can read them, the notice says what is missing.
+- **Mic** (`tern_platform::mic`, the `mic` feature, cpal): records from the default input, stops on a second click or Esc, sends 16 kHz mono WAV to the speech-to-text model, and puts the transcript in the composer. Attached audio files are transcribed too. On Linux the build needs ALSA headers (`libasound2-dev`; added to CI).
+- **Model picker**: sections by category with capability badges, provider names, aliases in the hover card, **Show retired**, search over ids, names, and aliases; the provider count counts every current model. Picking a model that cannot chat keeps the chat model and posts a notice ("whisper-large-v3 only transcribes speech, so it cannot chat ..."); a speech-to-text pick becomes the mic's model, a Mistral OCR pick the OCR default.
+- **CLI**: `tern provider models <id>` lists every model grouped by category with badges and aliases; `--all` adds deprecated and retired ones.
+- **Effort slider restyle**: the effort popover (about 300 × 110) shows the level's name centred in the slider's warm colour, one plain line under it, and the reset at the top right. Below, an inset rounded box (11 px radius, a step lighter than the popover, hairline border) holds 41 thin ticks; ticks up to the level glow from soft amber to red-orange, brightest beside the handle, with a short glow fading past it, and the rest rest grey. The round knob is replaced by a slim glowing bar handle (4 × 22 px, rounded ends, soft halo), clipped inside the box. Dragging moves the handle and recolours the ticks with the pointer (no re-layout, nothing allocated per frame); release and keys snap to one of the six stops in 200 ms on the house curve, at once with reduced motion. Click, drag, Left and Right, the greyed no-control state, and the always-thinks state are kept. Tests without a display: tick count and placement, lit ticks per level (0, 8, 16, 24, 32, 40), the warm ramp and glow, drag position and snapping (`composer::tick_look`, `drag_stop`).
+- **Docs**: [docs/models.md](docs/models.md).
+
 ### Added and fixed (PR #47)
 
 Fixes and additions from testing the PR #46 build.

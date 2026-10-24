@@ -96,7 +96,11 @@ async fn gemini_chat_uses_header_key_not_query() {
 async fn refused_key_and_rate_limit_are_plain_errors() {
     let server = MockServer::start().await;
     Mock::given(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(401))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": {"message": "Invalid API Key", "type": "invalid_request_error", "code": "invalid_api_key"}
+            })),
+        )
         .mount(&server)
         .await;
     Mock::given(path("/v1/chat/completions"))
@@ -109,10 +113,15 @@ async fn refused_key_and_rate_limit_are_plain_errors() {
         e,
         ProviderError::Auth {
             provider: "Groq",
-            status: 401
+            status: 401,
+            detail: "Invalid API Key".into(),
         }
     );
     assert!(e.to_string().contains("refused the key"));
+    assert!(
+        e.to_string()
+            .ends_with("The provider said: Invalid API Key")
+    );
     let e = p
         .chat(&ChatRequest::new("m", vec![ChatMessage::user("x")]))
         .await
@@ -121,7 +130,8 @@ async fn refused_key_and_rate_limit_are_plain_errors() {
         e,
         ProviderError::RateLimited {
             provider: "Groq",
-            retry_after: Some(7)
+            retry_after: Some(7),
+            detail: String::new(),
         }
     );
 }

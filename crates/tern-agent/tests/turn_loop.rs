@@ -462,6 +462,7 @@ async fn provider_errors_fail_plainly_with_no_fallback() {
     let model = Script::failing(ProviderError::Auth {
         provider: "OpenAI",
         status: 401,
+        detail: String::new(),
     });
     let out = s
         .run(

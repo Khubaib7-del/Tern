@@ -138,14 +138,17 @@ impl Provider {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse().ok());
         let body = resp.text().await.unwrap_or_default();
+        let detail = said(&body);
         Err(match status {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProviderError::Auth {
                 provider,
                 status: status.as_u16(),
+                detail,
             },
             StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimited {
                 provider,
                 retry_after,
+                detail,
             },
             StatusCode::NOT_FOUND => ProviderError::NotFound {
                 provider,
@@ -159,31 +162,198 @@ impl Provider {
         })
     }
 
-    /// Lists the models this key can use.
+    /// Lists every model this key can use, every page of it, with what
+    /// each can do (see `docs/models.md`). Nothing is filtered out: retired
+    /// models come back marked, and the caller decides what to show.
     pub async fn list_models(&self) -> ProviderResult<Vec<ModelInfo>> {
-        let (path, what) = match self.spec.wire {
-            Wire::OpenAiCompatible | Wire::Anthropic => ("models", "the models endpoint"),
-            Wire::Gemini => ("models?pageSize=1000", "the models endpoint"),
-        };
-        let json = self.send(self.http.get(self.url(path)), what).await?;
+        const MAX_PAGES: usize = 50;
+        let what = "the models endpoint";
         let decode = |reason: String| ProviderError::Decode {
             provider: self.spec.name,
             reason,
         };
-        let mut models = match self.spec.wire {
-            Wire::OpenAiCompatible => wire::openai::parse_models(&json),
-            Wire::Anthropic => wire::anthropic::parse_models(&json),
-            Wire::Gemini => wire::gemini::parse_models(&json),
-        }
-        .map_err(decode)?;
-        // Listings that leave the window out get Tern's table's size.
-        for m in &mut models {
-            if m.context_window.is_none() {
-                m.context_window = crate::model::known_context_window(&m.id);
+        let mut models = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let path = self.models_path(cursor.as_deref());
+            let json = self.send(self.http.get(self.url(&path)), what).await?;
+            let (page, next) = match self.spec.wire {
+                Wire::OpenAiCompatible => (
+                    wire::openai::parse_models(&json),
+                    wire::openai::next_cursor(&json),
+                ),
+                Wire::Anthropic => (
+                    wire::anthropic::parse_models(&json),
+                    wire::anthropic::next_cursor(&json),
+                ),
+                Wire::Gemini => (
+                    wire::gemini::parse_models(&json),
+                    wire::gemini::next_cursor(&json),
+                ),
+            };
+            models.extend(page.map_err(decode)?);
+            match next {
+                Some(n) if Some(&n) != cursor.as_ref() => cursor = Some(n),
+                _ => break,
             }
         }
+        self.enrich(&mut models).await;
+        for m in &mut models {
+            m.finish(self.spec.id);
+        }
+        let mut models = crate::model::tidy_aliases(models);
         models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.dedup_by(|a, b| a.id == b.id);
         Ok(models)
+    }
+
+    /// The listing path for one page.
+    fn models_path(&self, cursor: Option<&str>) -> String {
+        let enc = |c: &str| url::form_urlencoded::byte_serialize(c.as_bytes()).collect::<String>();
+        match (self.spec.wire, cursor) {
+            // Anthropic sends 20 a page unless asked for more.
+            (Wire::Anthropic, None) => "models?limit=1000".into(),
+            (Wire::Anthropic, Some(c)) => format!("models?limit=1000&after_id={}", enc(c)),
+            (Wire::Gemini, None) => "models?pageSize=1000".into(),
+            (Wire::Gemini, Some(c)) => format!("models?pageSize=1000&pageToken={}", enc(c)),
+            // OpenRouter lists text-output models only unless asked for all.
+            (Wire::OpenAiCompatible, _) if self.spec.id == "openrouter" => {
+                "models?output_modalities=all".into()
+            }
+            (Wire::OpenAiCompatible, None) => "models".into(),
+            (Wire::OpenAiCompatible, Some(c)) => format!("models?after={}", enc(c)),
+        }
+    }
+
+    /// Adds what a second, cheap endpoint knows and `/models` does not:
+    /// xAI's modalities, Ollama's capabilities, LM Studio's model types.
+    /// A failure here leaves the listing as it was.
+    async fn enrich(&self, models: &mut [ModelInfo]) {
+        let extra: Vec<(&str, String)> = match self.spec.id {
+            "xai" => vec![
+                ("data", self.url("language-models")),
+                ("data", self.url("image-generation-models")),
+            ],
+            "ollama" => vec![("models", format!("{}/api/tags", self.root()))],
+            "lmstudio" => vec![("data", format!("{}/api/v0/models", self.root()))],
+            _ => return,
+        };
+        for (key, url) in extra {
+            let Ok(json) = self.send(self.http.get(url), "the model details").await else {
+                continue;
+            };
+            let Some(list) = json.get(key).and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            for card in list {
+                let card = with_ollama_caps(card);
+                let Ok(found) = wire::openai::parse_models(&serde_json::json!([card])) else {
+                    continue;
+                };
+                let Some(found) = found.into_iter().next() else {
+                    continue;
+                };
+                let same = |m: &ModelInfo| m.id == found.id || found.aliases.contains(&m.id);
+                if let Some(m) = models.iter_mut().find(|m| same(m)) {
+                    if found.source != crate::model::Source::Table {
+                        m.capabilities = found.capabilities.clone();
+                        m.source = found.source;
+                    }
+                    if m.context_window.is_none() {
+                        m.context_window = found.context_window;
+                    }
+                    for a in &found.aliases {
+                        if !m.aliases.contains(a) && *a != m.id {
+                            m.aliases.push(a.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The server root for a local server's own API (`/v1` taken off).
+    fn root(&self) -> &str {
+        self.base_url.strip_suffix("/v1").unwrap_or(&self.base_url)
+    }
+
+    /// Transcribes `audio` with a speech-to-text model through the
+    /// OpenAI-style `/audio/transcriptions` endpoint (Groq, OpenAI,
+    /// Mistral's Voxtral, and other compatible servers). `file_name` tells
+    /// the server the format (`speech.wav`).
+    pub async fn transcribe(
+        &self,
+        model: &str,
+        audio: &[u8],
+        file_name: &str,
+        language: Option<&str>,
+    ) -> ProviderResult<String> {
+        if self.spec.wire != Wire::OpenAiCompatible {
+            return Err(ProviderError::Http {
+                provider: self.spec.name,
+                status: 400,
+                body: "Tern transcribes through OpenAI-style providers only (Groq, OpenAI, Mistral, and compatible servers).".into(),
+            });
+        }
+        let boundary = format!(
+            "tern-{:x}",
+            audio.len().wrapping_mul(2_654_435_761) ^ 0x5bd1_e995
+        );
+        let mut fields = vec![("model", model), ("response_format", "json")];
+        if let Some(l) = language {
+            fields.push(("language", l));
+        }
+        let body = multipart(&boundary, &fields, ("file", file_name, audio));
+        let rb = self
+            .http
+            .post(self.url("audio/transcriptions"))
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .timeout(STREAM_TIMEOUT)
+            .body(body);
+        let json = self.send(rb, &format!("the model `{model}`")).await?;
+        json.get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(|t| t.trim().to_owned())
+            .ok_or_else(|| ProviderError::Decode {
+                provider: self.spec.name,
+                reason: "no `text` in the transcription".into(),
+            })
+    }
+
+    /// Reads the text out of a document or picture with Mistral's OCR
+    /// endpoint (`POST /ocr`). `data` is base64; `media_type` is
+    /// `application/pdf` or an image type. Returns the pages as Markdown.
+    pub async fn ocr(&self, model: &str, media_type: &str, data: &str) -> ProviderResult<String> {
+        let url = format!("data:{media_type};base64,{data}");
+        let document = if media_type.starts_with("image/") {
+            serde_json::json!({"type": "image_url", "image_url": url})
+        } else {
+            serde_json::json!({"type": "document_url", "document_url": url})
+        };
+        let body = serde_json::json!({"model": model, "document": document});
+        let rb = self
+            .http
+            .post(self.url("ocr"))
+            .json(&body)
+            .timeout(STREAM_TIMEOUT);
+        let json = self.send(rb, &format!("the model `{model}`")).await?;
+        let pages = json
+            .get("pages")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| ProviderError::Decode {
+                provider: self.spec.name,
+                reason: "no `pages` in the OCR reply".into(),
+            })?;
+        Ok(pages
+            .iter()
+            .filter_map(|p| p.get("markdown").and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"))
     }
 
     /// One non-streaming chat call.
@@ -367,7 +537,7 @@ impl Provider {
             models: models.len(),
             chat_models: models
                 .iter()
-                .filter(|m| m.kind == crate::ModelKind::Chat)
+                .filter(|m| m.can_chat() && !m.is_retired())
                 .count(),
             latency_ms: start.elapsed().as_millis(),
         })
@@ -415,6 +585,93 @@ fn without_url(e: &reqwest::Error) -> String {
         return "the connection failed. Is the server running and the address right?".into();
     }
     s
+}
+
+/// The provider's own words from an error body (`error.message`,
+/// `message`, `detail`), redacted and shortened; empty when there are none.
+fn said(body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let msg = v
+        .pointer("/error/message")
+        .or_else(|| v.get("message"))
+        .or_else(|| v.get("detail"))
+        .or_else(|| v.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| body.trim().to_owned());
+    if msg.is_empty() || msg.starts_with('<') {
+        return String::new();
+    }
+    short(&msg)
+}
+
+/// A `multipart/form-data` body: text fields, then one file.
+fn multipart(boundary: &str, fields: &[(&str, &str)], file: (&str, &str, &[u8])) -> Vec<u8> {
+    let mut out = Vec::with_capacity(file.2.len() + 512);
+    for (k, v) in fields {
+        out.extend_from_slice(
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n")
+                .as_bytes(),
+        );
+    }
+    let (name, file_name, bytes) = file;
+    let mime = match file_name
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("wav") => "audio/wav",
+        Some("mp3") | Some("mpga") | Some("mpeg") => "audio/mpeg",
+        Some("m4a") | Some("mp4") => "audio/mp4",
+        Some("ogg") => "audio/ogg",
+        Some("webm") => "audio/webm",
+        Some("flac") => "audio/flac",
+        _ => "application/octet-stream",
+    };
+    let safe: String = file_name
+        .chars()
+        .map(|c| if c == '"' || c.is_control() { '_' } else { c })
+        .collect();
+    out.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{safe}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(bytes);
+    out.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    out
+}
+
+/// Ollama's `/api/tags` names a model in `name` and says `capabilities` as
+/// words; xAI's listing names modalities on top. Turns either into the
+/// card shape `parse_models` reads.
+fn with_ollama_caps(card: &serde_json::Value) -> serde_json::Value {
+    let mut card = card.clone();
+    if card.get("id").is_none()
+        && let Some(n) = card.get("name").or_else(|| card.get("model")).cloned()
+    {
+        card["id"] = n;
+    }
+    if let Some(words) = card
+        .get("capabilities")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+    {
+        let has = |w: &str| words.iter().any(|x| x.as_str() == Some(w));
+        let mut flags = serde_json::Map::new();
+        flags.insert("completion_chat".into(), has("completion").into());
+        flags.insert("vision".into(), has("vision").into());
+        flags.insert("function_calling".into(), has("tools").into());
+        flags.insert("reasoning".into(), has("thinking").into());
+        card["capabilities"] = serde_json::Value::Object(flags);
+        if has("embedding") && !has("completion") {
+            card["type"] = "embeddings".into();
+            card.as_object_mut().map(|o| o.remove("capabilities"));
+        }
+    }
+    card
 }
 
 fn short(body: &str) -> String {

@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use tern_agent::{Effort, Harness, Thinking, TurnMode};
 
-use crate::providers::{Kind, Models, ProvidersState};
+use tern_agent::providers::Category;
+
+use crate::providers::{Kind, ModelChoice, Models, ProvidersState};
 
 /// What a message is sent as. Research and Study each have their own set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -281,12 +283,55 @@ pub struct ProviderEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickerRow {
     pub id: String,
+    /// The provider's name for it ("Mistral Small 4"), when it differs
+    /// from the id.
+    pub label: Option<String>,
     /// The chat's model now: drawn with a tick.
     pub current: bool,
-    /// Starred: listed first, its star always shown (others on hover).
+    /// Starred: listed first in its section, its star always shown.
     pub favourite: bool,
-    /// "128k", muted on the right; `None` when no size is known.
+    /// "128k", muted on the right; `None` when no size is known or the
+    /// model does not chat.
     pub context: Option<String>,
+    /// The section it is listed under.
+    pub category: Category,
+    /// Small capability badges ("vision", "tools", "speech to text").
+    pub badges: Vec<&'static str>,
+    /// Whether it can be the chat model.
+    pub chat: bool,
+    /// Other names the provider takes for it (`mistral-large-latest`).
+    pub aliases: Vec<String>,
+    /// Deprecated or retired (shown only with "Show retired").
+    pub retired: bool,
+}
+
+/// What clicking a model in the picker does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PickOutcome {
+    /// It becomes the chat's model.
+    Chat,
+    /// A speech-to-text model: it becomes the mic's model; the chat model
+    /// stays. The notice says so.
+    Mic(String),
+    /// An OCR model: it reads attachments the chat model cannot see.
+    Ocr(String),
+    /// It cannot chat and Tern has no job for it; the chat model stays.
+    Refused(String),
+}
+
+/// What picking `info` from the picker should do.
+pub fn pick_outcome(provider: &str, info: &tern_agent::providers::ModelInfo) -> PickOutcome {
+    use tern_agent::media::{Job, can_do};
+    let Some(reason) = info.not_chat_reason() else {
+        return PickOutcome::Chat;
+    };
+    if can_do(Job::Transcribe, provider, info) {
+        PickOutcome::Mic(reason)
+    } else if can_do(Job::Ocr, provider, info) {
+        PickOutcome::Ocr(reason)
+    } else {
+        PickOutcome::Refused(reason)
+    }
 }
 
 /// The picker popover's width, its most height, and its provider column.
@@ -310,6 +355,8 @@ pub struct ModelPicker {
     pub query: String,
     /// The model under the pointer, for the hover card.
     pub hovered: Option<String>,
+    /// Lists deprecated and retired models too.
+    pub show_retired: bool,
 }
 
 /// The whole composer's state.
@@ -399,9 +446,22 @@ impl Composer {
         self.picker.provider.or_else(|| st.default_id(Kind::Model))
     }
 
-    /// The models of the shown provider that match the search, favourites
-    /// first. `None` while the list loads or when it failed.
+    /// The models of the shown provider that match the search (id, name,
+    /// or alias), by section (chat, vision, speech, OCR, image,
+    /// embeddings, safety, other), favourites first in each. Deprecated
+    /// and retired models only with "Show retired". `None` while the list
+    /// loads or when it failed.
+    #[cfg(test)]
     pub fn models<'a>(&self, st: &'a ProvidersState) -> Option<Vec<&'a str>> {
+        Some(
+            self.choices(st)?
+                .into_iter()
+                .map(|m| m.id.as_str())
+                .collect(),
+        )
+    }
+
+    fn choices<'a>(&self, st: &'a ProvidersState) -> Option<Vec<&'a ModelChoice>> {
         let shown = self.shown_provider(st)?;
         let Some(Models::Loaded(p, list)) = &st.models else {
             return None;
@@ -409,15 +469,39 @@ impl Composer {
         if *p != shown {
             return None;
         }
-        let q = self.picker.query.trim().to_ascii_lowercase();
+        let q = self.picker.query.trim();
         let favs = &st.prefs.favourite_models;
-        let mut out: Vec<&str> = list
+        let mut out: Vec<&ModelChoice> = list
             .iter()
-            .map(|m| m.id.as_str())
-            .filter(|id| q.is_empty() || id.to_ascii_lowercase().contains(&q))
+            .filter(|m| self.picker.show_retired || !m.info.is_retired())
+            .filter(|m| m.info.matches(q))
             .collect();
-        out.sort_by_key(|id| !favs.iter().any(|f| f == &format!("{shown}/{id}")));
+        out.sort_by_key(|m| {
+            (
+                m.info.category(),
+                !favs.iter().any(|f| f == &format!("{shown}/{}", m.id)),
+            )
+        });
         Some(out)
+    }
+
+    /// How many of the shown provider's models are deprecated or retired.
+    pub fn retired_count(&self, st: &ProvidersState) -> usize {
+        match &st.models {
+            Some(Models::Loaded(_, list)) => list.iter().filter(|m| m.info.is_retired()).count(),
+            _ => 0,
+        }
+    }
+
+    /// A listed model of the shown provider, by id.
+    pub fn info_of<'a>(
+        st: &'a ProvidersState,
+        model: &str,
+    ) -> Option<&'a tern_agent::providers::ModelInfo> {
+        match &st.models {
+            Some(Models::Loaded(_, list)) => list.iter().find(|m| m.id == model).map(|m| &m.info),
+            _ => None,
+        }
     }
 
     /// The context window of a model: the listing's, else Tern's table.
@@ -432,8 +516,9 @@ impl Composer {
         .or_else(|| tern_agent::known_context_window(model))
     }
 
-    /// The picker's model rows: one line each, favourites first, the
-    /// current model ticked, its window as a short muted size.
+    /// The picker's model rows: one line each, by section, favourites
+    /// first in a section, the current model ticked, its window as a short
+    /// muted size, capability badges, aliases.
     pub fn picker_rows(
         &self,
         st: &ProvidersState,
@@ -443,13 +528,31 @@ impl Composer {
         let current_provider = st.default_id(crate::providers::Kind::Model);
         let favs = &st.prefs.favourite_models;
         Some(
-            self.models(st)?
+            self.choices(st)?
                 .into_iter()
-                .map(|id| PickerRow {
-                    id: id.to_owned(),
-                    current: Some(shown) == current_provider && current == Some(id),
-                    favourite: favs.iter().any(|f| *f == format!("{shown}/{id}")),
-                    context: Self::context_of(st, id).map(crate::model::compact),
+                .map(|m| {
+                    let id = m.id.as_str();
+                    let info = &m.info;
+                    PickerRow {
+                        id: id.to_owned(),
+                        label: Some(info.label()).filter(|l| *l != id).map(str::to_owned),
+                        current: Some(shown) == current_provider && current == Some(id),
+                        favourite: favs.iter().any(|f| *f == format!("{shown}/{id}")),
+                        context: info
+                            .can_chat()
+                            .then(|| Self::context_of(st, id).map(crate::model::compact))
+                            .flatten(),
+                        category: info.category(),
+                        badges: info
+                            .capabilities
+                            .iter()
+                            .filter(|c| **c != tern_agent::providers::Capability::Chat)
+                            .map(|c| c.badge())
+                            .collect(),
+                        chat: info.can_chat(),
+                        aliases: info.aliases.clone(),
+                        retired: info.is_retired(),
+                    }
                 })
                 .collect(),
         )
@@ -536,17 +639,26 @@ pub fn effort_rows(thinking: Thinking) -> Vec<(Effort, String, bool)> {
         .collect()
 }
 
-/// The effort slider: a compact popover over the effort chip with one
-/// stop per step, None to Max, drawn as rising feather ticks on a track
-/// and a round knob that glides between stops.
+/// The effort slider: a compact popover over the effort chip (about
+/// 300 × 110, like ChatGPT's and Codex's): the level's name on top, one
+/// plain line under it, a reset at the top right, and below them a
+/// rounded box holding a row of thin ticks. Ticks up to the level light
+/// up warm, brightest at the handle, and a slim glowing bar handle glides
+/// between the six stops.
 ///
 /// | Size | Value |
 /// | --- | --- |
-/// | Popover | 300 px wide |
-/// | Track | 252 px; the first and last stops sit 10 px in (the knob's radius) |
+/// | Popover | 300 px wide, 12 px padding |
+/// | Tick box | 276 px, 11 px radius, 8 px / 12 px inner padding |
+/// | Track | 252 px; the first and last stops sit 8 px in (the handle's halo) |
+/// | Ticks | 41 (8 between stops), 2 px wide, 12 px tall |
+/// | Handle | 4 × 22 px bar, rounded ends, halo 14 px |
 pub const SLIDER_W: f32 = 300.;
 pub const TRACK_W: f32 = 252.;
-pub const TRACK_INSET: f32 = 10.;
+pub const TRACK_INSET: f32 = 8.;
+/// Ticks in the row; stop `s` sits on tick `s * TICKS_PER_STOP`.
+pub const TICKS: usize = 41;
+pub const TICKS_PER_STOP: usize = (TICKS - 1) / LAST_STOP;
 /// The last stop's index (Max); there are six stops.
 pub const LAST_STOP: usize = 5;
 
@@ -597,16 +709,72 @@ pub fn stop_x(stop: f32, track_w: f32) -> f32 {
     TRACK_INSET + stop.clamp(0., LAST_STOP as f32) * (track_w - 2. * TRACK_INSET) / LAST_STOP as f32
 }
 
+/// Tick `i`'s centre on a track `track_w` wide, from its left edge.
+pub fn tick_x(i: usize, track_w: f32) -> f32 {
+    stop_x(i as f32 / TICKS_PER_STOP as f32, track_w)
+}
+
+/// The pointer at `x` (from the track's left edge) as a fractional stop,
+/// kept to what the model allows: where the handle is drawn while it is
+/// dragged, before it snaps. `None` when the slider cannot move.
+pub fn drag_stop(x: f32, track_w: f32, kind: SliderKind) -> Option<f32> {
+    let SliderKind::Adjustable { min } = kind else {
+        return None;
+    };
+    let step = (track_w - 2. * TRACK_INSET) / LAST_STOP as f32;
+    Some(((x - TRACK_INSET) / step).clamp(min as f32, LAST_STOP as f32))
+}
+
+/// How one tick is drawn with the handle at fractional stop `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TickLook {
+    /// 0 = the dim resting grey, 1 = fully lit.
+    pub heat: f32,
+    /// Along the warm ramp: 0 = soft amber, 1 = the accent.
+    pub warmth: f32,
+}
+
+/// Ticks that glow past the handle, fading out.
+const SPILL_TICKS: f32 = 3.;
+
+/// Tick `i`'s look with the handle at fractional stop `at`. Ticks before
+/// the handle are lit, warming from amber at the far left to the accent
+/// at the handle and brightest beside it; a few ticks past the handle
+/// catch a fading glow; the rest rest grey. Plain arithmetic, so it runs
+/// for every tick on every frame of a drag without allocating.
+pub fn tick_look(i: usize, at: f32) -> TickLook {
+    let h = at.clamp(0., LAST_STOP as f32) * TICKS_PER_STOP as f32;
+    let i = i as f32;
+    if i < h - 0.5 {
+        let d = h - i;
+        TickLook {
+            heat: (1. - d / 14.).max(0.6),
+            warmth: if h <= 0. { 1. } else { (i / h).clamp(0., 1.) },
+        }
+    } else {
+        let d = (i - h).max(0.);
+        TickLook {
+            heat: (0.5 * (1. - d / SPILL_TICKS)).max(0.),
+            warmth: 1.,
+        }
+    }
+}
+
+/// How many ticks are lit with the handle resting on `stop`.
+#[cfg(test)]
+pub fn lit_ticks(stop: usize) -> usize {
+    (0..TICKS)
+        .filter(|&i| tick_look(i, stop as f32).heat >= 0.6)
+        .count()
+}
+
 /// The stop nearest `x` (from the track's left edge), kept to what the
 /// model allows; `None` when the slider cannot move.
 pub fn snap_stop(x: f32, track_w: f32, kind: SliderKind) -> Option<usize> {
     let SliderKind::Adjustable { min } = kind else {
         return None;
     };
-    let step = (track_w - 2. * TRACK_INSET) / LAST_STOP as f32;
-    let at = ((x - TRACK_INSET) / step)
-        .round()
-        .clamp(0., LAST_STOP as f32) as usize;
+    let at = drag_stop(x, track_w, kind)?.round() as usize;
     Some(at.max(min))
 }
 
@@ -694,9 +862,10 @@ mod tests {
                 "mistral-large-latest",
             ]
             .iter()
-            .map(|id| ModelChoice {
-                id: (*id).into(),
-                context_window: Some(128_000),
+            .map(|id| {
+                let mut info = tern_agent::providers::ModelInfo::new(*id);
+                info.context_window = Some(128_000);
+                ModelChoice::new(info)
             })
             .collect(),
         ));
@@ -797,6 +966,75 @@ mod tests {
         let (w, h) = picker_size(400., 420.);
         assert!(w <= 400. - 32. && h <= 420.);
         const { assert!(PICKER_LEFT_W < PICKER_W / 2.) };
+    }
+
+    #[test]
+    fn picker_groups_every_model_and_flags_non_chat_ones() {
+        let mut st = st();
+        let mk = |id: &str| {
+            ModelChoice::new({
+                let mut m = tern_agent::providers::ModelInfo::new(id);
+                m.finish("mistral");
+                m
+            })
+        };
+        let mut old = mk("mistral-ocr-2505");
+        old.info.lifecycle = tern_agent::providers::Lifecycle::Deprecated;
+        if let Some(Models::Loaded(_, list)) = &mut st.models {
+            list.extend([
+                mk("voxtral-mini-transcribe-3-0"),
+                mk("mistral-ocr-4-1"),
+                mk("pixtral-12b-2409"),
+                mk("mistral-embed"),
+                mk("mistral-small-2603"),
+                old,
+            ]);
+        }
+        let mut c = Composer::default();
+        let rows = c.picker_rows(&st, None).unwrap();
+        let cats: Vec<_> = rows.iter().map(|r| r.category).collect();
+        let mut sorted = cats.clone();
+        sorted.sort();
+        assert_eq!(cats, sorted, "rows come by section");
+        assert!(
+            !rows.iter().any(|r| r.id == "mistral-ocr-2505"),
+            "retired hidden"
+        );
+        assert_eq!(c.retired_count(&st), 1);
+        let stt = rows.iter().find(|r| r.id.starts_with("voxtral")).unwrap();
+        assert_eq!((stt.category, stt.chat), (Category::Speech, false));
+        assert_eq!(stt.badges, ["speech to text"]);
+        assert!(stt.context.is_none(), "no window for a non-chat model");
+        let small = rows.iter().find(|r| r.id == "mistral-small-2603").unwrap();
+        assert_eq!(small.label.as_deref(), Some("Mistral Small 4"));
+        assert_eq!(small.category, Category::Vision);
+        c.picker.query = "small 4".into();
+        assert_eq!(c.models(&st).unwrap(), ["mistral-small-2603"]);
+        c.picker.query.clear();
+        c.picker.show_retired = true;
+        assert!(c.models(&st).unwrap().contains(&"mistral-ocr-2505"));
+        // Picking a non-chat model keeps the chat model and says why.
+        let info = |id: &str| Composer::info_of(&st, id).unwrap().clone();
+        let PickOutcome::Mic(why) = pick_outcome("mistral", &info("voxtral-mini-transcribe-3-0"))
+        else {
+            panic!()
+        };
+        assert!(
+            why.contains("only transcribes speech") && why.contains("mic"),
+            "{why}"
+        );
+        assert!(matches!(
+            pick_outcome("mistral", &info("mistral-ocr-4-1")),
+            PickOutcome::Ocr(_)
+        ));
+        assert!(matches!(
+            pick_outcome("mistral", &info("mistral-embed")),
+            PickOutcome::Refused(_)
+        ));
+        assert_eq!(
+            pick_outcome("mistral", &info("pixtral-12b-2409")),
+            PickOutcome::Chat
+        );
     }
 
     #[test]
@@ -913,6 +1151,62 @@ mod tests {
             assert_eq!(effort_at(stop_of(e)), e);
         }
         assert_eq!(effort_at(stop_of(Effort::default())), Effort::Medium);
+    }
+
+    #[test]
+    fn the_effort_ticks_light_up_to_the_level() {
+        // About forty thin ticks, a stop on every eighth.
+        assert_eq!(TICKS, 41);
+        assert_eq!(TICKS_PER_STOP, 8);
+        for s in 0..=LAST_STOP {
+            assert_eq!(
+                tick_x(s * TICKS_PER_STOP, TRACK_W),
+                stop_x(s as f32, TRACK_W),
+                "stop {s} sits on a tick"
+            );
+        }
+        assert_eq!(tick_x(0, TRACK_W), TRACK_INSET);
+        assert_eq!(tick_x(TICKS - 1, TRACK_W), TRACK_W - TRACK_INSET);
+        // Lit ticks per level: none for None, all forty before Max.
+        let lit: Vec<usize> = (0..=LAST_STOP).map(lit_ticks).collect();
+        assert_eq!(lit, vec![0, 8, 16, 24, 32, 40]);
+        // Warm ramp: amber at the far left, the accent at the handle, and
+        // brightest beside it.
+        let at = 3.;
+        let first = tick_look(0, at);
+        let beside = tick_look(23, at);
+        assert!(first.warmth < 0.05, "{first:?}");
+        assert!(beside.warmth > 0.9, "{beside:?}");
+        assert!(beside.heat > first.heat);
+        assert!(beside.heat <= 1.);
+        // A fading glow just past the handle, then grey.
+        let past: Vec<f32> = (24..30).map(|i| tick_look(i, at).heat).collect();
+        assert!(past.windows(2).all(|w| w[1] <= w[0]), "{past:?}");
+        assert!(past[1] > 0. && past[1] < 0.5);
+        assert_eq!(past[4], 0.);
+        assert_eq!(tick_look(TICKS - 1, 0.).heat, 0.);
+        // The colour moves with the handle between stops.
+        assert!(tick_look(26, 3.4).heat > tick_look(26, 3.).heat);
+    }
+
+    #[test]
+    fn the_effort_handle_follows_the_drag_and_snaps_on_release() {
+        let kind = SliderKind::Adjustable { min: 0 };
+        let step = (TRACK_W - 2. * TRACK_INSET) / LAST_STOP as f32;
+        // While dragged the handle sits where the pointer is...
+        let x = TRACK_INSET + 2.3 * step;
+        let at = drag_stop(x, TRACK_W, kind).unwrap();
+        assert!((at - 2.3).abs() < 1e-4, "{at}");
+        // ...and the release snaps it to the nearest stop.
+        assert_eq!(snap_stop(x, TRACK_W, kind), Some(2));
+        assert_eq!(snap_stop(TRACK_INSET + 2.6 * step, TRACK_W, kind), Some(3));
+        // Clamped to the ends and to what the model allows.
+        assert_eq!(drag_stop(-40., TRACK_W, kind), Some(0.));
+        assert_eq!(drag_stop(1e4, TRACK_W, kind), Some(LAST_STOP as f32));
+        let o3 = SliderKind::Adjustable { min: 1 };
+        assert_eq!(drag_stop(0., TRACK_W, o3), Some(1.));
+        assert_eq!(drag_stop(50., TRACK_W, SliderKind::NoControl), None);
+        assert_eq!(drag_stop(50., TRACK_W, SliderKind::Fixed), None);
     }
 
     #[test]

@@ -10,13 +10,21 @@ pub enum ProviderError {
         id: &'static str,
     },
     #[error(
-        "{provider} refused the key (HTTP {status}). Check it is current and has access to this model."
+        "{provider} refused the key (HTTP {status}). Check it is current and has access to this model.{}",
+        said(detail)
     )]
-    Auth { provider: &'static str, status: u16 },
-    #[error("{provider} is rate limiting this key{}. Wait and try again.", retry_after.map(|s| format!(" (retry after {s} s)")).unwrap_or_default())]
+    Auth {
+        provider: &'static str,
+        status: u16,
+        /// The provider's own message, redacted; may be empty.
+        detail: String,
+    },
+    #[error("{provider} is rate limiting this key{}. Wait and try again.{}", retry_after.map(|s| format!(" (retry after {s} s)")).unwrap_or_default(), said(detail))]
     RateLimited {
         provider: &'static str,
         retry_after: Option<u64>,
+        /// The provider's own message, redacted; may be empty.
+        detail: String,
     },
     #[error("{provider} does not know {what}.")]
     NotFound {
@@ -44,3 +52,12 @@ pub enum ProviderError {
 }
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
+
+/// " The provider said: ..." or nothing.
+fn said(detail: &str) -> String {
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" The provider said: {detail}")
+    }
+}

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use tern_agent::Preferences;
-use tern_agent::providers::{ModelInfo, ModelKind, ProviderRow};
+use tern_agent::providers::{ModelInfo, ProviderRow};
 use tern_agent::search::SearchRow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -87,11 +87,23 @@ pub enum Note {
     Failed(String),
 }
 
-/// A model the picker offers.
+/// A model the picker offers: every model the key can use, with what it
+/// can do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelChoice {
     pub id: String,
     pub context_window: Option<u64>,
+    pub info: ModelInfo,
+}
+
+impl ModelChoice {
+    pub fn new(info: ModelInfo) -> Self {
+        Self {
+            id: info.id.clone(),
+            context_window: info.context_window,
+            info,
+        }
+    }
 }
 
 /// The model list of the default provider.
@@ -295,8 +307,9 @@ impl ProvidersState {
         self.models = Some(Models::Loading(provider));
     }
 
-    /// The listing for a provider. Only chat models are offered, unless the
-    /// listing labels none as chat, in which case all are.
+    /// The listing for a provider: every model, whatever it is for. The
+    /// picker groups them by category and offers non-chat models only for
+    /// their own job.
     pub fn models_loaded(
         &mut self,
         provider: &'static str,
@@ -304,15 +317,8 @@ impl ProvidersState {
     ) {
         self.models = Some(match result {
             Ok(list) => {
-                let any_chat = list.iter().any(|m| m.kind == ModelKind::Chat);
-                let mut choices: Vec<ModelChoice> = list
-                    .into_iter()
-                    .filter(|m| !any_chat || m.kind == ModelKind::Chat)
-                    .map(|m| ModelChoice {
-                        id: m.id,
-                        context_window: m.context_window,
-                    })
-                    .collect();
+                let mut choices: Vec<ModelChoice> =
+                    list.into_iter().map(ModelChoice::new).collect();
                 choices.sort_by(|a, b| a.id.cmp(&b.id));
                 choices.dedup_by(|a, b| a.id == b.id);
                 Models::Loaded(provider, choices)
@@ -335,6 +341,7 @@ impl ProvidersState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tern_agent::providers::ModelKind;
 
     fn row(kind: Kind, id: &'static str, local: bool, key: bool) -> ServiceRow {
         ServiceRow {
@@ -439,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_offers_chat_models_sorted() {
+    fn picker_offers_every_model_sorted() {
         let mut s = state();
         let mut embed = ModelInfo::new("text-embedding-3-small");
         embed.kind = ModelKind::Embedding;
@@ -453,8 +460,9 @@ mod tests {
             panic!("{:?}", s.models)
         };
         let ids: Vec<_> = list.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["a-chat", "b-chat"]);
+        assert_eq!(ids, ["a-chat", "b-chat", "text-embedding-3-small"]);
         assert_eq!(list[1].context_window, Some(128_000));
+        assert!(!list[2].info.can_chat());
 
         let mut other = ModelInfo::new("mystery");
         other.kind = ModelKind::Other;

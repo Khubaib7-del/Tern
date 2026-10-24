@@ -35,6 +35,10 @@ pub enum Msg {
     Resumed(Box<ChatSession>, Vec<PastTurn>, Vec<SessionSummary>),
     /// A plain note for the transcript (a chat that would not reopen).
     Notice(String),
+    /// Every configured provider's listing, for routing.
+    Catalog(Box<tern_agent::media::Catalog>),
+    /// Speech came back as text for the composer, or why not.
+    Transcribed(Result<String, String>),
     /// A site's favicon on disk, or `None` when it could not be had.
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
@@ -200,6 +204,8 @@ impl std::fmt::Debug for Msg {
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
+            Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
+            Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
             Self::Browsed(r, p) => write!(f, "Browsed({r}, ok: {})", p.is_ok()),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
@@ -280,6 +286,15 @@ impl PlanApprover for UiPlanApprover {
 }
 
 /// The tokio side of the app.
+/// Pictures another model reads before the turn (see [`Bridge::send`]).
+#[derive(Debug)]
+pub struct ReadFirst {
+    pub via: tern_agent::media::ModelRef,
+    pub job: tern_agent::media::Job,
+    pub images: Vec<tern_agent::ImageInput>,
+    pub chat_model: String,
+}
+
 #[derive(Debug)]
 pub struct Bridge {
     rt: tokio::runtime::Runtime,
@@ -529,10 +544,101 @@ impl Bridge {
         });
     }
 
-    /// Runs one turn and hands the session back when it ends.
-    pub fn send(&self, mut session: Box<ChatSession>, text: String, cancel: CancelFlag) {
+    /// Lists every configured provider's models for the routing.
+    pub fn catalog(&self, ids: Vec<&'static str>) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
+            let keychain = setup::keychain();
+            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let c = tern_agent::media::catalog(&ids, secrets).await;
+            let _ = tx.send(Msg::Catalog(Box::new(c)));
+        });
+    }
+
+    /// Sends recorded speech (a WAV) or an audio file's bytes to the
+    /// speech-to-text model.
+    pub fn transcribe(&self, via: tern_agent::media::ModelRef, audio: Vec<u8>, name: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let keychain = setup::keychain();
+            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let r = tern_agent::media::transcribe(secrets, &via, &audio, &name).await;
+            let _ = tx.send(Msg::Transcribed(r));
+        });
+    }
+
+    /// Reads an audio file off the UI thread and transcribes it.
+    pub fn transcribe_file(&self, via: tern_agent::media::ModelRef, path: std::path::PathBuf) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "audio.wav".into());
+            match tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || std::fs::read(path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+            {
+                Ok(bytes) => {
+                    let keychain = setup::keychain();
+                    let secrets: Option<&dyn SecretStore> =
+                        keychain.as_ref().ok().map(|b| b.as_ref());
+                    let r = tern_agent::media::transcribe(secrets, &via, &bytes, &name).await;
+                    let _ = tx.send(Msg::Transcribed(r));
+                }
+                Err(e) => {
+                    let _ = tx.send(Msg::Transcribed(Err(format!(
+                        "Tern could not read {name}: {e}"
+                    ))));
+                }
+            }
+        });
+    }
+
+    /// Runs one turn and hands the session back when it ends. With
+    /// `read_first`, another model reads the pictures first (the chat model
+    /// cannot see) and its text joins the message.
+    pub fn send(
+        &self,
+        mut session: Box<ChatSession>,
+        text: String,
+        cancel: CancelFlag,
+        read_first: Option<ReadFirst>,
+    ) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let text = match read_first {
+                None => text,
+                Some(r) => {
+                    let keychain = setup::keychain();
+                    let secrets: Option<&dyn SecretStore> =
+                        keychain.as_ref().ok().map(|b| b.as_ref());
+                    match tern_agent::media::read_images(
+                        secrets,
+                        &r.via,
+                        r.job,
+                        &r.images,
+                        &r.chat_model,
+                    )
+                    .await
+                    {
+                        Ok((blocks, notice)) => {
+                            let _ = tx.send(Msg::Notice(notice));
+                            format!("{text}\n\n{blocks}")
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Msg::Notice(format!(
+                                "{} could not read the pictures, so they were not sent: {e}",
+                                r.via
+                            )));
+                            text
+                        }
+                    }
+                }
+            };
             let approver = UiApprover(tx.clone());
             let events = tx.clone();
             let observer = move |e: &tern_core::EventEnvelope| {

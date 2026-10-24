@@ -32,6 +32,10 @@ tokio = { workspace = true, features = ["process", "io-util", "io-std", "sync"] 
 sha1_smol.workspace = true
 zip.workspace = true
 
+[features]
+# The microphone, through tern-platform (cpal). The desktop app turns it on.
+mic = ["tern-platform/mic"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 wiremock.workspace = true

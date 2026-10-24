@@ -13,7 +13,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod audio;
 pub mod disk;
+#[cfg(feature = "mic")]
+pub mod mic;
 pub mod motion;
 pub mod open;
 pub mod paths;
