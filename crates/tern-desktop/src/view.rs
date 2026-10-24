@@ -163,7 +163,8 @@ pub struct Workspace {
     /// The effort slider's track: its left edge in the window at the last
     /// paint, and whether the knob is being dragged.
     effort_track: std::rc::Rc<std::cell::Cell<f32>>,
-    effort_drag: bool,
+    /// The effort handle's fractional stop while it is dragged.
+    effort_drag: Option<f32>,
     /// When the context popover opened, for its sweep-in.
     ctx_opened: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
     /// The tab strip's "▾" menu of tabs that do not fit is open.
@@ -446,7 +447,7 @@ impl Workspace {
             glides: Default::default(),
             anim_pending: Default::default(),
             effort_track: Default::default(),
-            effort_drag: false,
+            effort_drag: None,
             ctx_opened: Default::default(),
             tabs_menu_open: false,
             _subscriptions: {

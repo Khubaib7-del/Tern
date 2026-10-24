@@ -761,12 +761,25 @@ impl Workspace {
         }
     }
 
-    /// The pointer at window x `x` over the slider's track.
+    /// The pointer at window x `x` over the slider's track: the handle
+    /// follows it and the level under it is picked; release snaps.
     fn effort_pointer(&mut self, x: f32, cx: &mut Context<Self>) {
         let kind = composer::slider_kind(self.thinking());
         let local = x - self.effort_track.get();
+        let Some(at) = composer::drag_stop(local, composer::TRACK_W, kind) else {
+            return;
+        };
+        self.effort_drag = Some(at);
         if let Some(stop) = composer::snap_stop(local, composer::TRACK_W, kind) {
             self.set_effort_stop(stop, cx);
+        }
+        cx.notify();
+    }
+
+    /// Ends a drag: the handle snaps to its stop on the house curve.
+    fn effort_release(&mut self, cx: &mut Context<Self>) {
+        if self.effort_drag.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -784,50 +797,78 @@ impl Workspace {
         true
     }
 
-    /// The effort slider: the level's name and a plain line, a track of
-    /// six rising feather ticks (None to Max) with a round knob that
-    /// glides between them, and a reset to the default. A model with no
-    /// thinking control shows it greyed; one that always thinks shows one
-    /// fixed state.
+    /// The effort slider: the level's name in the accent and a plain line,
+    /// a reset at the top right, and a rounded box holding about forty
+    /// thin ticks with a slim glowing bar handle between six stops (None
+    /// to Max). Ticks up to the level glow warm, brightest at the handle.
+    /// While dragged the handle follows the pointer at once; on release
+    /// (and for keys) it snaps on the house curve, at once with reduced
+    /// motion. Only colours and the handle's x change from frame to frame:
+    /// the row keeps the same elements and sizes, and nothing is collected.
+    /// A model with no thinking control shows it greyed; one that always
+    /// thinks shows one fixed state.
     fn effort_slider(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        use composer::{LAST_STOP, SliderKind, TRACK_W};
+        use composer::{SliderKind, TICKS, TRACK_W};
         let thinking = self.thinking();
         let kind = composer::slider_kind(thinking);
         let effort = self.model.composer.effort;
         let stop = composer::shown_stop(thinking, effort);
         let (title, line) = composer::slider_title(thinking, effort);
         let live = matches!(kind, SliderKind::Adjustable { .. });
-        let at = self.glide("effort-knob", stop as f32);
-        let knob_x = composer::stop_x(at, TRACK_W);
-        let lit_color = if live { p.accent } else { p.faint };
+        let at = match self.effort_drag.filter(|_| live) {
+            Some(drag) => {
+                self.glides
+                    .borrow_mut()
+                    .entry("effort-handle")
+                    .or_insert_with(|| crate::motion::Glide::new(drag))
+                    .jump(drag);
+                drag
+            }
+            None => self.glide("effort-handle", stop as f32),
+        };
+        let handle_x = composer::stop_x(at, TRACK_W);
         let is_default =
             composer::stop_of(effort.unwrap_or_default()) == composer::stop_of(Effort::default());
-        // The ticks rise like a feather's barbs: short for None, tall for Max.
-        let ticks = (0..=LAST_STOP).map(|i| {
-            let x = composer::stop_x(i as f32, TRACK_W);
-            let h = 6. + i as f32 * 3.2;
-            let lit = live && (i as f32) <= at + 0.01;
+        // The slider's own warm ramp, soft amber to red-orange (none of the
+        // accents is warm enough), a touch deeper on the light theme.
+        let dark = p.canvas.l < 0.5;
+        let amber = gpui_kit::hsla(38. / 360., 0.9, if dark { 0.62 } else { 0.5 }, 1.);
+        let hot = gpui_kit::hsla(12. / 360., 0.86, if dark { 0.56 } else { 0.48 }, 1.);
+        let rest = p.faint.opacity(0.4);
+        let tick_h = 12.;
+        let track_h = 26.;
+        let ticks = (0..TICKS).map(move |i| {
+            let x = composer::tick_x(i, TRACK_W);
+            let color = match kind {
+                SliderKind::Adjustable { .. } => {
+                    let look = composer::tick_look(i, at);
+                    let warm = amber.blend(hot.opacity(look.warmth));
+                    rest.blend(warm.opacity(look.heat))
+                }
+                // Always thinks: the whole row is set, in quiet grey.
+                SliderKind::Fixed => p.muted.opacity(0.7),
+                SliderKind::NoControl => rest,
+            };
             div()
                 .absolute()
-                .left(px(x - 1.5))
-                .bottom(px(16.))
-                .w(px(3.))
-                .h(px(h))
-                .rounded(px(1.5))
-                .bg(if lit {
-                    lit_color
-                } else if kind == SliderKind::Fixed && i == LAST_STOP {
-                    p.muted
-                } else {
-                    p.faint.opacity(0.35)
-                })
+                .left(px(x - 1.))
+                .top(px((track_h - tick_h) / 2.))
+                .w(px(2.))
+                .h(px(tick_h))
+                .rounded(px(1.))
+                .bg(color)
         });
         let track_origin = self.effort_track.clone();
+        let handle_color = if live {
+            hot.blend(gpui_kit::white().opacity(0.25))
+        } else {
+            p.muted
+        };
         let track = div()
             .id("effort-track")
             .relative()
             .w(px(TRACK_W))
-            .h(px(48.))
+            .h(px(track_h))
             .when(live, |d| d.cursor_pointer())
             .child(
                 gpui_kit::canvas(
@@ -839,65 +880,52 @@ impl Workspace {
                 .absolute()
                 .size_full(),
             )
-            // The rail and its lit run up to the knob.
-            .child(
-                div()
-                    .absolute()
-                    .left(px(composer::TRACK_INSET))
-                    .right(px(composer::TRACK_INSET))
-                    .bottom(px(10.))
-                    .h(px(2.))
-                    .rounded_full()
-                    .bg(p.border),
-            )
-            .when(live, |d| {
-                d.child(
-                    div()
-                        .absolute()
-                        .left(px(composer::TRACK_INSET))
-                        .bottom(px(10.))
-                        .h(px(2.))
-                        .w(px((knob_x - composer::TRACK_INSET).max(0.)))
-                        .rounded_full()
-                        .bg(lit_color),
-                )
-            })
             .children(ticks)
-            // The knob.
+            // The handle: a slim bar taller than the ticks, with a soft
+            // halo of two wider, fainter bars behind it.
             .when(kind != SliderKind::NoControl, |d| {
-                d.child(
+                let bar = |w: f32, h: f32, c: gpui_kit::Hsla| {
                     div()
                         .absolute()
-                        .left(px(knob_x - 7.))
-                        .bottom(px(4.))
-                        .size(px(14.))
+                        .left(px(handle_x - w / 2.))
+                        .top(px((track_h - h) / 2.))
+                        .w(px(w))
+                        .h(px(h))
                         .rounded_full()
-                        .bg(p.text)
-                        .border_2()
-                        .border_color(if live { p.accent } else { p.muted })
-                        .shadow_sm(),
-                )
+                        .bg(c)
+                };
+                d.when(live, |d| {
+                    d.child(bar(14., track_h, hot.opacity(0.12))).child(bar(
+                        8.,
+                        24.,
+                        hot.opacity(0.22),
+                    ))
+                })
+                .child(bar(4., 22., handle_color))
             })
             .when(live, |d| {
                 d.on_mouse_down(
                     gpui_kit::MouseButton::Left,
                     cx.listener(|this, e: &gpui_kit::MouseDownEvent, _, cx| {
-                        this.effort_drag = true;
                         this.effort_pointer(f32::from(e.position.x), cx);
-                    }),
-                )
-                .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
-                    if this.effort_drag && e.pressed_button == Some(gpui_kit::MouseButton::Left) {
-                        this.effort_pointer(f32::from(e.position.x), cx);
-                    }
-                }))
-                .on_mouse_up(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, _| {
-                        this.effort_drag = false;
                     }),
                 )
             });
+        // The tick box: an inset capsule a step off the popover's surface,
+        // clipping the handle and its glow.
+        let tick_box = div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .py(px(8.))
+            .px(px(12.))
+            .rounded(px(11.))
+            .border_1()
+            .border_color(p.border)
+            .bg(p.raised)
+            .overflow_hidden()
+            .child(track)
+            .when(!live, |d| d.opacity(0.55));
         let reset = Button::new("effort-reset")
             .icon(AssetIcon::Undo2)
             .ghost()
@@ -918,7 +946,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .items_center()
-            .gap_1()
+            .gap_2()
             .rounded_xl()
             .border_1()
             .border_color(p.border)
@@ -927,32 +955,45 @@ impl Workspace {
             .occlude()
             .child(
                 div()
+                    .relative()
                     .w_full()
                     .flex()
-                    .items_start()
-                    .justify_between()
-                    .child(div().size(px(22.)))
+                    .flex_col()
+                    .items_center()
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if live { p.text } else { p.muted })
-                                    .child(SharedString::from(title)),
-                            )
-                            .child(div().text_xs().text_color(p.muted).child(line)),
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if live { hot } else { p.muted })
+                            .child(SharedString::from(title)),
                     )
-                    .child(reset),
+                    .child(div().text_xs().text_color(p.muted).child(line))
+                    .child(div().absolute().top(px(-4.)).right(px(-4.)).child(reset)),
             )
-            .child(track.when(!live, |d| d.opacity(0.55)))
+            .child(tick_box)
+            // A drag keeps going when the pointer leaves the track, and
+            // ends wherever the button comes up.
+            .on_mouse_move(cx.listener(|this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                if this.effort_drag.is_some() {
+                    if e.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        this.effort_pointer(f32::from(e.position.x), cx);
+                    } else {
+                        this.effort_release(cx);
+                    }
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.effort_release(cx)),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.effort_release(cx)),
+            )
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 if this.model.composer.menu == Some(Menu::Effort) {
                     this.model.composer.close();
-                    this.effort_drag = false;
+                    this.effort_drag = None;
                     cx.notify();
                 }
             }))

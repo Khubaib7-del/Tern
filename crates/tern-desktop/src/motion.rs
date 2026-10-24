@@ -176,6 +176,14 @@ impl Glide {
     pub fn moving(&self) -> bool {
         self.moving.is_some()
     }
+
+    /// Shows `at` at once with nothing in flight (a dragged handle follows
+    /// the pointer); the next `frame` with another target glides from it.
+    pub fn jump(&mut self, at: f32) {
+        self.to = at;
+        self.shown = at;
+        self.moving = None;
+    }
 }
 
 fn raw(start: Instant, dur: Duration, now: Instant) -> f32 {
@@ -293,6 +301,12 @@ mod tests {
         assert!(!g.moving());
         assert_eq!(g.frame(4.0, t0 + UI * 3, true), 4.0, "reduced motion");
         assert_eq!(UI, Duration::from_millis(200));
+        // A jump shows the value at once; the next target glides from it.
+        g.jump(2.4);
+        assert!(!g.moving());
+        assert!((g.frame(2.0, t0 + UI * 4, false) - 2.4).abs() < 1e-4);
+        assert!(g.moving());
+        assert_eq!(g.frame(2.0, t0 + UI * 5, false), 2.0);
     }
 
     #[test]

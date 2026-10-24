@@ -639,17 +639,26 @@ pub fn effort_rows(thinking: Thinking) -> Vec<(Effort, String, bool)> {
         .collect()
 }
 
-/// The effort slider: a compact popover over the effort chip with one
-/// stop per step, None to Max, drawn as rising feather ticks on a track
-/// and a round knob that glides between stops.
+/// The effort slider: a compact popover over the effort chip (about
+/// 300 × 110, like ChatGPT's and Codex's): the level's name on top, one
+/// plain line under it, a reset at the top right, and below them a
+/// rounded box holding a row of thin ticks. Ticks up to the level light
+/// up warm, brightest at the handle, and a slim glowing bar handle glides
+/// between the six stops.
 ///
 /// | Size | Value |
 /// | --- | --- |
-/// | Popover | 300 px wide |
-/// | Track | 252 px; the first and last stops sit 10 px in (the knob's radius) |
+/// | Popover | 300 px wide, 12 px padding |
+/// | Tick box | 276 px, 11 px radius, 8 px / 12 px inner padding |
+/// | Track | 252 px; the first and last stops sit 8 px in (the handle's halo) |
+/// | Ticks | 41 (8 between stops), 2 px wide, 12 px tall |
+/// | Handle | 4 × 22 px bar, rounded ends, halo 14 px |
 pub const SLIDER_W: f32 = 300.;
 pub const TRACK_W: f32 = 252.;
-pub const TRACK_INSET: f32 = 10.;
+pub const TRACK_INSET: f32 = 8.;
+/// Ticks in the row; stop `s` sits on tick `s * TICKS_PER_STOP`.
+pub const TICKS: usize = 41;
+pub const TICKS_PER_STOP: usize = (TICKS - 1) / LAST_STOP;
 /// The last stop's index (Max); there are six stops.
 pub const LAST_STOP: usize = 5;
 
@@ -700,16 +709,72 @@ pub fn stop_x(stop: f32, track_w: f32) -> f32 {
     TRACK_INSET + stop.clamp(0., LAST_STOP as f32) * (track_w - 2. * TRACK_INSET) / LAST_STOP as f32
 }
 
+/// Tick `i`'s centre on a track `track_w` wide, from its left edge.
+pub fn tick_x(i: usize, track_w: f32) -> f32 {
+    stop_x(i as f32 / TICKS_PER_STOP as f32, track_w)
+}
+
+/// The pointer at `x` (from the track's left edge) as a fractional stop,
+/// kept to what the model allows: where the handle is drawn while it is
+/// dragged, before it snaps. `None` when the slider cannot move.
+pub fn drag_stop(x: f32, track_w: f32, kind: SliderKind) -> Option<f32> {
+    let SliderKind::Adjustable { min } = kind else {
+        return None;
+    };
+    let step = (track_w - 2. * TRACK_INSET) / LAST_STOP as f32;
+    Some(((x - TRACK_INSET) / step).clamp(min as f32, LAST_STOP as f32))
+}
+
+/// How one tick is drawn with the handle at fractional stop `at`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TickLook {
+    /// 0 = the dim resting grey, 1 = fully lit.
+    pub heat: f32,
+    /// Along the warm ramp: 0 = soft amber, 1 = the accent.
+    pub warmth: f32,
+}
+
+/// Ticks that glow past the handle, fading out.
+const SPILL_TICKS: f32 = 3.;
+
+/// Tick `i`'s look with the handle at fractional stop `at`. Ticks before
+/// the handle are lit, warming from amber at the far left to the accent
+/// at the handle and brightest beside it; a few ticks past the handle
+/// catch a fading glow; the rest rest grey. Plain arithmetic, so it runs
+/// for every tick on every frame of a drag without allocating.
+pub fn tick_look(i: usize, at: f32) -> TickLook {
+    let h = at.clamp(0., LAST_STOP as f32) * TICKS_PER_STOP as f32;
+    let i = i as f32;
+    if i < h - 0.5 {
+        let d = h - i;
+        TickLook {
+            heat: (1. - d / 14.).max(0.6),
+            warmth: if h <= 0. { 1. } else { (i / h).clamp(0., 1.) },
+        }
+    } else {
+        let d = (i - h).max(0.);
+        TickLook {
+            heat: (0.5 * (1. - d / SPILL_TICKS)).max(0.),
+            warmth: 1.,
+        }
+    }
+}
+
+/// How many ticks are lit with the handle resting on `stop`.
+#[cfg(test)]
+pub fn lit_ticks(stop: usize) -> usize {
+    (0..TICKS)
+        .filter(|&i| tick_look(i, stop as f32).heat >= 0.6)
+        .count()
+}
+
 /// The stop nearest `x` (from the track's left edge), kept to what the
 /// model allows; `None` when the slider cannot move.
 pub fn snap_stop(x: f32, track_w: f32, kind: SliderKind) -> Option<usize> {
     let SliderKind::Adjustable { min } = kind else {
         return None;
     };
-    let step = (track_w - 2. * TRACK_INSET) / LAST_STOP as f32;
-    let at = ((x - TRACK_INSET) / step)
-        .round()
-        .clamp(0., LAST_STOP as f32) as usize;
+    let at = drag_stop(x, track_w, kind)?.round() as usize;
     Some(at.max(min))
 }
 
@@ -1086,6 +1151,62 @@ mod tests {
             assert_eq!(effort_at(stop_of(e)), e);
         }
         assert_eq!(effort_at(stop_of(Effort::default())), Effort::Medium);
+    }
+
+    #[test]
+    fn the_effort_ticks_light_up_to_the_level() {
+        // About forty thin ticks, a stop on every eighth.
+        assert_eq!(TICKS, 41);
+        assert_eq!(TICKS_PER_STOP, 8);
+        for s in 0..=LAST_STOP {
+            assert_eq!(
+                tick_x(s * TICKS_PER_STOP, TRACK_W),
+                stop_x(s as f32, TRACK_W),
+                "stop {s} sits on a tick"
+            );
+        }
+        assert_eq!(tick_x(0, TRACK_W), TRACK_INSET);
+        assert_eq!(tick_x(TICKS - 1, TRACK_W), TRACK_W - TRACK_INSET);
+        // Lit ticks per level: none for None, all forty before Max.
+        let lit: Vec<usize> = (0..=LAST_STOP).map(lit_ticks).collect();
+        assert_eq!(lit, vec![0, 8, 16, 24, 32, 40]);
+        // Warm ramp: amber at the far left, the accent at the handle, and
+        // brightest beside it.
+        let at = 3.;
+        let first = tick_look(0, at);
+        let beside = tick_look(23, at);
+        assert!(first.warmth < 0.05, "{first:?}");
+        assert!(beside.warmth > 0.9, "{beside:?}");
+        assert!(beside.heat > first.heat);
+        assert!(beside.heat <= 1.);
+        // A fading glow just past the handle, then grey.
+        let past: Vec<f32> = (24..30).map(|i| tick_look(i, at).heat).collect();
+        assert!(past.windows(2).all(|w| w[1] <= w[0]), "{past:?}");
+        assert!(past[1] > 0. && past[1] < 0.5);
+        assert_eq!(past[4], 0.);
+        assert_eq!(tick_look(TICKS - 1, 0.).heat, 0.);
+        // The colour moves with the handle between stops.
+        assert!(tick_look(26, 3.4).heat > tick_look(26, 3.).heat);
+    }
+
+    #[test]
+    fn the_effort_handle_follows_the_drag_and_snaps_on_release() {
+        let kind = SliderKind::Adjustable { min: 0 };
+        let step = (TRACK_W - 2. * TRACK_INSET) / LAST_STOP as f32;
+        // While dragged the handle sits where the pointer is...
+        let x = TRACK_INSET + 2.3 * step;
+        let at = drag_stop(x, TRACK_W, kind).unwrap();
+        assert!((at - 2.3).abs() < 1e-4, "{at}");
+        // ...and the release snaps it to the nearest stop.
+        assert_eq!(snap_stop(x, TRACK_W, kind), Some(2));
+        assert_eq!(snap_stop(TRACK_INSET + 2.6 * step, TRACK_W, kind), Some(3));
+        // Clamped to the ends and to what the model allows.
+        assert_eq!(drag_stop(-40., TRACK_W, kind), Some(0.));
+        assert_eq!(drag_stop(1e4, TRACK_W, kind), Some(LAST_STOP as f32));
+        let o3 = SliderKind::Adjustable { min: 1 };
+        assert_eq!(drag_stop(0., TRACK_W, o3), Some(1.));
+        assert_eq!(drag_stop(50., TRACK_W, SliderKind::NoControl), None);
+        assert_eq!(drag_stop(50., TRACK_W, SliderKind::Fixed), None);
     }
 
     #[test]
