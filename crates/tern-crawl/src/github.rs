@@ -196,7 +196,9 @@ mod tests {
         let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
         assert_eq!(names, vec!["SKILL.md", "ref/a.md"]);
         assert_eq!(files[1].1, b"abc");
-        let e = fetch_folder_at(&u, "o", "missing", None, "x").await.unwrap_err();
+        let e = fetch_folder_at(&u, "o", "missing", None, "x")
+            .await
+            .unwrap_err();
         assert!(matches!(e, GithubError::NotFound(_)), "{e}");
     }
 }

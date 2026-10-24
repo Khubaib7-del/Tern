@@ -203,7 +203,11 @@ impl Workspace {
                         "Chose {chosen} · {:.0}% sure · {}{}",
                         d.confidence * 100.,
                         d.model,
-                        if d.fallback.is_some() { " (fell back to local)" } else { "" }
+                        if d.fallback.is_some() {
+                            " (fell back to local)"
+                        } else {
+                            ""
+                        }
                     )),
                     None,
                     p,

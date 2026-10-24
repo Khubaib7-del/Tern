@@ -269,8 +269,16 @@ mod tests {
         let all = |_| true;
         assert_eq!(pick(None, &[], all), Crawler::Tern);
         assert_eq!(pick(Some("nope"), &[], all), Crawler::Tern);
-        assert_eq!(pick(Some("jina"), &[], none), Crawler::Jina, "Jina needs no key");
-        assert_eq!(pick(Some("firecrawl"), &[], none), Crawler::Tern, "no key yet");
+        assert_eq!(
+            pick(Some("jina"), &[], none),
+            Crawler::Jina,
+            "Jina needs no key"
+        );
+        assert_eq!(
+            pick(Some("firecrawl"), &[], none),
+            Crawler::Tern,
+            "no key yet"
+        );
         assert_eq!(pick(Some("firecrawl"), &[], all), Crawler::Firecrawl);
         assert_eq!(
             pick(Some("Firecrawl"), &["firecrawl".into()], all),
@@ -310,6 +318,10 @@ mod tests {
         assert!(err.is_err());
         let store = tern_platform::MemorySecretStore::default();
         assert!(!has_key(Crawler::Firecrawl, Some(&store)));
-        assert!(add_key(Crawler::Firecrawl, SecretString::new("  "), &store).await.is_err());
+        assert!(
+            add_key(Crawler::Firecrawl, SecretString::new("  "), &store)
+                .await
+                .is_err()
+        );
     }
 }

@@ -14,14 +14,14 @@ use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, Hsla, Render, SharedString, Subscription, Window, div,
-    px, svg,
+    px,
 };
 use tern_agent::mcp::{HealthState, ServerConfig, Severity, ToolSetting, TrustPreview};
 use tern_agent::policy::Mode;
 use tern_core::{ProjectId, SessionId};
 
 use super::Workspace;
-use crate::assets::{self, MONO_FONT};
+use crate::assets::MONO_FONT;
 use crate::bridge::{ExtMsg, McpChange, ProjectChange, SkillChange};
 use crate::extensions::{CustomizeTab, Note, ServerGlyph, TreeRow, server_glyph};
 use crate::theme::Palette;
@@ -77,12 +77,7 @@ impl ExtInputs {
                 _ => {}
             },
         );
-        (
-            Self {
-                project,
-            },
-            vec![sub],
-        )
+        (Self { project }, vec![sub])
     }
 }
 
@@ -111,12 +106,12 @@ fn tile(content: AnyElement, p: Palette) -> AnyElement {
 
 fn server_tile(name: &str, s: &ServerConfig, p: Palette) -> AnyElement {
     let http = s.url.is_some() && s.command.is_none();
+    // A server named for a brand (a template's id) gets its coloured mark.
+    if matches!(crate::brands::logo(name), crate::brands::Logo::Mark(..)) {
+        return tile(super::brand_logo(name, 15., p), p);
+    }
     let inner = match server_glyph(name, &s.target(), http) {
-        ServerGlyph::Service(k) => svg()
-            .path(assets::service_path(k))
-            .size(px(15.))
-            .text_color(p.text)
-            .into_any_element(),
+        ServerGlyph::Service(k) => super::service_logo(k, 15., p, p.text),
         ServerGlyph::Terminal => icon(AssetIcon::SquareTerminal, p.text),
         ServerGlyph::Globe => icon(AssetIcon::Globe, p.text),
     };
@@ -738,7 +733,8 @@ impl Workspace {
                         .on_click(cx.listener({
                             let n = n.clone();
                             move |this, checked: &bool, _, cx| {
-                                this.bridge.mcp_change(McpChange::Switch(n.clone(), *checked));
+                                this.bridge
+                                    .mcp_change(McpChange::Switch(n.clone(), *checked));
                                 cx.notify();
                             }
                         })),

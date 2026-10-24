@@ -424,14 +424,13 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
         }
     }
     let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
-    let mut e =
-        crate::rules::effective_with_user(
-            web.then_some(WEB_INSTRUCTIONS),
-            crate::prompts::user_block(opts.harness).as_deref(),
-            &project,
-            &tools,
-            untrusted,
-        );
+    let mut e = crate::rules::effective_with_user(
+        web.then_some(WEB_INSTRUCTIONS),
+        crate::prompts::user_block(opts.harness).as_deref(),
+        &project,
+        &tools,
+        untrusted,
+    );
     e.notes.extend(notes);
     e.offers = offers;
     Ok(e)

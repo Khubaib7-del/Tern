@@ -1287,12 +1287,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    svg()
-                        .path(assets::service_path(service))
-                        .size(px(size * 0.85))
-                        .text_color(p.text),
-                )
+                .child(service_logo(service, size * 0.85, p, p.text))
                 .into_any_element();
         }
         match self.model.icons.get(&page.site) {
@@ -3427,7 +3422,11 @@ impl Workspace {
                 let confirm = self.model.settings.confirm == Some(id);
                 actions = actions.child(
                     Button::new(bid("delete"))
-                        .label(if confirm { "Click again to delete" } else { "Delete" })
+                        .label(if confirm {
+                            "Click again to delete"
+                        } else {
+                            "Delete"
+                        })
                         .ghost()
                         .small()
                         .disabled(busy_turn && is_default)
@@ -4427,6 +4426,22 @@ pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement 
             .text_color(p.accent)
             .child(SharedString::from(letter))
             .into_any_element(),
+    }
+}
+
+/// A service's logo (a source site, an MCP server, a provider): the
+/// coloured brand mark when Tern ships one, else the one-colour service
+/// glyph in `ink`.
+pub(crate) fn service_logo(name: &str, size: f32, p: Palette, ink: gpui_kit::Hsla) -> AnyElement {
+    if matches!(crate::brands::logo(name), crate::brands::Logo::Mark(..)) {
+        brand_logo(name, size, p)
+    } else {
+        svg()
+            .path(crate::assets::service_path(name))
+            .size(px(size))
+            .flex_none()
+            .text_color(ink)
+            .into_any_element()
     }
 }
 

@@ -25,10 +25,10 @@ use crate::providers::{Kind, ServiceRow, rows_from};
 
 mod cont;
 mod ext;
-mod setup;
-pub use setup::SetupMsg;
+mod jobs;
 pub use cont::{ContMsg, LibraryChange};
 pub use ext::{ExtMsg, McpChange, ProjectChange, SkillChange};
+pub use jobs::SetupMsg;
 
 /// Everything the background side tells the window.
 pub enum Msg {
@@ -244,6 +244,7 @@ impl std::fmt::Debug for Msg {
             Self::Decision(m) => write!(f, "Decision({m:?})"),
             Self::Cont(m) => write!(f, "Cont({m:?})"),
             Self::Ext(m) => write!(f, "Ext({m:?})"),
+            Self::Setup(m) => write!(f, "Setup({m:?})"),
             Self::Eval(m) => match m.as_ref() {
                 EvalMsg::Loaded(runs, sel, _) => write!(
                     f,

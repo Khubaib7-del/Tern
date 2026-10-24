@@ -683,7 +683,9 @@ impl Model {
             Phase::Approval { .. } | Phase::Plan { .. } => Mood::NeedsYou,
             Phase::Working { activity, .. } => match activity {
                 Activity::Searching => Mood::Searching,
-                Activity::Reading | Activity::Checking => Mood::Reading,
+                Activity::Reading => Mood::Reading,
+                // Claim checks: Scout taps the scroll once per verdict.
+                Activity::Checking => Mood::Verifying,
                 Activity::NeedsYou => Mood::NeedsYou,
                 Activity::Thinking | Activity::Tool | Activity::Writing | Activity::Stopping => {
                     Mood::Thinking

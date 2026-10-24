@@ -84,7 +84,9 @@ impl Job {
         match self {
             Self::Tool => "Suggests the first tool for a message (search, read, vault, or none).",
             Self::Rank => "Orders search results so the pages most worth reading are read first.",
-            Self::Support => "Pre-scores whether a cited passage backs a claim before the claim check.",
+            Self::Support => {
+                "Pre-scores whether a cited passage backs a claim before the claim check."
+            }
         }
     }
 }

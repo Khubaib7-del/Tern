@@ -127,12 +127,7 @@ fn material_icon(m: &Material, p: Palette) -> AnyElement {
     if m.kind == MaterialKind::Link
         && let Some(service) = url_site(&m.origin).and_then(|s| assets::service_for(&s))
     {
-        return svg()
-            .path(assets::service_path(service))
-            .size(px(16.))
-            .flex_none()
-            .text_color(p.muted)
-            .into_any_element();
+        return super::service_logo(service, 16., p, p.muted);
     }
     let name = match m.kind {
         MaterialKind::Pdf => AssetIcon::FileText,

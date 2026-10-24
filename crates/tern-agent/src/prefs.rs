@@ -182,7 +182,11 @@ impl Preferences {
         tern_providers::custom::register_all(&self.custom_providers);
         crate::prompts::set_user(&self.system_prompts);
         crate::decide::set_jobs_off(&self.decision.jobs_off);
-        let keychain = match self.crawler.as_deref().and_then(crate::crawlers::Crawler::parse) {
+        let keychain = match self
+            .crawler
+            .as_deref()
+            .and_then(crate::crawlers::Crawler::parse)
+        {
             Some(c) if c.needs_key() => crate::providers::keychain().ok(),
             _ => None,
         };

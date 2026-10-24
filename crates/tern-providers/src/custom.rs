@@ -236,10 +236,7 @@ pub fn parse_config(text: &str, taken: &[&str]) -> Result<Vec<Parsed>, Vec<Strin
     }
 }
 
-fn str_at<'a>(
-    o: &'a serde_json::Map<String, serde_json::Value>,
-    keys: &[&str],
-) -> Option<&'a str> {
+fn str_at<'a>(o: &'a serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<&'a str> {
     keys.iter()
         .find_map(|k| o.get(*k).and_then(|v| v.as_str()))
         .map(str::trim)
@@ -550,8 +547,11 @@ mod tests {
         .unwrap_err();
         assert!(e.iter().any(|m| m.starts_with("A: ")), "{e:?}");
         assert!(e.iter().any(|m| m.starts_with("B: ")), "{e:?}");
-        let e = parse_config(r#"{"name": "Taken", "url": "https://t.example"}"#, &["taken"])
-            .unwrap_err();
+        let e = parse_config(
+            r#"{"name": "Taken", "url": "https://t.example"}"#,
+            &["taken"],
+        )
+        .unwrap_err();
         assert!(e[0].contains("already"));
         assert!(parse_config("42", &[]).is_err());
     }

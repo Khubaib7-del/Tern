@@ -55,9 +55,14 @@ impl SetupInputs {
         let input = |ph: &'static str, window: &mut Window, cx: &mut Context<Workspace>| {
             cx.new(|cx| InputState::new(window, cx).placeholder(ph))
         };
-        let area = |ph: &'static str, rows: usize, window: &mut Window, cx: &mut Context<Workspace>| {
-            cx.new(|cx| TextareaState::new(window, cx).auto_grow(rows, 14).placeholder(ph))
-        };
+        let area =
+            |ph: &'static str, rows: usize, window: &mut Window, cx: &mut Context<Workspace>| {
+                cx.new(|cx| {
+                    TextareaState::new(window, cx)
+                        .auto_grow(rows, 14)
+                        .placeholder(ph)
+                })
+            };
         Self {
             crawler_key: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -223,7 +228,9 @@ fn area_of(e: &Entity<TextareaState>, cx: &Context<Workspace>) -> String {
 
 /// `Name: value` lines into a map; the first line that is not a pair is
 /// the error.
-pub(crate) fn header_lines(text: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+pub(crate) fn header_lines(
+    text: &str,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
     presets::parse_pairs(text, ':')
 }
 
@@ -274,7 +281,9 @@ impl Workspace {
             SetupMsg::CustomRemoved(id, r) => match r {
                 Ok(()) => {
                     self.model.toast_info(format!("Removed “{id}”"));
-                    if self.model.providers.default_id(Kind::Model).is_none() && !self.model.is_busy() {
+                    if self.model.providers.default_id(Kind::Model).is_none()
+                        && !self.model.is_busy()
+                    {
                         self.reconnect();
                     }
                 }
@@ -351,7 +360,10 @@ impl Workspace {
                 for parsed in list {
                     self.bridge.custom_save(
                         parsed.provider,
-                        parsed.key.filter(|k| !k.trim().is_empty()).map(SecretString::new),
+                        parsed
+                            .key
+                            .filter(|k| !k.trim().is_empty())
+                            .map(SecretString::new),
                     );
                 }
             }
@@ -615,9 +627,10 @@ impl Workspace {
                             .small()
                             .disabled(working)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model
-                                    .settings
-                                    .set_crawler_note(c, Line::Working("Reading example.com…".into()));
+                                this.model.settings.set_crawler_note(
+                                    c,
+                                    Line::Working("Reading example.com…".into()),
+                                );
                                 this.bridge.crawler_test(c);
                                 cx.notify();
                             })),
@@ -630,9 +643,9 @@ impl Workspace {
                             .selected(is_default)
                             .disabled(!on)
                             .tooltip("Read every page with this one")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_default_crawler(c, cx)
-                            })),
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.set_default_crawler(c, cx)),
+                            ),
                     )
                     .child(
                         Switch::new(bid("on"))
@@ -665,7 +678,12 @@ impl Workspace {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(c.name()))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(c.name()),
+                            )
                             .when(is_default, |d| {
                                 d.child(
                                     div()
@@ -709,11 +727,9 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&self.setup_inputs.crawler_key).mask_toggle()),
-                                )
+                                .child(div().flex_1().child(
+                                    Input::new(&self.setup_inputs.crawler_key).mask_toggle(),
+                                ))
                                 .child(
                                     Button::new(bid("save"))
                                         .label("Test and save")
@@ -769,7 +785,13 @@ impl Workspace {
         }
     }
 
-    fn save_prompt(&mut self, scope: Scope, reset: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn save_prompt(
+        &mut self,
+        scope: Scope,
+        reset: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = self.prompt_input(scope);
         let text = if reset {
             input.update(cx, |i, cx| i.set_value("", window, cx));
@@ -782,56 +804,71 @@ impl Workspace {
         self.model.toast_info(if reset {
             format!("{} instructions back to Tern's defaults", scope.label())
         } else {
-            format!("Saved your {} instructions; new chats use them", scope.label())
+            format!(
+                "Saved your {} instructions; new chats use them",
+                scope.label()
+            )
         });
         cx.notify();
     }
 
     pub(super) fn instructions_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let saved = &self.model.providers.prefs.system_prompts;
-        let editors: Vec<AnyElement> = Scope::ALL
-            .into_iter()
-            .map(|scope| {
-                let has = saved.contains_key(scope.key());
-                let input = self.prompt_input(scope);
-                let n = input.read(cx).value().chars().count();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .px_3()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(p.border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(scope.label()))
-                            .child(div().text_xs().text_color(p.faint).child(SharedString::from(
-                                format!(
-                                    "{} · {n}/{}",
-                                    if has { "Yours" } else { "Tern's defaults" },
-                                    prompts::MAX_CHARS
-                                ),
-                            ))),
-                    )
-                    .child(Textarea::new(&input))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                Button::new(SharedString::from(format!("prompt-save-{}", scope.key())))
+        let editors: Vec<AnyElement> =
+            Scope::ALL
+                .into_iter()
+                .map(|scope| {
+                    let has = saved.contains_key(scope.key());
+                    let input = self.prompt_input(scope);
+                    let n = input.read(cx).value().chars().count();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .px_3()
+                        .py_3()
+                        .border_b_1()
+                        .border_color(p.border)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(scope.label()),
+                                )
+                                .child(div().text_xs().text_color(p.faint).child(
+                                    SharedString::from(format!(
+                                        "{} · {n}/{}",
+                                        if has { "Yours" } else { "Tern's defaults" },
+                                        prompts::MAX_CHARS
+                                    )),
+                                )),
+                        )
+                        .child(Textarea::new(&input))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "prompt-save-{}",
+                                        scope.key()
+                                    )))
                                     .label("Save")
                                     .small()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.save_prompt(scope, false, window, cx)
                                     })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("prompt-reset-{}", scope.key())))
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "prompt-reset-{}",
+                                        scope.key()
+                                    )))
                                     .label("Reset to default")
                                     .ghost()
                                     .small()
@@ -839,11 +876,11 @@ impl Workspace {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.save_prompt(scope, true, window, cx)
                                     })),
-                            ),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+                                ),
+                        )
+                        .into_any_element()
+                })
+                .collect();
         let mut builtins: Vec<AnyElement> = Vec::new();
         for scope in [Scope::Research, Scope::Study] {
             for (k, b) in prompts::builtins(scope).into_iter().enumerate() {
@@ -944,12 +981,7 @@ impl Workspace {
 
     // ----- MCP: templates, Add, Paste -----
 
-    fn open_mcp_template(
-        &mut self,
-        id: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_mcp_template(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = presets::template(id) else {
             return;
         };
@@ -1017,7 +1049,9 @@ impl Workspace {
             errs.push("Give its command (with arguments) or its URL.".to_owned());
         }
         let cfg = if errs.is_empty() {
-            presets::from_form(&target, &pairs).map_err(|e| errs.push(e)).ok()
+            presets::from_form(&target, &pairs)
+                .map_err(|e| errs.push(e))
+                .ok()
         } else {
             None
         };
@@ -1026,7 +1060,10 @@ impl Workspace {
                 self.bridge.mcp_change(McpChange::Add(name, Box::new(cfg)));
                 self.model.customize.adding = false;
                 self.model.settings.mcp_errors.clear();
-                for e in [self.setup_inputs.mcp_name.clone(), self.setup_inputs.mcp_target.clone()] {
+                for e in [
+                    self.setup_inputs.mcp_name.clone(),
+                    self.setup_inputs.mcp_target.clone(),
+                ] {
                     e.update(cx, |i, cx| i.set_value("", window, cx));
                 }
                 self.setup_inputs
@@ -1138,7 +1175,12 @@ impl Workspace {
                             .items_center()
                             .gap_2()
                             .child(super::brand_logo(t.logo, 16., p))
-                            .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(t.name)),
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(t.name),
+                            ),
                     )
                     .child(
                         div()
@@ -1163,10 +1205,9 @@ impl Workspace {
                             .flex()
                             .gap_2()
                             .child(
-                                Button::new("mcp-tpl-add")
-                                    .label("Add")
-                                    .small()
-                                    .on_click(cx.listener(|this, _, _, cx| this.add_mcp_template(cx))),
+                                Button::new("mcp-tpl-add").label("Add").small().on_click(
+                                    cx.listener(|this, _, _, cx| this.add_mcp_template(cx)),
+                                ),
                             )
                             .child(
                                 Button::new("mcp-tpl-docs")
@@ -1210,7 +1251,9 @@ impl Workspace {
                         Button::new("mcp-paste-go")
                             .label("Check and add")
                             .small()
-                            .on_click(cx.listener(|this, _, window, cx| this.paste_mcp(window, cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.paste_mcp(window, cx)),
+                            ),
                     ),
             );
         }
@@ -1230,11 +1273,15 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.bridge.skills_change(SkillChange::Create(name, desc, body));
+        self.bridge
+            .skills_change(SkillChange::Create(name, desc, body));
         let st = &mut self.model.settings;
         st.skill_errors.clear();
         st.skill_new_open = false;
-        for e in [self.setup_inputs.skill_name.clone(), self.setup_inputs.skill_desc.clone()] {
+        for e in [
+            self.setup_inputs.skill_name.clone(),
+            self.setup_inputs.skill_desc.clone(),
+        ] {
             e.update(cx, |i, cx| i.set_value("", window, cx));
         }
         self.setup_inputs
@@ -1334,7 +1381,12 @@ impl Workspace {
                         this.use_skill_template(k, window, cx)
                     }))
             }));
-        let mut col = div().flex().flex_col().gap_2().child(buttons).child(templates);
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(buttons)
+            .child(templates);
         if st.skill_new_open {
             col = col.child(
                 form_box(p)

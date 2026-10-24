@@ -22,8 +22,7 @@ pub struct GithubRef {
 fn ok_part(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 100
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         && s != "."
         && s != ".."
@@ -104,11 +103,19 @@ impl GithubRef {
 
 /// Downloads the folder at `r` and installs the skills in it (each folder
 /// with a `SKILL.md`). Returns the installed names.
-pub async fn import_github(data: &Path, r: &GithubRef, replace: bool) -> Result<Vec<String>, String> {
-    let files = tern_crawl::github::fetch_folder(&r.owner, &r.repo, r.reference.as_deref(), &r.path)
-        .await
-        .map_err(|e| e.to_string())?;
-    if !files.iter().any(|(p, _)| p == FILE || p.ends_with(&format!("/{FILE}"))) {
+pub async fn import_github(
+    data: &Path,
+    r: &GithubRef,
+    replace: bool,
+) -> Result<Vec<String>, String> {
+    let files =
+        tern_crawl::github::fetch_folder(&r.owner, &r.repo, r.reference.as_deref(), &r.path)
+            .await
+            .map_err(|e| e.to_string())?;
+    if !files
+        .iter()
+        .any(|(p, _)| p == FILE || p.ends_with(&format!("/{FILE}")))
+    {
         return Err(format!("{} has no {FILE}.", r.label()));
     }
     let tmp = skills::tempfile_dir::TempDir::new()?;
@@ -140,7 +147,11 @@ pub fn skill_md(name: &str, description: &str, body: &str) -> String {
     } else {
         desc
     };
-    format!("---\nname: {}\ndescription: {desc}\n---\n\n{}\n", name.trim(), body.trim())
+    format!(
+        "---\nname: {}\ndescription: {desc}\n---\n\n{}\n",
+        name.trim(),
+        body.trim()
+    )
 }
 
 /// Checks the editor's fields; every problem, in words.
@@ -150,7 +161,9 @@ pub fn check_new(name: &str, description: &str, body: &str) -> Vec<String> {
         e.push("A skill name is lowercase letters, digits, and hyphens (up to 64), like study-summariser.".to_owned());
     }
     if description.trim().is_empty() {
-        e.push("Say in one line when Tern should use it; the model reads this to decide.".to_owned());
+        e.push(
+            "Say in one line when Tern should use it; the model reads this to decide.".to_owned(),
+        );
     } else if description.trim().len() > 1024 {
         e.push("Keep the description under 1024 characters.".to_owned());
     }
@@ -222,21 +235,36 @@ mod tests {
     #[test]
     fn github_links_in_every_common_form() {
         let r = GithubRef::parse("anthropics/skills").unwrap();
-        assert_eq!((r.owner.as_str(), r.repo.as_str(), r.path.as_str()), ("anthropics", "skills", ""));
+        assert_eq!(
+            (r.owner.as_str(), r.repo.as_str(), r.path.as_str()),
+            ("anthropics", "skills", "")
+        );
         assert_eq!(r.reference, None);
         let r = GithubRef::parse("anthropics/skills/document-skills/pdf").unwrap();
         assert_eq!(r.path, "document-skills/pdf");
-        let r = GithubRef::parse("https://github.com/anthropics/skills/tree/main/skills/pdf/").unwrap();
+        let r =
+            GithubRef::parse("https://github.com/anthropics/skills/tree/main/skills/pdf/").unwrap();
         assert_eq!(r.reference.as_deref(), Some("main"));
         assert_eq!(r.path, "skills/pdf");
         let r = GithubRef::parse("https://github.com/o/r/blob/v2/x/SKILL.md").unwrap();
         assert_eq!((r.reference.as_deref(), r.path.as_str()), (Some("v2"), "x"));
         let r = GithubRef::parse("https://raw.githubusercontent.com/o/r/main/SKILL.md").unwrap();
-        assert_eq!((r.reference.as_deref(), r.path.as_str()), (Some("main"), ""));
+        assert_eq!(
+            (r.reference.as_deref(), r.path.as_str()),
+            (Some("main"), "")
+        );
         let r = GithubRef::parse("https://github.com/o/r.git").unwrap();
         assert_eq!(r.repo, "r");
         assert_eq!(r.label(), "o/r");
-        for bad in ["", "justone", "https://gitlab.com/o/r", "o/../r", "o/r/../../etc", "git@github.com:o/r", "https://github.com/o/r/tree"] {
+        for bad in [
+            "",
+            "justone",
+            "https://gitlab.com/o/r",
+            "o/../r",
+            "o/r/../../etc",
+            "git@github.com:o/r",
+            "https://github.com/o/r/tree",
+        ] {
             assert!(GithubRef::parse(bad).is_err(), "{bad}");
         }
     }
@@ -247,8 +275,17 @@ mod tests {
         assert!(create(dir.path(), "Bad Name", "", "", false).is_err());
         let e = check_new("x", " ", " ");
         assert_eq!(e.len(), 2);
-        create(dir.path(), "citation-checker", "Use when: checking citations", "Do it.", false).unwrap();
-        let file = skills::user_dir(dir.path()).join("citation-checker").join(FILE);
+        create(
+            dir.path(),
+            "citation-checker",
+            "Use when: checking citations",
+            "Do it.",
+            false,
+        )
+        .unwrap();
+        let file = skills::user_dir(dir.path())
+            .join("citation-checker")
+            .join(FILE);
         let (keys, body) = skills::parse(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(keys["name"], "citation-checker");
         assert_eq!(keys["description"], "Use when: checking citations");
@@ -257,7 +294,11 @@ mod tests {
         create(dir.path(), "citation-checker", "d", "b2", true).unwrap();
         // Templates are valid skills.
         for t in TEMPLATES {
-            assert!(check_new(t.name, t.description, t.body).is_empty(), "{}", t.name);
+            assert!(
+                check_new(t.name, t.description, t.body).is_empty(),
+                "{}",
+                t.name
+            );
             skills::parse(&skill_md(t.name, t.description, t.body)).unwrap();
         }
     }

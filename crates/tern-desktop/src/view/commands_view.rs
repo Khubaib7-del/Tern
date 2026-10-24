@@ -34,11 +34,7 @@ pub(super) fn row_logo(logo: RowLogo, p: Palette) -> AnyElement {
             .size(px(13.))
             .text_color(p.text)
             .into_any_element(),
-        RowLogo::Server(ServerGlyph::Service(k)) => svg()
-            .path(assets::service_path(k))
-            .size(px(13.))
-            .text_color(p.text)
-            .into_any_element(),
+        RowLogo::Server(ServerGlyph::Service(k)) => super::service_logo(k, 13., p, p.text),
         RowLogo::Server(ServerGlyph::Terminal) => icon(AssetIcon::SquareTerminal, p.text),
         RowLogo::Server(ServerGlyph::Globe) => icon(AssetIcon::Globe, p.text),
     };

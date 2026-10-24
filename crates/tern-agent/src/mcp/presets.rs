@@ -282,10 +282,7 @@ pub fn parse_pairs(text: &str, sep: char) -> Result<BTreeMap<String, String>, St
 }
 
 /// A server from the Add form: a command line (stdio) or a URL (http).
-pub fn from_form(
-    command_or_url: &str,
-    env_or_headers: &str,
-) -> Result<ServerConfig, String> {
+pub fn from_form(command_or_url: &str, env_or_headers: &str) -> Result<ServerConfig, String> {
     let t = command_or_url.trim();
     if t.starts_with("http://") || t.starts_with("https://") {
         let u = url::Url::parse(t).map_err(|_| format!("“{t}” is not a URL."))?;
@@ -334,8 +331,7 @@ pub fn parse_pasted(text: &str) -> Result<Vec<(String, ServerConfig)>, Vec<Strin
     };
     if obj.contains_key("command") || obj.contains_key("url") {
         return Err(vec![
-            "That is one server without a name: wrap it as {\"mcpServers\": {\"name\": …}}."
-                .into(),
+            "That is one server without a name: wrap it as {\"mcpServers\": {\"name\": …}}.".into(),
         ]);
     }
     let mut out = Vec::new();
@@ -391,7 +387,10 @@ mod tests {
         }
         let fs = template("filesystem").unwrap();
         let s = fs
-            .config(&BTreeMap::from([("PATH_ARG".into(), "/home/me/notes".into())]))
+            .config(&BTreeMap::from([(
+                "PATH_ARG".into(),
+                "/home/me/notes".into(),
+            )]))
             .unwrap();
         assert_eq!(s.args.last().unwrap(), "/home/me/notes");
         assert_eq!(s.transport().unwrap(), Transport::Stdio);
@@ -441,10 +440,14 @@ mod tests {
         let got = parse_pasted(claude).unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].0, "docs");
-        let vscode = r#"{"servers": {"gh": {"type": "http", "url": "https://api.githubcopilot.com/mcp/"}}}"#;
+        let vscode =
+            r#"{"servers": {"gh": {"type": "http", "url": "https://api.githubcopilot.com/mcp/"}}}"#;
         assert_eq!(parse_pasted(vscode).unwrap()[0].0, "gh");
         let bare = r#"{"time": {"command": "uvx", "args": ["mcp-server-time"]}}"#;
-        assert_eq!(parse_pasted(bare).unwrap()[0].1.args, vec!["mcp-server-time"]);
+        assert_eq!(
+            parse_pasted(bare).unwrap()[0].1.args,
+            vec!["mcp-server-time"]
+        );
         let zed = r#"{"mcp": {"servers": {"w": {"serverUrl": "https://w.example/mcp"}}}}"#;
         assert_eq!(
             parse_pasted(zed).unwrap()[0].1.url.as_deref(),

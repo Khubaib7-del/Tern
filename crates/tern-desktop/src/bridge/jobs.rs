@@ -42,7 +42,8 @@ impl Bridge {
     /// Which page readers have a key.
     pub fn crawlers_load(&self) {
         let tx = self.tx.clone();
-        self.rt.spawn_blocking(move || send(&tx, SetupMsg::Crawlers(crawler_keys())));
+        self.rt
+            .spawn_blocking(move || send(&tx, SetupMsg::Crawlers(crawler_keys())));
     }
 
     /// Tests a hosted reader with a new key and saves it only if it works.
@@ -69,8 +70,7 @@ impl Bridge {
         self.rt.spawn(async move {
             let key = tokio::task::spawn_blocking(move || {
                 let keychain = setup::keychain();
-                let secrets: Option<&dyn SecretStore> =
-                    keychain.as_ref().ok().map(|b| b.as_ref());
+                let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
                 crawlers::saved_key(c, secrets)
             })
             .await
@@ -146,9 +146,11 @@ impl Bridge {
                 }
             };
             let _ = tx.send(Msg::Checked(Kind::Model, id, result));
-            let _ = tx.send(tokio::task::spawn_blocking(super::providers_msg)
-                .await
-                .unwrap_or_else(|e| Msg::PrefsFailed(e.to_string())));
+            let _ = tx.send(
+                tokio::task::spawn_blocking(super::providers_msg)
+                    .await
+                    .unwrap_or_else(|e| Msg::PrefsFailed(e.to_string())),
+            );
         });
     }
 

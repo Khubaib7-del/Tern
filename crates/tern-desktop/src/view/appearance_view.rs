@@ -3,6 +3,7 @@
 //! system's specimens — type, glyphs, logos, Scout's moods, the palette —
 //! are not settings, so they are not here.)
 
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, div, px};
 
@@ -123,8 +124,7 @@ impl Workspace {
                         .small()
                         .on_click(cx.listener(|this, on: &bool, _, cx| {
                             let on = *on;
-                            this.reduced_motion =
-                                on || tern_agent::platform::os_reduces_motion();
+                            this.reduced_motion = on || tern_agent::platform::os_reduces_motion();
                             this.save_ui_prefs(|p| p.reduced_motion = on);
                             crate::theme::set_reduced_motion(this.reduced_motion, cx);
                             cx.notify();
@@ -133,10 +133,23 @@ impl Workspace {
                 .into_any_element(),
         ];
         let one = |v: Vec<AnyElement>| -> Option<AnyElement> {
-            Some(div().flex().flex_wrap().justify_end().gap_1().children(v).into_any_element())
+            Some(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .justify_end()
+                    .gap_1()
+                    .children(v)
+                    .into_any_element(),
+            )
         };
         let look_rows = vec![
-            Self::row("Theme", "Dark, light, or follow the system.", one(themes), p),
+            Self::row(
+                "Theme",
+                "Dark, light, or follow the system.",
+                one(themes),
+                p,
+            ),
             Self::row(
                 "Accent",
                 "The one colour for selection, focus, and what is live.",
@@ -156,7 +169,12 @@ impl Workspace {
         let type_rows = vec![
             Self::row("Font", "The interface typeface.", one(fonts), p),
             Self::row("Text size", "Scales text across the app.", one(sizes), p),
-            Self::row("Density", "How much space rows and lists get.", one(densities), p),
+            Self::row(
+                "Density",
+                "How much space rows and lists get.",
+                one(densities),
+                p,
+            ),
         ];
         let motion_rows = vec![Self::row(
             "Reduce motion",

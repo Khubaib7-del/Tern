@@ -592,7 +592,11 @@ impl Workspace {
     }
 
     /// A titled group of rows on a card.
-    pub(super) fn settings_card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
+    pub(super) fn settings_card(
+        title: &'static str,
+        p: Palette,
+        rows: Vec<AnyElement>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -808,8 +812,13 @@ impl Workspace {
                     .text_color(p.faint)
                     .child("Model")
                     .children(match &st.models {
-                        Some(Models::Loaded(_, l)) if l.len() as f32 * LIST_ROW_H > settings::MODEL_LIST_MAX_H => {
-                            Some(SharedString::from(format!("{} models · scroll the list", l.len())))
+                        Some(Models::Loaded(_, l))
+                            if l.len() as f32 * LIST_ROW_H > settings::MODEL_LIST_MAX_H =>
+                        {
+                            Some(SharedString::from(format!(
+                                "{} models · scroll the list",
+                                l.len()
+                            )))
                         }
                         _ => None,
                     }),
@@ -1321,21 +1330,15 @@ impl Workspace {
                             .child(div().flex_none().child(switch)),
                     )
                     .when(on, |d| {
-                        d.child(
-                            div()
-                                .pl(px(40.))
-                                .flex()
-                                .flex_wrap()
-                                .child(self.segmented(
-                                    name,
-                                    &options,
-                                    selected,
-                                    Look::default(),
-                                    p,
-                                    pick,
-                                    cx,
-                                )),
-                        )
+                        d.child(div().pl(px(40.)).flex().flex_wrap().child(self.segmented(
+                            name,
+                            &options,
+                            selected,
+                            Look::default(),
+                            p,
+                            pick,
+                            cx,
+                        )))
                     })
                     .into_any_element()
             })

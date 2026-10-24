@@ -786,7 +786,10 @@ mod tests {
         s.set_crawler_note(Crawler::Jina, Line::Working("Testing".into()));
         s.set_crawler_note(Crawler::Jina, Line::Ok("Works".into()));
         assert_eq!(s.crawler_notes.len(), 1);
-        assert_eq!(s.crawler_note(Crawler::Jina), Some(&Line::Ok("Works".into())));
+        assert_eq!(
+            s.crawler_note(Crawler::Jina),
+            Some(&Line::Ok("Works".into()))
+        );
         s.crawler_keys = vec![(Crawler::Firecrawl, true), (Crawler::Jina, false)];
         assert!(s.crawler_has_key(Crawler::Firecrawl));
         assert!(!s.crawler_has_key(Crawler::Jina));

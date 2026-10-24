@@ -82,11 +82,7 @@ impl RemoteReader {
     }
 
     /// A reader at another address (a self-hosted Firecrawl, tests).
-    pub fn at(
-        kind: RemoteKind,
-        base: &str,
-        key: Option<SecretString>,
-    ) -> Result<Self, FetchError> {
+    pub fn at(kind: RemoteKind, base: &str, key: Option<SecretString>) -> Result<Self, FetchError> {
         let key = key.filter(|k| !k.is_empty());
         if kind.needs_key() && key.is_none() {
             return Err(FetchError::Network {
@@ -101,17 +97,18 @@ impl RemoteReader {
         // sent through the system proxy.
         let local = Url::parse(base)
             .ok()
-            .and_then(|u| u.host_str().map(|h| h == "localhost" || h.starts_with("127.")))
+            .and_then(|u| {
+                u.host_str()
+                    .map(|h| h == "localhost" || h.starts_with("127."))
+            })
             .unwrap_or(false);
         if local {
             b = b.no_proxy();
         }
-        let http = b
-            .build()
-            .map_err(|e| FetchError::Network {
-                site: kind.name().to_owned(),
-                reason: e.to_string(),
-            })?;
+        let http = b.build().map_err(|e| FetchError::Network {
+            site: kind.name().to_owned(),
+            reason: e.to_string(),
+        })?;
         Ok(Self {
             kind,
             base: base.trim_end_matches('/').to_owned(),
@@ -143,14 +140,15 @@ impl RemoteReader {
         }
         let service = self.kind.name().to_owned();
         let rb = match self.kind {
-            RemoteKind::Firecrawl => self
-                .http
-                .post(format!("{}/v1/scrape", self.base))
-                .json(&serde_json::json!({
-                    "url": target.as_str(),
-                    "formats": ["markdown"],
-                    "onlyMainContent": true,
-                })),
+            RemoteKind::Firecrawl => {
+                self.http
+                    .post(format!("{}/v1/scrape", self.base))
+                    .json(&serde_json::json!({
+                        "url": target.as_str(),
+                        "formats": ["markdown"],
+                        "onlyMainContent": true,
+                    }))
+            }
             RemoteKind::Jina => self
                 .http
                 .get(format!("{}/{}", self.base, target.as_str()))

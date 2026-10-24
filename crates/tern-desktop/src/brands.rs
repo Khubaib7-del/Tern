@@ -173,7 +173,7 @@ mod tests {
         );
         assert_eq!(
             logo("LM Studio"),
-            Logo::Mark("tern/brands/lmstudio.svg", Tint::Mono)
+            Logo::Mark("tern/brands/lmstudio.svg", Tint::Original)
         );
         assert_eq!(
             logo("openai"),
