@@ -224,6 +224,13 @@ impl Workspace {
             return;
         }
         self.scout.step(dt);
+        // Nothing to draw: Scout's corner is hidden (Settings, or the
+        // sidebar is closed), so it never asks for frames. Before this, a
+        // busy or drifting Scout redrew the whole window 15 to 60 times a
+        // second behind Settings, which is what made its scrolling lag.
+        if !self.scout_on_screen() {
+            return;
+        }
         if self.scout.busy() {
             window.request_animation_frame();
         } else if self.scout_wake.is_none() {
@@ -241,6 +248,16 @@ impl Workspace {
                     cx.notify();
                 });
             }));
+        }
+    }
+
+    /// Whether Scout is drawn anywhere right now.
+    pub(super) fn scout_on_screen(&self) -> bool {
+        use crate::model::Screen;
+        match self.model.screen {
+            Screen::Settings => false,
+            Screen::Study => true,
+            _ => self.model.sidebar_open,
         }
     }
 

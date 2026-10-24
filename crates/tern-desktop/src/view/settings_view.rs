@@ -54,6 +54,24 @@ fn section_icon(s: Section) -> AssetIcon {
     }
 }
 
+/// A small icon for each of Tern's own tools.
+fn tool_icon(name: &str) -> AssetIcon {
+    match name {
+        "web_search" => AssetIcon::Search,
+        "read_url" => AssetIcon::Globe,
+        "vault_search" => AssetIcon::BookMarked,
+        "vault_read" => AssetIcon::NotebookPen,
+        "vault_write" => AssetIcon::Pencil,
+        "files_list" => AssetIcon::FolderOpen,
+        "file_read" => AssetIcon::FileText,
+        "file_search" => AssetIcon::Search,
+        "load_skill" => AssetIcon::Sparkles,
+        n if n.starts_with("vault") => AssetIcon::NotebookPen,
+        n if n.starts_with("file") => AssetIcon::FileText,
+        _ => AssetIcon::Wrench,
+    }
+}
+
 fn icon(name: AssetIcon, color: gpui_kit::Hsla) -> AnyElement {
     Icon::new(name).small().text_color(color).into_any_element()
 }
@@ -744,10 +762,18 @@ impl Workspace {
                 .into_any_element(),
             Some(Models::Loaded(_, list)) => {
                 let n = list.len();
-                let h = (n as f32 * LIST_ROW_H).min(240.);
+                let h = (n as f32 * LIST_ROW_H).min(settings::MODEL_LIST_MAX_H);
+                // Its own bounded box with its own thin scrollbar: the
+                // wheel over it scrolls the list, never the page behind it.
                 div()
+                    .id("provider-models-box")
                     .relative()
-                    .h(px(h))
+                    .h(px(h + 2.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border)
+                    .overflow_hidden()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(
                         uniform_list(
                             "provider-models",
@@ -768,7 +794,20 @@ impl Workspace {
             .flex_col()
             .gap_1()
             .pl(px(40.))
-            .child(div().text_xs().text_color(p.faint).child("Model"))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child("Model")
+                    .children(match &st.models {
+                        Some(Models::Loaded(_, l)) if l.len() as f32 * LIST_ROW_H > settings::MODEL_LIST_MAX_H => {
+                            Some(SharedString::from(format!("{} models · scroll the list", l.len())))
+                        }
+                        _ => None,
+                    }),
+            )
             .child(body)
             .into_any_element()
     }
@@ -1214,46 +1253,85 @@ impl Workspace {
                         this.save_ui_prefs(|p| p.set_tool_mode(name, m));
                     },
                 );
-                let control = div()
+                let switch = Switch::new(SharedString::from(format!("tool-on-{name}")))
+                    .checked(on)
+                    .small()
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.save_ui_prefs(|p| p.set_tool_on(name, checked));
+                        cx.notify();
+                    }));
+                // Two lines, so the approval choices never run past the
+                // card's edge: the tool and its switch, then (when on)
+                // the choices under it, left-aligned.
+                div()
                     .flex()
-                    .items_center()
-                    .gap_3()
-                    .when(on, |d| {
-                        d.child(self.segmented(
-                            name,
-                            &options,
-                            selected,
-                            Look::default(),
-                            p,
-                            pick,
-                            cx,
-                        ))
-                    })
+                    .flex_col()
+                    .gap_2()
+                    .px_3()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(p.border)
                     .child(
-                        Switch::new(SharedString::from(format!("tool-on-{name}")))
-                            .checked(on)
-                            .small()
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                this.save_ui_prefs(|p| p.set_tool_on(name, checked));
-                                cx.notify();
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .size(px(28.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .bg(p.raised)
+                                    .child(icon(tool_icon(name), p.text)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(div().text_sm().child(SharedString::from(format!(
+                                        "{} · {}",
+                                        t.label, t.name
+                                    ))))
+                                    .child(div().text_xs().text_color(p.faint).child(
+                                        SharedString::from(format!(
+                                            "{}{}",
+                                            effect_line(t.effect),
+                                            if on {
+                                                ""
+                                            } else {
+                                                " · off: the model never sees it"
+                                            }
+                                        )),
+                                    )),
+                            )
+                            .child(div().flex_none().child(switch)),
                     )
-                    .into_any_element();
-                Self::row(
-                    SharedString::from(format!("{} · {}", t.label, t.name)),
-                    SharedString::from(format!(
-                        "{}{}",
-                        effect_line(t.effect),
-                        if on {
-                            ""
-                        } else {
-                            " · off: the model never sees it"
-                        }
-                    )),
-                    Some(control),
-                    p,
-                )
+                    .when(on, |d| {
+                        d.child(
+                            div()
+                                .pl(px(40.))
+                                .flex()
+                                .flex_wrap()
+                                .child(self.segmented(
+                                    name,
+                                    &options,
+                                    selected,
+                                    Look::default(),
+                                    p,
+                                    pick,
+                                    cx,
+                                )),
+                        )
+                    })
+                    .into_any_element()
             })
             .collect();
         self.page(

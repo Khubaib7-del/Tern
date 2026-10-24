@@ -341,6 +341,9 @@ pub fn sections_matching(query: &str) -> Vec<Section> {
 pub const NAV_W: f32 = 212.;
 /// The section list folded to icons.
 pub const NAV_ICONS_W: f32 = 52.;
+/// The tallest an expanded provider's model list grows before it scrolls
+/// in its own box.
+pub const MODEL_LIST_MAX_H: f32 = 280.;
 /// The widest a settings page grows.
 pub const PAGE_MAX_W: f32 = 720.;
 /// Below this window width the section list folds to icons, so a page
