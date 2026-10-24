@@ -358,6 +358,8 @@ pub fn parse_pasted(text: &str) -> Result<Vec<(String, ServerConfig)>, Vec<Strin
             Err(e) => errs.push(format!("“{name}”: {e}")),
         }
     }
+    // By name, whatever order the JSON map keeps.
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     if out.is_empty() && errs.is_empty() {
         errs.push("No servers in that JSON.".into());
     }
