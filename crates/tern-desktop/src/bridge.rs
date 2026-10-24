@@ -380,18 +380,41 @@ impl Bridge {
     /// the last chat with messages (on launch, or switching harness), else
     /// a new draft. Never makes an empty row.
     pub fn launch(&self, harness: tern_agent::Harness, prefer: Option<SessionId>) {
+        let start = prefer.map_or(crate::restore::Start::Last, crate::restore::Start::Chat);
+        self.launch_start(harness, start);
+    }
+
+    /// Opens `harness` with the chat `start` names: a given chat (or, when
+    /// it is gone, the last chat with messages), a new chat, or the last
+    /// chat with messages.
+    pub fn launch_start(&self, harness: tern_agent::Harness, start: crate::restore::Start) {
+        use crate::restore::Start;
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let (prefs, reopen) = tokio::task::spawn_blocking(move || {
-                (
-                    Preferences::load(),
-                    prefer.or_else(|| tern_agent::chat_to_reopen(harness)),
-                )
+            let (prefs, tries) = tokio::task::spawn_blocking(move || {
+                let tries: Vec<SessionId> = match start {
+                    Start::Fresh => Vec::new(),
+                    Start::Chat(id) => {
+                        // Only a chat still listed (not archived) in this
+                        // harness; otherwise the last chat with messages.
+                        let listed = tern_agent::recent_sessions(500)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|s| s.id == id && s.harness == harness);
+                        listed
+                            .then_some(id)
+                            .into_iter()
+                            .chain(tern_agent::chat_to_reopen(harness).filter(|r| *r != id))
+                            .collect()
+                    }
+                    Start::Last => tern_agent::chat_to_reopen(harness).into_iter().collect(),
+                };
+                (Preferences::load(), tries)
             })
             .await
             .unwrap_or_default();
-            if let Some(id) = reopen {
-                // The last chat shows at once; its model connects after.
+            for id in tries {
+                // The chat shows at once; its model connects after.
                 let turns = tokio::task::spawn_blocking(move || tern_agent::stored_turns(id))
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()));

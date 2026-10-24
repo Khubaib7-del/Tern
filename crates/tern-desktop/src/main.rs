@@ -37,6 +37,7 @@ mod motion;
 mod onboarding;
 mod panels;
 mod providers;
+mod restore;
 mod runmap;
 mod scout;
 mod scrollbar;
@@ -60,6 +61,12 @@ use view::Workspace;
 fn main() {
     // Every panic is written to <data>/logs/crash.log first.
     crashlog::install();
+    // On Windows release builds this process only watches the app, run as
+    // a child, so a crash no panic hook sees (a stack overflow, an abort,
+    // a driver fault) still leaves a line in crash.log.
+    if let Some(code) = crashlog::watch() {
+        std::process::exit(code);
+    }
     let (bridge, rx) = match Bridge::new() {
         Ok(b) => b,
         Err(e) => {

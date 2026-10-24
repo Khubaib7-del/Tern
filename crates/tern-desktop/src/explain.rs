@@ -718,7 +718,12 @@ impl ExplainState {
                     leader: l.leader.map(|(_, z)| (a1, (z.0 + dx, z.1 + dy))),
                     ..l.clone()
                 };
-                let ok = [p.x, p.y].iter().all(|v| v.is_finite() && v.abs() < 1e5);
+                // Only sane boxes reach the layout engine and the text
+                // system: finite, on or near the stage, and a sane size.
+                let ok = [p.x, p.y].iter().all(|v| v.is_finite() && v.abs() < 1e5)
+                    && [p.w, p.h]
+                        .iter()
+                        .all(|v| v.is_finite() && *v > 0.0 && *v < 4_000.0);
                 ok.then_some(p)
             })
             .collect();
@@ -1183,22 +1188,31 @@ mod tests {
     }
 
     const FRAME: Duration = Duration::from_millis(16);
-    /// Most any one frame may take here. Release builds take well under a
-    /// millisecond; this leaves room for a debug build on a slow runner.
-    const FRAME_BUDGET: Duration = Duration::from_millis(40);
 
     /// Runs frames at 60 a second until nothing moves (at most `cap`),
     /// ticking autoplay like the app does. Returns the frames run.
+    ///
+    /// The work is checked with counters, not the wall clock (a shared CI
+    /// runner can stall any one frame): a frame lays labels out at most
+    /// once, and only when the step, the pointer's node, the size or a
+    /// settled camera target asks for it.
     fn run_frames(s: &mut ExplainState, t: &mut Instant, w: f32, h: f32, cap: usize) -> usize {
         for n in 0..cap {
             *t += FRAME;
             s.tick_autoplay(*t);
             s.settle(FRAME.as_secs_f32(), false);
-            let started = Instant::now();
+            let before = s.solves.get();
             let f = s.frame_at(w, h, *t).expect("a frame");
-            let took = started.elapsed();
-            assert!(took < FRAME_BUDGET, "frame {n} took {took:?}");
+            assert!(
+                s.solves.get() - before <= 1,
+                "frame {n} laid labels out twice"
+            );
             assert!(f.labels.iter().all(|l| l.x.is_finite() && l.y.is_finite()));
+            assert!(
+                f.labels
+                    .iter()
+                    .all(|l| l.w.is_finite() && l.h.is_finite() && l.w > 0.0 && l.h > 0.0)
+            );
             assert_eq!(f.links.len(), f.drawing.links.len());
             if !s.moving(*t, false) && !s.autoplay {
                 return n + 1;
@@ -1281,9 +1295,7 @@ mod tests {
             s.wheel(dy, 300.0, 200.0, w, h);
             t += FRAME;
             s.settle(FRAME.as_secs_f32(), false);
-            let started = Instant::now();
             let f = s.frame_at(w, h, t).unwrap();
-            assert!(started.elapsed() < FRAME_BUDGET);
             // Labels ride with their nodes: same layout, moved.
             assert_eq!(s.solves.get(), base, "no layout while the wheel turns");
             if let Some(l) = f.labels.iter().find(|l| l.part == first.part) {
@@ -1398,6 +1410,56 @@ mod tests {
                 run_frames(&mut s, &mut t, w, h, 600);
             }
             assert!(s.camera.now.zoom.is_finite(), "scene {i}");
+        }
+    }
+
+    /// The user's kind of scene: 20 parts, 15 steps.
+    fn users_scene() -> Scene {
+        let mut sc = dense();
+        sc.steps.truncate(15);
+        sc
+    }
+
+    /// Every step change, Play and the way back, as the app drives them,
+    /// on a thread with the 1 MB stack a Windows main thread gets: a stack
+    /// overflow ends the process at once, so it must not happen here.
+    fn walk_every_step(w: f32, h: f32) -> u64 {
+        let (mut t, mut s) = (Instant::now(), ExplainState::new("ipv6"));
+        s.ready(Ok((users_scene(), None)), t);
+        run_frames(&mut s, &mut t, w, h, 120);
+        for _ in 1..15 {
+            assert!(s.next(t));
+            // The first frames right after Next, then the glide.
+            for _ in 0..3 {
+                let f = s.frame_at(w, h, t).expect("a frame");
+                assert!(s.reading().is_some());
+                assert_eq!(f.links.len(), f.drawing.links.len());
+                assert_eq!(s.lit_all(t, false).len(), 20);
+            }
+            assert!(run_frames(&mut s, &mut t, w, h, 600) < 600);
+        }
+        assert_eq!(s.step, 14);
+        s.toggle_autoplay(t);
+        run_frames(&mut s, &mut t, w, h, 16 * 400);
+        while s.back(t) {
+            run_frames(&mut s, &mut t, w, h, 600);
+        }
+        s.solves.get()
+    }
+
+    #[test]
+    fn step_changes_run_on_a_one_megabyte_stack() {
+        for (w, h) in [(330.0, 455.0), (900.0, 560.0), (1600.0, 900.0)] {
+            let solves = std::thread::Builder::new()
+                .name("one-megabyte".into())
+                .stack_size(1024 * 1024)
+                .spawn(move || walk_every_step(w, h))
+                .expect("a thread")
+                .join()
+                .expect("the walk finished on a 1 MB stack");
+            // One layout to load, one per step there and back, one per
+            // step on Play: never one per frame.
+            assert!(solves <= 1 + 14 * 3 + 2, "{solves} layouts");
         }
     }
 }
