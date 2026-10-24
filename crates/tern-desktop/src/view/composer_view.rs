@@ -2129,10 +2129,17 @@ impl Workspace {
                 })
                 .child(
                     action(
-                        "more-menu",
-                        AssetIcon::Ellipsis,
-                        "More: save, watch, Explain in 3D",
+                        "explain-3d",
+                        AssetIcon::Cuboid,
+                        "Explain in 3D: this whole answer as a map from the basics to the advanced parts",
                     )
+                    .child(div().text_xs().child("Explain in 3D"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.explain_answer(i, window, cx);
+                    })),
+                )
+                .child(
+                    action("more-menu", AssetIcon::Ellipsis, "More: save, watch")
                     .when(open == Some((i, ActionMenu::More)), |d| {
                         d.bg(p.hover).text_color(p.text)
                     })
@@ -2255,30 +2262,37 @@ impl Workspace {
                             this.model.action_menu = None;
                             this.toggle_watch(i, cx);
                         })),
-                        _ => item("am-3d", AssetIcon::Cuboid, label.into()).on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.model.action_menu = None;
-                                let Some(text) = this.model.entry_text(i).map(str::to_owned) else {
-                                    return;
-                                };
-                                let label = this
-                                    .model
-                                    .question_before(i)
-                                    .unwrap_or_else(|| "this answer".into());
-                                let ask = tern_agent::explain::Ask {
-                                    concept: String::new(),
-                                    topic: None,
-                                    context: Some(text),
-                                };
-                                this.open_explain(ask, &label, window, cx);
-                            },
-                        )),
+                        _ => item("am-other", AssetIcon::Ellipsis, label.into()),
                     });
                 }
                 m
             }
         };
         Some(div().flex().justify_end().child(menu).into_any_element())
+    }
+
+    /// Explain in 3D for answer `i`: the whole answer mapped from the
+    /// basics to the advanced parts. In Study it opens in the Explain tab;
+    /// in Research, in a tab of its own. Both use the same renderer.
+    pub(super) fn explain_answer(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.action_menu = None;
+        let Some(text) = self.model.entry_text(i).map(str::to_owned) else {
+            return;
+        };
+        let label = self
+            .model
+            .question_before(i)
+            .unwrap_or_else(|| "this answer".into());
+        let ask = tern_agent::explain::Ask {
+            concept: label.clone(),
+            topic: None,
+            context: Some(text),
+        };
+        if self.model.harness == tern_agent::Harness::Study {
+            self.study_explain(ask, &label, window, cx);
+        } else {
+            self.open_explain(ask, &label, window, cx);
+        }
     }
 
     /// Watch, or stop watching with Undo.

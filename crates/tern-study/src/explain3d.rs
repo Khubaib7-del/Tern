@@ -663,7 +663,16 @@ pub struct View {
     pub pitch: f32,
     /// A part raised a little (the one under the pointer).
     pub lift: Option<usize>,
+    /// The point the camera turns about, in floor units; `None` is the
+    /// floor's centre.
+    pub pivot: Option<[f32; 3]>,
 }
+
+/// The lowest and highest the camera looks down from, radians above the
+/// floor (about 6° and 86°).
+pub const ELEVATION: (f32, f32) = (0.1, 1.5);
+/// The base elevation `View::pitch` adds to (30°).
+pub const BASE_ELEVATION: f32 = 0.523_598_8;
 
 impl View {
     /// The view for a pointer at `(px, py)`, each -1 to 1 from the centre:
@@ -673,6 +682,7 @@ impl View {
             yaw: px.clamp(-1.0, 1.0) * 8f32.to_radians(),
             pitch: py.clamp(-1.0, 1.0) * 4f32.to_radians(),
             lift: None,
+            pivot: None,
         }
     }
 }
@@ -755,23 +765,27 @@ struct Cam {
     sa: f32,
     se: f32,
     ce: f32,
+    pivot: [f32; 3],
 }
 
 impl Cam {
     fn new(v: View) -> Self {
         let a = 45f32.to_radians() + v.yaw;
-        let e = (30f32.to_radians() + v.pitch).clamp(0.2, 1.2);
+        let e = (BASE_ELEVATION + v.pitch).clamp(ELEVATION.0, ELEVATION.1);
         Self {
             ca: a.cos(),
             sa: a.sin(),
             se: e.sin(),
             ce: e.cos(),
+            pivot: v.pivot.unwrap_or([GRID / 2.0, GRID / 2.0, 0.0]),
         }
     }
 
-    /// Screen point and depth (larger is nearer the viewer).
+    /// Screen point and depth (larger is nearer the viewer). The pivot
+    /// lands on the origin.
     fn p(&self, x: f32, y: f32, z: f32) -> ((f32, f32), f32) {
-        let (dx, dy) = (x - GRID / 2.0, y - GRID / 2.0);
+        let [px, py, pz] = self.pivot;
+        let (dx, dy, z) = (x - px, y - py, z - pz);
         let rx = dx * self.ca - dy * self.sa;
         let ry = dx * self.sa + dy * self.ca;
         ((rx, ry * self.se - z * self.ce), ry * self.ce + z * self.se)
@@ -836,6 +850,27 @@ fn height(p: &Part) -> f32 {
         Shape::Label => 0.0,
         _ => p.size[2],
     }
+}
+
+/// A part's top centre, in floor units: where the camera turns about to
+/// look at it.
+pub fn part_centre(p: &Part) -> [f32; 3] {
+    let (x, y, z) = top_centre(p, 0.0);
+    [x, y, z]
+}
+
+/// The centre of several parts' tops (the floor's centre for none).
+pub fn parts_centre(scene: &Scene, parts: &[usize]) -> [f32; 3] {
+    let pts: Vec<[f32; 3]> = parts
+        .iter()
+        .filter_map(|&i| scene.parts.get(i))
+        .map(part_centre)
+        .collect();
+    if pts.is_empty() {
+        return [GRID / 2.0, GRID / 2.0, 0.0];
+    }
+    let n = pts.len() as f32;
+    [0, 1, 2].map(|k| pts.iter().map(|p| p[k]).sum::<f32>() / n)
 }
 
 /// A part's top centre, in floor units.

@@ -3,27 +3,35 @@
 //! Solid, Anatomy-style faces (lit top, a lit side and a shaded side, in
 //! the text colour over the canvas) with a Hairline overlay (every edge in
 //! a thin line, the floor grid, dashed links). The parts a step is about
-//! take the one accent and fade in on the motion curve; the pointer tilts
-//! the machine a few degrees and lifts the part under it. Steps go back
-//! and forward with the buttons, the arrow keys, or autoplay (Space).
-//! Reduced motion keeps it square and switches steps without a fade.
+//! take the one accent and fade in on the motion curve; the part under the
+//! pointer lifts. A real camera: drag to orbit (all the way round, the
+//! tilt clamped), the wheel or a pinch to zoom, right- or Shift-drag to
+//! pan, double-click a node to focus it, Reset view, arrows and + / - on
+//! the keyboard, with damped inertia. Steps go level by level with Prev,
+//! Next and Play, the camera gliding onto each step's nodes, and the side
+//! caption reads the step (or the node clicked): its text, the passage
+//! and its citations. Reduced motion jumps the camera, never spins it on,
+//! and switches steps without a fade.
 
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, Context, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PathBuilder, Pixels, SharedString, Window, canvas, div, point, px,
+    MouseUpEvent, PathBuilder, PinchEvent, Pixels, ScrollWheelEvent, SharedString, Window, canvas,
+    div, point, px,
 };
+use tern_agent::explain::camera::Camera;
 use tern_agent::explain::{Drawing, Edge, FaceKind, ink_amount};
 
 use super::Workspace;
 use super::study_view::serif;
-use crate::explain::{ExplainState, fit};
+use crate::explain::{ExplainState, KeyDid, MARGIN};
 use crate::model::Screen;
 use crate::motion::lerp_color;
 use crate::theme::Palette;
@@ -31,6 +39,7 @@ use crate::theme::Palette;
 /// Colours and amounts the painter needs, captured for the frame.
 struct Paint {
     drawing: Drawing,
+    camera: Camera,
     lit: Vec<f32>,
     hover: Option<usize>,
     canvas: Hsla,
@@ -110,7 +119,7 @@ fn paint_edge(
 fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
     let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
     let o = (f32::from(b.origin.x), f32::from(b.origin.y));
-    let f = fit(&pt.drawing, w, h);
+    let f = pt.camera.fit(w, h, MARGIN);
     // The floor grid: the faintest hairlines.
     for e in &pt.drawing.grid {
         if let Some(p) = stroke(&e.pts, &f, o, 0.6, false, None) {
@@ -280,13 +289,31 @@ impl Workspace {
     }
 
     fn explain_keys(&mut self, key: u32, e: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) {
-        match e.keystroke.key.as_str() {
-            "right" | "down" | "pagedown" => self.explain_step(key, 1, cx),
-            "left" | "up" | "pageup" => self.explain_step(key, -1, cx),
-            "space" => self.explain_play(key, cx),
-            _ => return,
+        let reduced = self.reduced_motion;
+        let did = match self.explains.get_mut(&key) {
+            Some(s) => {
+                s.reduced = reduced;
+                s.key(e.keystroke.key.as_str(), Instant::now())
+            }
+            None => return,
+        };
+        match did {
+            KeyDid::Nothing => return,
+            KeyDid::Play => {
+                if self.explains.get(&key).is_some_and(|s| s.autoplay) {
+                    self.start_explain_ticker(cx);
+                }
+            }
+            _ => {}
         }
         cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// A pointer event's position inside the stage, with its size.
+    fn stage_local(&self, key: u32, x: f32, y: f32) -> Option<(f32, f32, f32, f32)> {
+        let [bx, by, w, h] = self.explains.get(&key)?.bounds.get();
+        Some((x - bx, y - by, w, h))
     }
 
     fn explain_export(&mut self, key: u32, cx: &mut Context<Self>) {
@@ -309,6 +336,21 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// A press on the stage ended: a click reads the node under it.
+    fn explain_release(&mut self, key: u32, window: &mut Window, cx: &mut Context<Self>) {
+        let reduced = self.reduced_motion;
+        if let Some(s) = self.explains.get_mut(&key)
+            && s.camera.dragging()
+        {
+            s.reduced = reduced;
+            s.release(Instant::now());
+            // The spin after a drag needs frames.
+            self.explain_at = None;
+            window.request_animation_frame();
+            cx.notify();
+        }
     }
 
     /// The explainer in tab `key`.
@@ -477,14 +519,19 @@ impl Workspace {
         let bounds = s.bounds.clone();
         let [_, _, bw, bh] = bounds.get();
         let labels: Vec<AnyElement> = if bw > 1.0 {
-            let f = fit(&drawing, bw, bh);
+            let f = s.fit(bw, bh);
             drawing
                 .labels
                 .iter()
+                .filter(|l| {
+                    let (x, y) = f.at(l.at);
+                    x > -80.0 && y > -20.0 && x < bw + 80.0 && y < bh + 20.0
+                })
                 .map(|l| {
                     let (x, y) = f.at(l.at);
-                    let on =
-                        lit.get(l.part).copied().unwrap_or(0.0) > 0.5 || s.hover == Some(l.part);
+                    let on = lit.get(l.part).copied().unwrap_or(0.0) > 0.5
+                        || s.hover == Some(l.part)
+                        || s.picked == Some(l.part);
                     div()
                         .absolute()
                         .left(px(x - 80.))
@@ -509,6 +556,7 @@ impl Workspace {
         };
         let pt = Paint {
             drawing,
+            camera: s.camera.clone(),
             lit,
             hover: s.hover,
             canvas: p.canvas,
@@ -536,52 +584,172 @@ impl Workspace {
                     d.child(div().text_color(p.muted).child(part.note.clone()))
                 })
         });
+        let reset = div().absolute().top(px(8.)).right(px(8.)).child(
+            Button::new(("x3d-reset", key as usize))
+                .icon(AssetIcon::RotateCcw)
+                .label("Reset view")
+                .ghost()
+                .xsmall()
+                .disabled(s.camera.at_home())
+                .tooltip("Back to the first view (0)")
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let reduced = this.reduced_motion;
+                    if let Some(s) = this.explains.get_mut(&key) {
+                        s.reduced = reduced;
+                        s.reset_view();
+                    }
+                    this.explain_at = None;
+                    window.request_animation_frame();
+                    cx.notify();
+                })),
+        );
         let stage = div()
             .id(("x3d-stage", key as usize))
             .relative()
             .flex_1()
+            .min_w_0()
             .min_h(px(320.))
             .rounded(px(16.))
             .border_1()
             .border_color(p.border)
             .bg(p.canvas)
             .overflow_hidden()
-            .cursor_pointer()
-            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+            .when(s.camera.dragging(), |d| d.cursor_grabbing())
+            .when(!s.camera.dragging(), |d| d.cursor_grab())
+            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, window, cx| {
+                let Some((mx, my, w, h)) =
+                    this.stage_local(key, f32::from(e.position.x), f32::from(e.position.y))
+                else {
+                    return;
+                };
+                let reduced = this.reduced_motion;
                 if let Some(s) = this.explains.get_mut(&key) {
-                    let [x, y, w, h] = s.bounds.get();
-                    let (mx, my) = (f32::from(e.position.x) - x, f32::from(e.position.y) - y);
-                    let before = s.hover;
-                    if mx < 0.0 || my < 0.0 || mx > w || my > h {
-                        s.leave();
-                    } else {
-                        s.point(mx, my, w, h);
+                    s.reduced = reduced;
+                    let dragging = s.camera.dragging();
+                    // A press released outside the window ends the drag.
+                    if dragging && e.pressed_button.is_none() {
+                        s.release(Instant::now());
+                        cx.notify();
+                        return;
                     }
-                    if s.hover != before || !this.reduced_motion {
+                    if mx < 0.0 || my < 0.0 || mx > w || my > h {
+                        if !dragging && s.hover.is_some() {
+                            s.leave();
+                            cx.notify();
+                        }
+                        return;
+                    }
+                    if s.point(mx, my, w, h, Instant::now()) || dragging {
+                        window.request_animation_frame();
                         cx.notify();
                     }
                 }
             }))
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                if !*over && let Some(s) = this.explains.get_mut(&key) {
+                if !*over
+                    && let Some(s) = this.explains.get_mut(&key)
+                    && !s.camera.dragging()
+                {
                     s.leave();
                     cx.notify();
                 }
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                     this.keys.focus(window, cx);
-                    if let Some(s) = this.explains.get_mut(&key)
-                        && let Some(part) = s.hover
-                        && let Some(step) = s.step_of(part)
-                    {
-                        s.autoplay = false;
-                        s.go(step, Instant::now());
+                    let Some((mx, my, w, h)) =
+                        this.stage_local(key, f32::from(e.position.x), f32::from(e.position.y))
+                    else {
+                        return;
+                    };
+                    let reduced = this.reduced_motion;
+                    if let Some(s) = this.explains.get_mut(&key) {
+                        s.reduced = reduced;
+                        if e.click_count >= 2 {
+                            s.double_click(mx, my, w, h);
+                        } else {
+                            s.press(mx, my, e.modifiers.shift, Instant::now());
+                        }
                     }
+                    this.explain_at = None;
+                    window.request_animation_frame();
                     cx.notify();
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    this.keys.focus(window, cx);
+                    let Some((mx, my, _, _)) =
+                        this.stage_local(key, f32::from(e.position.x), f32::from(e.position.y))
+                    else {
+                        return;
+                    };
+                    if let Some(s) = this.explains.get_mut(&key) {
+                        s.press(mx, my, true, Instant::now());
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                    this.explain_release(key, window, cx);
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                    this.explain_release(key, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                    this.explain_release(key, window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Right,
+                cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                    this.explain_release(key, window, cx);
+                }),
+            )
+            .on_scroll_wheel(cx.listener(move |this, e: &ScrollWheelEvent, window, cx| {
+                cx.stop_propagation();
+                let Some((mx, my, w, h)) =
+                    this.stage_local(key, f32::from(e.position.x), f32::from(e.position.y))
+                else {
+                    return;
+                };
+                let dy = f32::from(e.delta.pixel_delta(px(20.)).y);
+                let reduced = this.reduced_motion;
+                if let Some(s) = this.explains.get_mut(&key) {
+                    s.reduced = reduced;
+                    // Away from you zooms in.
+                    s.wheel(-dy, mx, my, w, h);
+                }
+                this.explain_at = None;
+                window.request_animation_frame();
+                cx.notify();
+            }))
+            .on_pinch(cx.listener(move |this, e: &PinchEvent, window, cx| {
+                let Some((mx, my, w, h)) =
+                    this.stage_local(key, f32::from(e.position.x), f32::from(e.position.y))
+                else {
+                    return;
+                };
+                let reduced = this.reduced_motion;
+                if let Some(s) = this.explains.get_mut(&key) {
+                    s.reduced = reduced;
+                    s.pinch(e.delta, mx, my, w, h);
+                }
+                this.explain_at = None;
+                window.request_animation_frame();
+                cx.notify();
+            }))
             .child(
                 canvas(
                     |_, _, _: &mut App| (),
@@ -603,11 +771,63 @@ impl Workspace {
                 .size_full(),
             )
             .children(labels)
-            .children(readout);
-        // The step bar and caption.
+            .children(readout)
+            .child(reset);
+        // The side caption: the step, or the node clicked.
+        let side = s.reading().map(|r| {
+            div()
+                .id(("x3d-side", key as usize))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .w(px(300.))
+                .flex_none()
+                .p_3()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.raised)
+                .overflow_y_scrollbar()
+                .children(r.level.map(|l| {
+                    div()
+                        .text_xs()
+                        .text_color(p.accent)
+                        .child(SharedString::from(l.to_uppercase()))
+                }))
+                .child(div().text_xs().text_color(p.faint).child(r.title.clone()))
+                .child(div().text_sm().text_color(p.text).child(r.text.clone()))
+                .when(!r.passage.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .pl_2()
+                            .border_l_2()
+                            .border_color(p.border)
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(r.passage.clone()),
+                    )
+                })
+                .when(!r.citations.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(format!(
+                                "Cites {}",
+                                r.citations.join(" ")
+                            ))),
+                    )
+                })
+                .children(r.cite.map(|c| {
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(format!("Source: {c}")))
+                }))
+        });
+        // The step bar: Prev, Play, Next, where it is, and the levels.
         let n = scene.steps.len();
         let i = s.step.min(n.saturating_sub(1));
-        let step = scene.steps.get(i);
         let dots = (0..n).map(|j| {
             div()
                 .id(("x3d-dot", key as usize * 100 + j))
@@ -616,26 +836,65 @@ impl Workspace {
                 .cursor_pointer()
                 .when(j == i, |d| d.bg(p.accent))
                 .when(j != i, |d| d.border_1().border_color(p.faint))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if let Some(s) = this.explains.get_mut(&key) {
                         s.autoplay = false;
                         s.go(j, Instant::now());
                     }
+                    this.explain_at = None;
+                    window.request_animation_frame();
                     cx.notify();
                 }))
         });
+        let cur_level = s
+            .level_marks()
+            .iter()
+            .rev()
+            .find(|(_, at)| *at <= i)
+            .map(|(name, _)| *name);
+        let marks = s
+            .level_marks()
+            .into_iter()
+            .enumerate()
+            .map(|(k, (name, at))| {
+                let here = Some(name) == cur_level;
+                div()
+                    .id(("x3d-level", key as usize * 10 + k))
+                    .px_1p5()
+                    .rounded_md()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(if here { p.accent } else { p.faint })
+                    .hover(move |d| d.text_color(p.text))
+                    .child(name)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if let Some(s) = this.explains.get_mut(&key) {
+                            s.autoplay = false;
+                            s.go(at, Instant::now());
+                        }
+                        this.explain_at = None;
+                        window.request_animation_frame();
+                        cx.notify();
+                    }))
+            });
         let bar = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_2()
             .child(
                 Button::new(("x3d-prev", key as usize))
                     .icon(AssetIcon::ChevronLeft)
+                    .label("Prev")
                     .ghost()
                     .small()
                     .disabled(i == 0)
-                    .tooltip("Previous step (←)")
-                    .on_click(cx.listener(move |this, _, _, cx| this.explain_step(key, -1, cx))),
+                    .tooltip("Previous step ([ or Page Up)")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.explain_step(key, -1, cx);
+                        this.explain_at = None;
+                        window.request_animation_frame();
+                    })),
             )
             .child(
                 Button::new(("x3d-play", key as usize))
@@ -644,23 +903,33 @@ impl Workspace {
                     } else {
                         AssetIcon::Play
                     })
+                    .label(if s.autoplay { "Pause" } else { "Play" })
                     .ghost()
                     .small()
                     .tooltip(if s.autoplay {
                         "Pause (Space)"
                     } else {
-                        "Play the steps (Space)"
+                        "Walk the levels from the basics up (Space)"
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| this.explain_play(key, cx))),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.explain_play(key, cx);
+                        this.explain_at = None;
+                        window.request_animation_frame();
+                    })),
             )
             .child(
                 Button::new(("x3d-next", key as usize))
                     .icon(AssetIcon::ChevronRight)
+                    .label("Next")
                     .ghost()
                     .small()
                     .disabled(i + 1 >= n)
-                    .tooltip("Next step (→)")
-                    .on_click(cx.listener(move |this, _, _, cx| this.explain_step(key, 1, cx))),
+                    .tooltip("Next step (] or Page Down)")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.explain_step(key, 1, cx);
+                        this.explain_at = None;
+                        window.request_animation_frame();
+                    })),
             )
             .child(
                 div()
@@ -668,25 +937,15 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(SharedString::from(format!("Step {} of {n}", i + 1))),
             )
-            .child(div().flex().gap_1p5().items_center().children(dots));
-        let caption = step.map(|st| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_3()
-                .rounded(px(16.))
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .child(div().text_sm().text_color(p.text).child(st.caption.clone()))
-                .children(st.cite().map(|c| {
-                    div()
-                        .text_xs()
-                        .text_color(p.faint)
-                        .child(SharedString::from(format!("Source: {c}")))
-                }))
-        });
+            .child(div().flex().gap_1p5().items_center().children(dots))
+            .child(div().flex().gap_1().items_center().children(marks));
+        let body = div()
+            .flex()
+            .gap_3()
+            .flex_1()
+            .min_h(px(320.))
+            .child(stage)
+            .children(side);
         div()
             .id(("x3d", key as usize))
             .key_context("Explain3d")
@@ -698,9 +957,9 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(col.child(stage).child(bar).children(caption).child(
+            .child(col.child(body).child(bar).child(
                 div().text_xs().text_color(p.faint).child(
-                    "Hover to see a part; click it to jump to its step. ← → step, Space plays.",
+                    "Drag to turn · right- or Shift-drag to pan · scroll or pinch to zoom · double-click a node to focus · click a node to read it · arrows turn, + − zoom, 0 resets · [ ] step, Space plays.",
                 ),
             ))
             .into_any_element()

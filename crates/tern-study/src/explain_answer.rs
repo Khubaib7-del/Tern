@@ -31,8 +31,12 @@ pub const LEVELS: [&str; 5] = [
 pub const MAX_NODES: usize = 20;
 /// Fewest main nodes.
 pub const MIN_NODES: usize = 4;
-/// Most characters of the answer read.
-pub const ANSWER_CHARS: usize = 40_000;
+/// Most characters of the answer one model prompt carries; a longer
+/// answer is mapped in chunks of about this size and the maps merged, so
+/// no part of the answer is cut off.
+pub const CHUNK_CHARS: usize = 24_000;
+/// Most chunks one answer is cut into (longer chunks past that).
+pub const MAX_CHUNKS: usize = 4;
 
 /// One passage of the answer: a heading's section, a paragraph, or a list
 /// item, with the heading it sits under.
@@ -345,7 +349,8 @@ fn chat_anchor(section: Option<String>) -> Anchor {
 /// level), with key-term sub-nodes, links from each level to the one
 /// before it, and one step per node.
 pub fn answer_scene(answer: &str, concept: &str, now: i64) -> Scene {
-    let answer: String = answer.chars().take(ANSWER_CHARS).collect();
+    // The whole answer: long ones just merge into the same node count.
+    let answer = answer.to_owned();
     let ps = passages(&answer);
     let headings = ps
         .iter()
@@ -553,14 +558,179 @@ pub fn lay_out(scene: &mut Scene) {
 
 /// The prompt asking a model to map an answer: (system, user).
 pub fn answer_prompt(answer: &str, title: &str) -> (String, String) {
-    let answer: String = answer.chars().take(ANSWER_CHARS).collect();
-    let ps = passages(&answer);
+    let ps = passages(answer);
     let headings = ps.iter().filter(|p| p.heading.is_some()).count();
-    let n = target_nodes(&answer, ps.len(), headings);
+    let n = target_nodes(answer, ps.len(), headings);
+    prompt_for(answer, title, n, None)
+}
+
+/// The prompt for chunk `k` (from 0) of `of` of a long answer, asking for
+/// about `n` nodes from it: (system, user).
+pub fn chunk_prompt(chunk: &str, title: &str, k: usize, of: usize, n: usize) -> (String, String) {
+    prompt_for(chunk, title, n.max(MIN_NODES), Some((k, of)))
+}
+
+/// Cuts a long answer into at most [`MAX_CHUNKS`] pieces of about
+/// [`CHUNK_CHARS`] (more when it is longer than that many chunks), at
+/// blank lines outside code fences, so no passage is split. A short
+/// answer is one chunk. Nothing is dropped: the chunks joined are the
+/// answer.
+pub fn chunks(answer: &str) -> Vec<String> {
+    let total = answer.chars().count();
+    if total <= CHUNK_CHARS {
+        return vec![answer.to_owned()];
+    }
+    let size = CHUNK_CHARS.max(total.div_ceil(MAX_CHUNKS));
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_chars = 0;
+    let mut fence = false;
+    for line in answer.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") {
+            fence = !fence;
+        }
+        cur.push_str(line);
+        cur_chars += line.chars().count();
+        let boundary = !fence && line.trim().is_empty();
+        if cur_chars >= size && (boundary || cur_chars >= size * 2) {
+            out.push(std::mem::take(&mut cur));
+            cur_chars = 0;
+        }
+    }
+    if !cur.trim().is_empty() || out.is_empty() {
+        out.push(cur);
+    } else if let Some(last) = out.last_mut() {
+        last.push_str(&cur);
+    }
+    // A last sliver joins the chunk before it.
+    while out.len() > MAX_CHUNKS {
+        let tail = out.pop().unwrap_or_default();
+        if let Some(last) = out.last_mut() {
+            last.push_str(&tail);
+        }
+    }
+    out
+}
+
+/// Merges the maps of a long answer's chunks into one: ids kept apart,
+/// main nodes taken from each chunk in turn up to the limit (so every
+/// part of the answer is on the map), terms while there is room, and the
+/// links and steps of what was kept. `None` for no scenes.
+pub fn merge(scenes: Vec<Scene>, now: i64) -> Option<Scene> {
+    if scenes.len() <= 1 {
+        return scenes.into_iter().next();
+    }
+    let max_mains = MAX_NODES - 4;
+    // Main node ids per chunk, in each chunk's order.
+    let mains: Vec<Vec<String>> = scenes
+        .iter()
+        .map(|s| {
+            s.parts
+                .iter()
+                .filter(|p| p.shape != Shape::Label)
+                .map(|p| p.id.clone())
+                .collect()
+        })
+        .collect();
+    let mut keep: Vec<std::collections::BTreeSet<String>> = vec![Default::default(); scenes.len()];
+    let mut taken = 0;
+    let mut round = 0;
+    while taken < max_mains && mains.iter().any(|m| m.len() > round) {
+        for (k, m) in mains.iter().enumerate() {
+            if taken < max_mains
+                && let Some(id) = m.get(round)
+            {
+                keep[k].insert(id.clone());
+                taken += 1;
+            }
+        }
+        round += 1;
+    }
+    let mut terms_left = MAX_NODES - taken;
+    let mut out = Scene {
+        id: String::new(),
+        concept: scenes[0].concept.clone(),
+        summary: scenes[0].summary.clone(),
+        parts: Vec::new(),
+        links: Vec::new(),
+        steps: Vec::new(),
+        topic: None,
+        written_by: if scenes.iter().all(|s| s.written_by == "model") {
+            "model".into()
+        } else {
+            "fallback".into()
+        },
+        created_at: now,
+    };
+    for (k, s) in scenes.into_iter().enumerate() {
+        let pre = |id: &str| format!("c{}{id}", k + 1);
+        let mut kept: std::collections::BTreeSet<String> = keep[k].clone();
+        for p in &s.parts {
+            if p.shape == Shape::Label {
+                let owned = keep[k]
+                    .iter()
+                    .any(|m| p.id.starts_with(m.as_str()) && p.id[m.len()..].starts_with('t'));
+                if owned && terms_left > 0 {
+                    kept.insert(p.id.clone());
+                    terms_left -= 1;
+                }
+            }
+        }
+        for p in s.parts.into_iter().filter(|p| kept.contains(&p.id)) {
+            out.parts.push(Part {
+                id: pre(&p.id),
+                ..p
+            });
+        }
+        for l in s.links {
+            if kept.contains(&l.from) && kept.contains(&l.to) {
+                out.links.push(Link {
+                    from: pre(&l.from),
+                    to: pre(&l.to),
+                    label: l.label,
+                });
+            }
+        }
+        for st in s.steps {
+            let parts: Vec<String> = st
+                .parts
+                .iter()
+                .filter(|id| kept.contains(*id))
+                .map(|id| pre(id))
+                .collect();
+            if parts.is_empty() {
+                continue;
+            }
+            out.steps.push(Step { parts, ..st });
+        }
+    }
+    let n = out.parts.iter().filter(|p| p.shape != Shape::Label).count();
+    out.summary = format!(
+        "This answer from the basics to the advanced parts: {n} nodes in {} levels.",
+        levels_used(&out.parts)
+    );
+    lay_out(&mut out);
+    Some(out)
+}
+
+fn prompt_for(
+    answer: &str,
+    title: &str,
+    n: usize,
+    chunk: Option<(usize, usize)>,
+) -> (String, String) {
+    let part = match chunk {
+        Some((k, of)) => format!(
+            " This is part {} of {of} of a long answer; map only this part, and set levels as they stand in the whole answer.",
+            k + 1
+        ),
+        None => String::new(),
+    };
     let system = format!(
         "You turn an answer into a teaching map that goes from the basics to the advanced parts. Read the WHOLE answer. Write about {n} nodes (at least {MIN_NODES}, at most {max}), each at one level: 0 Foundations (what you must know first), 1 Core idea, 2 Mechanism (how it works), 3 Details and edge cases (limits, trade-offs, comparisons of approaches), 4 Advanced and implications. Cover every major section, approach and technique the answer compares. Each node: a label of at most 5 words, a level, \"explain\" (one or two plain sentences a newcomer understands), \"quote\" (the exact passage of the answer it comes from, keeping any citations like [2]), up to 2 key \"terms\", and \"needs\" (the labels of earlier nodes it builds on). Use only what the answer says. Reply with JSON only: {{\"concept\": \"…\", \"summary\": \"one sentence\", \"nodes\": [{{\"label\": \"…\", \"level\": 0, \"explain\": \"…\", \"quote\": \"…\", \"terms\": [\"…\"], \"needs\": [\"…\"]}}]}}",
         max = MAX_NODES - 4
     );
+    let system = format!("{system}{part}");
     let user = format!("Question: {}\n\nAnswer:\n\n{answer}", one_line(title));
     (system, user)
 }
@@ -718,6 +888,71 @@ mod tests {
         assert_eq!(ps[1].heading.as_deref(), Some("In short"));
         assert!(ps.iter().any(|p| p.text.starts_with("- Sparse")));
         assert!(passages("").is_empty());
+    }
+
+    #[test]
+    fn a_long_answer_is_chunked_whole_and_the_maps_merge() {
+        let short = long_answer();
+        assert_eq!(chunks(&short), vec![short.clone()]);
+        let mut big = String::new();
+        for i in 0..400 {
+            big.push_str(&format!(
+                "## Section {i}\nPart {i} explains a mechanism in some detail [{}].\n\n",
+                i % 9 + 1
+            ));
+            if i == 200 {
+                big.push_str("```\nfn x() {}\n\nfn y() {}\n```\n\n");
+            }
+            big.push_str(&"More words about it follow here. ".repeat(4));
+            big.push_str("\n\n");
+        }
+        let cs = chunks(&big);
+        assert!(cs.len() >= 2 && cs.len() <= MAX_CHUNKS, "{}", cs.len());
+        assert_eq!(cs.concat(), big, "nothing is dropped");
+        assert!(
+            cs.iter().all(|c| c.matches("```").count() % 2 == 0),
+            "fences stay whole"
+        );
+        // The fallback map reads the whole answer, end included.
+        let whole = answer_scene(&big, "", 0);
+        assert!(
+            whole
+                .steps
+                .iter()
+                .any(|s| s.passage.contains("399") || s.caption.contains("399"))
+        );
+        // Maps of the chunks merge: ids apart, every chunk on the map.
+        let maps: Vec<Scene> = cs.iter().map(|c| answer_scene(c, "Big", 0)).collect();
+        let m = merge(maps, 7).unwrap();
+        let mains: Vec<&Part> = m.parts.iter().filter(|p| p.shape != Shape::Label).collect();
+        assert!(mains.len() <= MAX_NODES - 4);
+        assert!(m.parts.len() <= MAX_NODES);
+        for k in 1..=cs.len() {
+            assert!(
+                mains.iter().any(|p| p.id.starts_with(&format!("c{k}n"))),
+                "chunk {k}"
+            );
+        }
+        let ids: std::collections::BTreeSet<&str> = m.parts.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids.len(), m.parts.len(), "ids are unique");
+        assert!(
+            m.links
+                .iter()
+                .all(|l| ids.contains(l.from.as_str()) && ids.contains(l.to.as_str()))
+        );
+        assert!(
+            m.steps
+                .iter()
+                .all(|s| s.parts.iter().all(|p| ids.contains(p.as_str())))
+        );
+        assert!(
+            m.steps.windows(2).all(|w| w[0].level <= w[1].level),
+            "basics first"
+        );
+        assert_eq!(m.created_at, 7);
+        assert!(merge(Vec::new(), 0).is_none());
+        let (sys, _) = chunk_prompt(&cs[1], "q", 1, cs.len(), 5);
+        assert!(sys.contains(&format!("part 2 of {}", cs.len())));
     }
 
     #[test]

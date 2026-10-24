@@ -327,49 +327,12 @@ impl Stamp {
     }
 }
 
-/// Explain in 3D is offered only on answers that describe something with
-/// parts: long enough, and with structure or several technical terms.
-pub fn explain_fits(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 60 {
-        return false;
-    }
-    let code_lines = text
-        .lines()
-        .filter(|l| l.starts_with("    ") || l.starts_with('\t'))
-        .count();
-    let lines = text.lines().count().max(1);
-    if text.contains("```") && code_lines * 2 > lines {
-        return false;
-    }
-    let structured = text.lines().any(|l| {
-        let t = l.trim_start();
-        t.starts_with('#') || t.starts_with("- ") || t.starts_with("* ") || t.starts_with("1.")
-    });
-    // Terms: capitalised words mid-sentence, acronyms, and words joined by
-    // hyphens (Streaming Multiprocessor, GPU, page-table).
-    let mut terms = std::collections::BTreeSet::new();
-    for pair in words.windows(2) {
-        let w = pair[1].trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
-        let prev_ends = pair[0].ends_with(['.', '!', '?', ':']);
-        let acronym = w.len() >= 2
-            && w.chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
-        let cap = !prev_ends && w.chars().next().is_some_and(char::is_uppercase) && w.len() > 2;
-        let joined = w.contains('-') && w.len() > 4;
-        if acronym || cap || joined {
-            terms.insert(w.to_ascii_lowercase());
-        }
-    }
-    structured || terms.len() >= 4
-}
-
 /// The grouped message actions: always-visible ones, then two menus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionMenu {
     /// Sub-session, background branch, move, branch a copy, side chat.
     Branch,
-    /// Explain in 3D, watch, save to vault.
+    /// Watch, save to vault. (Explain in 3D sits in the row itself.)
     More,
 }
 
@@ -381,9 +344,9 @@ pub fn more_items(answer_text: &str, watched: bool) -> Vec<(&'static str, &'stat
     } else {
         ("watch", "Watch this question (daily)")
     });
-    if explain_fits(answer_text) {
-        v.push(("explain3d", "Explain in 3D"));
-    }
+    // Explain in 3D is no longer here: it is in the visible row under
+    // every answer.
+    let _ = answer_text;
     v
 }
 
@@ -618,20 +581,11 @@ mod tests {
     }
 
     #[test]
-    fn explain_in_3d_only_where_it_fits() {
-        assert!(!explain_fits("hello"));
-        assert!(!explain_fits("Hello! How can I help you today?"));
-        let gpu = "A GPU (graphics processing unit) is built from many Streaming Multiprocessors (SMs). \
-            Each SM holds CUDA cores, a warp scheduler, a register file, and shared memory. \
-            Threads run in groups of 32 called warps, and the scheduler swaps warps to hide memory latency. \
-            Global memory (VRAM) sits off-chip and is reached through the L2 cache. \
-            Data moves from host RAM over PCIe before a kernel runs, and results move back afterwards. \
-            This design trades single-thread speed for very high throughput on parallel work.";
-        assert!(explain_fits(gpu));
-        let items = more_items(gpu, false);
-        assert!(items.iter().any(|(k, _)| *k == "explain3d"));
+    fn explain_in_3d_is_not_in_the_more_menu() {
+        let gpu = "A GPU is built from many Streaming Multiprocessors (SMs).";
+        // Explain in 3D moved out of More into the visible row.
         assert!(
-            !more_items("hello", true)
+            !more_items(gpu, false)
                 .iter()
                 .any(|(k, _)| *k == "explain3d")
         );

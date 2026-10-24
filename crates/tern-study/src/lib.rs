@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod camera;
 pub mod cards;
 pub mod cards_io;
 pub mod explain3d;

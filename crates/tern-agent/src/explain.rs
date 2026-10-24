@@ -14,9 +14,12 @@ use std::path::{Path, PathBuf};
 
 use tern_providers::ChatMessage;
 
+/// The camera (orbit, zoom, pan, focus), GPUI-free.
+pub use tern_study::camera;
+pub use tern_study::explain_answer::{LEVELS, citations};
 pub use tern_study::explain3d::{
     Drawing, Edge, Face, FaceKind, Fit, GRID, Link, Part, Scene, Shape, Step, SvgStyle, View, hit,
-    ink_amount, mix, project, to_svg,
+    ink_amount, mix, part_centre, parts_centre, project, to_svg,
 };
 use tern_study::material::{Anchor, Source};
 
@@ -56,6 +59,15 @@ pub async fn build(
     ask: &Ask,
 ) -> Result<(Scene, Option<String>), String> {
     use tern_study::explain3d::{fallback_scene, parse_scene, scene_prompt};
+    // A chat answer is mapped whole, basics to advanced.
+    if ask.topic.is_none()
+        && let Some(text) = ask.context.as_deref().filter(|t| !t.trim().is_empty())
+    {
+        let at = now();
+        let (mut scene, note) = build_answer(engine, text, ask.concept.trim(), at).await;
+        scene.id = new_id(store, at);
+        return Ok((scene, note));
+    }
     if !lib.materials.is_empty() {
         ensure_topics(store, lib)?;
     }
@@ -129,6 +141,75 @@ pub async fn build(
     let mut scene = scene.unwrap_or_else(|| fallback_scene(&concept, &sources, tid, at));
     scene.id = new_id(store, at);
     Ok((scene, note))
+}
+
+/// Maps a whole chat answer from the basics to the advanced parts (4 to
+/// 20 nodes in five levels). The model writes the map when there is one:
+/// a long answer goes in chunks and the maps are merged, so nothing is cut
+/// off. Without a model, or when its map cannot be read, Tern maps the
+/// answer itself. Returns the scene (no id yet) and, when the model was
+/// tried and not used, why.
+pub async fn build_answer(
+    engine: Option<&StudyEngine>,
+    answer: &str,
+    title: &str,
+    at: i64,
+) -> (Scene, Option<String>) {
+    use tern_study::explain_answer::{
+        answer_prompt, answer_scene, chunk_prompt, chunks, merge, parse_answer_scene, passages,
+        target_nodes,
+    };
+    let concept = if title.is_empty() {
+        "This answer"
+    } else {
+        title
+    };
+    let fallback = || answer_scene(answer, title, at);
+    let Some(e) = engine else {
+        return (fallback(), None);
+    };
+    let parts = chunks(answer);
+    let mut maps = Vec::new();
+    let total = answer.chars().count().max(1);
+    let n_all = {
+        let ps = passages(answer);
+        let heads = ps.iter().filter(|p| p.heading.is_some()).count();
+        target_nodes(answer, ps.len(), heads)
+    };
+    for (k, part) in parts.iter().enumerate() {
+        let (system, user) = if parts.len() == 1 {
+            answer_prompt(part, concept)
+        } else {
+            let share = (n_all * part.chars().count()).div_ceil(total);
+            chunk_prompt(part, concept, k, parts.len(), share)
+        };
+        match e
+            .ask(system, vec![ChatMessage::user(user)], 4000, 0.3, None)
+            .await
+        {
+            Ok(text) => match parse_answer_scene(&text, concept, at) {
+                Some(s) => maps.push(s),
+                None => {
+                    return (
+                        fallback(),
+                        Some("The model's map could not be read; Tern mapped the answer itself instead.".into()),
+                    );
+                }
+            },
+            Err(err) => {
+                return (
+                    fallback(),
+                    Some(format!(
+                        "The model could not be reached ({err}); Tern mapped the answer itself instead."
+                    )),
+                );
+            }
+        }
+    }
+    match merge(maps, at) {
+        Some(s) => (s, None),
+        None => (fallback(), None),
+    }
 }
 
 fn new_id(store: &StudyStore, at: i64) -> String {
@@ -305,9 +386,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_context_and_model_scenes() {
+    async fn chat_answers_map_whole_from_basics_to_advanced() {
         let (_d, store, mut lib) = setup();
-        let reply = r#"{"concept": "TLB lookup", "parts": [{"id": "cpu", "label": "CPU"}, {"id": "tlb", "label": "TLB", "shape": "cylinder"}], "links": [{"from": "cpu", "to": "tlb"}], "steps": [{"caption": "The CPU checks the TLB.", "parts": ["cpu", "tlb"], "source": "S1"}]}"#;
+        let reply = r#"{"concept": "TLB lookup", "summary": "How a lookup goes.", "nodes": [
+            {"label": "Pages", "level": 0, "explain": "Memory comes in pages.", "quote": "Memory is split into pages [1].", "terms": ["page"]},
+            {"label": "The TLB", "level": 1, "explain": "A cache of translations.", "quote": "The CPU first checks the TLB.", "needs": ["Pages"]},
+            {"label": "Page walk", "level": 2, "explain": "On a miss it walks the table.", "quote": "Before walking the page table [2].", "needs": ["The TLB"]},
+            {"label": "Huge pages", "level": 4, "explain": "Bigger pages, fewer misses.", "quote": "Huge pages cut misses."}
+        ]}"#;
         let e = StudyEngine::with_model(Arc::new(Script(Mutex::new(reply.into()))), "m", "T");
         let ask = Ask {
             concept: String::new(),
@@ -317,11 +403,36 @@ mod tests {
         let (s, note) = build(&store, &mut lib, Some(&e), &ask).await.unwrap();
         assert!(note.is_none());
         assert_eq!(s.written_by, "model");
-        assert_eq!(s.steps[0].cite().as_deref(), Some("This chat"));
+        assert!(s.id.starts_with('x'));
+        assert_eq!(s.steps[0].cite().as_deref(), Some("This answer"));
+        assert_eq!(s.steps.len(), 4);
+        assert!(s.steps.windows(2).all(|w| w[0].level <= w[1].level));
+        assert!(s.steps[0].passage.contains("[1]"));
         let bad = StudyEngine::with_model(Arc::new(Script(Mutex::new("hmm".into()))), "m", "T");
         let (s, note) = build(&store, &mut lib, Some(&bad), &ask).await.unwrap();
         assert_eq!(s.written_by, "fallback");
         assert!(note.unwrap().contains("could not be read"));
+        // No 5,000-character cut: the end of a long answer is on the map.
+        let mut long = String::new();
+        for i in 0..60 {
+            long.push_str(&format!(
+                "## Part {i}\nSection {i} covers one more mechanism of paging in detail.\n\n"
+            ));
+        }
+        long.push_str("## Last\nThe final point is about TLB shootdowns across cores.\n");
+        assert!(long.len() > 5_000);
+        let ask = Ask {
+            context: Some(long),
+            ..Ask::default()
+        };
+        let (s, _) = build(&store, &mut lib, None, &ask).await.unwrap();
+        assert!(
+            s.steps
+                .iter()
+                .any(|st| st.passage.contains("shootdowns") || st.caption.contains("shootdowns")),
+            "the end of the answer is mapped"
+        );
+        assert!(s.parts.len() <= tern_study::explain_answer::MAX_NODES);
         // Nothing at all to go on.
         let empty = StudyStore::at(_d.path().join("none"));
         let mut lib2 = StudyLibrary::default();
