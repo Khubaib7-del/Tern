@@ -14,7 +14,18 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is being built as the research tool for its author's final-year project, on Windows, Linux and macOS.
 
-<!-- screenshots -->
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/research-answer-and-rail.png" alt="A deep research answer with verdict marks on each cited sentence, the sources read, and the right rail on Plan › Workers"></td>
+    <td width="50%"><img src="docs/assets/screenshots/empty-state.png" alt="The empty state: the dithered Tern mark, Start a research session, and three suggestion chips; Scout at the bottom left"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/study-flashcards.png" alt="Study: the flashcard stack with the Study rail showing what is due and the decks"></td>
+    <td><img src="docs/assets/screenshots/settings-scout.png" alt="Settings › Scout: a live preview of Scout, show or hide, the trim, and every state"></td>
+  </tr>
+</table>
+
+<sub>Frames from the scripted UI tour (`TERN_TOUR=1`) recorded by CI on Linux; demo data, no model calls.</sub>
 
 ## Highlights
 
