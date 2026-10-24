@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod browser_ipc;
 pub mod effect;
 pub mod error;
 pub mod event;

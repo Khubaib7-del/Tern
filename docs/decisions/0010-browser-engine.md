@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted |
+| Status | Accepted; the in-window engine is replaced by a helper process in ADR 0011 |
 | Date | 2026-10-24 |
 | Decider | Khubaib Nazeer |
 

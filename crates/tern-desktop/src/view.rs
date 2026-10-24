@@ -95,6 +95,8 @@ pub struct Workspace {
     pending_restore: Option<(tern_agent::Harness, tern_agent::prefs::LastChat)>,
     /// The browser's page engine (`crate::webview`).
     web: crate::webview::Shared,
+    /// Reads the browser helper while it runs (`watch_web`).
+    web_timer: Option<Task<()>>,
     /// The harness switcher's popover is open, and when it opened.
     switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
@@ -473,6 +475,7 @@ impl Workspace {
             )),
             switcher: None,
             web: crate::webview::Host::shared(),
+            web_timer: None,
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
