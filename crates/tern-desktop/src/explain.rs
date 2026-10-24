@@ -17,7 +17,6 @@
 //! labels out per frame.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -354,13 +353,15 @@ impl ExplainState {
     }
 
     /// How lit each part is (0 to 1): the step's parts fade in as the last
-    /// step's fade out, on the motion curve.
+    /// step's fade out, on the motion curve. The app uses
+    /// [`ExplainState::lit_all`]; this reads one part.
+    #[cfg(test)]
     pub fn lit(&self, part: usize, now: Instant, reduced: bool) -> f32 {
         let Some(s) = &self.scene else {
             return 0.0;
         };
-        let cur: BTreeSet<usize> = s.lit(self.step);
-        let old: BTreeSet<usize> = s.lit(self.prev);
+        let cur = s.lit(self.step);
+        let old = s.lit(self.prev);
         let t = match self.step_at {
             Some(at) if !reduced => motion::progress(at, STEP_FADE, now),
             _ => 1.0,
@@ -636,6 +637,7 @@ impl ExplainState {
 
     /// This frame's drawing and labels for a `w` × `h` stage, from the
     /// cache when nothing that moves them changed. `None` before a scene.
+    #[cfg(test)]
     pub fn frame(&self, w: f32, h: f32) -> Option<Rc<Frame>> {
         self.frame_at(w, h, Instant::now())
     }

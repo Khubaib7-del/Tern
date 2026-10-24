@@ -365,7 +365,7 @@ impl Workspace {
     /// shows its error card instead of the app aborting.
     fn with_explain<R>(&mut self, key: u32, f: impl FnOnce(&mut ExplainState) -> R) -> Option<R> {
         let s = self.explains.get_mut(&key)?;
-        match catch_unwind(AssertUnwindSafe(|| f(s))) {
+        match catch_unwind(AssertUnwindSafe(|| f(&mut *s))) {
             Ok(r) => Some(r),
             Err(_) => {
                 s.autoplay = false;
