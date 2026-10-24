@@ -158,9 +158,13 @@ pub const CATALOG: &[ProviderSpec] = &[
     spec!(local "lmstudio", "LM Studio", "http://localhost:1234/v1"),
 ];
 
-/// Looks a provider up by id, case-insensitively.
+/// Looks a provider up by id, case-insensitively: the built-in catalog
+/// first, then the user's custom providers (`crate::custom`).
 pub fn find(id: &str) -> Option<&'static ProviderSpec> {
-    CATALOG.iter().find(|p| p.id.eq_ignore_ascii_case(id))
+    CATALOG
+        .iter()
+        .find(|p| p.id.eq_ignore_ascii_case(id))
+        .or_else(|| crate::custom::find(id))
 }
 
 #[cfg(test)]

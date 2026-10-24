@@ -110,10 +110,15 @@ impl Provider {
     }
 
     fn with_wire_headers(&self, rb: RequestBuilder) -> RequestBuilder {
-        match self.spec.wire {
+        let mut rb = match self.spec.wire {
             Wire::Anthropic => rb.header("anthropic-version", wire::anthropic::VERSION),
             _ => rb,
+        };
+        // A custom provider's own headers (an org id, a route).
+        for (k, v) in crate::custom::headers_for(self.spec.id) {
+            rb = rb.header(k, v);
         }
+        rb
     }
 
     async fn send(&self, rb: RequestBuilder, what: &str) -> ProviderResult<serde_json::Value> {

@@ -18,6 +18,7 @@
 pub mod catalog;
 pub mod chat;
 mod client;
+pub mod custom;
 pub mod effort;
 pub mod error;
 pub mod model;
@@ -28,6 +29,7 @@ mod wire;
 
 pub use catalog::{CATALOG, DEFAULT_MAX_OUTPUT, ProviderSpec, Wire, default_max_output, find};
 pub use chat::{ChatMessage, ChatRequest, ChatResponse, IMAGE_CHARS, ImageInput, Role};
+pub use custom::{CustomProvider, CustomWire};
 pub use client::{Delta, ProbeReport, Provider};
 pub use effort::{Effort, ThinkSplitter, Thinking, thinking_support};
 pub use error::{ProviderError, ProviderResult};
