@@ -216,7 +216,7 @@ enum Act {
     Tabs,
     Sidebar(bool),
     RightPanel(bool),
-    Scout(Option<crate::scout::Mood>),
+    Scout(Option<crate::pet::State>),
     ModelMenu,
     EffortMenu,
     CloseMenu,
@@ -260,7 +260,6 @@ fn scene(id: &'static str, v2: &'static str, title: &'static str, act: Act, hold
 /// The whole tour, in order.
 fn script() -> Vec<Beat> {
     use crate::onboarding::Step;
-    use crate::scout::Mood;
     let mut v = vec![
         b(Act::Nothing, 1500),
         scene(
@@ -768,27 +767,31 @@ fn script() -> Vec<Beat> {
             ));
         }
     }
-    // Appearance's Scout previews (Scout is not drawn in Settings).
+    // Settings › Scout: every sprite state on the preview card (and on
+    // the floating pet), then each state again over the chat.
     v.push(scene(
-        "t70-scout-preview",
+        "t70-scout-settings",
         "s99",
-        "Appearance: Scout mood preview",
-        Act::Settings(Section::Appearance),
-        600,
+        "Settings: Scout (every state)",
+        Act::Settings(Section::Scout),
+        800,
     ));
-    for m in [Mood::Searching, Mood::Reading, Mood::NeedsYou] {
-        v.push(b(Act::Scout(Some(m)), 1000));
+    for st in crate::pet::State::ALL {
+        v.push(b(Act::Scout(Some(st)), 1300));
+    }
+    v.push(b(Act::CloseSettings, 300));
+    v.push(scene(
+        "t70b-scout-pet",
+        "s99",
+        "Scout pet over the chat (every state)",
+        Act::Nothing,
+        300,
+    ));
+    for st in crate::pet::State::ALL {
+        v.push(b(Act::Scout(Some(st)), 1300));
     }
     v.extend([
-        b(Act::Scout(None), 300),
-        b(Act::CloseSettings, 300),
-        scene(
-            "t70b-scout-corner",
-            "s99",
-            "Scout in the corner (idle)",
-            Act::Nothing,
-            2500,
-        ),
+        b(Act::Scout(None), 1500),
         scene(
             "t71-narrow",
             "tern-only",
@@ -1415,7 +1418,7 @@ impl Workspace {
             }
             Act::Sidebar(on) => self.model.sidebar_open = on,
             Act::RightPanel(on) => self.model.run_panel_open = on,
-            Act::Scout(m) => self.scout_preview = m,
+            Act::Scout(m) => self.pet_preview = m,
             Act::ModelMenu => {
                 self.model
                     .composer

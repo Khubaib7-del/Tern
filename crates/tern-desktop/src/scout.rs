@@ -4,8 +4,11 @@
 //! follow the work, the scroll opens to read. Every movement comes from a
 //! real event; at rest Scout only breathes and blinks.
 //!
-//! GPUI-free so the motion is unit tested. The view samples [`Rig::pose`]
-//! each frame and draws it.
+//! GPUI-free so the motion is unit tested. Since PR #58 Scout is drawn as
+//! the sprite pet (`crate::pet`); the rig is kept as Scout's mood clock
+//! (busy → Done → idle, flashcard reactions), and its pose, which drew the
+//! retired vector figure, stays with its tests.
+#![allow(dead_code)]
 
 /// What Scout is doing, in priority order (the first that applies wins).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

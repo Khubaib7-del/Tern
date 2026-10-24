@@ -219,7 +219,7 @@ impl Workspace {
                             }
                         ))),
                 )
-                .child(self.scout_figure(44., p)),
+                .child(self.pet_figure(56., p)),
         );
         let Some(card) = &run.card else {
             let stats = s.deck.stats(now_i, s.offset);

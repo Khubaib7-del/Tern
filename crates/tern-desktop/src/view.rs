@@ -45,6 +45,7 @@ mod git_view;
 mod library_view;
 mod onboarding_view;
 mod panels_view;
+mod pet_view;
 mod runmap_view;
 mod runs_view;
 mod scout_view;
@@ -55,6 +56,7 @@ mod study_view;
 mod timeline_view;
 mod toast_view;
 pub(crate) mod tour;
+pub use pet_view::Shell;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -129,16 +131,21 @@ pub struct Workspace {
     sidebar_slide: Slide,
     panel_slide: Slide,
     wipe: Option<ThemeWipe>,
-    /// Scout's rig, when it was last stepped, the last beat it saw, the
-    /// wake-up for its next blink, and a mood picked on Appearance.
+    /// Scout's rig (its mood clock), when it was last stepped, and the
+    /// last beat it saw.
     scout: crate::scout::Rig,
     scout_at: Option<Instant>,
     scout_beat: usize,
-    scout_wake: Option<Task<()>>,
-    scout_preview: Option<crate::scout::Mood>,
-    /// Where Scout was last painted (its figure's bounds), so the eyes can
-    /// follow the pointer.
-    scout_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
+    /// Scout's sprites (`crate::pet`), the state picked on Settings ›
+    /// Scout (or by the tour), the preview's own clock, and whether Scout
+    /// is hidden and which trim it wears (`None` follows the harness).
+    pet_manifest: std::rc::Rc<crate::pet::Manifest>,
+    pet_preview: Option<crate::pet::State>,
+    pet_preview_anim: std::cell::RefCell<crate::pet::Animator>,
+    scout_hidden: bool,
+    scout_variant: Option<String>,
+    /// Wakes Settings › Scout for the preview's next strip frame.
+    pet_preview_wake: Option<Task<()>>,
     /// The approved plan's step count and its fold spring.
     plan_folded: Option<(usize, crate::motion::Spring)>,
     /// Rows that have grown in already, per list (`view/segmented.rs`).
@@ -152,11 +159,7 @@ pub struct Workspace {
     view_id: gpui_kit::EntityId,
     /// Where measured elements (tabs, rail tabs) were laid out last frame,
     /// by (group, index), for sliding underlines (`view/segmented.rs`).
-    measured: std::rc::Rc<
-        std::cell::RefCell<
-            std::collections::HashMap<(&'static str, usize), gpui_kit::Bounds<gpui_kit::Pixels>>,
-        >,
-    >,
+    measured: Measured,
     /// Where each rail icon and the rail itself were laid out last frame
     /// (window coordinates), for the sliding active marker.
     rail_slots: std::rc::Rc<
@@ -279,6 +282,13 @@ pub struct Workspace {
     tour: Option<tour::Tour>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Measured bounds by (group, index), shared with paint-time canvases.
+type Measured = std::rc::Rc<
+    std::cell::RefCell<
+        std::collections::HashMap<(&'static str, usize), gpui_kit::Bounds<gpui_kit::Pixels>>,
+    >,
+>;
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -539,9 +549,12 @@ impl Workspace {
             scout: crate::scout::Rig::default(),
             scout_at: None,
             scout_beat: 0,
-            scout_wake: None,
-            scout_preview: None,
-            scout_bounds: Default::default(),
+            pet_manifest: std::rc::Rc::new(crate::pet::Manifest::embedded()),
+            pet_preview: None,
+            pet_preview_anim: std::cell::RefCell::new(crate::pet::Animator::new(Instant::now())),
+            scout_hidden: tern_agent::Preferences::load().scout_hidden,
+            scout_variant: tern_agent::Preferences::load().scout_variant,
+            pet_preview_wake: None,
             rail_slots: Default::default(),
             measured: Default::default(),
             view_id: cx.entity_id(),
@@ -2884,7 +2897,6 @@ impl Workspace {
             )
             .children(self.watches_section(p, cx))
             .child(self.archived_link(p, cx))
-            .child(self.scout_corner(p))
     }
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -4814,7 +4826,6 @@ impl Render for Workspace {
             .on_mouse_move(
                 cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
                     this.panel_drag_move(f32::from(e.position.x), window, cx);
-                    this.scout_pointer(e.position, cx);
                 }),
             )
             .on_mouse_up(
@@ -4822,7 +4833,7 @@ impl Render for Workspace {
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.settings_keys(e, window, cx) {
+                if !this.settings_keys(e, window, cx) && !this.scout_keys(e, cx) {
                     this.panel_keys(e, cx);
                 }
             }))

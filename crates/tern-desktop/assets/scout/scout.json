@@ -1,0 +1,75 @@
+{
+  "format": 1,
+  "frame": [
+    160,
+    192
+  ],
+  "baseline": 184,
+  "placeholder": true,
+  "variants": {
+    "normal": "",
+    "study": ".study"
+  },
+  "states": {
+    "idle": {
+      "file": "idle.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "searching": {
+      "file": "searching.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "reading": {
+      "file": "reading.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "needs_you": {
+      "file": "needs_you.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "done": {
+      "file": "done.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": false
+    },
+    "study": {
+      "file": "study.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "thinking": {
+      "file": "thinking.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "verifying": {
+      "file": "verifying.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "blocked": {
+      "file": "blocked.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    },
+    "sleeping": {
+      "file": "sleeping.png",
+      "frames": 1,
+      "fps": 1,
+      "loop": true
+    }
+  }
+}

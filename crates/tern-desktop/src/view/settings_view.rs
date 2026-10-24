@@ -49,6 +49,7 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::Instructions => AssetIcon::NotebookPen,
         Section::Search => AssetIcon::Globe,
         Section::Appearance => AssetIcon::Palette,
+        Section::Scout => AssetIcon::PawPrint,
         Section::Study => AssetIcon::GraduationCap,
         Section::Privacy => AssetIcon::ShieldCheck,
         Section::About => AssetIcon::Info,
@@ -159,6 +160,9 @@ impl Workspace {
             self.model.settings_back = self.model.screen;
         }
         self.model.screen = Screen::Settings;
+        if s != Section::Scout {
+            self.pet_preview = None;
+        }
         self.model.settings.open(s);
     }
 
@@ -198,7 +202,11 @@ impl Workspace {
                 }
             }
             Section::Instructions => self.open_instructions(window, cx),
-            Section::Tools | Section::Study | Section::Privacy | Section::About => {
+            Section::Tools
+            | Section::Study
+            | Section::Privacy
+            | Section::About
+            | Section::Scout => {
                 self.show_settings(s);
             }
         }
@@ -218,7 +226,7 @@ impl Workspace {
         self.model.decision.editing = None;
         self.model.settings.confirm = None;
         self.model.settings.editing_url = None;
-        self.scout_preview = None;
+        self.pet_preview = None;
         if back == Screen::Chat {
             self.composer.update(cx, |c, cx| c.focus(window, cx));
         }
@@ -476,6 +484,7 @@ impl Workspace {
             Section::Instructions => self.instructions_page(p, cx),
             Section::Search => self.search_page(p, cx),
             Section::Appearance => self.appearance_screen(p, cx),
+            Section::Scout => self.scout_page(p, cx),
             Section::Study => self.page(s, p, None, vec![self.study_settings(p, cx)]),
             Section::Privacy => self.privacy_page(p, cx),
             Section::About => self.about_page(p, cx),
@@ -1701,6 +1710,7 @@ impl Workspace {
             ("Queue a message while a run goes", "Tab"),
             ("Stop", "Esc in the composer"),
             ("Maximise the right pane", "Ctrl+\\"),
+            ("Hide or show Scout", "Ctrl+.  (Cmd+. on macOS)"),
         ]
         .into_iter()
         .map(|(what, key)| {

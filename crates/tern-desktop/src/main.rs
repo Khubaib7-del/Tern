@@ -36,6 +36,7 @@ mod model;
 mod motion;
 mod onboarding;
 mod panels;
+mod pet;
 mod providers;
 mod restore;
 mod rows;
@@ -119,7 +120,11 @@ fn main() {
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| Workspace::new(bridge, rx, window, cx))
+                // Scout floats over the workspace in its own view; the
+                // workspace is drawn cached, so Scout's frames redraw only
+                // Scout (`view/pet_view.rs`).
+                let workspace = cx.new(|cx| Workspace::new(bridge, rx, window, cx));
+                cx.new(|cx| view::Shell::new(workspace, cx))
             });
             if let Err(e) = opened {
                 eprintln!("Tern could not open its window: {e}");

@@ -187,6 +187,10 @@ fn lookup(path: &str) -> Option<&'static [u8]> {
     find(GLYPHS, "tern/glyph/")
         .or_else(|| find(SERVICES, "tern/service/"))
         .or_else(|| crate::brands::lookup(path))
+        .or_else(|| {
+            path.strip_prefix(crate::pet::ASSET_PREFIX)
+                .and_then(crate::pet::bytes)
+        })
 }
 
 #[derive(Debug)]
@@ -210,7 +214,8 @@ impl AssetSource for TernAssets {
                     .map(|(n, _)| format!("tern/glyph/{n}.svg").into()),
             )
             .chain(SERVICES.iter().map(|(n, _)| service_path(n)))
-            .chain(crate::brands::paths().map(SharedString::from));
+            .chain(crate::brands::paths().map(SharedString::from))
+            .chain(crate::pet::asset_paths().map(SharedString::from));
         out.extend(ours.filter(|p| p.starts_with(path)));
         Ok(out)
     }
@@ -232,6 +237,9 @@ mod tests {
         assert!(glyph("nope").is_none());
         assert!(lookup(MARK).is_some());
         assert!(lookup(CRAWL_LOGO).is_some());
+        for p in crate::pet::asset_paths() {
+            assert!(lookup(&p).is_some(), "{p}");
+        }
     }
 
     #[test]
