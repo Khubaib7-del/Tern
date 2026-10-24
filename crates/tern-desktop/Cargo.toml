@@ -21,6 +21,8 @@ tern-agent = { workspace = true, features = ["mic"] }
 gpui-kit = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 raw-window-handle = "0.6"
+# The UI tour builds its scripted events' payloads (`view::tour`).
+serde_json.workspace = true
 
 # The built-in browser's page engine runs in its own process, the
 # `tern-browser` helper, so no engine crate links into the app
@@ -33,5 +35,4 @@ winresource = "0.1"
 [dev-dependencies]
 # GPUI's test app (TestAppContext, simulated frames) for the frame tests.
 gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
-serde_json.workspace = true
 tempfile.workspace = true

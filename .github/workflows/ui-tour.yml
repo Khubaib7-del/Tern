@@ -1,0 +1,141 @@
+name: UI tour (screen recording)
+
+# Records the desktop app walking every screen with the hidden scripted
+# tour (`TERN_TOUR=1`, crates/tern-desktop/src/view/tour.rs): demo data in
+# a throwaway folder, no model calls, no keys. Uploads the video and the
+# timestamped scene log, used to compare the app with the v2 concept.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/v2-polish]
+    paths:
+      - "crates/**"
+      - "Cargo.lock"
+      - ".github/workflows/ui-tour.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-tour-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux tour (Xvfb + lavapipe, ffmpeg x11grab)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free disk space (unused preinstalled SDKs)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell
+          df -h /
+      - uses: actions/checkout@v7
+      - name: System libraries, Xvfb, lavapipe (software Vulkan), fonts, ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan-dev libvulkan1 libssl-dev libasound2-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            xvfb xauth x11-utils mesa-vulkan-drivers vulkan-tools \
+            fonts-dejavu fonts-noto-core fonts-noto-color-emoji fonts-liberation \
+            ffmpeg dbus-x11
+          ls /usr/share/vulkan/icd.d/
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ui-tour
+      - name: Build tern-desktop and the browser helper (release)
+        run: cargo build --release --locked -p tern-desktop -p tern-browser
+      - name: Record the tour
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          WGPU_BACKEND: vulkan
+          WGPU_POWER_PREF: low
+          RUST_BACKTRACE: "1"
+          TERN_TOUR: "1"
+          TERN_TOUR_HOME: ${{ runner.temp }}/tern-tour-home
+          TERN_KEYRING: keyutils
+        run: |
+          set -u
+          mkdir -p out
+          cat > tour.sh <<'EOS'
+          set -u
+          vulkaninfo --summary > out/vulkaninfo.txt 2>&1 || true
+          xdpyinfo | head -40 > out/xdpyinfo.txt 2>&1 || true
+          ffmpeg -y -loglevel warning -f x11grab -video_size 1600x1000 -framerate 30 -i "$DISPLAY" \
+            -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p out/tern-current-tour.mp4 \
+            > out/ffmpeg.log 2>&1 &
+          ff=$!
+          date +%s%3N > out/rec_start_unix_ms.txt
+          export TERN_TOUR_LOG="$PWD/out/scene-log.txt"
+          timeout 900 dbus-run-session -- ./target/release/tern-desktop --tour > out/tour-stdout.txt 2> out/tour-stderr.txt
+          echo $? > out/tour-exit.txt
+          sleep 1
+          kill -INT $ff
+          wait $ff || true
+          EOS
+          xvfb-run -n 99 -s "-screen 0 1600x1000x24" bash tour.sh
+          echo "exit $(cat out/tour-exit.txt)"
+          tail -n 40 out/tour-stderr.txt || true
+          cat out/scene-log.txt || true
+          ls -la out
+          ffprobe -v error -show_entries format=duration -of csv=p=0 out/tern-current-tour.mp4 || true
+          cp "${TERN_TOUR_HOME}/data/logs/crash.log" out/ 2>/dev/null || true
+          find "${TERN_TOUR_HOME}" -name '*.log' -exec cp {} out/ \; 2>/dev/null || true
+      - name: Upload the recording and scene log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tern-ui-tour-linux
+          path: out/
+          retention-days: 14
+
+  windows:
+    name: Windows tour (gdigrab, best effort)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-release
+      - name: Build tern-desktop and the browser helper (release)
+        run: cargo build --release --locked -p tern-desktop -p tern-browser
+      - name: Record the tour
+        shell: pwsh
+        env:
+          TERN_TOUR: "1"
+          TERN_TOUR_HOME: ${{ runner.temp }}\tern-tour-home
+        run: |
+          choco install ffmpeg -y --no-progress | Out-Null
+          New-Item -ItemType Directory -Force out | Out-Null
+          $env:TERN_TOUR_LOG = "$PWD\out\scene-log.txt"
+          $ff = Start-Process ffmpeg -ArgumentList '-y','-loglevel','warning','-f','gdigrab','-framerate','30','-i','desktop','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','out\tern-current-tour-windows.mkv' -PassThru -RedirectStandardError out\ffmpeg.log
+          [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File out\rec_start_unix_ms.txt
+          $p = Start-Process .\target\release\tern-desktop.exe -ArgumentList '--tour' -PassThru -RedirectStandardOutput out\tour-stdout.txt -RedirectStandardError out\tour-stderr.txt
+          if (-not $p.WaitForExit(900000)) { $p.Kill() }
+          Start-Sleep 1
+          # A killed recording is still a readable Matroska file; remux it.
+          Stop-Process -Id $ff.Id
+          Start-Sleep 3
+          ffmpeg -y -loglevel warning -i out\tern-current-tour-windows.mkv -c copy out\tern-current-tour-windows.mp4
+          Get-ChildItem out
+          Get-Content out\scene-log.txt -ErrorAction SilentlyContinue
+      - name: Upload the Windows recording
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tern-ui-tour-windows
+          path: out/
+          retention-days: 14

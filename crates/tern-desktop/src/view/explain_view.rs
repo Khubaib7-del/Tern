@@ -544,7 +544,7 @@ impl Workspace {
         }));
     }
 
-    fn explain_step(&mut self, key: u32, by: i32, cx: &mut Context<Self>) {
+    pub(super) fn explain_step(&mut self, key: u32, by: i32, cx: &mut Context<Self>) {
         let now = Instant::now();
         self.with_explain(key, |s| {
             s.autoplay = false;
@@ -558,7 +558,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn explain_play(&mut self, key: u32, cx: &mut Context<Self>) {
+    pub(super) fn explain_play(&mut self, key: u32, cx: &mut Context<Self>) {
         let playing = self.with_explain(key, |s| {
             s.toggle_autoplay(Instant::now());
             s.autoplay
