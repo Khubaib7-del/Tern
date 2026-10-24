@@ -37,14 +37,22 @@ use crate::model::Screen;
 use crate::motion::lerp_color;
 use crate::theme::Palette;
 
+/// A leader line from a node to its label, stage pixels.
+type Leader = ((f32, f32), (f32, f32));
+/// Drawing units to window pixels, `None` when not drawable.
+type ToStage<'a> = &'a dyn Fn(&[(f32, f32)]) -> Option<Vec<gpui_kit::Point<Pixels>>>;
+
 /// Colours and amounts the painter needs, captured for the frame.
 struct Paint {
     drawing: Rc<Drawing>,
+    /// The cached frame's fit and the stage size it was made for: used
+    /// when the stage has not changed size, so shapes and labels agree.
+    fit: Option<(Fit, (f32, f32))>,
     camera: Camera,
     lit: Vec<f32>,
     hover: Option<usize>,
     /// Leader lines from nodes to labels that moved away, stage pixels.
-    leaders: Vec<((f32, f32), (f32, f32))>,
+    leaders: Vec<Leader>,
     canvas: Hsla,
     ink: Hsla,
     faint: Hsla,
@@ -141,12 +149,7 @@ fn fill(pts: &[gpui_kit::Point<Pixels>]) -> Option<gpui_kit::Path<Pixels>> {
 }
 
 /// One hairline: in the accent when its part is lit or hovered.
-fn paint_edge(
-    e: &Edge,
-    pt: &Paint,
-    at: &dyn Fn(&[(f32, f32)]) -> Option<Vec<gpui_kit::Point<Pixels>>>,
-    window: &mut Window,
-) {
+fn paint_edge(e: &Edge, pt: &Paint, at: ToStage<'_>, window: &mut Window) {
     let lit = e.part.and_then(|i| pt.lit.get(i).copied()).unwrap_or(0.0);
     let hovered = e.part.is_some() && e.part == pt.hover;
     let (c, wid) = if lit > 0.5 || hovered {
@@ -165,7 +168,10 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
     if !(w > 1.0 && h > 1.0) {
         return;
     }
-    let f = pt.camera.fit(w, h, MARGIN);
+    let f = match pt.fit {
+        Some((f, size)) if size == (w, h) => f,
+        _ => pt.camera.fit(w, h, MARGIN),
+    };
     let at = |pts: &[(f32, f32)]| on_stage(pts, &f, o, w, h);
     // The floor grid: the faintest hairlines.
     for e in &pt.drawing.grid {
@@ -711,7 +717,7 @@ impl Workspace {
         let lit: Vec<f32> = (0..scene.parts.len())
             .map(|i| s.lit(i, now, reduced))
             .collect();
-        let (label_els, leaders): (Vec<AnyElement>, Vec<((f32, f32), (f32, f32))>) = match frame
+        let (label_els, leaders): (Vec<AnyElement>, Vec<Leader>) = match frame
             .as_ref()
             .filter(|_| bw > 1.0)
         {
@@ -761,6 +767,7 @@ impl Workspace {
             .unwrap_or_else(|| Rc::new(s.drawing().unwrap_or_default()));
         let pt = Paint {
             drawing,
+            fit: frame.as_ref().map(|f| (f.fit, f.size)),
             camera: s.camera.clone(),
             lit,
             hover: s.hover,

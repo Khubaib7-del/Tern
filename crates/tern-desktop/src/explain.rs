@@ -37,6 +37,8 @@ pub struct Frame {
     key: u64,
     pub drawing: Rc<Drawing>,
     pub fit: Fit,
+    /// The stage size it was laid out for.
+    pub size: (f32, f32),
     pub labels: Rc<Vec<Placed>>,
     /// Label text size, pixels.
     pub font: f32,
@@ -543,6 +545,7 @@ impl ExplainState {
             key,
             drawing: Rc::new(drawing),
             fit,
+            size: (w, h),
             labels: Rc::new(placed),
             font,
         });
