@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/tern-hero-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/tern-hero-light.gif">
-    <img alt="Tern, a diving tern drawn in moving dither beside the TERN Research wordmark" src="assets/brand/tern-hero-light.gif" width="100%">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.webp">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner.webp">
+    <img alt="Tern: the diving-tern mark in moving dither beside the TERN Research · Study wordmark" src="docs/assets/banner.gif" width="100%">
   </picture>
 </p>
 
@@ -246,7 +246,7 @@ Phase detail and exit checks: [docs/04-roadmap.md](docs/04-roadmap.md).
 │   └── brand/            mark (PNG and SVG), lockups, app icon, animated dither hero
 ├── crates/               the Rust workspace (12 crates, see Architecture)
 ├── docs/
-│   ├── assets/           README banner and screenshots
+│   ├── assets/           README banner (animated WebP, GIF fallback, light variant) and screenshots
 │   ├── 00-vision.md
 │   ├── 01-product-spec.md
 │   ├── 02-ui-definition.md
