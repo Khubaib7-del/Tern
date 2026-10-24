@@ -1,79 +1,25 @@
-//! Appearance: the locked design in one place for review (ADR 0002). The
-//! palette, the three faces, Tern's glyphs, the built-in service logos,
-//! and Scout, with a button for each of its moods.
+//! Appearance: only what you can change. Theme, accent, font, text size,
+//! density, and motion; each applies at once and is saved. (The design
+//! system's specimens — type, glyphs, logos, Scout's moods, the palette —
+//! are not settings, so they are not here.)
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, div, px, svg};
+use gpui_kit::{AnyElement, Context, SharedString, div, px};
 
 use super::Workspace;
 use crate::appearance::{Accent, Choice, FontChoice, TextSize, ThemeChoice};
-use crate::assets::{self, MONO_FONT, SERIF_FONT, UI_FONT};
-use crate::scout::Mood;
+use crate::settings::Section;
 use crate::theme::Palette;
 
 impl Workspace {
     pub(super) fn open_appearance(&mut self, cx: &mut Context<Self>) {
-        self.show_settings(crate::settings::Section::Appearance);
+        self.show_settings(Section::Appearance);
         cx.notify();
     }
 
     pub(super) fn appearance_screen(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let section = |title: &'static str| {
-            div()
-                .pt_6()
-                .pb_2()
-                .text_xs()
-                .text_color(p.faint)
-                .child(title)
-        };
-        let swatch = |name: &'static str, c: Hsla| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .w(px(76.))
-                .child(
-                    div()
-                        .h(px(36.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(p.border)
-                        .bg(c),
-                )
-                .child(div().text_xs().text_color(p.muted).child(name))
-        };
-        let tile = |label: String, path: SharedString| {
-            div()
-                .w(px(96.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_1()
-                .py_2()
-                .rounded_md()
-                .child(svg().path(path).size(px(18.)).text_color(p.text))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(p.muted)
-                        .child(SharedString::from(label)),
-                )
-        };
-
         // The choices: each click applies at once and is saved.
         let look = self.look;
-        let choice_row = |label: &'static str, buttons: Vec<AnyElement>| {
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .py_1()
-                .child(div().w(px(96.)).text_sm().text_color(p.muted).child(label))
-                .child(div().flex().flex_wrap().gap_1().children(buttons))
-        };
         // Theme, font and size are segmented controls whose highlight
         // slides to the picked option.
         let row_of =
@@ -184,213 +130,49 @@ impl Workspace {
                             cx.notify();
                         })),
                 )
-                .child(div().text_xs().text_color(p.faint).child(
-                    "Reduce motion: no slides, wipes, or flapping; scrollbars show and hide at once.",
-                ))
                 .into_any_element(),
         ];
-        let choices = div()
-            .flex()
-            .flex_col()
-            .child(choice_row("Theme", themes))
-            .child(choice_row("Accent", accents))
-            .child(choice_row("Font", fonts))
-            .child(choice_row("Text size", sizes))
-            .child(choice_row("Density", densities))
-            .child(choice_row("Motion", motion));
-
-        let current = self.scout_mood();
-        let moods = div()
-            .flex()
-            .flex_wrap()
-            .gap_1()
-            .children(Mood::ALL.iter().map(|&m| {
-                Button::new(SharedString::from(format!("scout-{}", m.label())))
-                    .label(m.label())
-                    .ghost()
-                    .xsmall()
-                    .selected(current == m)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.scout_preview = Some(m);
-                        if matches!(m, Mood::Searching | Mood::Reading | Mood::Verifying) {
-                            this.scout.kick();
-                        }
-                        cx.notify();
-                    }))
-            }));
-
-        div()
-            .flex_1()
-            .min_h_0()
-            .child(
-                div()
-                    .mx_auto()
-                    .w_full()
-                    .max_w(px(760.))
-                    .px_6()
-                    .py_6()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Appearance"))
-                            .child(self.scout_figure(28., p)),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(p.muted)
-                            .child("Palette C: black and white, one quiet accent. Changes apply at once and are saved."),
-                    )
-                    .child(section("Look"))
-                    .child(choices)
-                    .child(section("Palette"))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_3()
-                            .child(swatch("Background", p.rail))
-                            .child(swatch("Surface", p.canvas))
-                            .child(swatch("Raised", p.raised))
-                            .child(swatch("Border", p.border))
-                            .child(swatch("Text", p.text))
-                            .child(swatch("Muted", p.muted))
-                            .child(swatch("Faint", p.faint))
-                            .child(swatch("Accent", p.accent)),
-                    )
-                    .child(section("Type"))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_family(UI_FONT)
-                                    .text_base()
-                                    .child("IBM Plex Sans for the interface: sources, steps, answers."),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_sm()
-                                    .text_color(p.muted)
-                                    .child("IBM Plex Mono for paths, costs, and metadata · 12,480 tokens · $0.042"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_baseline()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_xl()
-                                            .child("TERN"),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(SERIF_FONT)
-                                            .italic()
-                                            .text_xl()
-                                            .text_color(p.muted)
-                                            .child("Research"),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(SERIF_FONT)
-                                            .italic()
-                                            .text_xl()
-                                            .text_color(p.muted)
-                                            .child("Study"),
-                                    ),
-                            ),
-                    )
-                    .child(section("Tern Crawl"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(gpui_kit::img(assets::CRAWL_LOGO).size(px(40.)).flex_none())
-                            .children(assets::glyph("tern-crawl").map(|path| {
-                                svg().path(path).size(px(24.)).text_color(p.muted)
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_baseline()
-                                            .gap_2()
-                                            .child(div().font_weight(FontWeight::SEMIBOLD).text_lg().child("TERN"))
-                                            .child(
-                                                div()
-                                                    .font_family(SERIF_FONT)
-                                                    .italic()
-                                                    .text_lg()
-                                                    .text_color(p.muted)
-                                                    .child("Crawl"),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(p.muted)
-                                            .child("Tern's own crawler and reader. Shown wherever Tern read the pages itself."),
-                                    ),
-                            ),
-                    )
-                    .child(section("Tern glyphs"))
-                    .child(
-                        div().flex().flex_wrap().children(
-                            assets::glyph_names()
-                                .filter_map(|n| assets::glyph(n).map(|path| tile(n.replace('-', " "), path))),
-                        ),
-                    )
-                    .child(section("Built-in service logos"))
-                    .child(
-                        div().flex().flex_wrap().children(
-                            assets::service_names().map(|n| tile(n.to_owned(), assets::service_path(n))),
-                        ),
-                    )
-                    .child(section("Scout"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .gap_4()
-                            .child(
-                                div()
-                                    .p_2()
-                                    .rounded_lg()
-                                    .bg(p.sidebar)
-                                    .child(self.scout_figure(120., p)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .max_w(px(380.))
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .text_color(p.muted)
-                                            .child("Each mood comes from a real event in a run. Try one:"),
-                                    )
-                                    .child(moods),
-                            ),
-                    ),
-            )
-            .overflow_y_scrollbar()
-            .id("appearance-screen")
-            .into_any_element()
+        let one = |v: Vec<AnyElement>| -> Option<AnyElement> {
+            Some(div().flex().flex_wrap().justify_end().gap_1().children(v).into_any_element())
+        };
+        let look_rows = vec![
+            Self::row("Theme", "Dark, light, or follow the system.", one(themes), p),
+            Self::row(
+                "Accent",
+                "The one colour for selection, focus, and what is live.",
+                Some(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_1()
+                        .max_w(px(360.))
+                        .children(accents)
+                        .into_any_element(),
+                ),
+                p,
+            ),
+        ];
+        let type_rows = vec![
+            Self::row("Font", "The interface typeface.", one(fonts), p),
+            Self::row("Text size", "Scales text across the app.", one(sizes), p),
+            Self::row("Density", "How much space rows and lists get.", one(densities), p),
+        ];
+        let motion_rows = vec![Self::row(
+            "Reduce motion",
+            "No slides, wipes, or flapping; scrollbars show and hide at once. Also follows your system setting.",
+            one(motion),
+            p,
+        )];
+        self.page(
+            Section::Appearance,
+            p,
+            None,
+            vec![
+                Self::settings_card("Look", p, look_rows),
+                Self::settings_card("Text", p, type_rows),
+                Self::settings_card("Motion", p, motion_rows),
+            ],
+        )
     }
 }

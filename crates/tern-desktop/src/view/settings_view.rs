@@ -569,7 +569,7 @@ impl Workspace {
     }
 
     /// A titled group of rows on a card.
-    fn settings_card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
+    pub(super) fn settings_card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -588,7 +588,7 @@ impl Workspace {
     }
 
     /// A row: a title, a line under it, and a control on the right.
-    fn row(
+    pub(super) fn row(
         title: impl Into<SharedString>,
         line: impl Into<SharedString>,
         control: Option<AnyElement>,
