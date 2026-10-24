@@ -113,10 +113,6 @@ impl Section {
         }
     }
 
-    /// The group the section list draws a rule before.
-    pub fn starts_group(self) -> bool {
-        matches!(self, Self::Decision | Self::Appearance | Self::Privacy)
-    }
 }
 
 /// One searchable setting: where it lives, its name, and other words for it.
@@ -366,11 +362,6 @@ pub fn nav_width(window_w: f32) -> f32 {
     }
 }
 
-/// The page column's width: what is left beside the rail and the section
-/// list, up to [`PAGE_MAX_W`].
-pub fn page_width(window_w: f32, rail_w: f32) -> f32 {
-    (window_w - rail_w - nav_width(window_w)).clamp(0., PAGE_MAX_W)
-}
 
 /// The Settings screen's own state.
 #[derive(Clone, Debug, Default)]
@@ -700,13 +691,11 @@ mod tests {
         assert!(nav_labels(1366.));
         assert!(nav_labels(1536.));
         assert_eq!(nav_width(1024.), NAV_ICONS_W);
-        // A page always keeps room for its rows.
+        // A page always keeps room for its rows beside the rail (52 px).
         for w in [1024., 1280., 1366., 1536.] {
-            let page = page_width(w, 48.);
+            let page = w - 52. - nav_width(w);
             assert!(page >= 560., "{w}: {page}");
-            assert!(page <= PAGE_MAX_W);
         }
-        assert_eq!(page_width(300., 48.), 0.);
     }
 
     #[test]

@@ -86,7 +86,7 @@ mod tests {
         assert_eq!(HOVER_W, 8.);
         assert_eq!(radius(IDLE_W), 2.);
         assert_eq!(radius(HOVER_W), 4.);
-        assert!(MIN_THUMB > HOVER_W * 2.);
+        const { assert!(MIN_THUMB > HOVER_W * 2.) };
     }
 
     #[test]

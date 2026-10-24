@@ -251,7 +251,7 @@ impl Workspace {
     ) -> AnyElement {
         let width = f32::from(window.viewport_size().width);
         let labels = settings::nav_labels(width);
-        let nav = self.settings_nav(p, labels, cx);
+        let nav = self.settings_nav(p, width, cx);
         let page = self.settings_page(p, labels, window, cx);
         div()
             .relative()
@@ -272,7 +272,8 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn settings_nav(&self, p: Palette, labels: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn settings_nav(&self, p: Palette, width: f32, cx: &mut Context<Self>) -> AnyElement {
+        let labels = settings::nav_labels(width);
         let st = &self.model.settings;
         let current = Section::ALL
             .iter()
@@ -383,11 +384,7 @@ impl Workspace {
                 }))
         });
         div()
-            .w(px(if labels {
-                settings::NAV_W
-            } else {
-                settings::NAV_ICONS_W
-            }))
+            .w(px(settings::nav_width(width)))
             .flex_none()
             .h_full()
             .flex()
