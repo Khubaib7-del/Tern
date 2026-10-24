@@ -206,6 +206,10 @@ pub struct Workspace {
     popover_closed_at: Option<Instant>,
     /// The saved chat tabs were put back after launch.
     tabs_restored: bool,
+    /// The window as last saved for the next launch (`crate::restore`).
+    shown_saved: crate::restore::Shown,
+    /// Saves the window shortly after it last changed.
+    shown_task: Option<Task<()>>,
     /// The other harness's chat tabs while this one is in front.
     parked_tabs: crate::layout::ParkedTabs,
     /// A model picked while the chat was busy, applied when it is free.
@@ -408,8 +412,25 @@ impl Workspace {
                 }
             }
         });
-        // Reopen the last chat that has messages; a new draft otherwise.
-        bridge.launch(tern_agent::Harness::Research, None);
+        // Open the way Tern was left: the harness, and in it the chat of
+        // the tab that was in front (a deleted one falls back to the last
+        // chat with messages, then a new draft).
+        let shown = {
+            let prefs = tern_agent::Preferences::load();
+            let shown = crate::restore::Shown::from_prefs(&prefs.session);
+            let start =
+                crate::restore::start(prefs.open_tabs.get(crate::harness::key(shown.harness)));
+            bridge.launch_start(shown.harness, start);
+            shown
+        };
+        // The window is saved for the next launch as it closes, too.
+        {
+            let weak = cx.entity().downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                let _ = weak.update(cx, |this, cx| this.save_session_now(cx));
+                true
+            });
+        }
         // The provider list decides whether the first-run tour shows.
         bridge.load_providers();
         bridge.load_watches();
@@ -465,6 +486,18 @@ impl Workspace {
                 crate::panels::Panels::from_prefs(prefs.sidebar_width, prefs.right_pane_width);
             model.composer.effort = prefs.effort();
         }
+        // The harness, Study tab, right panel and sidebar as they were.
+        model.choose_harness(shown.harness);
+        model.composer.harness_changed(shown.harness);
+        model.study.set_tab(shown.study_tab);
+        model.set_run_view(shown.right_view);
+        model.sidebar_open = shown.sidebar_open;
+        model.run_panel_open = shown.right_open;
+        if shown.harness == tern_agent::Harness::Study {
+            model.study.busy = Some("Opening your study library…".into());
+            bridge.study_load();
+            bridge.cards_load();
+        }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
         Self {
             sidebar_slide: Slide::new(sidebar_open),
@@ -488,10 +521,7 @@ impl Workspace {
             searx_input,
             parked: Default::default(),
             harness_memory: harness_memory.clone(),
-            pending_restore: Some((
-                tern_agent::Harness::Research,
-                harness_memory.get(tern_agent::Harness::Research).clone(),
-            )),
+            pending_restore: Some((shown.harness, harness_memory.get(shown.harness).clone())),
             switcher: None,
             web: crate::webview::Host::shared(),
             web_timer: None,
@@ -546,6 +576,8 @@ impl Workspace {
             tab_pick_sel: 0,
             popover_closed_at: None,
             tabs_restored: false,
+            shown_saved: shown,
+            shown_task: None,
             parked_tabs: Default::default(),
             pending_pick: None,
             dictation: None,
@@ -1560,6 +1592,73 @@ impl Workspace {
         }
         self.persist_tabs();
         cx.notify();
+    }
+
+    /// What the window shows now, as a restart puts it back.
+    fn shown(&self) -> crate::restore::Shown {
+        crate::restore::Shown {
+            harness: self.model.harness,
+            study_tab: self.model.study.tab,
+            right_view: self.model.run_panel.view,
+            right_open: self.model.run_panel_open,
+            sidebar_open: self.model.sidebar_open,
+        }
+    }
+
+    /// Saves the window for the next launch once it has stayed the same
+    /// for `restore::SAVE_AFTER`: one write after a burst of changes, none
+    /// while nothing changes. Cheap enough to call every frame.
+    fn save_session_soon(&mut self, cx: &mut Context<Self>) {
+        if self.shown_task.is_some() || self.shown() == self.shown_saved {
+            return;
+        }
+        self.shown_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(crate::restore::SAVE_AFTER)
+                .await;
+            let _ = this.update(cx, |this, _| {
+                this.shown_task = None;
+                let now = this.shown();
+                if now != this.shown_saved {
+                    this.shown_saved = now;
+                    this.save_ui_prefs(|p| p.session = now.to_prefs());
+                }
+            });
+        }));
+    }
+
+    /// Writes the whole session now, on this thread, as the window closes:
+    /// the window, both harnesses' chat tabs, and where the open harness's
+    /// chat was left (its draft and scroll).
+    pub(super) fn save_session_now(&mut self, cx: &mut Context<Self>) {
+        let shown = self.shown();
+        self.shown_saved = shown;
+        let h = self.model.harness;
+        let place = self.current_place(cx);
+        self.harness_memory.record(h, place);
+        let other = match h {
+            tern_agent::Harness::Research => tern_agent::Harness::Study,
+            tern_agent::Harness::Study => tern_agent::Harness::Research,
+        };
+        let here = self.tabs.to_saved();
+        let there = self.parked_tabs.saved(other);
+        let memory = self.harness_memory.clone();
+        let apply = |p: &mut tern_agent::Preferences| {
+            p.session = shown.to_prefs();
+            memory.save_into(p);
+            p.open_tabs
+                .insert(crate::harness::key(h).to_owned(), here.clone());
+            if let Some(t) = &there {
+                p.open_tabs
+                    .insert(crate::harness::key(other).to_owned(), t.clone());
+            }
+        };
+        let mut prefs = tern_agent::Preferences::load();
+        apply(&mut prefs);
+        apply(&mut self.model.providers.prefs);
+        if let Err(e) = prefs.save() {
+            crate::crashlog::note(&format!("Could not save the session on close: {e}"));
+        }
     }
 
     /// After launch, once this harness's chats are known: put back the chat
@@ -4385,6 +4484,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.save_session_soon(cx);
         self.tick_scout(window, cx);
         self.tick_explain(window);
         self.sync_web(window, cx);

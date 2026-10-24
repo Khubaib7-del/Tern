@@ -47,6 +47,25 @@ pub struct OpenTabs {
     pub active: usize,
 }
 
+/// What the desktop app showed when it last closed, so it opens the same
+/// way: the harness, the Study tab, the right panel and the sidebar. The
+/// chat tabs and the chat per harness are in `open_tabs` and `last_chats`.
+/// `None` means not recorded yet (the app's defaults).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SessionState {
+    /// `research` or `study`.
+    pub harness: Option<String>,
+    /// The Study tab: `chat`, `cards`, `quiz`, `viva` or `explain`.
+    pub study_tab: Option<String>,
+    /// The right panel's view (`summary`, `report`, `graph`, ...).
+    pub right_view: Option<String>,
+    /// The right panel was open.
+    pub right_open: Option<bool>,
+    /// The sidebar was open (not collapsed).
+    pub sidebar_open: Option<bool>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -153,6 +172,8 @@ pub struct Preferences {
     pub crawlers_off: Vec<String>,
     /// The user's own system prompts: `global`, `research`, `study`.
     pub system_prompts: std::collections::BTreeMap<String, String>,
+    /// What the desktop app showed when it last closed.
+    pub session: SessionState,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -567,6 +588,13 @@ mod tests {
             crawler: Some("jina".into()),
             crawlers_off: vec!["fetch".into()],
             system_prompts: [("global".to_owned(), "Be brief.".to_owned())].into(),
+            session: SessionState {
+                harness: Some("study".into()),
+                study_tab: Some("quiz".into()),
+                right_view: Some("report".into()),
+                right_open: Some(true),
+                sidebar_open: Some(false),
+            },
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;
