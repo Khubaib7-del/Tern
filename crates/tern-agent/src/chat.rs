@@ -158,6 +158,18 @@ pub fn recent_sessions(limit: usize) -> Result<Vec<SessionSummary>, String> {
     store.recent_sessions(limit).map_err(|e| e.to_string())
 }
 
+/// A past chat's turns for the transcript, read without opening a
+/// provider, so a front end can show the chat before its model connects.
+pub fn stored_turns(id: SessionId) -> Result<Vec<PastTurn>, String> {
+    let paths = AppPaths::discover().map_err(|e| e.to_string())?;
+    let store = Store::open(&paths.database()).map_err(|e| e.to_string())?;
+    if store.session(id).map_err(|e| e.to_string())?.is_none() {
+        return Err("That chat is no longer in the database.".into());
+    }
+    let events = store.replay(id, 0).map_err(|e| e.to_string())?;
+    Ok(live_turns(&events))
+}
+
 /// Renames a chat without opening a provider. Blank titles are refused.
 pub fn rename_session(id: SessionId, title: &str) -> Result<String, String> {
     let title = clean_title(title).ok_or("A chat needs a title.")?;
@@ -249,6 +261,10 @@ pub fn archive_session(id: SessionId) -> Result<(), String> {
 /// The provider and model `opts` names, or the defaults: the first
 /// provider with a saved key and its first chat model. Also gives the
 /// model's context window when the listing has it.
+/// How long opening a chat waits for the model listing (only used for the
+/// context window and to refuse a non-chat model) before going on.
+const LISTING_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
+
 pub(crate) async fn connect_model(
     opts: &ChatOptions,
     secrets: Option<&dyn SecretStore>,
@@ -269,10 +285,13 @@ pub(crate) async fn connect_model(
         Some(m) => {
             // Look the window up when the listing has it; a failed
             // listing is not fatal, since the model id may still work.
-            let listed = provider
-                .list_models()
+            // The listing is reused for a while, and a slow or unreachable
+            // provider does not hold the chat up: after a few seconds the
+            // chat opens without it.
+            let listed = tokio::time::timeout(LISTING_WAIT, provider.list_models_cached())
                 .await
                 .ok()
+                .and_then(Result::ok)
                 .and_then(|ms| ms.into_iter().find(|x| x.id == m || x.aliases.contains(&m)));
             // A voice, OCR, image, or embedding model cannot be the chat
             // model: say so instead of failing on the first message.
@@ -285,7 +304,10 @@ pub(crate) async fn connect_model(
             (m, window)
         }
         None => {
-            let models = provider.list_models().await.map_err(|e| e.to_string())?;
+            let models = provider
+                .list_models_cached()
+                .await
+                .map_err(|e| e.to_string())?;
             let m = models
                 .into_iter()
                 .find(|m| m.can_chat() && !m.is_retired())

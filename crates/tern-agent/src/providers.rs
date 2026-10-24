@@ -156,7 +156,21 @@ pub async fn models(
     secrets: Option<&dyn SecretStore>,
     base_url: Option<&str>,
 ) -> SetupResult<Vec<ModelInfo>> {
-    Ok(connect(spec(id)?, secrets, base_url)?.list_models().await?)
+    Ok(connect(spec(id)?, secrets, base_url)?
+        .list_models_cached()
+        .await?)
+}
+
+/// [`models`], fetched again even when a recent listing is cached (the
+/// picker's Retry).
+pub async fn models_fresh(
+    id: &str,
+    secrets: Option<&dyn SecretStore>,
+    base_url: Option<&str>,
+) -> SetupResult<Vec<ModelInfo>> {
+    let p = connect(spec(id)?, secrets, base_url)?;
+    p.forget_cached_models();
+    Ok(p.list_models().await?)
 }
 
 /// Deletes the saved key. Returns whether one existed.

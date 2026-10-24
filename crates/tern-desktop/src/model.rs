@@ -273,6 +273,11 @@ pub struct Model {
     pub compact_open: bool,
     pub compacting: bool,
     pub entries: Vec<Entry>,
+    /// Short notes from Tern (model switches, saved choices, errors),
+    /// shown as toasts over the window instead of lines in the chat.
+    pub toasts: crate::toast::Toasts,
+    /// The model a switch is under way to, for the chip.
+    pub switching_to: Option<String>,
     pub phase: Phase,
     pub connection: Option<Connection>,
     /// How full the model's context window is.
@@ -453,6 +458,8 @@ impl Model {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            toasts: Default::default(),
+            switching_to: None,
             compacted: None,
             compact_pending: false,
             compact_open: false,
@@ -530,9 +537,22 @@ impl Model {
         }
     }
 
-    /// A plain line in the transcript.
+    /// A note from Tern, as a toast: errors stay until dismissed, the
+    /// rest leave after a few seconds. The chat itself stays clean.
     pub fn notice_line(&mut self, text: String) {
-        self.entries.push(Entry::Notice(text));
+        if crate::toast::is_error_text(&text) {
+            self.toast_error(text, None);
+        } else {
+            self.toast_info(text);
+        }
+    }
+
+    pub fn toast_info(&mut self, text: impl Into<String>) {
+        self.toasts.info(text, std::time::Instant::now());
+    }
+
+    pub fn toast_error(&mut self, text: impl Into<String>, retry: Option<crate::toast::Retry>) {
+        self.toasts.error(text, retry, std::time::Instant::now());
     }
 
     /// Which user message (0 for the first) entry `i` is or answers.
@@ -575,9 +595,9 @@ impl Model {
             return false;
         }
         let what = tern_agent::steer::parse_steer(&text).describe();
-        self.entries.push(Entry::Notice(format!(
+        self.toast_info(format!(
             "Steer sent: {what}. It lands at the run's next safe point."
-        )));
+        ));
         true
     }
 
@@ -1126,7 +1146,7 @@ impl Model {
         self.attaching = self.attaching.saturating_sub(1);
         match result {
             Ok(a) => self.attachments.push(a),
-            Err(e) => self.entries.push(Entry::Notice(e)),
+            Err(e) => self.toast_error(e, None),
         }
     }
 
@@ -1556,7 +1576,13 @@ impl Model {
             if crate::chatflow::is_search_failure(r) {
                 self.search_down = Some(r.clone());
             }
-            self.entries.push(Entry::Notice(r.clone()));
+            if out.state == TurnState::Cancelled {
+                // The user stopped it: the chat says so where it happened.
+                self.entries.push(Entry::Notice(r.clone()));
+            } else {
+                // A failure is a toast that stays, with Retry.
+                self.toast_error(r.clone(), Some(crate::toast::Retry::Resend));
+            }
         }
         if self.continue_offer {
             self.entries.push(Entry::Notice(
@@ -1643,7 +1669,9 @@ impl Model {
                     at: t.run.started_rfc3339(),
                 });
             }
-            if let Some(why) = &t.stop {
+            // A stop the user made stays in the chat; old errors and
+            // system notes do not come back as lines in the transcript.
+            if let Some(why) = t.stop.as_ref().filter(|w| w.starts_with("You stopped")) {
                 self.entries.push(Entry::Notice(why.clone()));
             }
             for r in &t.reports {
@@ -2513,6 +2541,58 @@ mod tests {
     }
 
     #[test]
+    fn failures_are_toasts_with_retry_not_chat_lines() {
+        let mut m = ready();
+        m.start_turn("q");
+        let before = m.entries.len();
+        m.finish_turn(
+            &outcome(
+                TurnState::Failed,
+                None,
+                Some("Could not reach Groq: could not look up api.groq.com (DNS)."),
+            ),
+            ctx(0, 0),
+        );
+        assert!(
+            !m.entries[before..]
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(_)))
+        );
+        let t = &m.toasts.shown()[0];
+        assert_eq!(t.level, crate::toast::Level::Error);
+        assert_eq!(t.retry, Some(crate::toast::Retry::Resend));
+        m.notice_line("Now answering with Mistral · codestral.".into());
+        assert_eq!(m.toasts.shown()[1].level, crate::toast::Level::Info);
+    }
+
+    #[test]
+    fn old_chats_drop_error_lines_but_keep_user_stops() {
+        let mut m = ready();
+        let turns = vec![
+            PastTurn {
+                message: Some("a".into()),
+                stop: Some("Could not reach Groq: the connection failed.".into()),
+                ..PastTurn::default()
+            },
+            PastTurn {
+                message: Some("b".into()),
+                stop: Some("You stopped this turn.".into()),
+                ..PastTurn::default()
+            },
+        ];
+        m.restore(&turns);
+        let notices: Vec<_> = m
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice(n) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, ["You stopped this turn."]);
+    }
+
+    #[test]
     fn stopped_turns_leave_a_notice() {
         let mut m = ready();
         m.start_turn("q");
@@ -2820,13 +2900,11 @@ mod tests {
         assert!(msg.contains("role=\"prompt\""));
         assert!(m.attachments.is_empty());
         assert!(matches!(
-            &m.entries[1],
+            &m.entries[0],
             Entry::User { chips, .. } if chips.len() == 1 && chips[0].role == Role::Prompt
         ));
-        assert_eq!(
-            m.entries[0],
-            Entry::Notice("Tern cannot read x.pdf yet.".into())
-        );
+        assert_eq!(m.toasts.shown()[0].text, "Tern cannot read x.pdf yet.");
+        assert_eq!(m.toasts.shown()[0].level, crate::toast::Level::Error);
     }
 
     #[test]
@@ -2897,10 +2975,14 @@ mod tests {
         assert!(!m.steer("   "));
         assert!(m.steer("drop sub-question 3"));
         assert_eq!(inbox.take()[0].text, "drop sub-question 3");
-        assert!(matches!(
-            m.entries.last(),
-            Some(Entry::Notice(n)) if n.starts_with("Steer sent: Drop sub-question 3")
-        ));
+        assert!(
+            m.toasts
+                .shown()
+                .last()
+                .is_some_and(|t| t.text.starts_with("Steer sent: Drop sub-question 3")),
+            "steering is a toast, not a chat line"
+        );
+        assert!(!m.entries.iter().any(|e| matches!(e, Entry::Notice(_))));
         m.on_event(&ev(
             "steer.received",
             "You steered the run: drop sub-question 3",

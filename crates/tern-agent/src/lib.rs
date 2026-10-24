@@ -79,7 +79,7 @@ pub use attach::{Attachment, Chip, Role};
 pub use chat::{
     ChatOptions, ChatSession, ContextParts, ContextUse, ReasoningSink, Usage, archive_session,
     chat_to_reopen, clean_title, pick_reopen, recent_sessions, remember_chat, rename_session,
-    title_from,
+    stored_turns, title_from,
 };
 pub use checkpoint::{
     CheckpointDir, CheckpointSink, OfferKind, RunCheckpoint, RunMode, RunOffer, Stage, WorkerCounts,

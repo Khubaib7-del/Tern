@@ -41,6 +41,11 @@ pub struct Provider {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// How long opening a connection may take before Tern gives up and says
+/// so; a request that never connects should not wait the full timeout.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a model listing is reused before it is fetched again.
+pub const LISTING_TTL: Duration = Duration::from_secs(10 * 60);
 /// A streamed reply may run long; the whole stream gets this much.
 const STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 const BODY_LIMIT: usize = 400;
@@ -67,17 +72,14 @@ impl Provider {
                 id: spec.id,
             });
         }
-        let mut builder = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")));
-        // A local model server is never reached through a system proxy.
-        if is_loopback(&parsed) {
-            builder = builder.no_proxy();
-        }
-        let http = builder.build().map_err(|e| ProviderError::Network {
-            provider: spec.name,
-            reason: e.to_string(),
-        })?;
+        // One shared client per kind of address: building a client loads
+        // the TLS roots, which is slow on some machines, and a shared pool
+        // keeps connections warm between calls.
+        let http =
+            shared_client(is_loopback(&parsed)).map_err(|reason| ProviderError::Network {
+                provider: spec.name,
+                reason,
+            })?;
         Ok(Self {
             spec,
             base_url: base,
@@ -116,11 +118,36 @@ impl Provider {
 
     async fn send(&self, rb: RequestBuilder, what: &str) -> ProviderResult<serde_json::Value> {
         let rb = self.with_wire_headers(self.authed(rb));
-        let resp = rb.send().await.map_err(|e| ProviderError::Network {
-            provider: self.spec.name,
-            reason: Redactor::default().redact(&without_url(&e)).into_owned(),
-        })?;
+        let resp = self.dispatch(rb).await?;
         self.check(resp, what).await
+    }
+
+    /// Sends a request, trying once more when the connection itself could
+    /// not be made (nothing reached the server, so a second try is safe):
+    /// a stale pooled connection or a brief network blip should not fail a
+    /// turn. Errors say what failed (DNS, TLS, refused, timed out).
+    async fn dispatch(&self, rb: RequestBuilder) -> ProviderResult<Response> {
+        let again = rb.try_clone();
+        match rb.send().await {
+            Ok(r) => Ok(r),
+            Err(e) if e.is_connect() && again.is_some() => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                match again {
+                    Some(rb) => rb.send().await.map_err(|e| self.network(&e)),
+                    None => Err(self.network(&e)),
+                }
+            }
+            Err(e) => Err(self.network(&e)),
+        }
+    }
+
+    fn network(&self, e: &reqwest::Error) -> ProviderError {
+        ProviderError::Network {
+            provider: self.spec.name,
+            reason: Redactor::default()
+                .redact(&describe_network(e, &self.base_url))
+                .into_owned(),
+        }
     }
 
     async fn check(&self, resp: Response, what: &str) -> ProviderResult<serde_json::Value> {
@@ -165,6 +192,45 @@ impl Provider {
     /// Lists every model this key can use, every page of it, with what
     /// each can do (see `docs/models.md`). Nothing is filtered out: retired
     /// models come back marked, and the caller decides what to show.
+    /// The models the provider lists, reused for [`LISTING_TTL`] after a
+    /// fetch: opening or reopening a chat, switching models, and the picker
+    /// do not each go back to the network.
+    pub async fn list_models_cached(&self) -> ProviderResult<Vec<ModelInfo>> {
+        if let Some(m) = self.cached_models(LISTING_TTL) {
+            return Ok(m);
+        }
+        self.list_models().await
+    }
+
+    /// The last listing fetched for this provider, address, and key, when
+    /// it is younger than `max_age`.
+    pub fn cached_models(&self, max_age: Duration) -> Option<Vec<ModelInfo>> {
+        let key = self.listing_key();
+        let cache = listings().lock().ok()?;
+        let (at, list) = cache.get(&key)?;
+        (at.elapsed() <= max_age).then(|| list.clone())
+    }
+
+    /// Drops the cached listing so the next call fetches it again.
+    pub fn forget_cached_models(&self) {
+        let key = self.listing_key();
+        if let Ok(mut c) = listings().lock() {
+            c.remove(&key);
+        }
+    }
+
+    /// The cache key: provider, address, and a fingerprint of the key (a
+    /// new key may see other models). The key itself is never stored.
+    fn listing_key(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Some(k) = &self.key {
+            k.expose().hash(&mut h);
+        }
+        format!("{}|{}|{:x}", self.spec.id, self.base_url, h.finish())
+    }
+
+    /// Fetches the provider's model listing (and caches it).
     pub async fn list_models(&self) -> ProviderResult<Vec<ModelInfo>> {
         const MAX_PAGES: usize = 50;
         let what = "the models endpoint";
@@ -204,6 +270,9 @@ impl Provider {
         let mut models = crate::model::tidy_aliases(models);
         models.sort_by(|a, b| a.id.cmp(&b.id));
         models.dedup_by(|a, b| a.id == b.id);
+        if let Ok(mut c) = listings().lock() {
+            c.insert(self.listing_key(), (Instant::now(), models.clone()));
+        }
         Ok(models)
     }
 
@@ -438,10 +507,6 @@ impl Provider {
             }
         };
         let provider = self.spec.name;
-        let network = |e: reqwest::Error| ProviderError::Network {
-            provider,
-            reason: Redactor::default().redact(&without_url(&e)).into_owned(),
-        };
         let rb = self
             .http
             .post(url)
@@ -449,10 +514,8 @@ impl Provider {
             .header("accept", "text/event-stream")
             .timeout(STREAM_TIMEOUT);
         let mut resp = self
-            .with_wire_headers(self.authed(rb))
-            .send()
-            .await
-            .map_err(network)?;
+            .dispatch(self.with_wire_headers(self.authed(rb)))
+            .await?;
         if !resp.status().is_success() {
             return Err(self
                 .check(resp, &what)
@@ -481,7 +544,7 @@ impl Provider {
             }
             !(!piece.text.is_empty() && !on(Delta::Text(&piece.text)))
         };
-        'read: while let Some(chunk) = resp.chunk().await.map_err(network)? {
+        'read: while let Some(chunk) = resp.chunk().await.map_err(|e| self.network(&e))? {
             for e in parser.push(&chunk) {
                 let mut piece = stream::decode(self.spec.wire, &e);
                 if let Some(err) = piece.error {
@@ -544,6 +607,14 @@ impl Provider {
     }
 }
 
+type Listings = std::collections::HashMap<String, (Instant, Vec<ModelInfo>)>;
+
+/// Model listings by provider, address, and key fingerprint.
+fn listings() -> &'static std::sync::Mutex<Listings> {
+    static L: std::sync::OnceLock<std::sync::Mutex<Listings>> = std::sync::OnceLock::new();
+    L.get_or_init(Default::default)
+}
+
 /// OpenAI-compatible servers known to accept `stream_options.include_usage`.
 /// Others get no option (some reject unknown fields) and usage is estimated
 /// unless they send it anyway.
@@ -571,8 +642,143 @@ fn is_loopback(u: &url::Url) -> bool {
     }
 }
 
-/// reqwest errors include the URL; Gemini once took keys in the query string,
-/// so strip it to be safe.
+/// The shared HTTP client: one for remote services (through the system
+/// proxy, if any) and one for servers on this computer (never proxied).
+fn shared_client(loopback: bool) -> Result<reqwest::Client, String> {
+    use std::sync::OnceLock;
+    static REMOTE: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    static LOCAL: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    let slot = if loopback { &LOCAL } else { &REMOTE };
+    slot.get_or_init(|| {
+        let mut b = reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            // Servers drop idle keep-alive connections; reusing one they
+            // already closed fails the next call, so idle ones go sooner.
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(30))
+            .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")));
+        if loopback {
+            b = b.no_proxy();
+        }
+        b.build().map_err(|e| e.to_string())
+    })
+    .clone()
+}
+
+/// What went wrong with a request that never got an answer, in words the
+/// user can act on: the DNS lookup, the TLS handshake, a refusal, a reset,
+/// or a timeout. Only a server on this computer gets "is it running?".
+/// reqwest's message includes the URL (Gemini once took keys in the query
+/// string), so it is never shown as is.
+fn describe_network(e: &reqwest::Error, base_url: &str) -> String {
+    let mut chain = Vec::new();
+    let mut src: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(s) = src {
+        chain.push(s.to_string());
+        src = s.source();
+    }
+    let host = url::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| "the server".into());
+    let local = url::Url::parse(base_url).is_ok_and(|u| is_loopback(&u));
+    network_reason(
+        &chain,
+        &host,
+        local,
+        e.is_timeout(),
+        e.is_connect(),
+        &without_url(e),
+    )
+}
+
+/// [`describe_network`] on plain strings, for tests: `chain` is the error's
+/// sources, outermost first.
+pub(crate) fn network_reason(
+    chain: &[String],
+    host: &str,
+    local: bool,
+    timed_out: bool,
+    connect: bool,
+    fallback: &str,
+) -> String {
+    let all = chain.join(" | ").to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| all.contains(n));
+    let inner = chain
+        .last()
+        .map(|s| short(s))
+        .unwrap_or_else(|| fallback.to_owned());
+    if has(&[
+        "dns error",
+        "failed to lookup",
+        "no such host",
+        "name or service not known",
+        "nodename nor servname",
+        "getaddrinfo",
+        "11001",
+    ]) {
+        return format!(
+            "could not look up {host} (DNS). Check the internet connection, VPN, or proxy settings."
+        );
+    }
+    if has(&[
+        "certificate",
+        "invalid peer",
+        "unknownissuer",
+        "handshake",
+        "tls",
+        "ssl",
+    ]) {
+        return format!(
+            "the secure (TLS) connection to {host} failed: {inner}. A proxy, VPN, or antivirus that inspects HTTPS can cause this."
+        );
+    }
+    if has(&["proxy"]) {
+        return format!("the proxy refused or failed the connection to {host}: {inner}.");
+    }
+    if timed_out || has(&["timed out", "10060"]) {
+        return if connect || has(&["connect"]) {
+            format!(
+                "connecting to {host} took longer than {} s. The network may be blocking it.",
+                CONNECT_TIMEOUT.as_secs()
+            )
+        } else {
+            format!("{host} did not answer in time (the request timed out).")
+        };
+    }
+    if has(&["refused", "10061"]) {
+        return if local {
+            format!("nothing is listening at {host}. Is the server running and the address right?")
+        } else {
+            format!("{host} refused the connection.")
+        };
+    }
+    if has(&[
+        "reset",
+        "10054",
+        "forcibly closed",
+        "broken pipe",
+        "connection closed",
+        "unexpected eof",
+    ]) {
+        return format!("the connection to {host} was cut off ({inner}). Try again in a moment.");
+    }
+    if has(&["unreachable", "10051", "10065"]) {
+        return format!("{host} is unreachable from this network.");
+    }
+    if connect {
+        return if local {
+            format!(
+                "the connection to {host} failed ({inner}). Is the server running and the address right?"
+            )
+        } else {
+            format!("the connection to {host} failed ({inner}).")
+        };
+    }
+    fallback.to_owned()
+}
+
 fn without_url(e: &reqwest::Error) -> String {
     let mut s = e.to_string();
     if let Some(u) = e.url() {
@@ -580,9 +786,6 @@ fn without_url(e: &reqwest::Error) -> String {
     }
     if e.is_timeout() {
         return "the request timed out".into();
-    }
-    if e.is_connect() {
-        return "the connection failed. Is the server running and the address right?".into();
     }
     s
 }
@@ -681,5 +884,92 @@ fn short(body: &str) -> String {
         format!("{trimmed}...")
     } else {
         trimmed
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::network_reason;
+
+    fn chain(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn dns_failure_names_the_host_and_dns() {
+        let r = network_reason(
+            &chain(&[
+                "client error (Connect)",
+                "dns error: No such host is known. (os error 11001)",
+            ]),
+            "api.groq.com",
+            false,
+            false,
+            true,
+            "x",
+        );
+        assert!(r.contains("api.groq.com") && r.contains("DNS"), "{r}");
+        assert!(!r.contains("server running"), "{r}");
+    }
+
+    #[test]
+    fn tls_failure_mentions_inspection() {
+        let r = network_reason(
+            &chain(&[
+                "client error (Connect)",
+                "invalid peer certificate: UnknownIssuer",
+            ]),
+            "api.groq.com",
+            false,
+            false,
+            true,
+            "x",
+        );
+        assert!(r.contains("TLS") && r.contains("UnknownIssuer"), "{r}");
+    }
+
+    #[test]
+    fn refused_only_asks_about_a_local_server() {
+        let c = chain(&[
+            "tcp connect error",
+            "No connection could be made because the target machine actively refused it. (os error 10061)",
+        ]);
+        let local = network_reason(&c, "localhost", true, false, true, "x");
+        assert!(local.contains("Is the server running"), "{local}");
+        let remote = network_reason(&c, "api.mistral.ai", false, false, true, "x");
+        assert_eq!(remote, "api.mistral.ai refused the connection.");
+    }
+
+    #[test]
+    fn connect_timeout_and_reset_are_told_apart() {
+        let t = network_reason(
+            &chain(&["tcp connect error", "timed out"]),
+            "api.groq.com",
+            false,
+            true,
+            true,
+            "x",
+        );
+        assert!(t.contains("took longer than 10 s"), "{t}");
+        let r = network_reason(
+            &chain(&[
+                "connection error",
+                "An existing connection was forcibly closed by the remote host. (os error 10054)",
+            ]),
+            "api.groq.com",
+            false,
+            false,
+            false,
+            "x",
+        );
+        assert!(r.contains("cut off"), "{r}");
+    }
+
+    #[test]
+    fn unknown_errors_keep_the_plain_reason() {
+        assert_eq!(
+            network_reason(&[], "h", false, false, false, "plain"),
+            "plain"
+        );
     }
 }

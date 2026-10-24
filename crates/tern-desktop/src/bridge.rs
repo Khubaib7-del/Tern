@@ -39,6 +39,14 @@ pub enum Msg {
     Catalog(Box<tern_agent::media::Catalog>),
     /// Speech came back as text for the composer, or why not.
     Transcribed(Result<String, String>),
+    /// One window of streaming dictation came back: its number and text.
+    Dictated(u64, Result<String, String>),
+    /// A past chat's turns, read before its model connects, so the
+    /// transcript shows at once; `Resumed` (or a connect failure) follows.
+    Opening(SessionId, Vec<PastTurn>),
+    /// Reopening a chat could not connect its model: the chat, its
+    /// turns, and why. The transcript stays; the user can pick a model.
+    ResumeFailed(SessionId, String),
     /// A site's favicon on disk, or `None` when it could not be had.
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
@@ -206,6 +214,9 @@ impl std::fmt::Debug for Msg {
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
             Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
+            Self::Dictated(seq, r) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
+            Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
+            Self::ResumeFailed(id, e) => write!(f, "ResumeFailed({id}, {e})"),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
             Self::Browsed(r, p) => write!(f, "Browsed({r}, ok: {})", p.is_ok()),
             Self::Sessions(s) => write!(f, "Sessions({})", s.len()),
@@ -285,6 +296,9 @@ impl PlanApprover for UiPlanApprover {
     }
 }
 
+/// How long the picker waits for a provider's model listing.
+pub const MODELS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The tokio side of the app.
 /// Pictures another model reads before the turn (see [`Bridge::send`]).
 #[derive(Debug)]
@@ -308,7 +322,10 @@ pub struct Bridge {
 impl Bridge {
     pub fn new() -> std::io::Result<(Self, mpsc::UnboundedReceiver<Msg>)> {
         let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            // Four workers: a turn, a model switch, a listing, and a chat
+            // being reopened can all wait on the network at once without
+            // holding each other up.
+            .worker_threads(4)
             .enable_all()
             .thread_name("tern-desktop-rt")
             .build()?;
@@ -365,12 +382,16 @@ impl Bridge {
             })
             .await
             .unwrap_or_default();
-            if let Some(id) = reopen
-                && let Ok((s, turns)) = ChatSession::resume(prefs.chat_options(), id).await
-            {
-                let recent = s.recent_sessions(RECENT).unwrap_or_default();
-                let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
-                return;
+            if let Some(id) = reopen {
+                // The last chat shows at once; its model connects after.
+                let turns = tokio::task::spawn_blocking(move || tern_agent::stored_turns(id))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                if let Ok(turns) = turns {
+                    let _ = tx.send(Msg::Opening(id, turns));
+                    resume_connect(&tx, &prefs, id).await;
+                    return;
+                }
             }
             let mut opts = prefs.chat_options();
             opts.harness = harness;
@@ -429,23 +450,12 @@ impl Bridge {
         });
     }
 
-    /// Reopens a past chat with the saved provider choices.
+    /// Reopens a past chat with the saved provider choices. Its turns are
+    /// read from the database first and sent on their own, so the
+    /// transcript shows at once; the model connects after, and a model
+    /// that cannot be reached leaves the transcript up with a reason.
     pub fn resume(&self, id: SessionId) {
-        let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            let prefs = tokio::task::spawn_blocking(Preferences::load)
-                .await
-                .unwrap_or_default();
-            match ChatSession::resume(prefs.chat_options(), id).await {
-                Ok((s, turns)) => {
-                    let recent = s.recent_sessions(RECENT).unwrap_or_default();
-                    let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
-                }
-                Err(e) => {
-                    let _ = tx.send(Msg::Notice(format!("Tern could not reopen that chat: {e}")));
-                }
-            }
-        });
+        self.rt.spawn(resume_task(self.tx.clone(), id));
     }
 
     /// Makes a branch of chat `from` keeping its first `turns` turns, then
@@ -552,18 +562,6 @@ impl Bridge {
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let c = tern_agent::media::catalog(&ids, secrets).await;
             let _ = tx.send(Msg::Catalog(Box::new(c)));
-        });
-    }
-
-    /// Sends recorded speech (a WAV) or an audio file's bytes to the
-    /// speech-to-text model.
-    pub fn transcribe(&self, via: tern_agent::media::ModelRef, audio: Vec<u8>, name: String) {
-        let tx = self.tx.clone();
-        self.rt.spawn(async move {
-            let keychain = setup::keychain();
-            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
-            let r = tern_agent::media::transcribe(secrets, &via, &audio, &name).await;
-            let _ = tx.send(Msg::Transcribed(r));
         });
     }
 
@@ -928,6 +926,21 @@ impl Bridge {
         });
     }
 
+    /// Saves the choices, then reopens chat `id` with them (a chat whose
+    /// model could not be reached, after the user picked another).
+    pub fn save_and_resume(&self, prefs: Preferences, id: SessionId) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let saved = tokio::task::spawn_blocking(move || prefs.save())
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            if let Err(e) = saved {
+                let _ = tx.send(Msg::PrefsFailed(e));
+            }
+            resume_task(tx, id).await;
+        });
+    }
+
     /// Reads the catalog with key status and the saved choices.
     /// Runs a git operation in `dir`, then reads the repository again.
     pub fn git(&self, dir: std::path::PathBuf, op: crate::git::GitOp) {
@@ -1178,16 +1191,40 @@ impl Bridge {
         });
     }
 
-    /// Lists a provider's models for the picker.
-    pub fn models(&self, id: &'static str) {
+    /// Lists a provider's models for the picker (a recent listing is
+    /// reused unless `fresh`). Always answers within [`MODELS_WAIT`], with
+    /// the list or why not, so the picker never stays on "Loading models…".
+    pub fn models(&self, id: &'static str, fresh: bool) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
-            let result = setup::models(id, secrets, None)
-                .await
-                .map_err(|e| e.to_string());
+            let fetch = async {
+                if fresh {
+                    setup::models_fresh(id, secrets, None).await
+                } else {
+                    setup::models(id, secrets, None).await
+                }
+            };
+            let result = match tokio::time::timeout(MODELS_WAIT, fetch).await {
+                Ok(r) => r.map_err(|e| e.to_string()),
+                Err(_) => Err(format!(
+                    "no answer in {} s. Check the connection and try again.",
+                    MODELS_WAIT.as_secs()
+                )),
+            };
             let _ = tx.send(Msg::Models(id, result));
+        });
+    }
+
+    /// Transcribes one window of streaming dictation (a WAV).
+    pub fn dictate(&self, via: tern_agent::media::ModelRef, seq: u64, wav: Vec<u8>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let keychain = setup::keychain();
+            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let r = tern_agent::media::transcribe(secrets, &via, &wav, "speech.wav").await;
+            let _ = tx.send(Msg::Dictated(seq, r));
         });
     }
 
@@ -1681,6 +1718,31 @@ pub enum CardChange {
 /// The study model: the cached one, or the chat's provider and model
 /// from the saved choices; `None` when Study is set to offline or no
 /// model connects (Study then uses its own fallbacks).
+/// [`Bridge::resume`]: the turns first, then the model.
+async fn resume_task(tx: mpsc::UnboundedSender<Msg>, id: SessionId) {
+    let (prefs, turns) =
+        tokio::task::spawn_blocking(move || (Preferences::load(), tern_agent::stored_turns(id)))
+            .await
+            .unwrap_or_else(|_| (Preferences::default(), Err("the read failed".into())));
+    if let Ok(turns) = turns {
+        let _ = tx.send(Msg::Opening(id, turns));
+    }
+    resume_connect(&tx, &prefs, id).await;
+}
+
+/// Connects a shown chat's model: `Resumed`, or `ResumeFailed` with why.
+async fn resume_connect(tx: &mpsc::UnboundedSender<Msg>, prefs: &Preferences, id: SessionId) {
+    match ChatSession::resume(prefs.chat_options(), id).await {
+        Ok((s, turns)) => {
+            let recent = s.recent_sessions(RECENT).unwrap_or_default();
+            let _ = tx.send(Msg::Resumed(Box::new(s), turns, recent));
+        }
+        Err(e) => {
+            let _ = tx.send(Msg::ResumeFailed(id, e));
+        }
+    }
+}
+
 async fn study_engine(
     cache: &std::sync::Arc<std::sync::Mutex<Option<StudyEngine>>>,
 ) -> Option<StudyEngine> {

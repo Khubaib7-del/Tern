@@ -117,7 +117,9 @@ impl Workspace {
 
     /// Opens a composer menu, loading what it needs.
     fn open_menu(&mut self, menu: Menu, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.composer.toggle(menu);
+        self.model
+            .composer
+            .toggle_at(menu, std::time::Instant::now());
         if matches!(self.model.composer.menu, Some(Menu::Model | Menu::Search)) {
             if !self.model.providers.loaded {
                 self.bridge.load_providers();
@@ -230,44 +232,111 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Picks a model, from this provider or another, in place.
-    fn choose_model(&mut self, provider: &'static str, model: String, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
-            return;
-        }
+    /// Picks a model, from this provider or another, in place. Another
+    /// provider is connected and swapped in: same chat, same history. A
+    /// pick while an answer runs (or another switch lands) waits for it
+    /// and says so, instead of being dropped.
+    pub(super) fn choose_model(
+        &mut self,
+        provider: &'static str,
+        model: String,
+        cx: &mut Context<Self>,
+    ) {
         self.model.composer.close();
         // A voice, OCR, image, or embedding model never becomes the chat
-        // model: the notice says what it does, and the chat keeps its model.
-        if let Some(info) = composer::Composer::info_of(&self.model.providers, &model) {
+        // model: a toast says what it does now, and the chat keeps its model.
+        let info = composer::Composer::info_of(&self.model.providers, &model)
+            .cloned()
+            .or_else(|| {
+                self.model
+                    .providers
+                    .cached(provider)
+                    .and_then(|l| l.iter().find(|m| m.id == model))
+                    .map(|m| m.info.clone())
+            });
+        let name = self.provider_name(provider);
+        if let Some(info) = &info {
             let key = format!("{provider}/{}", info.id);
             match composer::pick_outcome(provider, info) {
                 composer::PickOutcome::Chat => {}
-                composer::PickOutcome::Mic(why) => {
+                composer::PickOutcome::Mic(_) => {
                     self.save_ui_prefs(|p| p.default_stt_model = Some(key.clone()));
-                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    self.model
+                        .toast_info(composer::mic_pick_note(&info.id, &name));
                     cx.notify();
                     return;
                 }
-                composer::PickOutcome::Ocr(why) => {
+                composer::PickOutcome::Ocr(_) => {
                     self.save_ui_prefs(|p| p.default_ocr_model = Some(key.clone()));
-                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    self.model
+                        .toast_info(composer::ocr_pick_note(&info.id, &name));
                     cx.notify();
                     return;
                 }
                 composer::PickOutcome::Refused(why) => {
-                    self.model.entries.push(crate::model::Entry::Notice(why));
+                    self.model.toast_error(why, None);
                     cx.notify();
                     return;
                 }
             }
         }
+        let connecting =
+            matches!(self.model.phase, crate::model::Phase::Connecting) && self.session.is_none();
+        match composer::pick_timing(self.model.is_busy(), connecting) {
+            composer::PickTiming::Now => {}
+            timing => {
+                self.pending_pick = Some((provider, model.clone()));
+                self.model.toast_info(match timing {
+                    composer::PickTiming::AfterAnswer => {
+                        format!("Switching to {model} when this answer finishes.")
+                    }
+                    _ => format!("Switching to {model} next."),
+                });
+                cx.notify();
+                return;
+            }
+        }
+        self.apply_pick(provider, model);
+        cx.notify();
+    }
+
+    /// Switches the open chat to `model` on `provider` now.
+    pub(super) fn apply_pick(&mut self, provider: &'static str, model: String) {
         let current = self.model.providers.default_id(Kind::Model);
         if current != Some(provider) && !self.model.providers.choose(Kind::Model, provider) {
+            self.model.toast_error(
+                format!(
+                    "{} needs a working key before its models can be used: Manage providers…",
+                    self.provider_name(provider)
+                ),
+                None,
+            );
             return;
         }
         self.model.providers.choose_model(&model);
+        self.model.switching_to = Some(model);
         self.reconnect();
-        cx.notify();
+    }
+
+    /// A model picked while the chat was busy takes over now, if any.
+    pub(crate) fn apply_pending_pick(&mut self) {
+        if self.model.is_busy() || self.session.is_none() {
+            return;
+        }
+        if let Some((provider, model)) = self.pending_pick.take() {
+            self.apply_pick(provider, model);
+        }
+    }
+
+    /// A provider's display name ("Groq"), or its id.
+    pub(super) fn provider_name(&self, id: &str) -> String {
+        self.model
+            .providers
+            .rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.to_owned())
+            .unwrap_or_else(|| id.to_owned())
     }
 
     /// Picks a search service (or off) in place.
@@ -293,9 +362,10 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Sets the effort. The slider stays open: one click or drag is one
+    /// change, and the popover closes only on Esc or a press outside.
     fn set_effort(&mut self, e: Effort, cx: &mut Context<Self>) {
         self.model.composer.effort = Some(e);
-        self.model.composer.close();
         self.save_ui_prefs(|p| p.effort = Some(e.id().to_owned()));
         cx.notify();
     }
@@ -531,6 +601,18 @@ impl Workspace {
                         .appearance(false)
                         .disabled(!ready),
                 )
+                // The phrase being spoken, as the voice model hears it so
+                // far: grey, ending in "…"; it turns into composer text
+                // when the phrase ends or the mic stops.
+                .children(self.dictation_line().map(|t| {
+                    div()
+                        .id("dictation-interim")
+                        .px_1()
+                        .text_sm()
+                        .italic()
+                        .text_color(p.faint)
+                        .child(SharedString::from(t))
+                }))
                 .child(
                     div()
                         .flex()
@@ -661,9 +743,19 @@ impl Workspace {
 
     /// The model chip: provider initial and model name; opens the picker.
     fn model_chip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (label, provider): (SharedString, String) = match &self.model.connection {
-            Some(c) => (c.model.clone().into(), c.provider.clone()),
-            None => (
+        // While the mic records, the chip names the voice model doing the
+        // listening; it goes back to the chat model when the mic stops.
+        let voice = self
+            .dictation_model
+            .as_ref()
+            .map(|v| (SharedString::from(v.model.clone()), v.provider.to_owned()));
+        let (label, provider): (SharedString, String) = match (voice, &self.model.connection) {
+            (Some(v), _) => v,
+            (None, Some(c)) => match &self.model.switching_to {
+                Some(m) => (format!("{m}…").into(), c.provider.clone()),
+                None => (c.model.clone().into(), c.provider.clone()),
+            },
+            (None, None) => (
                 match &self.model.phase {
                     crate::model::Phase::Offline(_) => "No model".into(),
                     _ => "Connecting…".into(),
@@ -671,6 +763,7 @@ impl Workspace {
                 String::new(),
             ),
         };
+        let listening = self.dictation_model.is_some();
         let open = self.model.composer.menu == Some(Menu::Model);
         let chip = div()
             .id("model-chip")
@@ -690,12 +783,17 @@ impl Workspace {
             .when(!provider.is_empty(), |d| {
                 d.child(super::brand_logo(&provider, 14., p))
             })
+            .when(listening, |d| d.child(icon(AssetIcon::Mic, p.accent)))
             .child(div().min_w_0().truncate().child(label))
             .child(icon(AssetIcon::ChevronDown, p.faint))
             .when(!open, |d| {
                 d.tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new("Choose the model for this chat")
-                        .build(window, cx)
+                    gpui_kit::component::tooltip::Tooltip::new(if listening {
+                        "The voice model listening now; the chat model comes back when the mic stops"
+                    } else {
+                        "Choose the model for this chat"
+                    })
+                    .build(window, cx)
                 })
             })
             .on_click(cx.listener(|this, _, window, cx| this.open_menu(Menu::Model, window, cx)));
@@ -992,7 +1090,7 @@ impl Workspace {
             )
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 if this.model.composer.menu == Some(Menu::Effort) {
-                    this.model.composer.close();
+                    this.model.composer.close_outside(std::time::Instant::now());
                     this.effort_drag = None;
                     cx.notify();
                 }
@@ -1385,9 +1483,13 @@ impl Workspace {
                         this.model.composer.picker.hovered = None;
                         let loaded = matches!(&this.model.providers.models,
                             Some(crate::providers::Models::Loaded(p, _)) if *p == id);
-                        if !loaded {
-                            this.model.providers.models_loading(id);
-                            this.bridge.models(id);
+                        if !loaded
+                            && !this
+                                .model
+                                .providers
+                                .show_models(id, std::time::Instant::now())
+                        {
+                            this.bridge.models(id, false);
                         }
                         cx.notify();
                     }))
@@ -1416,17 +1518,35 @@ impl Workspace {
                 .text_color(p.muted)
                 .child("Add a provider key to choose a model.")
                 .into_any_element(),
-            (Some(_), None) => div()
-                .p_2()
-                .text_xs()
-                .text_color(p.muted)
-                .child(match &st.models {
-                    Some(crate::providers::Models::Failed(_, e)) => {
-                        SharedString::from(format!("Could not list models: {e}"))
-                    }
-                    _ => SharedString::from("Loading models…"),
-                })
-                .into_any_element(),
+            (Some(prov), None) => match &st.models {
+                Some(crate::providers::Models::Failed(_, e)) => div()
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(SharedString::from(format!("Could not list models: {e}")))
+                    .child(
+                        Button::new("picker-retry")
+                            .label("Retry")
+                            .xsmall()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.model.providers.forget_models(prov);
+                                this.model.providers.models_loading(prov);
+                                this.bridge.models(prov, true);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+                _ => div()
+                    .p_2()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child("Loading models…")
+                    .into_any_element(),
+            },
             (Some(_), Some(rows)) if rows.is_empty() => div()
                 .p_2()
                 .text_xs()
@@ -1594,7 +1714,7 @@ impl Workspace {
             .children(card)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 if this.model.composer.menu == Some(Menu::Model) {
-                    this.model.composer.close();
+                    this.model.composer.close_outside(std::time::Instant::now());
                     cx.notify();
                 }
             }))
@@ -2309,6 +2429,9 @@ impl Workspace {
         let hover = r.id.clone();
         let fav = r.id.clone();
         let badges: Vec<&str> = r.badges.iter().take(2).copied().collect();
+        // The mic's own model is marked with a mic, so a voice pick shows.
+        let voice = self.model.providers.prefs.default_stt_model.as_deref()
+            == Some(format!("{prov}/{}", r.id).as_str());
         div()
             .id(("picker-model", i))
             .flex()
@@ -2330,7 +2453,10 @@ impl Workspace {
                 div()
                     .w(px(14.))
                     .flex_none()
-                    .when(r.current, |d| d.child(icon(AssetIcon::Check, p.text))),
+                    .when(r.current, |d| d.child(icon(AssetIcon::Check, p.text)))
+                    .when(voice && !r.current, |d| {
+                        d.child(icon(AssetIcon::Mic, p.accent))
+                    }),
             )
             .child(
                 div()

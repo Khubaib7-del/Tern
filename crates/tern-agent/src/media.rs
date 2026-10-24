@@ -208,7 +208,7 @@ pub async fn catalog(ids: &[&'static str], secrets: Option<&dyn SecretStore>) ->
         .collect();
     let lists = join_all(connected.iter().map(|(id, p)| async move {
         let r = match p {
-            Ok(p) => p.list_models().await.map_err(|e| e.to_string()),
+            Ok(p) => p.list_models_cached().await.map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         };
         (*id, r)

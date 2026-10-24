@@ -226,7 +226,13 @@ impl Workspace {
         if self.scout.busy() {
             window.request_animation_frame();
         } else if self.scout_wake.is_none() {
-            let wait = Duration::from_secs_f32(self.scout.until_blink() + 0.02);
+            // A drifting mood wakes about 15 times a second; a still one
+            // sleeps until its next blink.
+            let wait = if self.scout.ambient() {
+                Duration::from_millis(66)
+            } else {
+                Duration::from_secs_f32(self.scout.until_blink() + 0.02)
+            };
             self.scout_wake = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(wait).await;
                 let _ = this.update(cx, |this, cx| {
