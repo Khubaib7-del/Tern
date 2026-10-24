@@ -130,20 +130,29 @@ impl RunMap {
                 // reading it belongs to the phase going on.
                 ph = match cur {
                     Some(c) if c >= 2 => Some(3),
-                    c => c.or(Some(0)),
+                    // Before any search it is no phase yet: only a real
+                    // search lights the search phase.
+                    c => c,
                 };
             }
             if let Some(p) = ph {
                 seen[p] = true;
                 cur = Some(cur.map_or(p, |c| if p == 5 || p >= c { p } else { c }));
                 match s.kind {
-                    StepKind::Search => {
+                    // Only a search that ran adds sources: its result
+                    // count, or the hits it carries.
+                    StepKind::Search if s.ok => {
                         let n = s
                             .payload
-                            .get("hits")
-                            .and_then(|h| h.as_array())
-                            .map(|a| a.len() as u64)
-                            .unwrap_or(1);
+                            .pointer("/meta/results")
+                            .and_then(|v| v.as_u64())
+                            .or_else(|| {
+                                s.payload
+                                    .get("hits")
+                                    .and_then(|h| h.as_array())
+                                    .map(|a| a.len() as u64)
+                            })
+                            .unwrap_or(0);
                         phases[0].count += n;
                         sources += n;
                     }
@@ -152,7 +161,9 @@ impl RunMap {
                         kept += 1;
                     }
                     StepKind::Decision | StepKind::Plan => phases[1].count += 1,
-                    StepKind::Model => phases[p].count += 1,
+                    // A model call is counted only as synthesis; one made
+                    // before any reading is not a search.
+                    StepKind::Model if p == 3 => phases[3].count += 1,
                     _ => {}
                 }
             }
@@ -266,8 +277,20 @@ pub fn tile(c: (f32, f32), s: f32, h: f32) -> Vec<Vec<(f32, f32)>> {
         (c.0 + a, c.1 + b)
     };
     vec![
-        vec![p(-s, -s, h), p(s, -s, h), p(s, s, h), p(-s, s, h), p(-s, -s, h)],
-        vec![p(-s, s, h), p(-s, s, 0.), p(s, s, 0.), p(s, -s, 0.), p(s, -s, h)],
+        vec![
+            p(-s, -s, h),
+            p(s, -s, h),
+            p(s, s, h),
+            p(-s, s, h),
+            p(-s, -s, h),
+        ],
+        vec![
+            p(-s, s, h),
+            p(-s, s, 0.),
+            p(s, s, 0.),
+            p(s, -s, 0.),
+            p(s, -s, h),
+        ],
         vec![p(s, s, h), p(s, s, 0.)],
     ]
 }
@@ -343,7 +366,9 @@ pub fn figure(map: &RunMap, w: f32, h: f32) -> Figure {
         let (ax, ay) = iso(POS[i].0 * k, POS[i].1 * k, 0.);
         let node = (hub.0 + ax, hub.1 + ay);
         let c = control(hub, node);
-        let curve: Vec<(f32, f32)> = (0..=24).map(|j| bezier(hub, c, node, j as f32 / 24.)).collect();
+        let curve: Vec<(f32, f32)> = (0..=24)
+            .map(|j| bezier(hub, c, node, j as f32 / 24.))
+            .collect();
         lines.push(Line {
             pts: curve,
             ink: Ink::Link(i),
@@ -408,8 +433,15 @@ pub fn trim(pts: &[(f32, f32)], frac: f32) -> Vec<(f32, f32)> {
         if left >= *len {
             out.push(pts[i + 1]);
             left -= len;
+            // The cut landed on this corner: stop, so it is not repeated.
+            if left <= f32::EPSILON {
+                break;
+            }
         } else {
             let t = if *len > 0. { left / len } else { 0. };
+            if t <= 0. {
+                break;
+            }
             let (a, b) = (pts[i], pts[i + 1]);
             out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
             break;
@@ -554,11 +586,42 @@ mod tests {
     }
 
     #[test]
+    fn only_a_search_that_ran_lights_the_search_phase() {
+        let mut r = Run::new();
+        let mut s = RunStep {
+            seq: 1,
+            event: "model.replied".into(),
+            summary: String::new(),
+            kind: StepKind::Model,
+            verb: "",
+            target: String::new(),
+            note: String::new(),
+            at: Duration::from_secs(1),
+            tokens: Some((10, 5)),
+            ok: true,
+            detailed: true,
+            page: None,
+            payload: serde_json::json!({}),
+        };
+        r.steps = vec![s.clone()];
+        let m = RunMap::from_run(&r);
+        assert_eq!(m.phases[0].count, 0);
+        assert_eq!(m.phases[0].state, PhaseState::Pending);
+        assert_eq!(m.sources, 0);
+        s.kind = StepKind::Search;
+        s.event = "tool.executed".into();
+        s.payload = serde_json::json!({"meta": {"results": 7}});
+        s.ok = false;
+        r.steps.push(s.clone());
+        assert_eq!(RunMap::from_run(&r).sources, 0, "a failed search adds none");
+        s.ok = true;
+        r.steps.push(s);
+        assert_eq!(RunMap::from_run(&r).phases[0].count, 7);
+    }
+
+    #[test]
     fn a_finished_run_has_no_live_phase() {
-        let r = run(&[(
-            "turn.finished",
-            serde_json::json!({"reason": "done"}),
-        )]);
+        let r = run(&[("turn.finished", serde_json::json!({"reason": "done"}))]);
         let m = RunMap::from_run(&r);
         if m.ended {
             assert!(m.phases.iter().all(|p| p.state != PhaseState::Live));
@@ -600,6 +663,10 @@ mod tests {
         assert_eq!(trim(&line, 0.5), vec![(0., 0.), (10., 0.)]);
         assert_eq!(trim(&line, 0.25), vec![(0., 0.), (5., 0.)]);
         assert_eq!(trim(&line, 1.), line.to_vec());
+        assert_eq!(trim(&line, 0.), vec![(0., 0.)]);
+        let t = trim(&line, 0.75);
+        assert_eq!(t, vec![(0., 0.), (10., 0.), (10., 5.)]);
+        assert!(t.windows(2).all(|w| w[0] != w[1]), "no repeated point");
     }
 
     #[test]

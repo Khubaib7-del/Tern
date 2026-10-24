@@ -52,17 +52,18 @@ pub fn passages(answer: &str) -> Vec<Passage> {
     let mut cur = String::new();
     let mut fence = false;
     let mut start = 0;
-    let flush = |cur: &mut String, out: &mut Vec<Passage>, heading: &Option<String>, start: usize| {
-        let t = cur.trim();
-        if t.chars().filter(|c| c.is_alphanumeric()).count() >= 3 {
-            out.push(Passage {
-                heading: heading.clone(),
-                text: t.to_owned(),
-                at: start,
-            });
-        }
-        cur.clear();
-    };
+    let flush =
+        |cur: &mut String, out: &mut Vec<Passage>, heading: &Option<String>, start: usize| {
+            let t = cur.trim();
+            if t.chars().filter(|c| c.is_alphanumeric()).count() >= 3 {
+                out.push(Passage {
+                    heading: heading.clone(),
+                    text: t.to_owned(),
+                    at: start,
+                });
+            }
+            cur.clear();
+        };
     for (i, line) in answer.lines().enumerate() {
         let l = line.trim();
         if l.starts_with("```") {
@@ -85,7 +86,9 @@ pub fn passages(answer: &str) -> Vec<Passage> {
         let item = l.starts_with("- ")
             || l.starts_with("* ")
             || l.starts_with("• ")
-            || l.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit()));
+            || l.split_once(". ").is_some_and(|(n, _)| {
+                !n.is_empty() && n.len() <= 3 && n.chars().all(|c| c.is_ascii_digit())
+            });
         if l.is_empty() || (item && !cur.trim().is_empty()) {
             flush(&mut cur, &mut out, &heading, start);
             start = i;
@@ -112,19 +115,99 @@ fn has(text: &str, words: &[&str]) -> bool {
 /// fraction 0 to 1 through the answer).
 pub fn level_of(p: &Passage, frac: f32) -> u8 {
     let t = format!("{} {}", p.heading.clone().unwrap_or_default(), p.text);
-    if has(&t, &[" in short", " tl;dr", " the key idea", " the main idea", " core idea", " in a nutshell", " summary"]) {
+    if has(
+        &t,
+        &[
+            " in short",
+            " tl;dr",
+            " the key idea",
+            " the main idea",
+            " core idea",
+            " in a nutshell",
+            " summary",
+        ],
+    ) {
         return 1;
     }
-    if has(&t, &[" advanced", " future", " implication", " at scale", " in production", " open question", " research direction", " compar", " versus ", " vs ", " vs. ", " which to choose", " when to use", " trade-offs between"]) {
+    if has(
+        &t,
+        &[
+            " advanced",
+            " future",
+            " implication",
+            " at scale",
+            " in production",
+            " open question",
+            " research direction",
+            " compar",
+            " versus ",
+            " vs ",
+            " vs. ",
+            " which to choose",
+            " when to use",
+            " trade-offs between",
+        ],
+    ) {
         return 4;
     }
-    if has(&t, &[" however", " limitation", " edge case", " caveat", " trade-off", " tradeoff", " fails ", " failure", " pitfall", " risk", " note that", " drawback", " downside", " cost "]) {
+    if has(
+        &t,
+        &[
+            " however",
+            " limitation",
+            " edge case",
+            " caveat",
+            " trade-off",
+            " tradeoff",
+            " fails ",
+            " failure",
+            " pitfall",
+            " risk",
+            " note that",
+            " drawback",
+            " downside",
+            " cost ",
+        ],
+    ) {
         return 3;
     }
-    if has(&t, &[" how it works", " works by", " step ", " steps", " process", " pipeline", " mechanism", " algorithm", " first,", " then ", " finally", " under the hood", " implementation", " method"]) {
+    if has(
+        &t,
+        &[
+            " how it works",
+            " works by",
+            " step ",
+            " steps",
+            " process",
+            " pipeline",
+            " mechanism",
+            " algorithm",
+            " first,",
+            " then ",
+            " finally",
+            " under the hood",
+            " implementation",
+            " method",
+        ],
+    ) {
         return 2;
     }
-    if frac < 0.12 || has(&t, &[" is a ", " is an ", " refers to", " means ", " defined as", " basics", " background", " definition", " what is"]) {
+    if frac < 0.12
+        || has(
+            &t,
+            &[
+                " is a ",
+                " is an ",
+                " refers to",
+                " means ",
+                " defined as",
+                " basics",
+                " background",
+                " definition",
+                " what is",
+            ],
+        )
+    {
         return 0;
     }
     (1. + frac * 3.5).floor().clamp(1., 4.) as u8
@@ -135,7 +218,8 @@ pub fn level_of(p: &Passage, frac: f32) -> u8 {
 pub fn target_nodes(answer: &str, passages: usize, headings: usize) -> usize {
     let words = answer.split_whitespace().count();
     let want = MIN_NODES + words / 90 + headings;
-    want.min(passages.max(MIN_NODES)).clamp(MIN_NODES, MAX_NODES - 4)
+    want.min(passages.max(MIN_NODES))
+        .clamp(MIN_NODES, MAX_NODES - 4)
 }
 
 /// `[1]`, `[2][3]`, `[12]` in a passage, in order, without repeats.
@@ -203,7 +287,10 @@ fn label_for(p: &Passage, used: &[String]) -> String {
     {
         return clip(&t, 40);
     }
-    let first = sentences(&strip_marks(&p.text)).into_iter().next().unwrap_or_default();
+    let first = sentences(&strip_marks(&p.text))
+        .into_iter()
+        .next()
+        .unwrap_or_default();
     let words: Vec<&str> = first.split_whitespace().take(6).collect();
     clip(&words.join(" "), 40)
 }
@@ -216,7 +303,9 @@ fn fit_count(mut ps: Vec<(u8, Passage)>, n: usize) -> Vec<(u8, Passage)> {
         let best = (0..ps.len() - 1)
             .filter(|&i| ps[i].0 == ps[i + 1].0)
             .min_by_key(|&i| ps[i].1.text.len() + ps[i + 1].1.text.len())
-            .or_else(|| (0..ps.len() - 1).min_by_key(|&i| ps[i].1.text.len() + ps[i + 1].1.text.len()));
+            .or_else(|| {
+                (0..ps.len() - 1).min_by_key(|&i| ps[i].1.text.len() + ps[i + 1].1.text.len())
+            });
         let Some(i) = best else { break };
         let next = ps.remove(i + 1);
         ps[i].1.text = format!("{}\n\n{}", ps[i].1.text, next.1.text);
@@ -284,7 +373,10 @@ pub fn answer_scene(answer: &str, concept: &str, now: i64) -> Scene {
         labels.push(label.clone());
         let id = format!("n{}", k + 1);
         let plain = strip_marks(&p.text);
-        let first = sentences(&plain).into_iter().next().unwrap_or(plain.clone());
+        let first = sentences(&plain)
+            .into_iter()
+            .next()
+            .unwrap_or(plain.clone());
         let shape = match level {
             0 => Shape::Plate,
             3 => Shape::Cylinder,
@@ -299,7 +391,10 @@ pub fn answer_scene(answer: &str, concept: &str, now: i64) -> Scene {
             ..Part::default()
         });
         let mut lit = vec![id.clone()];
-        for (t, term) in key_terms(&p.text, 2.min(terms_left)).into_iter().enumerate() {
+        for (t, term) in key_terms(&p.text, 2.min(terms_left))
+            .into_iter()
+            .enumerate()
+        {
             if labels.iter().any(|l| l.eq_ignore_ascii_case(&term)) {
                 continue;
             }
@@ -356,7 +451,10 @@ pub fn answer_scene(answer: &str, concept: &str, now: i64) -> Scene {
         }
     }
     let concept = if concept.trim().is_empty() {
-        labels.first().cloned().unwrap_or_else(|| "This answer".into())
+        labels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "This answer".into())
     } else {
         clip(concept, 80)
     };
@@ -436,7 +534,11 @@ pub fn lay_out(scene: &mut Scene) {
             .filter(|(id, _, _)| p.id.starts_with(id.as_str()) && p.id != *id)
             .max_by_key(|(id, _, _)| id.len());
         if let Some((_, at, size)) = owner {
-            let k = p.id.chars().last().and_then(|c| c.to_digit(10)).unwrap_or(1) as f32;
+            let k =
+                p.id.chars()
+                    .last()
+                    .and_then(|c| c.to_digit(10))
+                    .unwrap_or(1) as f32;
             p.at = [
                 (at[0] + size[0] * 0.5 + (k - 1.5) * 1.2).clamp(0., GRID),
                 (at[1] - 0.3).clamp(0., GRID),
@@ -478,7 +580,10 @@ pub fn parse_answer_scene(text: &str, concept: &str, now: i64) -> Option<Scene> 
         };
         let level = item
             .get("level")
-            .and_then(|l| l.as_u64().or_else(|| l.as_str().and_then(|s| s.trim().parse().ok())))
+            .and_then(|l| {
+                l.as_u64()
+                    .or_else(|| l.as_str().and_then(|s| s.trim().parse().ok()))
+            })
             .unwrap_or(1)
             .min(4) as u8;
         let mut id = format!("n{}", parts.len() + 1);
@@ -571,7 +676,9 @@ pub fn parse_answer_scene(text: &str, concept: &str, now: i64) -> Option<Scene> 
     let mut scene = Scene {
         id: String::new(),
         concept: clip(&concept, 80),
-        summary: field(&v, &["summary"]).map(|s| clip(s, 240)).unwrap_or_default(),
+        summary: field(&v, &["summary"])
+            .map(|s| clip(s, 240))
+            .unwrap_or_default(),
         parts,
         links,
         steps,
@@ -593,10 +700,14 @@ mod tests {
         );
         s.push_str("## In short\nThe key idea is to retrieve first and generate second [2].\n\n");
         s.push_str("## How it works\nFirst, a **retriever** finds passages. Then the generator writes with them in its context. Finally the answer cites them [3].\n\n");
-        s.push_str("- Dense retrieval uses `embeddings`.\n- Sparse retrieval uses **BM25** [4].\n\n");
+        s.push_str(
+            "- Dense retrieval uses `embeddings`.\n- Sparse retrieval uses **BM25** [4].\n\n",
+        );
         s.push_str("## Limitations\nHowever, retrieval fails when the query is vague, and long contexts cost more [5].\n\n");
         s.push_str("## Comparing approaches\nAgentic RAG versus single-shot RAG: the agent plans several searches, which helps on multi-hop questions at a higher cost [6]. ");
-        s.push_str(&"In production teams also cache results and evaluate faithfulness. ".repeat(20));
+        s.push_str(
+            &"In production teams also cache results and evaluate faithfulness. ".repeat(20),
+        );
         s
     }
 
@@ -611,7 +722,11 @@ mod tests {
 
     #[test]
     fn node_count_scales_with_the_answer() {
-        let short = answer_scene("RAG retrieves passages, then writes with them. It cites them.", "", 0);
+        let short = answer_scene(
+            "RAG retrieves passages, then writes with them. It cites them.",
+            "",
+            0,
+        );
         let long = answer_scene(&long_answer(), "", 0);
         let mains = |s: &Scene| s.parts.iter().filter(|p| p.shape != Shape::Label).count();
         assert!(mains(&short) <= MIN_NODES);
@@ -632,7 +747,11 @@ mod tests {
         assert_eq!(levels, sorted, "steps are in level order");
         assert_eq!(levels.first(), Some(&0));
         assert!(levels.iter().any(|&l| l >= 3), "{levels:?}");
-        assert!(s.steps.iter().any(|st| st.caption.contains("[2]") || st.passage.contains("[2]")));
+        assert!(
+            s.steps
+                .iter()
+                .any(|st| st.caption.contains("[2]") || st.passage.contains("[2]"))
+        );
         // Key terms are sub-nodes linked to their node.
         let terms: Vec<&Part> = s.parts.iter().filter(|p| p.shape == Shape::Label).collect();
         assert!(!terms.is_empty());
@@ -682,7 +801,13 @@ mod tests {
 
     #[test]
     fn citations_and_terms_are_found() {
-        assert_eq!(citations("a [1] b [2][3] c [1] [x] [1234]"), vec!["[1]", "[2]", "[3]"]);
-        assert_eq!(key_terms("use **BM25** and `faiss`, **BM25** again", 5), vec!["BM25", "faiss"]);
+        assert_eq!(
+            citations("a [1] b [2][3] c [1] [x] [1234]"),
+            vec!["[1]", "[2]", "[3]"]
+        );
+        assert_eq!(
+            key_terms("use **BM25** and `faiss`, **BM25** again", 5),
+            vec!["BM25", "faiss"]
+        );
     }
 }

@@ -42,7 +42,12 @@ pub(super) struct GraphUi {
     pub chart: Rc<Cell<[f32; 4]>>,
 }
 
-fn stroke(pts: &[(f32, f32)], o: (f32, f32), w: f32, dash: Option<f32>) -> Option<gpui_kit::Path<Pixels>> {
+fn stroke(
+    pts: &[(f32, f32)],
+    o: (f32, f32),
+    w: f32,
+    dash: Option<f32>,
+) -> Option<gpui_kit::Path<Pixels>> {
     let mut pb = PathBuilder::stroke(px(w));
     if let Some(d) = dash {
         pb = pb.dash_array(&[px(d), px(d * 1.5)]);
@@ -145,14 +150,20 @@ impl Workspace {
         let drawn = if reduced {
             1.
         } else {
-            crate::motion::ease(((now - opened).as_secs_f32() / DRAW_IN.as_secs_f32()).clamp(0., 1.))
+            crate::motion::ease(
+                ((now - opened).as_secs_f32() / DRAW_IN.as_secs_f32()).clamp(0., 1.),
+            )
         };
         let travel = if reduced {
             0.5
         } else {
             (now.duration_since(opened).as_secs_f32() / TRAVEL.as_secs_f32()).fract()
         };
-        let animating = !reduced && (drawn < 1. || map.current.is_some_and(|c| map.phases[c].state == PhaseState::Live));
+        let animating = !reduced
+            && (drawn < 1.
+                || map
+                    .current
+                    .is_some_and(|c| map.phases[c].state == PhaseState::Live));
         let (line1, line2) = map.readout(ui.hover);
         let inks = Inks {
             text: p.text,
@@ -187,7 +198,11 @@ impl Workspace {
                 let [x, y, w, h] = this.graph.card.get();
                 let map = RunMap::from_run(this.model.panel_run());
                 let fig = runmap::figure(&map, w, h);
-                let at = runmap::hit(&fig, f32::from(e.position.x) - x, f32::from(e.position.y) - y);
+                let at = runmap::hit(
+                    &fig,
+                    f32::from(e.position.x) - x,
+                    f32::from(e.position.y) - y,
+                );
                 if at != this.graph.hover {
                     this.graph.hover = at;
                     cx.notify();
@@ -229,7 +244,16 @@ impl Workspace {
                         ];
                         card_cell.set(r);
                         let fig = runmap::figure(&fig_map, r[2], r[3]);
-                        paint_figure(&fig, &fig_map, hover, (r[0], r[1]), drawn, travel, inks, window);
+                        paint_figure(
+                            &fig,
+                            &fig_map,
+                            hover,
+                            (r[0], r[1]),
+                            drawn,
+                            travel,
+                            inks,
+                            window,
+                        );
                         if animating {
                             window.request_animation_frame();
                         }
@@ -267,14 +291,25 @@ impl Workspace {
     }
 
     /// Spend over time against the budget, with a crosshair and tooltip.
-    fn spend_chart(&self, map: &RunMap, drawn: f32, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn spend_chart(
+        &self,
+        map: &RunMap,
+        drawn: f32,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let top = map
             .spend
             .last()
             .map_or(0, |s| s.tokens)
             .max(map.budget.unwrap_or(0));
         let (max, ticks) = runmap::chart_ticks(top);
-        let end = map.spend.last().map_or(Duration::ZERO, |s| s.at).as_secs_f32().max(1.);
+        let end = map
+            .spend
+            .last()
+            .map_or(Duration::ZERO, |s| s.at)
+            .as_secs_f32()
+            .max(1.);
         let pts: Vec<(f32, f32)> = map
             .spend
             .iter()
@@ -376,52 +411,68 @@ impl Workspace {
                         }
                     }))
                     .child(
-                        div().absolute().left_0().top_0().bottom_0().right(px(48.)).child(
-                            canvas(
-                                |_, _, _: &mut App| (),
-                                move |b, _, window, _: &mut App| {
-                                    let (ox, oy) = (f32::from(b.origin.x), f32::from(b.origin.y));
-                                    let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
-                                    chart_cell.set([ox, oy, w, h]);
-                                    let at = |p: (f32, f32)| (p.0 * w, h - p.1 * h);
-                                    // Grid lines at the ticks.
-                                    for k in 0..4 {
-                                        let y = h - h * k as f32 / 3.;
-                                        if let Some(path) = stroke(&[(0., y), (w, y)], (ox, oy), 0.6, None) {
-                                            window.paint_path(path, faint.opacity(0.25));
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .right(px(48.))
+                            .child(
+                                canvas(
+                                    |_, _, _: &mut App| (),
+                                    move |b, _, window, _: &mut App| {
+                                        let (ox, oy) =
+                                            (f32::from(b.origin.x), f32::from(b.origin.y));
+                                        let (w, h) =
+                                            (f32::from(b.size.width), f32::from(b.size.height));
+                                        chart_cell.set([ox, oy, w, h]);
+                                        let at = |p: (f32, f32)| (p.0 * w, h - p.1 * h);
+                                        // Grid lines at the ticks.
+                                        for k in 0..4 {
+                                            let y = h - h * k as f32 / 3.;
+                                            if let Some(path) =
+                                                stroke(&[(0., y), (w, y)], (ox, oy), 0.6, None)
+                                            {
+                                                window.paint_path(path, faint.opacity(0.25));
+                                            }
                                         }
-                                    }
-                                    let line: Vec<(f32, f32)> = runmap::trim(
-                                        &pts.iter().map(|p| at(*p)).collect::<Vec<_>>(),
-                                        drawn,
-                                    );
-                                    if line.len() >= 2 {
-                                        let mut area = line.clone();
-                                        area.push((line.last().map_or(0., |p| p.0), h));
-                                        area.push((0., h));
-                                        if let Some(path) = fill(&area, (ox, oy)) {
-                                            window.paint_path(path, accent_fill);
+                                        let line: Vec<(f32, f32)> = runmap::trim(
+                                            &pts.iter().map(|p| at(*p)).collect::<Vec<_>>(),
+                                            drawn,
+                                        );
+                                        if line.len() >= 2 {
+                                            let mut area = line.clone();
+                                            area.push((line.last().map_or(0., |p| p.0), h));
+                                            area.push((0., h));
+                                            if let Some(path) = fill(&area, (ox, oy)) {
+                                                window.paint_path(path, accent_fill);
+                                            }
+                                            if let Some(path) = stroke(&line, (ox, oy), 1.6, None) {
+                                                window.paint_path(path, text);
+                                            }
                                         }
-                                        if let Some(path) = stroke(&line, (ox, oy), 1.6, None) {
-                                            window.paint_path(path, text);
+                                        if let Some(bv) = budget {
+                                            let y = h - bv * h;
+                                            if let Some(path) =
+                                                stroke(&[(0., y), (w, y)], (ox, oy), 1.0, Some(4.))
+                                            {
+                                                window.paint_path(path, faint);
+                                            }
                                         }
-                                    }
-                                    if let Some(bv) = budget {
-                                        let y = h - bv * h;
-                                        if let Some(path) = stroke(&[(0., y), (w, y)], (ox, oy), 1.0, Some(4.)) {
-                                            window.paint_path(path, faint);
+                                        if let Some(fx) = x
+                                            && let Some(path) = stroke(
+                                                &[(fx * w, 0.), (fx * w, h)],
+                                                (ox, oy),
+                                                0.8,
+                                                None,
+                                            )
+                                        {
+                                            window.paint_path(path, faint.opacity(0.6));
                                         }
-                                    }
-                                    if let Some(fx) = x
-                                        && let Some(path) =
-                                            stroke(&[(fx * w, 0.), (fx * w, h)], (ox, oy), 0.8, None)
-                                    {
-                                        window.paint_path(path, faint.opacity(0.6));
-                                    }
-                                },
-                            )
-                            .size_full(),
-                        ),
+                                    },
+                                )
+                                .size_full(),
+                            ),
                     )
                     .child(axis)
                     .children(tip),

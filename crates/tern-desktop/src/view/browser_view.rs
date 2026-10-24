@@ -24,8 +24,8 @@ use super::Workspace;
 fn native_handle(window: &Window) -> Option<isize> {
     #[cfg(target_os = "windows")]
     {
-        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-        if let Ok(h) = window.window_handle()
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(h) = HasWindowHandle::window_handle(window)
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             return Some(w.hwnd.get());

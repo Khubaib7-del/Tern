@@ -530,6 +530,14 @@ mod tests {
                 },
             )]
             .into(),
+            open_tabs: [(
+                "research".to_owned(),
+                OpenTabs {
+                    tabs: vec![OpenTab::default()],
+                    active: 0,
+                },
+            )]
+            .into(),
             effort: Some("high".into()),
             favourite_models: vec!["mistral/mistral-large-latest".into()],
             default_stt_model: Some("groq/whisper-large-v3-turbo".into()),
