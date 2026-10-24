@@ -299,10 +299,8 @@ impl Workspace {
         };
         match did {
             KeyDid::Nothing => return,
-            KeyDid::Play => {
-                if self.explains.get(&key).is_some_and(|s| s.autoplay) {
-                    self.start_explain_ticker(cx);
-                }
+            KeyDid::Play if self.explains.get(&key).is_some_and(|s| s.autoplay) => {
+                self.start_explain_ticker(cx);
             }
             _ => {}
         }

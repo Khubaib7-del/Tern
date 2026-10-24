@@ -476,8 +476,10 @@ mod tests {
 
     #[test]
     fn ready_then_events_then_exit() {
-        let mut h = Host::default();
-        h.status = Status::Starting(Instant::now());
+        let mut h = Host {
+            status: Status::Starting(Instant::now()),
+            ..Host::default()
+        };
         h.on_incoming(Incoming::Ev(Event::Ready {
             version: 1,
             engine: "WebView2".into(),
@@ -517,8 +519,10 @@ mod tests {
 
     #[test]
     fn a_start_error_stops_but_a_later_error_does_not() {
-        let mut h = Host::default();
-        h.status = Status::Starting(Instant::now());
+        let mut h = Host {
+            status: Status::Starting(Instant::now()),
+            ..Host::default()
+        };
         h.on_incoming(Incoming::Ev(Event::Error {
             message: "no WebView2 runtime".into(),
         }));
@@ -533,8 +537,10 @@ mod tests {
     #[test]
     fn placing_with_no_helper_binary_stops_with_a_reason_and_never_panics() {
         // SAFETY-free: point the lookup at a path that does not exist.
-        let mut h = Host::default();
-        h.status = Status::Stopped("x".into());
+        let mut h = Host {
+            status: Status::Stopped("x".into()),
+            ..Host::default()
+        };
         h.place(Rect::new(0., 0., 10., 10.), (0., 0.));
         assert!(h.seen);
         assert!(!h.shown);
