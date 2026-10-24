@@ -923,6 +923,17 @@ impl Workspace {
             cx.notify();
             return;
         }
+        // In Study, a message that names a mode ("quiz me on paging",
+        // "explain TLBs in 3D") switches the window to it and starts it.
+        if self.model.harness == Harness::Study {
+            let typed = self.composer.read(cx).value().to_string();
+            if self.study_intent(&typed, window, cx) {
+                self.composer
+                    .update(cx, |c, cx| c.set_value("", window, cx));
+                cx.notify();
+                return;
+            }
+        }
         if self.session.is_none() {
             return;
         }
@@ -933,8 +944,10 @@ impl Workspace {
         let Some(session) = self.session.take() else {
             return;
         };
-        // Asked from the Study tools: the answer shows in the Study chat.
-        if self.model.screen == Screen::Study {
+        // Asked in Study: the answer shows in the Study window's chat.
+        if self.model.harness == Harness::Study {
+            self.model.study.set_tab(crate::study::StudyTab::Chat);
+            self.model.study.materials_open = false;
             self.model.screen = Screen::Chat;
         }
         let mut session = session;
@@ -4437,13 +4450,18 @@ impl Render for Workspace {
                             .overflow_hidden()
                             .when(!panels.shows_centre(), |d| d.hidden())
                             .map(|d| match self.model.screen {
+                                Screen::Chat
+                                    if self.model.harness == Harness::Study
+                                        && self.active_explain().is_none() =>
+                                {
+                                    d.child(self.study_window(p, window, cx))
+                                }
                                 Screen::Chat => match self.active_explain() {
                                     Some(key) => d
                                         .children(self.tab_strip(p, cx))
                                         .child(self.explain_view(key, p, cx)),
                                     None => d
                                         .children(self.tab_strip(p, cx))
-                                        .children(self.study_chat_header(p, cx))
                                         .child(self.transcript(p, cx))
                                         .children(self.range_bar(p, cx).map(|b| {
                                             div()
@@ -4460,13 +4478,7 @@ impl Render for Workspace {
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
-                                Screen::Study => d
-                                    .child(self.study_screen(p, window, cx))
-                                    // Asking from the tools goes to the Study chat.
-                                    .when(
-                                        self.model.study.view == crate::study::StudyView::Home,
-                                        |d| d.child(self.composer(p, cx)),
-                                    ),
+                                Screen::Study => d.child(self.study_window(p, window, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
                                 Screen::Archived => d.child(self.archived_screen(p, cx)),
                             })

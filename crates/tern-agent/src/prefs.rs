@@ -499,6 +499,17 @@ mod tests {
                 ..Default::default()
             },
             collapsed_projects: vec!["p1".into()],
+            last_chats: [(
+                "study".to_owned(),
+                LastChat {
+                    chat: Some("01J".into()),
+                    draft: "half".into(),
+                    scroll: 120,
+                    side_open: true,
+                    browser_open: false,
+                },
+            )]
+            .into(),
             effort: Some("high".into()),
             favourite_models: vec!["mistral/mistral-large-latest".into()],
             default_stt_model: Some("groq/whisper-large-v3-turbo".into()),

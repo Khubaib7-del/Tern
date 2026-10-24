@@ -202,12 +202,20 @@ impl Workspace {
             .map(|t| now.duration_since(t).as_secs_f32())
             .unwrap_or(0.0);
         self.explain_at = Some(now);
-        let Some(key) = self.active_explain() else {
-            return;
+        let study = &self.model.study;
+        let key = match self.active_explain() {
+            Some(k) if self.model.screen == Screen::Chat => k,
+            // The Study window's Explain tab.
+            _ if self.model.harness == tern_agent::Harness::Study
+                && study.tab == crate::study::StudyTab::Explain =>
+            {
+                match study.explain {
+                    Some(k) => k,
+                    None => return,
+                }
+            }
+            _ => return,
         };
-        if self.model.screen != Screen::Chat {
-            return;
-        }
         let reduced = self.reduced_motion;
         if let Some(s) = self.explains.get_mut(&key) {
             s.settle(dt, reduced);

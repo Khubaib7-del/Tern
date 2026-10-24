@@ -29,7 +29,7 @@ use super::Workspace;
 use crate::assets;
 use crate::bridge::StudyMsg;
 use crate::model::Screen;
-use crate::study::{StudyView, fmt_score};
+use crate::study::{StudyTab, StudyView, fmt_score};
 use crate::theme::Palette;
 
 /// Study's pill radius.
@@ -46,6 +46,8 @@ pub(super) struct StudyInputs {
     /// A card's two sides on the deck screen.
     pub card_front: Entity<InputState>,
     pub card_back: Entity<InputState>,
+    /// A page or online PDF to add as a material.
+    pub link: Entity<InputState>,
 }
 
 impl StudyInputs {
@@ -62,6 +64,8 @@ impl StudyInputs {
         });
         let card_front = cx.new(|cx| InputState::new(window, cx).placeholder("Front"));
         let card_back = cx.new(|cx| InputState::new(window, cx).placeholder("Back"));
+        let link = cx
+            .new(|cx| InputState::new(window, cx).placeholder("https://… a page or an online PDF"));
         let subs = vec![
             cx.subscribe_in(
                 &answer,
@@ -89,6 +93,7 @@ impl StudyInputs {
                 title,
                 card_front,
                 card_back,
+                link,
             },
             subs,
         )
@@ -276,63 +281,14 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Over the Study chat: where it is filed, and the way back to the
-    /// Study tools. `None` in the Research harness.
-    pub(super) fn study_chat_header(
-        &self,
-        p: Palette,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if self.model.harness != Harness::Study {
-            return None;
-        }
-        Some(
-            div()
-                .w_full()
-                .max_w(px(super::COLUMN_MAX_W))
-                .mx_auto()
-                .px_4()
-                .pt_2()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(glyph("study", 14., p.accent))
-                        .child(serif("Study chat", p).text_lg())
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(p.faint)
-                                .child("Its own chat, kept apart from Research"),
-                        ),
-                )
-                .child(
-                    Button::new("study-chat-back")
-                        .icon(AssetIcon::ArrowLeft)
-                        .label("Study tools")
-                        .ghost()
-                        .small()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.model.screen = crate::model::Screen::Study;
-                            this.model.study.go_home();
-                            cx.notify();
-                        })),
-                )
-                .into_any_element(),
-        )
-    }
-
     /// The Study harness's own chat: its transcript and composer. It is
     /// a separate chat from Research, filed under Study.
     pub(super) fn open_study_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model.harness != Harness::Study {
             self.choose_harness(Harness::Study, cx);
         }
+        self.model.study.set_tab(StudyTab::Chat);
+        self.model.study.materials_open = false;
         self.model.screen = crate::model::Screen::Chat;
         self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
@@ -614,6 +570,436 @@ impl Workspace {
 
     // ---- Rendering ----
 
+    /// Switches the one Study window's mode.
+    pub(super) fn study_tab(&mut self, tab: StudyTab, cx: &mut Context<Self>) {
+        self.model.study.set_tab(tab);
+        if tab != StudyTab::Chat {
+            self.model.study.materials_open = false;
+        }
+        self.model.screen = Screen::Study;
+        cx.notify();
+    }
+
+    /// Builds a 3D explainer inside the Study window's Explain tab.
+    pub(super) fn study_explain(
+        &mut self,
+        ask: tern_agent::explain::Ask,
+        label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.next_explain += 1;
+        let key = self.next_explain;
+        self.explains
+            .insert(key, crate::explain::ExplainState::new(label));
+        self.model.study.explain = Some(key);
+        self.model.study.set_tab(StudyTab::Explain);
+        self.model.screen = Screen::Study;
+        self.bridge.explain_build(key, ask);
+        self.keys.focus(window, cx);
+        cx.notify();
+    }
+
+    /// A Study message that names a mode ("quiz me on paging") switches
+    /// to it and starts it instead of going to the chat. `true` when it
+    /// was taken.
+    pub(super) fn study_intent(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 140 {
+            return false;
+        }
+        let tab_now = self.model.study.tab;
+        let (tab, subject) = match crate::study::intent(text) {
+            Some(i) => i,
+            // Typed in the Explain tab: the words are the concept.
+            None if tab_now == StudyTab::Explain => (StudyTab::Explain, text.to_owned()),
+            None => return false,
+        };
+        let low = subject.to_lowercase();
+        let topic = (!low.is_empty())
+            .then(|| {
+                self.model
+                    .study
+                    .library
+                    .topics
+                    .iter()
+                    .find(|t| {
+                        let tl = t.title.to_lowercase();
+                        tl.contains(&low) || low.contains(&tl)
+                    })
+                    .cloned()
+            })
+            .flatten();
+        match tab {
+            StudyTab::Quiz => {
+                self.study_tab(StudyTab::Quiz, cx);
+                if !self.model.study.library.topics.is_empty() {
+                    self.model.study.open_quiz(topic);
+                    self.start_quiz(cx);
+                }
+            }
+            StudyTab::Cards => {
+                self.study_tab(StudyTab::Cards, cx);
+                let now = tern_agent::study::now();
+                if self.model.study.due(None, now) > 0 {
+                    self.start_review(topic.map(|t| t.id), window, cx);
+                } else if !self.model.study.library.materials.is_empty() {
+                    self.gen_cards(topic.map(|t| t.id), cx);
+                }
+            }
+            StudyTab::Viva => {
+                self.study_tab(StudyTab::Viva, cx);
+                if !subject.is_empty() {
+                    let s = subject.clone();
+                    self.study_inputs
+                        .title
+                        .update(cx, |i, cx| i.set_value(s, window, cx));
+                }
+            }
+            StudyTab::Explain => {
+                let label = if subject.is_empty() {
+                    "Explain"
+                } else {
+                    subject.as_str()
+                };
+                let ask = tern_agent::explain::Ask {
+                    concept: subject.clone(),
+                    topic: topic.map(|t| t.id),
+                    context: None,
+                };
+                self.study_explain(ask, &label.to_owned(), window, cx);
+            }
+            StudyTab::Chat => return false,
+        }
+        true
+    }
+
+    /// The one Study window (v2 s14): the mode tabs centred at the top,
+    /// the mode in the middle, and the Study composer at the bottom. The
+    /// chat and every tool live here; nothing opens a separate page.
+    pub(super) fn study_window(
+        &self,
+        p: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let s = &self.model.study;
+        let tab = s.tab;
+        let segs: Vec<super::segmented::Segment> = StudyTab::ALL
+            .iter()
+            .map(|t| super::segmented::Segment::text(t.label()))
+            .collect();
+        let tabs = self.segmented(
+            "study-tabs",
+            &segs,
+            tab.index(),
+            super::segmented::Look {
+                framed: true,
+                fill: false,
+                small: false,
+            },
+            p,
+            std::rc::Rc::new(|this: &mut Self, i, _, cx| {
+                this.study_tab(StudyTab::ALL[i], cx);
+            }),
+            cx,
+        );
+        let now = tern_agent::study::now();
+        let header = div()
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .px_4()
+            .pt(px(14.))
+            .pb_2()
+            .child(div().occlude().child(tabs))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(s.status_line(now))),
+                    )
+                    .when(tab == StudyTab::Chat, |d| {
+                        d.child(
+                            Button::new("study-materials")
+                                .icon(AssetIcon::BookOpen)
+                                .label("Materials")
+                                .ghost()
+                                .small()
+                                .selected(s.materials_open)
+                                .tooltip("Your materials, topics and progress")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let s = &mut this.model.study;
+                                    s.materials_open = !s.materials_open;
+                                    if s.view != StudyView::Tutor {
+                                        s.view = StudyView::Home;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            );
+        let empty_lib = s.library.materials.is_empty();
+        let body: AnyElement = match tab {
+            StudyTab::Chat => {
+                if s.view == StudyView::Tutor || s.materials_open || self.model.entries.is_empty() {
+                    self.study_screen(p, window, cx)
+                } else {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(self.transcript(p, cx))
+                        .children(self.range_bar(p, cx).map(|b| {
+                            div()
+                                .w_full()
+                                .max_w(px(super::COLUMN_MAX_W))
+                                .mx_auto()
+                                .px_4()
+                                .pb_1()
+                                .child(b)
+                        }))
+                        .into_any_element()
+                }
+            }
+            StudyTab::Cards if empty_lib && s.deck.cards.is_empty() => {
+                self.material_empty(tab, p, cx)
+            }
+            t if t.needs_materials() && empty_lib && s.quiz.is_none() && s.viva.is_none() => {
+                self.material_empty(tab, p, cx)
+            }
+            StudyTab::Explain => match s.explain.filter(|k| self.explains.contains_key(k)) {
+                Some(key) => self.explain_view(key, p, cx),
+                None => self.explain_empty(p, cx),
+            },
+            _ => self.study_screen(p, window, cx),
+        };
+        div()
+            .id("study-window")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .bg(p.warm)
+            .child(header)
+            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .child(self.composer(p, cx))
+            .into_any_element()
+    }
+
+    /// A mode that works from materials, with none yet: what it does and
+    /// the three ways to add one (a file, a link, the last report).
+    fn material_empty(&self, tab: StudyTab, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.model.study.busy.is_some();
+        let (title, line) = match tab {
+            StudyTab::Quiz => (
+                "Quizzes from your own sources",
+                "Add something to study and Tern writes questions from it, grades each answer and explains every miss with the page it came from.",
+            ),
+            StudyTab::Viva => (
+                "Viva practice",
+                "An examiner asks, you defend, Tern scores it. Add your report or notes so the questions come from your own work.",
+            ),
+            StudyTab::Cards => (
+                "Flashcards",
+                "Tern writes cards from your materials and schedules them like Anki. Add something to start a deck.",
+            ),
+            _ => ("Start here", "Add something to study."),
+        };
+        div()
+            .id("study-empty")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px_4()
+            .py_6()
+            .child(
+                self.card(p)
+                    .w_full()
+                    .max_w(px(520.))
+                    .gap_3()
+                    .p_5()
+                    .child(serif(title, p).text_2xl())
+                    .child(div().text_sm().text_color(p.muted).child(line))
+                    .children(self.study_status(p, cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                Button::new("study-empty-files")
+                                    .icon(AssetIcon::Plus)
+                                    .label("Add material")
+                                    .primary()
+                                    .small()
+                                    .disabled(busy)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.pick_study_files(cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("study-empty-pdf")
+                                    .icon(AssetIcon::FileText)
+                                    .label("Upload PDF")
+                                    .small()
+                                    .disabled(busy)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.pick_study_files(cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("study-empty-report")
+                                    .icon(AssetIcon::ScrollText)
+                                    .label("Use the last report")
+                                    .ghost()
+                                    .small()
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.model.study.busy = Some("Adding your report…".into());
+                                        this.bridge.study_add_report("last".into());
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Input::new(&self.study_inputs.link).small()),
+                            )
+                            .child(
+                                Button::new("study-empty-link")
+                                    .icon(AssetIcon::Link)
+                                    .label("Paste link")
+                                    .small()
+                                    .disabled(busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.study_add_link(window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(div().text_xs().text_color(p.faint).child(
+                        "Or ask Tern anything in the box below; it answers without materials.",
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// Adds the page or online PDF in the link field as a material.
+    pub(super) fn study_add_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let url = self.study_inputs.link.read(cx).value().trim().to_owned();
+        if url.is_empty() {
+            self.model.study.notice = Some("Paste a link to a page or an online PDF first.".into());
+            cx.notify();
+            return;
+        }
+        self.model.study.busy = Some(format!("Reading {url}…"));
+        self.bridge.study_add_link(url);
+        self.study_inputs
+            .link
+            .update(cx, |i, cx| i.set_value("", window, cx));
+        cx.notify();
+    }
+
+    /// The Explain tab before a scene: what it does and the topics to
+    /// start from (or type a concept in the box below).
+    fn explain_empty(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let topics: Vec<AnyElement> = self
+            .model
+            .study
+            .library
+            .topics
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(i, t)| {
+                let topic = t.clone();
+                Button::new(("explain-topic", i))
+                    .label(SharedString::from(t.title.clone()))
+                    .small()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let ask = tern_agent::explain::Ask {
+                            concept: topic.title.clone(),
+                            topic: Some(topic.id.clone()),
+                            context: None,
+                        };
+                        this.study_explain(ask, &topic.title.clone(), window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let last_answer = self.model.entries.iter().rev().find_map(|e| match e {
+            crate::model::Entry::Assistant { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        div()
+            .id("explain-empty")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px_4()
+            .py_6()
+            .child(
+                self.card(p)
+                    .w_full()
+                    .max_w(px(560.))
+                    .gap_3()
+                    .p_5()
+                    .child(serif("Explain in 3D", p).text_2xl())
+                    .child(div().text_sm().text_color(p.muted).child(
+                        "Type a concept below and Tern builds a 3D scene you can turn, step through and save, with every step cited.",
+                    ))
+                    .when(!topics.is_empty(), |d| {
+                        d.child(div().text_xs().text_color(p.faint).child("From your topics"))
+                            .child(div().flex().flex_wrap().gap_2().children(topics))
+                    })
+                    .when_some(last_answer, |d, text| {
+                        d.child(
+                            Button::new("explain-last-answer")
+                                .icon(AssetIcon::Box)
+                                .label("Explain the last answer in 3D")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    let ask = tern_agent::explain::Ask {
+                                        concept: String::new(),
+                                        topic: None,
+                                        context: Some(text.clone()),
+                                    };
+                                    this.study_explain(ask, "This chat", window, cx);
+                                })),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn study_screen(
         &self,
         p: Palette,
@@ -703,22 +1089,18 @@ impl Workspace {
         out
     }
 
-    pub(super) fn back_row(&self, title: String, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    /// A mode's heading in the one Study window. The tab bar moves
+    /// between modes, so there is no Back button.
+    pub(super) fn back_row(
+        &self,
+        title: String,
+        p: Palette,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .flex()
             .items_center()
             .gap_2()
-            .child(
-                Button::new("study-back")
-                    .icon(AssetIcon::ArrowLeft)
-                    .label("Study")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.model.study.go_home();
-                        cx.notify();
-                    })),
-            )
             .child(serif(title, p).text_xl())
             .into_any_element()
     }
@@ -789,16 +1171,6 @@ impl Workspace {
                     .flex()
                     .gap_1()
                     .child(
-                        Button::new("study-chat")
-                            .label("Study chat")
-                            .ghost()
-                            .small()
-                            .tooltip("Ask Tern to explain, quiz, or test you, in a chat of its own")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_study_chat(window, cx)
-                            })),
-                    )
-                    .child(
                         Button::new("study-add")
                             .icon(AssetIcon::Plus)
                             .label("Add files")
@@ -846,6 +1218,8 @@ impl Workspace {
             div()
                 .id(id)
                 .flex_1()
+                .flex_basis(px(170.))
+                .min_w(px(150.))
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -854,8 +1228,10 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .bg(p.canvas)
-                .when(ready, |d| d.cursor_pointer().hover(|d| d.bg(p.hover)))
-                .when(!ready, |d| d.cursor_not_allowed())
+                // Always clickable: a tile that cannot run yet opens its
+                // mode with the add-material empty state.
+                .cursor_pointer()
+                .hover(|d| d.bg(p.hover))
                 .child(
                     div()
                         .flex()
@@ -878,6 +1254,7 @@ impl Workspace {
             .unwrap_or_else(|| "A Socratic tutor on one topic".into());
         let actions = div()
             .flex()
+            .flex_wrap()
             .gap_2()
             .child(
                 action(
@@ -896,6 +1273,8 @@ impl Workspace {
                         .cloned()
                     {
                         this.open_tutor(t, cx);
+                    } else {
+                        this.study_tab(StudyTab::Chat, cx);
                     }
                 })),
             )
@@ -908,6 +1287,7 @@ impl Workspace {
                     has,
                 )
                 .on_click(cx.listener(|this, _, _, cx| {
+                    this.study_tab(StudyTab::Quiz, cx);
                     if !this.model.study.library.topics.is_empty() {
                         this.model.study.open_quiz(None);
                         cx.notify();
@@ -943,6 +1323,7 @@ impl Workspace {
                 })
                 .relative()
                 .on_click(cx.listener(|this, _, window, cx| {
+                    this.study_tab(StudyTab::Cards, cx);
                     let now = tern_agent::study::now();
                     let s = &this.model.study;
                     if s.deck.cards.is_empty() {
@@ -987,7 +1368,7 @@ impl Workspace {
                 .bg(p.canvas)
                 .child(serif("Start here", p).text_lg())
                 .child(div().text_sm().text_color(p.muted).child(
-                    "Tutor, Quiz, Flashcards, and Viva work from your own materials. Add one, or ask Tern anything in the Study chat now.",
+                    "Tutor, Quiz, Flashcards, and Viva work from your own materials. Add one, or just ask Tern below.",
                 ))
                 .child(
                     div()
