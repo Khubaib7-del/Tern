@@ -40,6 +40,7 @@ mod deep_view;
 mod editor_view;
 mod eval_view;
 mod explain_view;
+mod frame;
 mod git_view;
 mod library_view;
 mod onboarding_view;
@@ -3409,6 +3410,7 @@ impl Workspace {
         let opened = self.ctx_opened.clone();
         let opened_set = self.ctx_opened.clone();
         let accent = p.accent;
+        let ws = cx.entity_id();
         HoverCard::new("context-card")
             .anchor(gpui_kit::Anchor::BottomRight)
             .open_delay(Duration::from_millis(150))
@@ -3421,7 +3423,7 @@ impl Workspace {
                     .get()
                     .map_or(crate::gauge::SWEEP, |at| at.elapsed());
                 if !reduced && t < crate::gauge::SWEEP + Duration::from_millis(30) {
-                    window.request_animation_frame();
+                    frame::next_frame_for(window, ws);
                 }
                 let used: Vec<&crate::model::ContextRow> =
                     b.rows.iter().filter(|r| r.label != "Free").collect();
@@ -4486,7 +4488,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.save_session_soon(cx);
         self.tick_scout(window, cx);
-        self.tick_explain(window);
+        self.tick_explain(window, cx);
         self.sync_web(window, cx);
         // The Graph view draws in each time it opens.
         if self.model.run_panel.view == RunView::Graph && self.model.run_panel_open {
@@ -4495,7 +4497,7 @@ impl Render for Workspace {
             self.graph.opened = None;
         }
         self.tick_toasts(window, cx);
-        self.tick_rail_scroll(window);
+        self.tick_rail_scroll(window, cx);
         let now = Instant::now();
         // A flashcard turning over draws every frame until it lands.
         if self.model.screen == Screen::Study
@@ -4506,7 +4508,7 @@ impl Render for Workspace {
                 .as_ref()
                 .is_some_and(|r| r.turning(now, self.reduced_motion))
         {
-            window.request_animation_frame();
+            frame::next_frame(window, cx);
         }
         let layout = Layout::for_width(f32::from(window.viewport_size().width));
         if Layout::sidebar_squeezed(self.last_layout, layout) {
@@ -4535,7 +4537,7 @@ impl Render for Workspace {
             .panel_slide
             .frame(self.model.run_panel_open, now, reduced);
         if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
-            window.request_animation_frame();
+            frame::next_frame(window, cx);
         }
         // The theme change: the new theme is drawn whole and the old one's
         // canvas parts from the centre out (v2 s17), no ripple.
@@ -4757,7 +4759,7 @@ impl Render for Workspace {
             .children(ripple);
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
-            window.request_animation_frame();
+            frame::next_frame(window, cx);
         }
         root
     }
@@ -5188,7 +5190,11 @@ pub(crate) fn inner_list_bar(
 /// precise pixels), and keeps it from the page; at the list's ends the
 /// turn goes on to the page (`scrollbar::wheel_take`). Only the view is
 /// notified, once per turn that moved the list.
-pub(crate) fn wheel_first<H>(handle: &H) -> impl IntoElement
+///
+/// `view` is the view to notify (`cx.entity_id()` in its render); it is
+/// passed in rather than read from GPUI's rendered-view stack
+/// (`view/frame.rs`).
+pub(crate) fn wheel_first<H>(handle: &H, view: gpui_kit::EntityId) -> impl IntoElement
 where
     H: gpui_kit::base::ScrollbarHandle + Clone,
 {
@@ -5196,7 +5202,6 @@ where
     gpui_kit::canvas(
         |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
         move |_, hitbox, window, _| {
-            let view = window.current_view();
             window.on_mouse_event(move |e: &gpui_kit::ScrollWheelEvent, phase, window, cx| {
                 if phase != gpui_kit::DispatchPhase::Capture || !hitbox.should_handle_scroll(window)
                 {

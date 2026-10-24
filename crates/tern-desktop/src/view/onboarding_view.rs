@@ -604,6 +604,7 @@ impl Workspace {
                             .border_color(p.border)
                             .child(super::wheel_first(
                                 &self.settings_inputs.onboarding_models_scroll,
+                                cx.entity_id(),
                             ))
                             .child(
                                 uniform_list(

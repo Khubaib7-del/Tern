@@ -30,7 +30,7 @@ impl Workspace {
             return;
         };
         if wait <= Duration::from_millis(16) {
-            window.request_animation_frame();
+            super::frame::next_frame(window, cx);
         } else if self.toast_wake.is_none() {
             self.toast_wake = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()

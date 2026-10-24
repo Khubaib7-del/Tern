@@ -8,11 +8,12 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     // An 8 MB main-thread stack on Windows, as on Linux and macOS. Windows
     // gives an executable's main thread 1 MB, and GPUI lays out and paints
-    // its element tree recursively on that thread: a deep view (the Explain
-    // in 3D stage with its labels, caption and step bar inside the
-    // workspace) can run past 1 MB, and a stack overflow ends the process
-    // at once, with no panic to catch or log. Zed's own build sets the
-    // same size for the same reason.
+    // its element tree recursively on that thread, and a stack overflow
+    // ends the process at once, with no panic to catch or log. Zed's own
+    // build sets the same size for the same reason. (PR #56 added this for
+    // the Explain in 3D crash on Next and Play; the crash log later showed
+    // that crash was a panic in GPUI's `current_view`, fixed in PR #57,
+    // not an overflow. The headroom stays.)
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
             println!("cargo:rustc-link-arg-bins=/STACK:8388608");

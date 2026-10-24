@@ -209,3 +209,147 @@ fn the_windows_desktop_gets_an_eight_megabyte_main_stack() {
     assert!(build.contains("cargo:rustc-link-arg-bins=/STACK:8388608"));
     assert!(build.contains("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"));
 }
+
+/// Every `.rs` file under `crates/*/src`, with its path from `crates/`.
+fn crate_sources() -> Vec<(String, String)> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&crates_dir).unwrap() {
+        let src = entry.unwrap().path().join("src");
+        if src.is_dir() {
+            walk(&src, &mut files);
+        }
+    }
+    files
+        .into_iter()
+        .map(|p| {
+            let name = p
+                .strip_prefix(&crates_dir)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            (name, std::fs::read_to_string(&p).unwrap())
+        })
+        .collect()
+}
+
+/// The source with `//` comments blanked, so prose can name a call.
+fn code_only(src: &str) -> String {
+    src.lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The bodies of `cx.listener(...)` and `.on_*(...)` calls (a click,
+/// mouse, wheel, pinch, key or action listener), found by matching
+/// parentheses. A heuristic, not a parser: good enough to catch a frame
+/// request written into a listener.
+fn listener_bodies(code: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while i < code.len() {
+        let rest = &code[i..];
+        let start = if rest.starts_with("cx.listener(") {
+            Some("cx.listener(".len())
+        } else if rest.starts_with(".on_") {
+            rest.find('(')
+                .filter(|&p| {
+                    rest[4..p]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                })
+                .map(|p| p + 1)
+        } else {
+            None
+        };
+        if let Some(open) = start {
+            let from = i + open;
+            let mut depth = 1usize;
+            let mut j = from;
+            while j < code.len() && depth > 0 {
+                match bytes[j] {
+                    b'(' => depth += 1,
+                    b')' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+            out.push(&code[from..j.saturating_sub(1)]);
+        }
+        i += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    out
+}
+
+#[test]
+fn the_listener_scan_finds_a_frame_request_in_a_listener() {
+    let bad = "div().on_click(cx.listener(|this, _, window, cx| {\n    this.step += 1;\n    window.request_animation_frame();\n}))";
+    assert!(
+        listener_bodies(bad)
+            .iter()
+            .any(|b| b.contains("request_animation_frame"))
+    );
+    let good =
+        "div().on_click(cx.listener(|this, _, window, cx| {\n    next_frame(window, cx);\n}))";
+    assert!(
+        !listener_bodies(good)
+            .iter()
+            .any(|b| b.contains("request_animation_frame"))
+    );
+}
+
+#[test]
+fn no_frame_request_reads_gpuis_rendered_view_outside_a_render() {
+    // `Window::request_animation_frame` and `Window::current_view` unwrap
+    // GPUI's rendered-view stack, which is empty in a listener, a timer,
+    // an action or a task. Called from a click or wheel listener they
+    // panicked inside the Windows window procedure, which cannot unwind,
+    // and Tern closed (0xC0000409, PR #57: Explain in 3D's Next, Play,
+    // zoom and Reset). Tern asks for frames with
+    // `view::frame::next_frame`, which names its view itself; the two
+    // calls appear nowhere else, not even where they would work, and
+    // `view/frame.rs` uses `request_animation_frame` only in its tests.
+    let mut offenders = Vec::new();
+    let mut in_listeners = Vec::new();
+    for (name, src) in crate_sources() {
+        let code = code_only(&src);
+        for b in listener_bodies(&code) {
+            if b.contains("request_animation_frame") || b.contains("current_view(") {
+                in_listeners.push(name.clone());
+            }
+        }
+        if name == "tern-desktop/src/view/frame.rs" {
+            let tests = code.find("#[cfg(test)]").expect("frame.rs has its tests");
+            assert!(!code[..tests].contains("request_animation_frame"));
+            assert!(!code[..tests].contains("current_view("));
+            assert!(code[..tests].contains("on_next_frame"));
+            continue;
+        }
+        for (n, line) in code.lines().enumerate() {
+            if line.contains("request_animation_frame") || line.contains("current_view(") {
+                offenders.push(format!("{name}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(in_listeners.is_empty(), "in a listener: {in_listeners:?}");
+    assert!(
+        offenders.is_empty(),
+        "use view::frame::next_frame (or next_frame_for in a paint callback):\n{}",
+        offenders.join("\n")
+    );
+}

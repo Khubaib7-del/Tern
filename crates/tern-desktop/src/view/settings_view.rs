@@ -787,6 +787,7 @@ impl Workspace {
                     // the list's ends it goes on to the page.
                     .child(super::wheel_first(
                         &self.settings_inputs.provider_models_scroll,
+                        cx.entity_id(),
                     ))
                     .child(
                         uniform_list(
@@ -1016,7 +1017,10 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .overflow_hidden()
-                .child(super::wheel_first(&self.settings_inputs.catalog_scroll))
+                .child(super::wheel_first(
+                    &self.settings_inputs.catalog_scroll,
+                    cx.entity_id(),
+                ))
                 .child(
                     uniform_list(
                         "model-catalogue",
@@ -1098,7 +1102,10 @@ impl Workspace {
             .mx_3()
             .mb_2()
             .h(px((n as f32 * LIST_ROW_H).min(220.)))
-            .child(super::wheel_first(&self.settings_inputs.role_scroll))
+            .child(super::wheel_first(
+                &self.settings_inputs.role_scroll,
+                cx.entity_id(),
+            ))
             .child(
                 uniform_list(
                     "role-choices",

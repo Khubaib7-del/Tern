@@ -159,6 +159,7 @@ impl Workspace {
         } else {
             (now.duration_since(opened).as_secs_f32() / TRAVEL.as_secs_f32()).fract()
         };
+        let me = cx.entity_id();
         let animating = !reduced
             && (drawn < 1.
                 || map
@@ -255,7 +256,7 @@ impl Workspace {
                             window,
                         );
                         if animating {
-                            window.request_animation_frame();
+                            super::frame::next_frame_for(window, me);
                         }
                     },
                 )
