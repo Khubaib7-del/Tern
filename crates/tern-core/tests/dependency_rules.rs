@@ -197,3 +197,15 @@ fn the_windows_icon_is_embedded_at_build_time_only() {
     }
     assert!(crates_dir.join("../assets/brand/tern.ico").exists());
 }
+
+#[test]
+fn the_windows_desktop_gets_an_eight_megabyte_main_stack() {
+    // Windows gives a main thread 1 MB; GPUI lays out and paints on it
+    // recursively, and a stack overflow ends the app with nothing logged.
+    let build = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tern-desktop/build.rs"),
+    )
+    .unwrap();
+    assert!(build.contains("cargo:rustc-link-arg-bins=/STACK:8388608"));
+    assert!(build.contains("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"));
+}
