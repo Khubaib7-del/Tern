@@ -49,7 +49,7 @@ impl TutorMode {
         })
     }
 
-    fn instructions(self) -> &'static str {
+    pub fn instructions(self) -> &'static str {
         match self {
             Self::Explain => {
                 "Explain the topic clearly in short paragraphs, building from the core idea to the details, with one concrete example from the passages. End with exactly one check-for-understanding question."

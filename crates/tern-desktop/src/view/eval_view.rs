@@ -37,18 +37,20 @@ fn tile(p: Palette, inner: AnyElement) -> AnyElement {
 
 /// Who answered: the provider's logo when Tern has one, else Tern's mark.
 fn subject_logo(provider: Option<&str>, p: Palette) -> AnyElement {
-    let path = match provider {
-        Some(id) if assets::service_names().any(|n| n == id) => assets::service_path(id),
-        _ => assets::MARK.into(),
-    };
-    tile(
-        p,
-        svg()
-            .path(path)
+    let inner = match provider {
+        Some(id) if matches!(crate::brands::logo(id), crate::brands::Logo::Mark(..)) => {
+            super::brand_logo(id, 15., p)
+        }
+        Some(id) if assets::service_names().any(|n| n == id) => {
+            super::service_logo(id, 15., p, p.text)
+        }
+        _ => svg()
+            .path(assets::MARK)
             .size(px(15.))
             .text_color(p.text)
             .into_any_element(),
-    )
+    };
+    tile(p, inner)
 }
 
 fn kind_icon(kind: SuiteKind) -> AssetIcon {

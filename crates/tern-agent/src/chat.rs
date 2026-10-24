@@ -63,7 +63,7 @@ pub struct ChatOptions {
     pub tool_modes: std::collections::BTreeMap<String, crate::Mode>,
 }
 
-const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
+pub(crate) const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
 
 /// One open chat.
 #[allow(missing_debug_implementations)]
@@ -424,8 +424,13 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
         }
     }
     let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
-    let mut e =
-        crate::rules::effective(web.then_some(WEB_INSTRUCTIONS), &project, &tools, untrusted);
+    let mut e = crate::rules::effective_with_user(
+        web.then_some(WEB_INSTRUCTIONS),
+        crate::prompts::user_block(opts.harness).as_deref(),
+        &project,
+        &tools,
+        untrusted,
+    );
     e.notes.extend(notes);
     e.offers = offers;
     Ok(e)
@@ -973,6 +978,9 @@ impl ChatSession {
                 ws.name()
             ));
         }
+        if let Some(u) = crate::prompts::user_block(self.harness) {
+            extra.push(u);
+        }
         let joined = (!extra.is_empty()).then(|| extra.join("\n\n"));
         crate::rules::instructions(joined.as_deref(), &self.project, self.untrusted)
     }
@@ -981,7 +989,14 @@ impl ChatSession {
     /// piece (see [`crate::rules::effective`]).
     pub fn effective_instructions(&self) -> crate::rules::Effective {
         let harness = self.search_name.map(|_| WEB_INSTRUCTIONS);
-        let mut e = crate::rules::effective(harness, &self.project, &self.tools, self.untrusted);
+        let user = crate::prompts::user_block(self.harness);
+        let mut e = crate::rules::effective_with_user(
+            harness,
+            user.as_deref(),
+            &self.project,
+            &self.tools,
+            self.untrusted,
+        );
         e.notes.extend(self.mcp_notes.iter().cloned());
         e.offers = crate::mcp::catalog::lines(&self.mcp_offers);
         if self.decider.is_on() {

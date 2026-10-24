@@ -32,18 +32,6 @@ pub enum Mood {
 }
 
 impl Mood {
-    pub const ALL: [Mood; 9] = [
-        Mood::Idle,
-        Mood::Thinking,
-        Mood::Searching,
-        Mood::Reading,
-        Mood::Verifying,
-        Mood::NeedsYou,
-        Mood::Blocked,
-        Mood::Studying,
-        Mood::Ready,
-    ];
-
     pub fn label(self) -> &'static str {
         match self {
             Mood::NeedsYou => "Needs you",

@@ -48,6 +48,7 @@ mod runs_view;
 mod scout_view;
 mod segmented;
 mod settings_view;
+mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
@@ -203,6 +204,8 @@ pub struct Workspace {
     /// Settings' search, server-address and filter fields, and its lists'
     /// scroll positions.
     settings_inputs: settings_view::SettingsInputs,
+    /// Custom providers, crawlers, instructions, MCP and skill forms.
+    setup_inputs: setup_view::SetupInputs,
     /// The first-run tour, while it shows.
     onboarding: Option<crate::onboarding::Onboarding>,
     /// Whether the tour was considered at launch (once per run).
@@ -411,6 +414,7 @@ impl Workspace {
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
         let (settings_inputs, settings_subs) = settings_view::SettingsInputs::new(window, cx);
+        let setup_inputs = setup_view::SetupInputs::new(window, cx);
         model.projects.collapsed = tern_agent::Preferences::load()
             .collapsed_projects
             .into_iter()
@@ -507,6 +511,7 @@ impl Workspace {
             resume_retry: None,
             rail_base: Default::default(),
             settings_inputs,
+            setup_inputs,
             onboarding: None,
             onboarding_checked: false,
             _subscriptions: {
@@ -865,6 +870,7 @@ impl Workspace {
                 }
                 crate::bridge::EvalMsg::Ran(r) => self.model.eval.finished(r),
             },
+            Msg::Setup(m) => self.on_setup(*m, window, cx),
             Msg::PrefsFailed(e) => self
                 .model
                 .toast_error(format!("Tern could not save your choice: {e}"), None),
@@ -1281,12 +1287,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    svg()
-                        .path(assets::service_path(service))
-                        .size(px(size * 0.85))
-                        .text_color(p.text),
-                )
+                .child(service_logo(service, size * 0.85, p, p.text))
                 .into_any_element();
         }
         match self.model.icons.get(&page.site) {
@@ -3416,7 +3417,29 @@ impl Workspace {
                         })),
                 );
             }
-            if r.key_saved {
+            if kind == Kind::Model && tern_agent::providers::custom::is_custom(id) {
+                // Asks twice; the armed button is this provider's own.
+                let confirm = self.model.settings.confirm == Some(id);
+                actions = actions.child(
+                    Button::new(bid("delete"))
+                        .label(if confirm {
+                            "Click again to delete"
+                        } else {
+                            "Delete"
+                        })
+                        .ghost()
+                        .small()
+                        .disabled(busy_turn && is_default)
+                        .tooltip("Delete this custom provider and its key")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.model.settings.confirm(id) {
+                                this.model.providers.begin(kind, id, "Deleting…");
+                                this.bridge.custom_remove(id.to_owned());
+                            }
+                            cx.notify();
+                        })),
+                );
+            } else if r.key_saved {
                 actions = actions.child(
                     Button::new(bid("remove"))
                         .label("Remove")
@@ -4388,7 +4411,7 @@ pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement 
             .path(path)
             .size(px(size))
             .flex_none()
-            .text_color(p.text)
+            .text_color(mono_ink(p))
             .into_any_element(),
         crate::brands::Logo::Initial(letter) => div()
             .size(px(size + 2.))
@@ -4397,12 +4420,38 @@ pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement 
             .items_center()
             .justify_center()
             .rounded(px(4.))
-            .border_1()
-            .border_color(p.border)
+            .bg(p.accent.opacity(0.18))
             .text_xs()
-            .text_color(p.muted)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.accent)
             .child(SharedString::from(letter))
             .into_any_element(),
+    }
+}
+
+/// A service's logo (a source site, an MCP server, a provider): the
+/// coloured brand mark when Tern ships one, else the one-colour service
+/// glyph in `ink`.
+pub(crate) fn service_logo(name: &str, size: f32, p: Palette, ink: gpui_kit::Hsla) -> AnyElement {
+    if matches!(crate::brands::logo(name), crate::brands::Logo::Mark(..)) {
+        brand_logo(name, size, p)
+    } else {
+        svg()
+            .path(crate::assets::service_path(name))
+            .size(px(size))
+            .flex_none()
+            .text_color(ink)
+            .into_any_element()
+    }
+}
+
+/// The ink for a one-colour brand mark: white on a dark theme, near
+/// black on a light one, at full strength so the mark never reads grey.
+pub(crate) fn mono_ink(p: Palette) -> gpui_kit::Hsla {
+    if p.canvas.l < 0.5 {
+        gpui_kit::hsla(0., 0., 1., 1.)
+    } else {
+        gpui_kit::hsla(0., 0., 0.07, 1.)
     }
 }
 

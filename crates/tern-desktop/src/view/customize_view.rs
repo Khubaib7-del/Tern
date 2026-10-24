@@ -9,18 +9,19 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, Hsla, Render, SharedString, Subscription, Window, div,
-    px, svg,
+    px,
 };
 use tern_agent::mcp::{HealthState, ServerConfig, Severity, ToolSetting, TrustPreview};
 use tern_agent::policy::Mode;
 use tern_core::{ProjectId, SessionId};
 
 use super::Workspace;
-use crate::assets::{self, MONO_FONT};
+use crate::assets::MONO_FONT;
 use crate::bridge::{ExtMsg, McpChange, ProjectChange, SkillChange};
 use crate::extensions::{CustomizeTab, Note, ServerGlyph, TreeRow, server_glyph};
 use crate::theme::Palette;
@@ -59,9 +60,6 @@ impl Render for DraggedChat {
 pub struct ExtInputs {
     /// A new project's name, or a project being renamed.
     pub project: Entity<InputState>,
-    pub server_name: Entity<InputState>,
-    pub server_command: Entity<InputState>,
-    pub server_url: Entity<InputState>,
 }
 
 impl ExtInputs {
@@ -79,23 +77,7 @@ impl ExtInputs {
                 _ => {}
             },
         );
-        let server_name = cx.new(|cx| InputState::new(window, cx).placeholder("name, e.g. zotero"));
-        let server_command = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("command, e.g. npx -y @scope/notes-mcp")
-        });
-        let server_url = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("or an http(s) address, e.g. https://example.com/mcp")
-        });
-        (
-            Self {
-                project,
-                server_name,
-                server_command,
-                server_url,
-            },
-            vec![sub],
-        )
+        (Self { project }, vec![sub])
     }
 }
 
@@ -124,12 +106,12 @@ fn tile(content: AnyElement, p: Palette) -> AnyElement {
 
 fn server_tile(name: &str, s: &ServerConfig, p: Palette) -> AnyElement {
     let http = s.url.is_some() && s.command.is_none();
+    // A server named for a brand (a template's id) gets its coloured mark.
+    if matches!(crate::brands::logo(name), crate::brands::Logo::Mark(..)) {
+        return tile(super::brand_logo(name, 15., p), p);
+    }
     let inner = match server_glyph(name, &s.target(), http) {
-        ServerGlyph::Service(k) => svg()
-            .path(assets::service_path(k))
-            .size(px(15.))
-            .text_color(p.text)
-            .into_any_element(),
+        ServerGlyph::Service(k) => super::service_logo(k, 15., p, p.text),
         ServerGlyph::Terminal => icon(AssetIcon::SquareTerminal, p.text),
         ServerGlyph::Globe => icon(AssetIcon::Globe, p.text),
     };
@@ -333,40 +315,6 @@ impl Workspace {
         .detach();
     }
 
-    fn add_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let read =
-            |e: &Entity<InputState>, cx: &mut Context<Self>| e.read(cx).value().trim().to_owned();
-        let name = read(&self.ext_inputs.server_name, cx);
-        let command = read(&self.ext_inputs.server_command, cx);
-        let url = read(&self.ext_inputs.server_url, cx);
-        let mut s = ServerConfig::default();
-        if !url.is_empty() {
-            s.kind = Some("http".into());
-            s.url = Some(url);
-        } else {
-            let mut parts = crate::extensions::CustomizeState::split_command(&command);
-            if parts.is_empty() {
-                self.model.customize.note = Some(Note::Failed(
-                    "Give the server's command or its address.".into(),
-                ));
-                cx.notify();
-                return;
-            }
-            s.command = Some(parts.remove(0));
-            s.args = parts;
-        }
-        self.bridge.mcp_change(McpChange::Add(name, Box::new(s)));
-        self.model.customize.adding = false;
-        for e in [
-            self.ext_inputs.server_name.clone(),
-            self.ext_inputs.server_command.clone(),
-            self.ext_inputs.server_url.clone(),
-        ] {
-            e.update(cx, |i, cx| i.set_value("", window, cx));
-        }
-        cx.notify();
-    }
-
     fn preview_server(&mut self, name: String, cx: &mut Context<Self>) {
         let c = &mut self.model.customize;
         c.previewing = Some(name.clone());
@@ -499,6 +447,7 @@ impl Workspace {
                         .on_click(cx.listener(|this, _, _, cx| this.pick_skill_folder(cx))),
                 ),
         );
+        col = col.child(self.skill_extras(p, cx));
         if let Some((from, previews)) = &c.skill_preview {
             let from = from.clone();
             col = col.child(
@@ -605,16 +554,14 @@ impl Workspace {
                             ),
                     )
                     .child(
-                        Button::new(("skill-switch", i))
-                            .label(if on { "On" } else { "Off" })
-                            .ghost()
-                            .xsmall()
-                            .selected(on)
+                        Switch::new(("skill-switch", i))
+                            .checked(on)
+                            .small()
                             .on_click(cx.listener({
                                 let name = name.clone();
-                                move |this, _, _, cx| {
+                                move |this, checked: &bool, _, cx| {
                                     this.bridge
-                                        .skills_change(SkillChange::Switch(name.clone(), !on));
+                                        .skills_change(SkillChange::Switch(name.clone(), *checked));
                                     cx.notify();
                                 }
                             })),
@@ -663,34 +610,7 @@ impl Workspace {
                         })),
                 ),
         );
-        if c.adding {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(p.border)
-                    .bg(p.raised)
-                    .child(Input::new(&self.ext_inputs.server_name).small())
-                    .child(Input::new(&self.ext_inputs.server_command).small())
-                    .child(Input::new(&self.ext_inputs.server_url).small())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(p.faint)
-                            .child("Environment variables and headers go in mcp.json in Tern's data folder (the same shape as Claude Desktop's), or `tern mcp add --env`."),
-                    )
-                    .child(
-                        Button::new("mcp-add-go")
-                            .label("Add")
-                            .small()
-                            .on_click(cx.listener(|this, _, window, cx| this.add_server(window, cx))),
-                    ),
-            );
-        }
+        col = col.child(self.mcp_extras(p, cx));
         if c.mcp.servers.is_empty() && !c.adding {
             col = col.child(div().text_sm().text_color(p.muted).child(
                 "No MCP servers yet. Add one with its command (stdio) or its address (Streamable HTTP).",
@@ -801,16 +721,20 @@ impl Workspace {
                         })),
                 )
                 .child(
-                    Button::new(("mcp-switch", i))
-                        .label(if on { "On" } else { "Off" })
-                        .ghost()
-                        .xsmall()
-                        .selected(on)
+                    Switch::new(("mcp-switch", i))
+                        .checked(on)
+                        .small()
                         .disabled(!trusted)
+                        .tooltip(if trusted {
+                            "On: new chats may call its tools"
+                        } else {
+                            "Review its tools first"
+                        })
                         .on_click(cx.listener({
                             let n = n.clone();
-                            move |this, _, _, cx| {
-                                this.bridge.mcp_change(McpChange::Switch(n.clone(), !on));
+                            move |this, checked: &bool, _, cx| {
+                                this.bridge
+                                    .mcp_change(McpChange::Switch(n.clone(), *checked));
                                 cx.notify();
                             }
                         })),

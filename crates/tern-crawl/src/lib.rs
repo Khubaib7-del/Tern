@@ -19,9 +19,11 @@
 pub mod cache;
 pub mod extract;
 pub mod fetch;
+pub mod github;
 pub mod guard;
 pub mod icon;
 pub mod pdf;
+pub mod remote;
 pub mod robots;
 pub mod search;
 
@@ -29,6 +31,7 @@ pub use extract::Anchor;
 pub use fetch::{FetchError, Fetcher, Page};
 pub use icon::{SourceIcon, TERN_CRAWL, TERN_READER, site_of};
 pub use pdf::{PdfError, PdfText};
+pub use remote::{RemoteKind, RemoteReader};
 pub use robots::Robots;
 pub use search::{
     KEYLESS_SEARCH, SEARCH_CATALOG, SearchClient, SearchError, SearchHit, SearchSpec, find_search,

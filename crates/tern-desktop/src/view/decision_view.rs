@@ -3,23 +3,24 @@
 //! a Test button) and the run panel's Decisions view (what was decided,
 //! by which model, with each choice's probability and why).
 
+use std::rc::Rc;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px, svg};
 use tern_agent::Run;
-use tern_agent::decide::{DecisionKind, Mode};
+use tern_agent::decide::{DecisionKind, Job, Mode};
 use tern_core::SecretString;
 
 use super::Workspace;
+use super::segmented::{Look, OnPick, Segment};
 use crate::assets;
 use crate::decision::{RowNote, RowView};
 use crate::theme::Palette;
-
-const PAGE_MAX_W: f32 = 760.;
 
 /// The provider's logo on a neutral tile, like every service row.
 fn logo(icon: &str, p: Palette) -> AnyElement {
@@ -33,12 +34,7 @@ fn logo(icon: &str, p: Palette) -> AnyElement {
         .border_1()
         .border_color(p.border)
         .bg(p.raised)
-        .child(
-            svg()
-                .path(assets::service_path(icon))
-                .size(px(15.))
-                .text_color(p.text),
-        )
+        .child(super::brand_logo(icon, 16., p))
         .into_any_element()
 }
 
@@ -112,58 +108,48 @@ impl Workspace {
     pub(super) fn decision_screen(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let st = &self.model.decision;
         let mode = st.mode();
-        let header = div()
-            .flex()
-            .items_start()
-            .justify_between()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xl()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Decision model"),
-                    )
-                    .child(div().text_sm().text_color(p.muted).child(
-                        "A fast scorer beside the chat model for fixed choices: which page to read first, which tool fits, whether a passage supports a claim, what to run now. Hard checks always override its score. Changes apply to new chats.",
-                    )),
-            );
-        let mode_button = |m: Mode, cx: &mut Context<Self>| {
-            Button::new(SharedString::from(format!("decision-mode-{}", m.label())))
-                .label(m.label())
-                .small()
-                .ghost()
-                .selected(mode == m)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_decision_mode(m, cx)))
+        let selected = match mode {
+            Mode::Off => 0,
+            Mode::Local => 1,
+            Mode::Remote => 2,
         };
+        let options = [
+            Segment::text("Off"),
+            Segment::text("Local"),
+            Segment::text("Remote"),
+        ];
+        let pick: OnPick = Rc::new(
+            |this: &mut Workspace, i: usize, _: &mut Window, cx: &mut Context<Workspace>| {
+                let m = match i {
+                    1 => Mode::Local,
+                    2 => Mode::Remote,
+                    _ => Mode::Off,
+                };
+                this.set_decision_mode(m, cx);
+            },
+        );
         let explain = match mode {
             Mode::Off => {
-                "Tern keeps the search order, the plan's order, and the word-overlap claim check."
+                "Off: Tern keeps the search order, the plan's order, and the word-overlap claim check."
             }
             Mode::Local => {
-                "Tern's own scorer: word statistics and a few rules. Offline, free, the same answer every time."
+                "Local: Tern's own scorer (word statistics and a few rules). Offline, free, the same answer every time."
             }
             Mode::Remote => {
-                "The provider below scores each decision; if it is slow, fails, or cannot answer a kind of question, the local scorer answers and the log says why."
+                "Remote: the provider you pick below scores each choice. If it is slow or fails, the local scorer answers and the log says why."
             }
         };
         let modes = div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_xs().text_color(p.faint).child("Mode"))
+            .child(div().text_sm().text_color(p.text).child(
+                "Tern makes small, fixed choices many times a turn (which page to read first, which tool to start with, whether a passage backs a claim). A decision model makes them fast and cheap; hard checks always win.",
+            ))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(mode_button(Mode::Off, cx))
-                    .child(mode_button(Mode::Local, cx))
-                    .child(mode_button(Mode::Remote, cx)),
+                    .child(self.segmented("decision-mode", &options, selected, Look::default(), p, pick, cx)),
             )
             .child(div().text_xs().text_color(p.muted).child(explain))
             .child(
@@ -172,6 +158,71 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(SharedString::from(format!("In use: {}", st.in_use()))),
             );
+        let jobs: Vec<AnyElement> = Job::ALL
+            .into_iter()
+            .map(|job| {
+                let on = st.prefs.job_on(job);
+                Self::row(
+                    job.label(),
+                    job.blurb(),
+                    Some(
+                        Switch::new(SharedString::from(format!("decision-job-{}", job.id())))
+                            .checked(on)
+                            .small()
+                            .disabled(mode == Mode::Off)
+                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                this.model.decision.prefs.set_job(job, *checked);
+                                tern_agent::decide::set_jobs_off(
+                                    &this.model.decision.prefs.jobs_off,
+                                );
+                                this.save_decision_prefs();
+                                cx.notify();
+                            }))
+                            .into_any_element(),
+                    ),
+                    p,
+                )
+            })
+            .collect();
+        let recent: Vec<AnyElement> = self
+            .model
+            .last_run
+            .decisions
+            .iter()
+            .rev()
+            .take(5)
+            .map(|d| {
+                let chosen = d
+                    .choices
+                    .get(d.chosen)
+                    .map(|c| short(c))
+                    .unwrap_or_default();
+                Self::row(
+                    SharedString::from(format!("{} · {}", kind_label(d.kind), short(&d.question))),
+                    SharedString::from(format!(
+                        "Chose {chosen} · {:.0}% sure · {}{}",
+                        d.confidence * 100.,
+                        d.model,
+                        if d.fallback.is_some() {
+                            " (fell back to local)"
+                        } else {
+                            ""
+                        }
+                    )),
+                    None,
+                    p,
+                )
+            })
+            .collect();
+        let recent = if recent.is_empty() {
+            div()
+                .text_xs()
+                .text_color(p.faint)
+                .child("Recent decisions: none yet. After a chat turn, the last few show here (all of them are in the run panel's Decisions view).")
+                .into_any_element()
+        } else {
+            Self::settings_card("Recent decisions (last run)", p, recent)
+        };
         let test_line: AnyElement = match &st.test {
             Some(RowNote::Working(t)) => div()
                 .flex()
@@ -253,70 +304,55 @@ impl Workspace {
             .into_iter()
             .map(|r| self.decision_row(r, p, cx))
             .collect();
-        let mut column = div()
-            .w_full()
-            .max_w(px(PAGE_MAX_W))
-            .flex()
-            .flex_col()
-            .gap_5()
-            .py_6()
-            .px_4()
-            .child(header)
-            .child(modes)
-            .child(test);
+        let mut column: Vec<AnyElement> = vec![
+            modes.into_any_element(),
+            test.into_any_element(),
+            Self::settings_card("What it decides", p, jobs),
+        ];
         if let Some(e) = &st.keychain_error {
-            column = column.child(
+            column.push(
                 div()
                     .text_sm()
                     .text_color(p.muted)
                     .child(SharedString::from(format!(
                         "The keychain cannot be read on this computer: {e}"
-                    ))),
+                    )))
+                    .into_any_element(),
             );
         }
-        column = if !st.loaded {
-            column.child(
-                div()
-                    .flex()
-                    .items_center()
+        column.push(if !st.loaded {
+            div()
+                .flex()
+                .items_center()
                     .gap_2()
                     .text_sm()
                     .text_color(p.muted)
                     .child(Spinner::new().small().color(p.muted))
-                    .child("Reading the keychain…"),
-            )
+                    .child("Reading the keychain…")
+                    .into_any_element()
         } else {
-            column.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(div().text_xs().text_color(p.faint).child("Models"))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .rounded_xl()
-                            .border_1()
-                            .border_color(p.border)
-                            .child(local_row)
-                            .children(rows),
-                    )
-                    .child(div().text_xs().text_color(p.faint).child(
-                        "Keys are tested with one small decision before they are saved, and kept only in Windows Credential Manager. Prices are the providers' published input prices; output is free on all three.",
-                    )),
-            )
-        };
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(column)
-            .overflow_y_scrollbar()
-            .id("decision-model")
-            .into_any_element()
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().text_xs().text_color(p.faint).child("Providers"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .rounded_xl()
+                        .border_1()
+                        .border_color(p.border)
+                        .child(local_row)
+                        .children(rows),
+                )
+                .child(div().text_xs().text_color(p.faint).child(
+                    "Keys are tested with one small decision before they are saved, and kept only in the system keychain. Prices are the providers' published input prices.",
+                ))
+                .into_any_element()
+        });
+        column.push(recent);
+        self.page(crate::settings::Section::Decision, p, None, column)
     }
 
     fn decision_row(&self, r: RowView, p: Palette, cx: &mut Context<Self>) -> AnyElement {

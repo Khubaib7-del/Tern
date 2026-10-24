@@ -46,11 +46,30 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::Decision => AssetIcon::Signpost,
         Section::Evaluation => AssetIcon::FlaskConical,
         Section::Extensions => AssetIcon::Blocks,
+        Section::Instructions => AssetIcon::NotebookPen,
         Section::Search => AssetIcon::Globe,
         Section::Appearance => AssetIcon::Palette,
         Section::Study => AssetIcon::GraduationCap,
         Section::Privacy => AssetIcon::ShieldCheck,
         Section::About => AssetIcon::Info,
+    }
+}
+
+/// A small icon for each of Tern's own tools.
+fn tool_icon(name: &str) -> AssetIcon {
+    match name {
+        "web_search" => AssetIcon::Search,
+        "read_url" => AssetIcon::Globe,
+        "vault_search" => AssetIcon::BookMarked,
+        "vault_read" => AssetIcon::NotebookPen,
+        "vault_write" => AssetIcon::Pencil,
+        "files_list" => AssetIcon::FolderOpen,
+        "file_read" => AssetIcon::FileText,
+        "file_search" => AssetIcon::Search,
+        "load_skill" => AssetIcon::Sparkles,
+        n if n.starts_with("vault") => AssetIcon::NotebookPen,
+        n if n.starts_with("file") => AssetIcon::FileText,
+        _ => AssetIcon::Wrench,
     }
 }
 
@@ -168,6 +187,8 @@ impl Workspace {
                 if !self.model.providers.loaded {
                     self.bridge.load_providers();
                 }
+                self.bridge.crawlers_load();
+                self.measure_cache();
                 let typed = self.searx_input.read(cx).value().to_string();
                 if typed.is_empty()
                     && let Some(u) = self.model.providers.prefs.search_url.clone()
@@ -176,6 +197,7 @@ impl Workspace {
                         .update(cx, |i, cx| i.set_value(u, window, cx));
                 }
             }
+            Section::Instructions => self.open_instructions(window, cx),
             Section::Tools | Section::Study | Section::Privacy | Section::About => {
                 self.show_settings(s);
             }
@@ -451,6 +473,7 @@ impl Workspace {
             Section::Decision => self.decision_screen(p, cx),
             Section::Evaluation => self.eval_screen(p, cx),
             Section::Extensions => self.customize_screen(p, window, cx),
+            Section::Instructions => self.instructions_page(p, cx),
             Section::Search => self.search_page(p, cx),
             Section::Appearance => self.appearance_screen(p, cx),
             Section::Study => self.page(s, p, None, vec![self.study_settings(p, cx)]),
@@ -569,7 +592,11 @@ impl Workspace {
     }
 
     /// A titled group of rows on a card.
-    fn settings_card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
+    pub(super) fn settings_card(
+        title: &'static str,
+        p: Palette,
+        rows: Vec<AnyElement>,
+    ) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -588,7 +615,7 @@ impl Workspace {
     }
 
     /// A row: a title, a line under it, and a control on the right.
-    fn row(
+    pub(super) fn row(
         title: impl Into<SharedString>,
         line: impl Into<SharedString>,
         control: Option<AnyElement>,
@@ -637,6 +664,7 @@ impl Workspace {
                 self.section(Kind::Model, "Model providers", p, cx)
                     .into_any_element(),
             );
+            body.push(self.custom_provider_block(p, cx));
         }
         self.page(Section::Providers, p, None, body)
     }
@@ -744,10 +772,18 @@ impl Workspace {
                 .into_any_element(),
             Some(Models::Loaded(_, list)) => {
                 let n = list.len();
-                let h = (n as f32 * LIST_ROW_H).min(240.);
+                let h = (n as f32 * LIST_ROW_H).min(settings::MODEL_LIST_MAX_H);
+                // Its own bounded box with its own thin scrollbar: the
+                // wheel over it scrolls the list, never the page behind it.
                 div()
+                    .id("provider-models-box")
                     .relative()
-                    .h(px(h))
+                    .h(px(h + 2.))
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.border)
+                    .overflow_hidden()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(
                         uniform_list(
                             "provider-models",
@@ -768,7 +804,25 @@ impl Workspace {
             .flex_col()
             .gap_1()
             .pl(px(40.))
-            .child(div().text_xs().text_color(p.faint).child("Model"))
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child("Model")
+                    .children(match &st.models {
+                        Some(Models::Loaded(_, l))
+                            if l.len() as f32 * LIST_ROW_H > settings::MODEL_LIST_MAX_H =>
+                        {
+                            Some(SharedString::from(format!(
+                                "{} models · scroll the list",
+                                l.len()
+                            )))
+                        }
+                        _ => None,
+                    }),
+            )
             .child(body)
             .into_any_element()
     }
@@ -1214,12 +1268,69 @@ impl Workspace {
                         this.save_ui_prefs(|p| p.set_tool_mode(name, m));
                     },
                 );
-                let control = div()
+                let switch = Switch::new(SharedString::from(format!("tool-on-{name}")))
+                    .checked(on)
+                    .small()
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        let checked = *checked;
+                        this.save_ui_prefs(|p| p.set_tool_on(name, checked));
+                        cx.notify();
+                    }));
+                // Two lines, so the approval choices never run past the
+                // card's edge: the tool and its switch, then (when on)
+                // the choices under it, left-aligned.
+                div()
                     .flex()
-                    .items_center()
-                    .gap_3()
+                    .flex_col()
+                    .gap_2()
+                    .px_3()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .size(px(28.))
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .bg(p.raised)
+                                    .child(icon(tool_icon(name), p.text)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(div().text_sm().child(SharedString::from(format!(
+                                        "{} · {}",
+                                        t.label, t.name
+                                    ))))
+                                    .child(div().text_xs().text_color(p.faint).child(
+                                        SharedString::from(format!(
+                                            "{}{}",
+                                            effect_line(t.effect),
+                                            if on {
+                                                ""
+                                            } else {
+                                                " · off: the model never sees it"
+                                            }
+                                        )),
+                                    )),
+                            )
+                            .child(div().flex_none().child(switch)),
+                    )
                     .when(on, |d| {
-                        d.child(self.segmented(
+                        d.child(div().pl(px(40.)).flex().flex_wrap().child(self.segmented(
                             name,
                             &options,
                             selected,
@@ -1227,33 +1338,9 @@ impl Workspace {
                             p,
                             pick,
                             cx,
-                        ))
+                        )))
                     })
-                    .child(
-                        Switch::new(SharedString::from(format!("tool-on-{name}")))
-                            .checked(on)
-                            .small()
-                            .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                                let checked = *checked;
-                                this.save_ui_prefs(|p| p.set_tool_on(name, checked));
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element();
-                Self::row(
-                    SharedString::from(format!("{} · {}", t.label, t.name)),
-                    SharedString::from(format!(
-                        "{}{}",
-                        effect_line(t.effect),
-                        if on {
-                            ""
-                        } else {
-                            " · off: the model never sees it"
-                        }
-                    )),
-                    Some(control),
-                    p,
-                )
+                    .into_any_element()
             })
             .collect();
         self.page(
@@ -1286,10 +1373,12 @@ impl Workspace {
                     .into_any_element(),
             );
         }
+        body.push(self.crawlers_card(p, cx));
         let cache = tern_agent::platform::AppPaths::discover()
             .ok()
             .map(|a| a.crawl_cache());
-        let size = cache.as_deref().map(dir_size).unwrap_or(0);
+        // Measured on opening the page and after a clear, never per frame.
+        let size = self.model.settings.cache_size.unwrap_or(0);
         let confirm = self.model.settings.confirm == Some("crawl-cache");
         let crawl_rows = vec![
             div()
@@ -1319,7 +1408,7 @@ impl Workspace {
                         .flex_col()
                         .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Tern Crawl"))
                         .child(div().text_xs().text_color(p.faint).child(
-                            "Reads every page Tern opens: HTML and PDFs, in reader form, with the sources kept.",
+                            "The built-in crawler, and the fallback when a hosted one fails: HTML and PDFs, in reader form, with the sources kept.",
                         )),
                 )
                 .into_any_element(),
@@ -1355,6 +1444,7 @@ impl Workspace {
                                 if let Ok(a) = tern_agent::platform::AppPaths::discover() {
                                     let _ = std::fs::remove_dir_all(a.crawl_cache());
                                 }
+                                this.measure_cache();
                                 this.model.toast_info("Page cache cleared");
                             }
                             cx.notify();
@@ -1364,7 +1454,7 @@ impl Workspace {
                 p,
             ),
         ];
-        body.push(Self::settings_card("Crawler", p, crawl_rows));
+        body.push(Self::settings_card("Tern Crawl", p, crawl_rows));
         self.page(Section::Search, p, None, body)
     }
 
@@ -1447,6 +1537,7 @@ impl Workspace {
                                 if let Ok(a) = tern_agent::platform::AppPaths::discover() {
                                     let _ = std::fs::remove_dir_all(a.crawl_cache());
                                 }
+                                this.measure_cache();
                                 this.model.toast_info("Page cache cleared");
                             }
                             cx.notify();
@@ -1687,7 +1778,7 @@ fn effect_line(e: tern_core::EffectClass) -> &'static str {
 }
 
 /// The size of everything under `dir`, in bytes (0 when it is missing).
-fn dir_size(dir: &std::path::Path) -> u64 {
+pub(super) fn dir_size(dir: &std::path::Path) -> u64 {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return 0;
     };

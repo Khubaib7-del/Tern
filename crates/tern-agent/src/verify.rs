@@ -83,7 +83,7 @@ pub async fn prescore(
     use crate::decide::{Choice, DecisionKind, DecisionRequest, Rule};
     use tern_research::verdict::passages;
     let mut out = Vec::new();
-    if !decider.is_on() {
+    if !decider.is_on() || !crate::decide::job_running(crate::decide::Job::Support) {
         return out;
     }
     for check in checks.iter_mut() {

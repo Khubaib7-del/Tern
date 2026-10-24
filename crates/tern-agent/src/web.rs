@@ -150,11 +150,19 @@ impl Tool for ReadUrlTool {
         Box::pin(async move {
             let u = args["url"].as_str().unwrap_or_default();
             let cache = if self.0.has_cached(u) { "hit" } else { "miss" };
-            let p = self
-                .0
-                .fetch(u)
+            // The reader chosen in Settings › Search & Crawler; hosted
+            // readers fall back to Tern Crawl when they fail.
+            let crawler = crate::crawlers::active();
+            let keychain = crawler
+                .hosted()
+                .then(crate::providers::keychain)
+                .and_then(Result::ok);
+            let read = crate::crawlers::read(crawler, u, &self.0, keychain.as_deref())
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let reader = read.reader.name();
+            let fell_back = read.fell_back.clone();
+            let p = read.page;
             let text: String = p.text.chars().take(READ_CHARS).collect();
             let page = PageRef {
                 title: p.title.clone(),
@@ -169,7 +177,12 @@ impl Tool for ReadUrlTool {
                 meta: json!({
                     "page": page,
                     // How Tern Crawl read it, for the run report.
-                    "crawl": {"reader": "Tern Crawl", "robots": "allowed", "cache": cache},
+                    "crawl": {
+                        "reader": reader,
+                        "robots": if reader == "Tern Crawl" { "allowed" } else { "not checked" },
+                        "cache": cache,
+                        "fell_back": fell_back,
+                    },
                 }),
             })
         })

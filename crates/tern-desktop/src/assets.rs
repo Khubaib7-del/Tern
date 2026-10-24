@@ -124,6 +124,7 @@ pub fn glyph(name: &str) -> Option<SharedString> {
 }
 
 /// Every glyph name, for the Appearance screen.
+#[cfg(test)]
 pub fn glyph_names() -> impl Iterator<Item = &'static str> {
     GLYPHS.iter().map(|(n, _)| *n)
 }

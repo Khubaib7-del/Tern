@@ -103,6 +103,16 @@ pub struct Preferences {
     /// Per-tool approval in Settings › Tools: `allow`, `ask`, or `deny`,
     /// by tool name. A tool not listed follows its effect class.
     pub tool_modes: std::collections::BTreeMap<String, String>,
+    /// Providers the user added (OpenAI- or Anthropic-compatible), without
+    /// their keys (those are in the keychain under `provider.<id>`).
+    pub custom_providers: Vec<tern_providers::CustomProvider>,
+    /// The default page reader: `tern` (Tern Crawl), `firecrawl`, `jina`,
+    /// or `fetch`. `None` is Tern Crawl.
+    pub crawler: Option<String>,
+    /// Readers switched off in Settings › Search & Crawler, by id.
+    pub crawlers_off: Vec<String>,
+    /// The user's own system prompts: `global`, `research`, `study`.
+    pub system_prompts: std::collections::BTreeMap<String, String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -164,6 +174,45 @@ impl Preferences {
             .unwrap_or_default()
     }
 
+    /// Puts the choices that are process-wide into effect: custom
+    /// providers become findable like built-ins, `read_url` uses the
+    /// chosen reader, and every chat gets the user's prompts. Front ends
+    /// call it after changing any of them.
+    pub fn apply_runtime(&self) {
+        tern_providers::custom::register_all(&self.custom_providers);
+        crate::prompts::set_user(&self.system_prompts);
+        crate::decide::set_jobs_off(&self.decision.jobs_off);
+        let keychain = match self
+            .crawler
+            .as_deref()
+            .and_then(crate::crawlers::Crawler::parse)
+        {
+            Some(c) if c.needs_key() => crate::providers::keychain().ok(),
+            _ => None,
+        };
+        let c = crate::crawlers::pick(self.crawler.as_deref(), &self.crawlers_off, |c| {
+            crate::crawlers::has_key(c, keychain.as_deref())
+        });
+        crate::crawlers::set(c);
+    }
+
+    /// Adds or replaces a custom provider (by id) and puts it into effect.
+    pub fn upsert_custom_provider(&mut self, p: tern_providers::CustomProvider) {
+        match self.custom_providers.iter_mut().find(|c| c.id == p.id) {
+            Some(c) => *c = p,
+            None => self.custom_providers.push(p),
+        }
+        tern_providers::custom::register_all(&self.custom_providers);
+    }
+
+    /// Removes a custom provider and the choices that pointed at it.
+    pub fn remove_custom_provider(&mut self, id: &str) {
+        self.custom_providers.retain(|c| c.id != id);
+        self.base_urls.remove(id);
+        self.forget_provider(id);
+        tern_providers::custom::register_all(&self.custom_providers);
+    }
+
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -175,11 +224,15 @@ impl Preferences {
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
-    /// The saved choices from the default data directory.
+    /// The saved choices from the default data directory. The
+    /// process-wide parts (custom providers, the page reader, the user's
+    /// prompts, decision jobs) take effect at once.
     pub fn load() -> Self {
-        AppPaths::discover()
+        let p = AppPaths::discover()
             .map(|p| Self::load_from(&Self::path(&p)))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        p.apply_runtime();
+        p
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -309,6 +362,7 @@ impl Preferences {
 
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
+        tern_providers::custom::register_all(&self.custom_providers);
         let base_url = self
             .provider
             .as_deref()
@@ -445,6 +499,15 @@ mod tests {
             base_urls: Default::default(),
             tools_off: vec!["read_url".into()],
             tool_modes: Default::default(),
+            custom_providers: vec![tern_providers::CustomProvider {
+                id: "box".into(),
+                name: "Box".into(),
+                base_url: "http://localhost:8000/v1".into(),
+                ..Default::default()
+            }],
+            crawler: Some("jina".into()),
+            crawlers_off: vec!["fetch".into()],
+            system_prompts: [("global".to_owned(), "Be brief.".to_owned())].into(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;
