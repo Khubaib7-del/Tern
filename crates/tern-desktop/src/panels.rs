@@ -349,6 +349,15 @@ impl ArchiveView {
     }
 }
 
+/// The + popover's chat rows: this harness's chats matching `query`.
+pub fn pick_rows_for(
+    sessions: &[tern_agent::SessionSummary],
+    tabs: &crate::layout::Tabs,
+    query: &str,
+) -> Vec<crate::layout::PickRow> {
+    crate::layout::pick_rows(sessions, tabs, query, 40)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

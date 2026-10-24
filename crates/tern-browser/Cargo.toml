@@ -1,0 +1,23 @@
+[package]
+name = "tern-browser"
+description = "The browser helper: the system web view in its own process, driven by Tern over a line protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tern-browser"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# Only the protocol from tern-core; no engine, store or network crates
+# (docs/decisions/0011-browser-helper-process.md).
+[dependencies]
+tern-core.workspace = true
+tao = "0.37"
+wry = "0.57"

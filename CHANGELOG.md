@@ -4,6 +4,17 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added and changed (PR #53)
+
+The browser in its own process (fixes the Windows freeze), chat tabs, the v2 Graph run map, and a deeper Explain in 3D.
+
+- **Fixed: clicking Browser froze Tern on Windows, then it crashed after 30 to 40 s.** Root cause: wry built WebView2 synchronously from inside GPUI's frame (the page canvas's prepaint), waiting in a nested message pump on GPUI's UI thread. Re-entrant paints were dropped (the window looked frozen), clicks and Close reached callbacks already taken for the frame, and a GPUI task finishing inside the pump (the crawler's read of the page) borrowed app state the frame still held; the panic inside a window procedure aborted the process. The page engine now runs in a helper process, **`tern-browser`** (wry + tao, its own event loop; WebView2, WKWebView, WebKitGTK), driven over a line-based JSON protocol (`tern_core::browser_ipc`) that the desktop only ever writes to and reads from on background threads. A helper that does not report ready in 5 s, or stops, leaves the pane with the reader view and **Restart**. On Windows the page window is owned by Tern's; Wayland gets an attached window. The helper ships next to `tern-desktop` in every artifact ([ADR 0011](docs/decisions/0011-browser-helper-process.md); `dependency_rules` keeps engine crates out of the front ends).
+- **`tern browse <address or words>`**: the reader view of a page and Tern's cited explanation, or search results; `--open` opens the helper window.
+- **Chat tabs** with a **+** popover (new chat, recent chats), per harness, restored on launch (`Preferences::open_tabs`).
+- **Graph** (right panel): FIG 1 · RUN MAP, a hairline isometric figure of the run (a hub slab, one box per phase, cube clusters for sources and reads, dotted links to phases not reached, the live link in the accent with a travelling dot), lit phase by phase from the run's events; a readout (phase 4/6 · verify, sources · kept · spend; hover a phase for its numbers, click it to open the view with its steps), and spend over time against the budget with a crosshair tooltip. Lines draw in; reduced motion shows them at once. Only searches that ran count as sources.
+- **Explain in 3D, deeper**: a whole chat answer is mapped from the basics to the advanced parts (4 to 20 nodes in five levels, sized to the answer, key-term sub-nodes, prerequisite links, each node with its explanation, passage and citations) through `tern_study::explain_answer`; no 5,000-character cut (long answers go to the model in chunks and the maps merge). A real camera (`tern_study::camera`): orbit with a full turn and a clamped tilt, wheel or pinch zoom about the pointer, right- or Shift-drag pan, double-click to focus a node, Reset view, arrows and + / −, damped inertia, reduced motion respected. Prev / Next / Play walk the levels with the camera gliding onto each step, and a side caption reads the step or the clicked node. **Explain in 3D** moved out of More ▾ into the visible row under every answer, in Research and Study.
+- Deferred: renaming the right-panel views to v2's Plan · Sources N · Report · Graph · Context (the views do not map one to one; Context and Plan are new views, not renames).
+
 ### Added and changed (PR #52)
 
 Study as one window, Research and Study kept apart, a real browser, and compaction for small windows.

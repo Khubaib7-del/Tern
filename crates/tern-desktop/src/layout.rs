@@ -7,6 +7,8 @@
 //! | 900 to 1099 px | Beside the chat | Over the chat |
 //! | Under 900 px | Over the chat, closed when the window narrows | Over the chat |
 
+use tern_agent::prefs::{LastChat, OpenTab, OpenTabs};
+use tern_agent::{Harness, SessionSummary};
 use tern_core::SessionId;
 
 /// Narrower than this, the sidebar floats over the chat.
@@ -49,6 +51,9 @@ pub struct Tab {
     pub id: Option<SessionId>,
     pub title: String,
     pub explain: Option<u32>,
+    /// Where this tab was left when another came to the front: its unsent
+    /// draft and how far it was scrolled, put back when it returns.
+    pub place: LastChat,
 }
 
 impl Tab {
@@ -57,11 +62,26 @@ impl Tab {
             id: None,
             title: "New chat".into(),
             explain: None,
+            place: LastChat::default(),
+        }
+    }
+
+    fn chat(id: SessionId, title: &str) -> Self {
+        Self {
+            id: Some(id),
+            title: title.to_owned(),
+            explain: None,
+            place: LastChat::default(),
         }
     }
 
     pub fn is_explain(&self) -> bool {
         self.explain.is_some()
+    }
+
+    fn titled(mut self, title: &str) -> Self {
+        self.title = title.to_owned();
+        self
     }
 }
 
@@ -99,11 +119,7 @@ impl Tabs {
         if self.active_tab().is_explain() {
             self.add();
         }
-        self.list[self.active] = Tab {
-            id: Some(id),
-            title: title.to_owned(),
-            explain: None,
-        };
+        self.list[self.active] = Tab::chat(id, title);
         true
     }
 
@@ -113,9 +129,8 @@ impl Tabs {
         self.list.insert(
             self.active,
             Tab {
-                id: None,
-                title: title.to_owned(),
                 explain: Some(key),
+                ..Tab::fresh().titled(title)
             },
         );
     }
@@ -203,6 +218,87 @@ impl Tabs {
         }
     }
 
+    /// Keeps where the front tab was left (draft, scroll) before another
+    /// tab comes to the front.
+    pub fn stash_place(&mut self, place: LastChat) {
+        let i = self.active;
+        if !self.list[i].is_explain() {
+            self.list[i].place = place;
+        }
+    }
+
+    /// Opens a saved chat in a new tab after the front one, or focuses
+    /// its tab when it is open. Returns true when the chat must load.
+    pub fn open_new(&mut self, id: SessionId, title: &str) -> bool {
+        if let Some(i) = self.list.iter().position(|t| t.id == Some(id)) {
+            let load = i != self.active;
+            self.active = i;
+            return load;
+        }
+        self.active += 1;
+        self.list.insert(self.active, Tab::chat(id, title));
+        true
+    }
+
+    /// The chat tabs to save for the next launch. Explainers are not kept
+    /// (their scenes are in the Library); the front tab maps to the
+    /// nearest chat tab.
+    pub fn to_saved(&self) -> OpenTabs {
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        for (i, t) in self.list.iter().enumerate() {
+            if t.is_explain() {
+                continue;
+            }
+            if i <= self.active {
+                active = tabs.len();
+            }
+            tabs.push(OpenTab {
+                chat: t.id.map(|id| id.to_string()),
+                title: t.title.clone(),
+            });
+        }
+        if tabs.is_empty() {
+            return OpenTabs::default();
+        }
+        OpenTabs {
+            active: active.min(tabs.len() - 1),
+            tabs,
+        }
+    }
+
+    /// The tabs a launch restores. Chats that no longer exist (deleted, or
+    /// moved to the other harness) are dropped; `known` is this harness's
+    /// chat list. Always at least one tab.
+    pub fn from_saved(saved: &OpenTabs, known: &[SessionSummary]) -> Self {
+        let mut list = Vec::new();
+        let mut active = 0;
+        for (i, t) in saved.tabs.iter().enumerate() {
+            let tab = match t.chat.as_deref().and_then(|s| s.parse::<SessionId>().ok()) {
+                Some(id) => match known.iter().find(|s| s.id == id) {
+                    Some(s) => Tab::chat(id, &s.title),
+                    None => continue,
+                },
+                None if t.chat.is_none() => Tab::fresh(),
+                None => continue,
+            };
+            if list.iter().any(|x: &Tab| x.id.is_some() && x.id == tab.id) {
+                continue;
+            }
+            if i <= saved.active {
+                active = list.len();
+            }
+            list.push(tab);
+        }
+        if list.is_empty() {
+            return Self::default();
+        }
+        Self {
+            active: active.min(list.len() - 1),
+            list,
+        }
+    }
+
     /// A chat was archived: its tabs close.
     pub fn forget(&mut self, id: SessionId) -> Option<&Tab> {
         let i = self.list.iter().position(|t| t.id == Some(id))?;
@@ -210,9 +306,188 @@ impl Tabs {
     }
 }
 
+/// The other harness's tabs while this one is in front, so Research and
+/// Study each keep their own (matching each harness's own last place).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ParkedTabs {
+    pub research: Option<Tabs>,
+    pub study: Option<Tabs>,
+}
+
+impl ParkedTabs {
+    fn slot(&mut self, h: Harness) -> &mut Option<Tabs> {
+        match h {
+            Harness::Research => &mut self.research,
+            Harness::Study => &mut self.study,
+        }
+    }
+
+    /// Parks `current` (harness `from`'s tabs) and returns harness `to`'s,
+    /// or `None` when `to` has none yet (the caller restores them from the
+    /// preferences or starts fresh).
+    pub fn swap(&mut self, from: Harness, to: Harness, current: Tabs) -> Option<Tabs> {
+        if from == to {
+            return Some(current);
+        }
+        *self.slot(from) = Some(current);
+        self.slot(to).take()
+    }
+
+    /// What to save for the harness that is not in front.
+    pub fn saved(&self, h: Harness) -> Option<OpenTabs> {
+        match h {
+            Harness::Research => self.research.as_ref(),
+            Harness::Study => self.study.as_ref(),
+        }
+        .map(Tabs::to_saved)
+    }
+}
+
+/// A row in the + popover's "Open existing chat" list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickRow {
+    pub id: SessionId,
+    pub title: String,
+    /// Already open in a tab (picking it focuses that tab).
+    pub open: bool,
+}
+
+/// This harness's chats matching `query` (every word, any case, in the
+/// title), newest first as listed, at most `max`. Sub-sessions are kept:
+/// they are chats too.
+pub fn pick_rows(
+    sessions: &[SessionSummary],
+    tabs: &Tabs,
+    query: &str,
+    max: usize,
+) -> Vec<PickRow> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    sessions
+        .iter()
+        .filter(|s| {
+            let t = s.title.to_lowercase();
+            words.iter().all(|w| t.contains(w.as_str()))
+        })
+        .take(max)
+        .map(|s| PickRow {
+            id: s.id,
+            title: s.title.clone(),
+            open: tabs.list.iter().any(|t| t.id == Some(s.id)),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary(h: Harness, title: &str) -> SessionSummary {
+        SessionSummary {
+            id: SessionId::new(),
+            title: title.into(),
+            harness: h,
+            created_at: String::new(),
+            events: 1,
+            parent: None,
+            anchor: None,
+            plan: None,
+            project: None,
+        }
+    }
+
+    #[test]
+    fn chat_tabs_keep_their_draft_and_scroll_and_open_beside_each_other() {
+        let (a, b) = (SessionId::new(), SessionId::new());
+        let mut t = Tabs::default();
+        t.set_active(a, "RAG");
+        t.stash_place(LastChat {
+            chat: Some(a.to_string()),
+            draft: "half a question".into(),
+            scroll: 420,
+            ..Default::default()
+        });
+        assert!(t.open_new(b, "Crawler"));
+        assert_eq!(t.active, 1);
+        assert_eq!(t.list[0].place.draft, "half a question");
+        assert_eq!(t.list[0].place.scroll, 420);
+        // Picking an open chat focuses it instead of opening it twice.
+        assert!(t.open_new(a, "RAG"));
+        assert_eq!(t.active, 0);
+        assert_eq!(t.list.len(), 2);
+        assert!(!t.open_new(a, "RAG"));
+        // Closing a tab never deletes the chat: it is only gone from tabs.
+        t.close(0);
+        assert_eq!(t.list.len(), 1);
+        assert_eq!(t.active_tab().id, Some(b));
+    }
+
+    #[test]
+    fn tabs_save_and_restore_dropping_explainers_and_lost_chats() {
+        let rag = summary(Harness::Research, "RAG survey");
+        let crawl = summary(Harness::Research, "Crawler");
+        let mut t = Tabs::default();
+        t.set_active(rag.id, "RAG survey");
+        t.open_new(crawl.id, "Crawler");
+        t.open_explain(3, "3D · RAG");
+        t.add(); // a fresh chat
+        t.focus(2); // the explainer in front
+        let saved = t.to_saved();
+        assert_eq!(saved.tabs.len(), 3);
+        assert_eq!(
+            saved.active, 1,
+            "front explainer maps to the chat before it"
+        );
+        assert_eq!(saved.tabs[2].chat, None);
+        // Crawler was deleted since: its tab is dropped on restore.
+        let back = Tabs::from_saved(&saved, std::slice::from_ref(&rag));
+        assert_eq!(back.list.len(), 2);
+        assert_eq!(back.list[0].id, Some(rag.id));
+        assert_eq!(back.list[1].id, None);
+        assert_eq!(back.active, 0);
+        // Nothing saved: one fresh tab.
+        assert_eq!(Tabs::from_saved(&OpenTabs::default(), &[]), Tabs::default());
+    }
+
+    #[test]
+    fn each_harness_keeps_its_own_tabs() {
+        let mut parked = ParkedTabs::default();
+        let mut research = Tabs::default();
+        let a = SessionId::new();
+        research.set_active(a, "RAG");
+        research.add();
+        // Research → Study: Study has none yet.
+        assert_eq!(
+            parked.swap(Harness::Research, Harness::Study, research.clone()),
+            None
+        );
+        assert_eq!(
+            parked.saved(Harness::Research).map(|s| s.tabs.len()),
+            Some(2)
+        );
+        let study = Tabs::default();
+        // Study → Research: Research's tabs come back as they were.
+        let back = parked.swap(Harness::Study, Harness::Research, study);
+        assert_eq!(back, Some(research));
+        assert!(parked.study.is_some());
+        assert!(parked.research.is_none());
+    }
+
+    #[test]
+    fn the_picker_filters_by_every_word_and_marks_open_chats() {
+        let all = vec![
+            summary(Harness::Research, "Agentic RAG survey"),
+            summary(Harness::Research, "Crawler design"),
+            summary(Harness::Research, "RAG eval plan"),
+        ];
+        let mut t = Tabs::default();
+        t.set_active(all[2].id, "RAG eval plan");
+        let rows = pick_rows(&all, &t, "rag", 10);
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[0].open && rows[1].open);
+        assert_eq!(pick_rows(&all, &t, "RAG survey", 10).len(), 1);
+        assert_eq!(pick_rows(&all, &t, "", 2).len(), 2);
+        assert!(pick_rows(&all, &t, "zzz", 10).is_empty());
+    }
 
     #[test]
     fn explainers_get_their_own_tabs() {

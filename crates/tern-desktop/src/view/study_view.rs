@@ -173,7 +173,7 @@ impl Workspace {
 
     /// Where the open harness is now: its chat, the unsent draft, the
     /// transcript's scroll and the panels.
-    fn current_place(&self, cx: &mut Context<Self>) -> tern_agent::prefs::LastChat {
+    pub(super) fn current_place(&self, cx: &mut Context<Self>) -> tern_agent::prefs::LastChat {
         tern_agent::prefs::LastChat {
             chat: self
                 .session
@@ -267,7 +267,33 @@ impl Workspace {
             self.current = None;
             self.model.new_chat();
             self.model.phase = crate::model::Phase::Connecting;
-            self.tabs.reset_active();
+            // Each harness keeps its own chat tabs.
+            self.tabs_restored = true;
+            self.stash_tab_place(cx);
+            let current = std::mem::take(&mut self.tabs);
+            let known = crate::harness::only(&self.model.all_sessions, h);
+            self.tabs = self.parked_tabs.swap(from, h, current).unwrap_or_else(|| {
+                tern_agent::Preferences::load()
+                    .open_tabs
+                    .get(crate::harness::key(h))
+                    .map(|t| crate::layout::Tabs::from_saved(t, &known))
+                    .unwrap_or_default()
+            });
+            match open.or(target) {
+                Some(id) => {
+                    let title = known
+                        .iter()
+                        .find(|s| s.id == id)
+                        .map(|s| s.title.clone())
+                        .unwrap_or_else(|| "Chat".into());
+                    self.tabs.open(id, &title);
+                }
+                None => {
+                    if self.tabs.active_tab().id.is_some() {
+                        self.tabs.add();
+                    }
+                }
+            }
             self.bridge.launch(h, target);
         }
         self.model.choose_harness(h);

@@ -17,6 +17,32 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, ClickEvent, Context, SharedString, Window, div};
 
 use super::Workspace;
+
+/// Tern's native window handle (an `HWND` on Windows), so the page window
+/// can be owned by it. `None` elsewhere: owning across processes is a
+/// Windows idea.
+fn native_handle(window: &Window) -> Option<isize> {
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(h) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(w) = h.as_raw()
+        {
+            return Some(w.hwnd.get());
+        }
+        None
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        None
+    }
+}
+
+/// The helper has not stopped (idle: the first placement starts it).
+fn stopped_is_none(web: &crate::webview::Shared) -> bool {
+    web.borrow().stopped().is_none()
+}
 use crate::browser::{PaneView, engine_address};
 use crate::theme::Palette;
 
@@ -97,11 +123,15 @@ impl Workspace {
             && self.model.screen != crate::model::Screen::Settings
             && self.switcher.is_none()
             && self.onboarding.is_none();
-        let reports = {
+        let active = window.is_window_active();
+        let (reports, ticks) = {
             let mut host = self.web.borrow_mut();
-            host.frame(show);
-            host.take_reports()
+            host.frame(show, active);
+            (host.take_reports(), host.wants_ticks())
         };
+        if (ticks || show) && !self.web_ticking {
+            self.watch_web(cx);
+        }
         if let Some(t) = reports.title.filter(|t| !t.trim().is_empty()) {
             self.model.browser.title = t;
         }
@@ -113,6 +143,35 @@ impl Workspace {
             self.address_input
                 .update(cx, |i, cx| i.set_value(shown, window, cx));
         }
+    }
+
+    /// Reads the browser helper four times a second while it is starting
+    /// or up, so its address and title reach the pane and a start timeout
+    /// shows, without redrawing every frame. Stops when it is not needed.
+    pub(super) fn watch_web(&mut self, cx: &mut Context<Self>) {
+        self.web_ticking = true;
+        self.web_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let go = this.update(cx, |this, cx| {
+                    cx.notify();
+                    let b = &this.model.browser;
+                    let open = b.visible && this.model.run_panel_open;
+                    let h = this.web.borrow();
+                    let keep = h.wants_ticks() || (open && h.is_idle());
+                    drop(h);
+                    if !keep {
+                        this.web_ticking = false;
+                    }
+                    keep
+                });
+                if !matches!(go, Ok(true)) {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Tern's answer about the page (or the words) showing, when the chat
@@ -160,48 +219,144 @@ impl Workspace {
         self.submit(window, cx);
     }
 
-    /// The live page: a real engine where the build has one, placed on
-    /// this element's bounds every frame; else Tern's reader view.
+    /// The live page: the browser helper's window docked on this
+    /// element's rectangle (placed every frame it is drawn), while it is
+    /// up; else Tern's reader view, with why and a restart when the
+    /// helper stopped or never came up.
     fn web_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let engine_error = self.web.borrow().error.clone();
-        if crate::webview::AVAILABLE && engine_error.is_none() {
-            let host = self.web.clone();
+        let (live, starting, stopped, detached) = {
+            let h = self.web.borrow();
+            (
+                h.is_live(),
+                h.is_starting(),
+                h.stopped().map(str::to_owned),
+                h.detached,
+            )
+        };
+        // The canvas reports where the page goes; it starts the helper the
+        // first time and docks it after that. It never blocks.
+        let host = self.web.clone();
+        let place = gpui_kit::canvas(
+            move |bounds, window, _| {
+                let inner = tern_core::browser_ipc::Rect::new(
+                    f64::from(f32::from(bounds.origin.x)),
+                    f64::from(f32::from(bounds.origin.y)),
+                    f64::from(f32::from(bounds.size.width)),
+                    f64::from(f32::from(bounds.size.height)),
+                );
+                let wb = window.bounds();
+                let origin = (
+                    f64::from(f32::from(wb.origin.x)),
+                    f64::from(f32::from(wb.origin.y)),
+                );
+                let mut h = host.borrow_mut();
+                if h.owner.is_none() {
+                    h.owner = native_handle(window);
+                }
+                h.place(inner, origin);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+        if live && !detached {
             return div()
                 .flex_1()
                 .min_w_0()
                 .min_h_0()
                 .relative()
                 .bg(p.canvas)
-                .child(
-                    gpui_kit::canvas(
-                        move |bounds, window, _| {
-                            let b = [
-                                f32::from(bounds.origin.x),
-                                f32::from(bounds.origin.y),
-                                f32::from(bounds.size.width),
-                                f32::from(bounds.size.height),
-                            ];
-                            host.borrow_mut().place(b, &*window);
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .size_full(),
-                )
+                .child(place)
                 .into_any_element();
         }
+        let banner = if starting {
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .py_2()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(Spinner::new().xsmall())
+                    .child("Starting the page engine…")
+                    .into_any_element(),
+            )
+        } else if live && detached {
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_4()
+                    .py_2()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child("The page is open in its own window. Here it is as text.")
+                    .when(!crate::webview::cannot_dock_here(), |d| {
+                        d.child(
+                            Button::new("web-dock")
+                                .label("Dock it here")
+                                .xsmall()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.web.borrow_mut().set_detached(false);
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .into_any_element(),
+            )
+        } else {
+            stopped.map(|why| {
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .mx_4()
+                    .my_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.raised)
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(div().min_w_0().child(SharedString::from(format!(
+                        "Browser stopped ({why}). Showing the page as text."
+                    ))))
+                    .child(
+                        Button::new("web-restart")
+                            .icon(AssetIcon::RefreshCw)
+                            .label("Restart")
+                            .xsmall()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.web.borrow_mut().restart();
+                                this.watch_web(cx);
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element()
+            })
+        };
         div()
             .flex_1()
             .min_w_0()
             .min_h_0()
+            .relative()
             .flex()
             .flex_col()
-            .when_some(engine_error, |d, e| {
-                d.child(div().px_4().pt_2().text_xs().text_color(p.faint).child(
-                    SharedString::from(format!(
-                        "The page engine did not start ({e}); showing the page as text."
-                    )),
-                ))
-            })
+            // Keeps reporting while the helper starts, so it docks the
+            // moment it is ready. A stopped helper is not restarted here.
+            .when(
+                starting || (live && detached) || stopped_is_none(&self.web),
+                |d| d.child(place),
+            )
+            .children(banner)
             .child(self.reader_body("web-page", p, cx))
             .into_any_element()
     }
@@ -489,6 +644,26 @@ impl Workspace {
                     this.browse_step(step, window, cx);
                 })),
             )
+            .when(self.web.borrow().is_live(), |d| {
+                let detached = self.web.borrow().detached;
+                d.child(
+                    nav(
+                        "web-popout",
+                        AssetIcon::Maximize2,
+                        if detached {
+                            "Dock the page in the pane"
+                        } else {
+                            "Open the page in its own window"
+                        },
+                        !crate::webview::cannot_dock_here(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let d = this.web.borrow().detached;
+                        this.web.borrow_mut().set_detached(!d);
+                        cx.notify();
+                    })),
+                )
+            })
             .child(
                 div()
                     .flex_1()
