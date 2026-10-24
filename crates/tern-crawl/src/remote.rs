@@ -94,9 +94,19 @@ impl RemoteReader {
                 reason: "no API key saved; add one in Settings › Search & Crawler".into(),
             });
         }
-        let http = reqwest::Client::builder()
+        let mut b = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")));
+        // A reader on this computer (a self-hosted Firecrawl) is never
+        // sent through the system proxy.
+        let local = Url::parse(base)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h == "localhost" || h.starts_with("127.")))
+            .unwrap_or(false);
+        if local {
+            b = b.no_proxy();
+        }
+        let http = b
             .build()
             .map_err(|e| FetchError::Network {
                 site: kind.name().to_owned(),

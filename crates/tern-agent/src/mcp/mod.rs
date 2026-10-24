@@ -12,6 +12,7 @@
 pub mod catalog;
 pub mod client;
 pub mod config;
+pub mod presets;
 pub mod tool;
 pub mod trust;
 
