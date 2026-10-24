@@ -213,11 +213,7 @@ pub fn plan_for(
         };
     }
     let budget = tail_budget(window);
-    let cap = if pressure && budget.is_some() {
-        keep.max(1).min(live.len().saturating_sub(1).max(1))
-    } else {
-        keep.max(1)
-    };
+    let cap = keep.max(1);
     // The tail, newest first: the newest always, then while it fits.
     let mut used = 0u64;
     let mut kept = 0usize;
@@ -230,6 +226,12 @@ pub fn plan_for(
         } else {
             break;
         }
+    }
+    // Under pressure a tail that would keep every turn (a short chat)
+    // keeps only the newest, so the compaction frees room.
+    if pressure && budget.is_some() && live.len() >= 2 && kept == live.len() {
+        kept = 1;
+        used = live.last().map_or(0, |t| turn_tokens(t));
     }
     let cut = live.len() - kept;
     // Older turns with attachments stay while they fit too (newest first).
