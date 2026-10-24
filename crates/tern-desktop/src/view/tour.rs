@@ -206,6 +206,8 @@ enum Act {
     ExplainZoom,
     Research,
     Slash,
+    Palette(&'static str),
+    PaletteClose,
     Mention,
     TabPicker,
     Settings(Section),
@@ -461,6 +463,13 @@ fn script() -> Vec<Beat> {
             4500,
         ),
         scene(
+            "t23b-context",
+            "s05",
+            "Right rail: Context",
+            Act::View(RunView::Context),
+            2200,
+        ),
+        scene(
             "t24-side-chat",
             "s10",
             "Side chat about this chat",
@@ -593,9 +602,17 @@ fn script() -> Vec<Beat> {
         scene(
             "t41-palette",
             "s15",
-            "Command palette stand-in: / menu",
-            Act::Slash,
+            "Command palette (Ctrl+K)",
+            Act::Palette("rail"),
             3000,
+        ),
+        b(Act::PaletteClose, 300),
+        scene(
+            "t41b-slash",
+            "tern-only",
+            "/ command menu",
+            Act::Slash,
+            2500,
         ),
         scene(
             "t42-mention",
@@ -1400,6 +1417,13 @@ impl Workspace {
                 self.tour_connect();
             }
             Act::Slash => self.set_composer("/", window, cx),
+            Act::Palette(q) => {
+                self.cmdk = Some(super::palette_view::CmdK {
+                    query: q.to_string(),
+                    sel: 0,
+                })
+            }
+            Act::PaletteClose => self.cmdk = None,
             Act::Mention => self.set_composer("Compare these @", window, cx),
             Act::TabPicker => self.toggle_tab_picker(window, cx),
             Act::Settings(s) => self.open_settings(s, window, cx),
