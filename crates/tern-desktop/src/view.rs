@@ -4388,7 +4388,7 @@ pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement 
             .path(path)
             .size(px(size))
             .flex_none()
-            .text_color(p.text)
+            .text_color(mono_ink(p))
             .into_any_element(),
         crate::brands::Logo::Initial(letter) => div()
             .size(px(size + 2.))
@@ -4397,12 +4397,22 @@ pub(crate) fn brand_logo(id_or_name: &str, size: f32, p: Palette) -> AnyElement 
             .items_center()
             .justify_center()
             .rounded(px(4.))
-            .border_1()
-            .border_color(p.border)
+            .bg(p.accent.opacity(0.18))
             .text_xs()
-            .text_color(p.muted)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.accent)
             .child(SharedString::from(letter))
             .into_any_element(),
+    }
+}
+
+/// The ink for a one-colour brand mark: white on a dark theme, near
+/// black on a light one, at full strength so the mark never reads grey.
+pub(crate) fn mono_ink(p: Palette) -> gpui_kit::Hsla {
+    if p.canvas.l < 0.5 {
+        gpui_kit::hsla(0., 0., 1., 1.)
+    } else {
+        gpui_kit::hsla(0., 0., 0.07, 1.)
     }
 }
 

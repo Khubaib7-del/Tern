@@ -33,12 +33,7 @@ fn logo(icon: &str, p: Palette) -> AnyElement {
         .border_1()
         .border_color(p.border)
         .bg(p.raised)
-        .child(
-            svg()
-                .path(assets::service_path(icon))
-                .size(px(15.))
-                .text_color(p.text),
-        )
+        .child(super::brand_logo(icon, 16., p))
         .into_any_element()
 }
 

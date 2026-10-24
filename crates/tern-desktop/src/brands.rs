@@ -28,80 +28,56 @@ pub enum Logo {
     Initial(String),
 }
 
-/// `(id, asset bytes, tint)` for every bundled brand mark.
-const BRANDS: &[(&str, &[u8], Tint)] = &[
-    (
-        "anthropic",
-        include_bytes!("../assets/brands/anthropic.svg"),
-        Tint::Original,
-    ),
-    (
-        "brave",
-        include_bytes!("../assets/brands/brave.svg"),
-        Tint::Original,
-    ),
-    (
-        "deepseek",
-        include_bytes!("../assets/brands/deepseek.svg"),
-        Tint::Original,
-    ),
-    (
-        "google",
-        include_bytes!("../assets/brands/google.svg"),
-        Tint::Original,
-    ),
-    (
-        "groq",
-        include_bytes!("../assets/brands/groq.svg"),
-        Tint::Original,
-    ),
-    (
-        "lmstudio",
-        include_bytes!("../assets/brands/lmstudio.svg"),
-        Tint::Mono,
-    ),
-    (
-        "mistral",
-        include_bytes!("../assets/brands/mistral.svg"),
-        Tint::Original,
-    ),
-    (
-        "ollama",
-        include_bytes!("../assets/brands/ollama.svg"),
-        Tint::Mono,
-    ),
-    (
-        "openai",
-        include_bytes!("../assets/brands/openai.svg"),
-        Tint::Mono,
-    ),
-    (
-        "openrouter",
-        include_bytes!("../assets/brands/openrouter.svg"),
-        Tint::Mono,
-    ),
-    (
-        "searxng",
-        include_bytes!("../assets/brands/searxng.svg"),
-        Tint::Original,
-    ),
-    (
-        "tavily",
-        include_bytes!("../assets/brands/tavily.svg"),
-        Tint::Original,
-    ),
-    (
-        "xai",
-        include_bytes!("../assets/brands/xai.svg"),
-        Tint::Mono,
-    ),
+/// One bundled mark: its id, asset path, bytes, and how it is drawn.
+macro_rules! brand {
+    ($id:literal, $tint:ident) => {
+        (
+            $id,
+            concat!("tern/brands/", $id, ".svg"),
+            include_bytes!(concat!("../assets/brands/", $id, ".svg")) as &[u8],
+            Tint::$tint,
+        )
+    };
+}
+
+/// `(id, asset path, asset bytes, tint)` for every bundled brand mark.
+/// Colour marks keep their brand colours; `Mono` is only for brands whose
+/// mark is one colour (OpenAI, xAI, Ollama…), drawn at full contrast in
+/// the theme's ink so it never fades into the tile.
+const BRANDS: &[(&str, &str, &[u8], Tint)] = &[
+    brand!("anthropic", Original),
+    brand!("brave", Original),
+    brand!("cerebras", Original),
+    brand!("context7", Original),
+    brand!("deepseek", Original),
+    brand!("figma", Original),
+    brand!("firecrawl", Original),
+    brand!("fireworks", Original),
+    brand!("github", Mono),
+    brand!("google", Original),
+    brand!("groq", Original),
+    brand!("jev", Original),
+    brand!("jina", Original),
+    brand!("lmstudio", Original),
+    brand!("mcp", Mono),
+    brand!("mistral", Original),
+    brand!("notion", Mono),
+    brand!("ollama", Mono),
+    brand!("openai", Mono),
+    brand!("openrouter", Mono),
+    brand!("searxng", Original),
+    brand!("subq", Original),
+    brand!("tavily", Original),
+    brand!("together", Original),
+    brand!("voyage", Mono),
+    brand!("xai", Mono),
 ];
 
 /// Where brand marks live in the asset source.
 const PREFIX: &str = "tern/brands/";
 
-/// The canonical id for a provider or search id, or a display name
-/// ("Google AI Studio", "LM Studio", "Brave Search").
+/// The canonical id for a provider, service, or MCP template id, or a
+/// display name ("Google AI Studio", "LM Studio", "Brave Search").
 fn canonical(id_or_name: &str) -> Option<&'static str> {
     let k: String = id_or_name
         .trim()
@@ -120,10 +96,24 @@ fn canonical(id_or_name: &str) -> Option<&'static str> {
         "deepseek" => "deepseek",
         "ollama" => "ollama",
         "lmstudio" => "lmstudio",
+        "together" | "togetherai" => "together",
+        "fireworks" | "fireworksai" => "fireworks",
+        "cerebras" => "cerebras",
         "tavily" => "tavily",
         "brave" | "bravesearch" => "brave",
         "searxng" => "searxng",
         "wikipedia" => "wikipedia",
+        "firecrawl" => "firecrawl",
+        "jina" | "jinareader" | "jinaai" => "jina",
+        "jev" | "typesafe" | "typesafejev" | "typesafeai" => "jev",
+        "subq" | "subqsnap" | "subquadratic" | "subquadraticsubqsnap" => "subq",
+        "voyage" | "voyageai" | "voyagererank" | "voyageairerank" => "voyage",
+        "context7" => "context7",
+        "github" => "github",
+        "notion" => "notion",
+        "figma" => "figma",
+        // The reference servers from the MCP project carry its mark.
+        "mcp" | "filesystem" | "fetch" | "memory" | "sequentialthinking" | "time" | "git" => "mcp",
         _ => return None,
     })
 }
@@ -133,30 +123,11 @@ pub fn logo(id_or_name: &str) -> Logo {
     match canonical(id_or_name) {
         // Wikipedia's W is the one-colour service logo Tern already ships.
         Some("wikipedia") => Logo::Mark("tern/service/wikipedia.svg", Tint::Mono),
-        Some(id) => match BRANDS.iter().find(|(n, _, _)| *n == id) {
-            Some((n, _, tint)) => Logo::Mark(path_of(n), *tint),
+        Some(id) => match BRANDS.iter().find(|(n, _, _, _)| *n == id) {
+            Some((_, path, _, tint)) => Logo::Mark(path, *tint),
             None => Logo::Initial(initial(id_or_name)),
         },
         None => Logo::Initial(initial(id_or_name)),
-    }
-}
-
-fn path_of(id: &str) -> &'static str {
-    // The ids are a fixed set, so a match keeps the paths 'static.
-    match id {
-        "anthropic" => "tern/brands/anthropic.svg",
-        "brave" => "tern/brands/brave.svg",
-        "deepseek" => "tern/brands/deepseek.svg",
-        "google" => "tern/brands/google.svg",
-        "groq" => "tern/brands/groq.svg",
-        "lmstudio" => "tern/brands/lmstudio.svg",
-        "mistral" => "tern/brands/mistral.svg",
-        "ollama" => "tern/brands/ollama.svg",
-        "openai" => "tern/brands/openai.svg",
-        "openrouter" => "tern/brands/openrouter.svg",
-        "searxng" => "tern/brands/searxng.svg",
-        "tavily" => "tern/brands/tavily.svg",
-        _ => "tern/brands/xai.svg",
     }
 }
 
@@ -171,12 +142,15 @@ pub fn initial(name: &str) -> String {
 /// The bytes of a brand asset path, for the asset source.
 pub fn lookup(path: &str) -> Option<&'static [u8]> {
     let id = path.strip_prefix(PREFIX)?.strip_suffix(".svg")?;
-    BRANDS.iter().find(|(n, _, _)| *n == id).map(|(_, b, _)| *b)
+    BRANDS
+        .iter()
+        .find(|(n, _, _, _)| *n == id)
+        .map(|(_, _, b, _)| *b)
 }
 
 /// Every brand asset path.
 pub fn paths() -> impl Iterator<Item = &'static str> {
-    BRANDS.iter().map(|(n, _, _)| path_of(n))
+    BRANDS.iter().map(|(_, p, _, _)| *p)
 }
 
 #[cfg(test)]
@@ -222,6 +196,18 @@ mod tests {
             "ollama",
             "tavily",
             "searxng",
+            "together",
+            "Fireworks AI",
+            "cerebras",
+            "firecrawl",
+            "Jina Reader",
+            "TypeSafe Jev",
+            "Subquadratic SubQ Snap",
+            "Voyage AI Rerank",
+            "context7",
+            "github",
+            "filesystem",
+            "sequential-thinking",
         ] {
             assert!(matches!(logo(id), Logo::Mark(..)), "{id}");
         }
@@ -229,7 +215,10 @@ mod tests {
 
     #[test]
     fn unknown_and_custom_services_fall_back_to_their_initial() {
-        assert_eq!(logo("Together AI"), Logo::Initial("T".into()));
+        assert_eq!(
+            logo("Together AI"),
+            Logo::Mark("tern/brands/together.svg", Tint::Original)
+        );
         assert_eq!(logo("my-vllm"), Logo::Initial("M".into()));
         assert_eq!(logo(""), Logo::Initial(String::new()));
     }
@@ -251,7 +240,7 @@ mod tests {
         for p in paths() {
             let text = std::str::from_utf8(lookup(p).unwrap()).unwrap();
             let id = p.trim_start_matches(PREFIX).trim_end_matches(".svg");
-            let tint = BRANDS.iter().find(|(n, _, _)| *n == id).unwrap().2;
+            let tint = BRANDS.iter().find(|(n, _, _, _)| *n == id).unwrap().3;
             match tint {
                 Tint::Original => assert!(
                     text.contains("fill=\"#")
