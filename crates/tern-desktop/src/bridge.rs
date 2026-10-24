@@ -25,6 +25,8 @@ use crate::providers::{Kind, ServiceRow, rows_from};
 
 mod cont;
 mod ext;
+mod setup;
+pub use setup::SetupMsg;
 pub use cont::{ContMsg, LibraryChange};
 pub use ext::{ExtMsg, McpChange, ProjectChange, SkillChange};
 
@@ -109,6 +111,8 @@ pub enum Msg {
     Ext(Box<ExtMsg>),
     /// The Evaluation page.
     Eval(Box<EvalMsg>),
+    /// Page readers and custom providers (Settings).
+    Setup(Box<SetupMsg>),
 }
 
 /// Sends a reply's reasoning to the window as it streams.
@@ -963,6 +967,9 @@ impl Bridge {
             if let Err(e) = prefs.save() {
                 let _ = tx.send(Msg::PrefsFailed(e));
             }
+            // Custom providers, the page reader, the user's prompts, and the
+            // decision jobs take effect at once, not at the next launch.
+            prefs.apply_runtime();
         });
     }
 
@@ -987,14 +994,7 @@ impl Bridge {
     pub fn load_providers(&self) {
         let tx = self.tx.clone();
         self.rt.spawn_blocking(move || {
-            let keychain = setup::keychain();
-            let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
-            let rows = rows_from(setup::list(secrets), search::list(secrets));
-            let _ = tx.send(Msg::Providers(
-                rows,
-                Box::new(Preferences::load()),
-                keychain.err(),
-            ));
+            let _ = tx.send(providers_msg());
         });
     }
 
@@ -1765,6 +1765,16 @@ async fn study_engine(
 }
 
 /// "Works, 12 chat models, 180 ms".
+/// The Providers rows with key status, the saved choices (custom
+/// providers registered first, so they are listed), and a keychain error.
+fn providers_msg() -> Msg {
+    let prefs = Preferences::load();
+    let keychain = setup::keychain();
+    let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let rows = rows_from(setup::list(secrets), search::list(secrets));
+    Msg::Providers(rows, Box::new(prefs), keychain.err())
+}
+
 fn model_report(chat: usize, all: usize, ms: u128) -> String {
     let n = if chat > 0 { chat } else { all };
     let what = if chat > 0 { "chat model" } else { "model" };

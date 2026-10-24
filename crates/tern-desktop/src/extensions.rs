@@ -97,36 +97,6 @@ impl CustomizeState {
         self.checking.remove(&h.server);
         self.health.insert(h.server.clone(), h);
     }
-
-    /// Splits a typed command line into the program and its arguments,
-    /// keeping quoted parts together.
-    pub fn split_command(line: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut cur = String::new();
-        let mut quote: Option<char> = None;
-        let mut any = false;
-        for c in line.chars() {
-            match (quote, c) {
-                (Some(q), c) if c == q => quote = None,
-                (Some(_), c) => cur.push(c),
-                (None, '"' | '\'') => {
-                    quote = Some(c);
-                    any = true;
-                }
-                (None, c) if c.is_whitespace() => {
-                    if !cur.is_empty() || any {
-                        out.push(std::mem::take(&mut cur));
-                        any = false;
-                    }
-                }
-                (None, c) => cur.push(c),
-            }
-        }
-        if !cur.is_empty() || any {
-            out.push(cur);
-        }
-        out
-    }
 }
 
 /// A glyph for a server row: a known service's logo when the name says
@@ -348,14 +318,6 @@ mod tests {
         let s = vec![session(None, None, "1")];
         let rows = ProjectTree::default().rows(&s, &[0]);
         assert_eq!(rows, [TreeRow::Session(0)]);
-    }
-
-    #[test]
-    fn command_lines_split_with_quotes() {
-        assert_eq!(
-            CustomizeState::split_command(r#"npx -y "@scope/notes mcp" --dir '' x"#),
-            ["npx", "-y", "@scope/notes mcp", "--dir", "", "x"]
-        );
     }
 
     #[test]

@@ -262,12 +262,34 @@ impl Bridge {
                 SkillChange::Remove(name) => {
                     skills::remove(&d, &name).map(|_| format!("Removed “{name}”."))
                 }
+                SkillChange::Create(name, description, body) => {
+                    tern_agent::skill_author::create(&d, &name, &description, &body, false)
+                        .map(|_| format!("Saved skill “{}”.", name.trim()))
+                }
             });
             let note = match r {
                 Ok(n) => n,
                 Err(e) => format!("! {e}"),
             };
             let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Loaded(load_all(), Some(note)))));
+        });
+    }
+
+    /// Downloads a skill folder from GitHub and installs it.
+    pub fn skills_import_github(&self, r: tern_agent::skill_author::GithubRef) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let note = match data() {
+                Err(e) => format!("! {e}"),
+                Ok(d) => match tern_agent::skill_author::import_github(&d, &r, false).await {
+                    Ok(names) => format!("Installed {} from {}.", names.join(", "), r.label()),
+                    Err(e) => format!("! {e}"),
+                },
+            };
+            let all = tokio::task::spawn_blocking(load_all)
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Loaded(all, Some(note)))));
         });
     }
 
@@ -355,4 +377,6 @@ pub enum SkillChange {
     Install(PathBuf),
     Switch(String, bool),
     Remove(String),
+    /// A new skill from the editor: name, description, instructions.
+    Create(String, String, String),
 }

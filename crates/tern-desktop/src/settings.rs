@@ -26,6 +26,8 @@ pub enum Section {
     Evaluation,
     /// MCP servers, skills, and the effective instructions.
     Extensions,
+    /// The built-in prompts, and the user's own (global, Research, Study).
+    Instructions,
     /// Web search services and Tern Crawl.
     Search,
     /// Theme, accent, font, size, density, motion, glyphs.
@@ -39,13 +41,14 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Providers,
         Self::Models,
         Self::Tools,
         Self::Decision,
         Self::Evaluation,
         Self::Extensions,
+        Self::Instructions,
         Self::Search,
         Self::Appearance,
         Self::Study,
@@ -61,7 +64,8 @@ impl Section {
             Self::Decision => "Decision model",
             Self::Evaluation => "Evaluation",
             Self::Extensions => "MCP & Skills",
-            Self::Search => "Search & Crawler",
+            Self::Instructions => "Instructions",
+            Self::Search => "Search & Crawlers",
             Self::Appearance => "Appearance",
             Self::Study => "Study",
             Self::Privacy => "Privacy & data",
@@ -80,13 +84,16 @@ impl Section {
             }
             Self::Tools => "Tern's own tools: turn one off, or choose whether it asks you first.",
             Self::Decision => {
-                "A small model that ranks results, picks the first tool, and pre-scores claims."
+                "A small, fast model that makes Tern's quick choices so the chat model does not have to."
             }
             Self::Evaluation => "Scores per suite, failures, and the change since the last run.",
             Self::Extensions => {
                 "MCP servers Tern may call, skills it loads when a task needs them, and what the model is told."
             }
-            Self::Search => "Where web searches go, and how Tern Crawl reads the pages it finds.",
+            Self::Instructions => {
+                "What Tern tells the model: the built-in prompts, and your own on top of them."
+            }
+            Self::Search => "Where web searches go, and which crawler reads the pages they find.",
             Self::Appearance => "Theme, accent, type, density, and motion.",
             Self::Study => "How quizzes and vivas are made, and Study without a model.",
             Self::Privacy => {
@@ -105,6 +112,7 @@ impl Section {
             Self::Decision => "decision",
             Self::Evaluation => "evaluation",
             Self::Extensions => "extensions",
+            Self::Instructions => "instructions",
             Self::Search => "search",
             Self::Appearance => "appearance",
             Self::Study => "study",
@@ -146,6 +154,11 @@ pub const ENTRIES: &[Entry] = &[
         Section::Providers,
         "Server address",
         "base url endpoint ollama lm studio local proxy port",
+    ),
+    e(
+        Section::Providers,
+        "Custom provider",
+        "openai-compatible anthropic-compatible vllm llama.cpp proxy paste config headers",
     ),
     e(
         Section::Providers,
@@ -211,8 +224,18 @@ pub const ENTRIES: &[Entry] = &[
     e(Section::Extensions, "Skills", "skill install folder git"),
     e(
         Section::Extensions,
+        "MCP templates",
+        "gallery github notion figma context7 filesystem paste json vscode zed",
+    ),
+    e(
+        Section::Extensions,
+        "New skill",
+        "skill.md editor github import template",
+    ),
+    e(
+        Section::Instructions,
         "Instructions",
-        "tern.md rules system prompt",
+        "tern.md rules system prompt research study global custom",
     ),
     e(
         Section::Search,
@@ -220,6 +243,11 @@ pub const ENTRIES: &[Entry] = &[
         "web search wikipedia tavily brave searxng",
     ),
     e(Section::Search, "SearXNG address", "searx self-hosted url"),
+    e(
+        Section::Search,
+        "Crawlers",
+        "firecrawl jina reader fetch default page reader hosted",
+    ),
     e(
         Section::Search,
         "Tern Crawl",
@@ -380,9 +408,60 @@ pub struct SettingsState {
     pub role_open: Option<Role>,
     /// Providers: the provider whose server address is being edited.
     pub editing_url: Option<&'static str>,
+    /// Providers › Add custom provider: the form is open, the API it
+    /// speaks, and what is wrong with it.
+    pub custom_open: bool,
+    pub custom_wire: tern_agent::providers::CustomWire,
+    pub custom_errors: Vec<String>,
+    /// Providers › Paste config: the box is open, and what is wrong.
+    pub paste_open: bool,
+    pub paste_errors: Vec<String>,
+    /// Search › Crawlers: each reader and whether a key is saved.
+    pub crawler_keys: Vec<(tern_agent::crawlers::Crawler, bool)>,
+    /// The reader whose key field is open.
+    pub crawler_editing: Option<tern_agent::crawlers::Crawler>,
+    /// Each reader's last test or key result.
+    pub crawler_notes: Vec<(tern_agent::crawlers::Crawler, Line)>,
+    /// The page cache's size, measured when the page opens or after a
+    /// clear (never per frame).
+    pub cache_size: Option<u64>,
+    /// MCP: the template whose form is open, the paste box, and problems.
+    pub mcp_template: Option<&'static str>,
+    pub mcp_paste_open: bool,
+    pub mcp_errors: Vec<String>,
+    /// Skills: the editor and the GitHub field are open, and problems.
+    pub skill_new_open: bool,
+    pub skill_github_open: bool,
+    pub skill_errors: Vec<String>,
+}
+
+/// A one-line result beside a row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Line {
+    Working(String),
+    Ok(String),
+    Failed(String),
 }
 
 impl SettingsState {
+    /// The last result for reader `c`.
+    pub fn crawler_note(&self, c: tern_agent::crawlers::Crawler) -> Option<&Line> {
+        self.crawler_notes
+            .iter()
+            .find(|(k, _)| *k == c)
+            .map(|(_, l)| l)
+    }
+
+    pub fn set_crawler_note(&mut self, c: tern_agent::crawlers::Crawler, l: Line) {
+        self.crawler_notes.retain(|(k, _)| *k != c);
+        self.crawler_notes.push((c, l));
+    }
+
+    /// Whether a key is saved for reader `c`.
+    pub fn crawler_has_key(&self, c: tern_agent::crawlers::Crawler) -> bool {
+        self.crawler_keys.iter().any(|(k, on)| *k == c && *on)
+    }
+
     /// Opens a section; a pending delete confirmation is dropped.
     pub fn open(&mut self, s: Section) {
         self.section = s;
@@ -697,6 +776,22 @@ mod tests {
             let page = w - 52. - nav_width(w);
             assert!(page >= 560., "{w}: {page}");
         }
+    }
+
+    #[test]
+    fn crawler_notes_keep_one_line_per_reader() {
+        use tern_agent::crawlers::Crawler;
+        let mut s = SettingsState::default();
+        assert_eq!(s.crawler_note(Crawler::Jina), None);
+        s.set_crawler_note(Crawler::Jina, Line::Working("Testing".into()));
+        s.set_crawler_note(Crawler::Jina, Line::Ok("Works".into()));
+        assert_eq!(s.crawler_notes.len(), 1);
+        assert_eq!(s.crawler_note(Crawler::Jina), Some(&Line::Ok("Works".into())));
+        s.crawler_keys = vec![(Crawler::Firecrawl, true), (Crawler::Jina, false)];
+        assert!(s.crawler_has_key(Crawler::Firecrawl));
+        assert!(!s.crawler_has_key(Crawler::Jina));
+        assert_eq!(Section::Instructions.title(), "Instructions");
+        assert_eq!(search("instructions")[0].section, Section::Instructions);
     }
 
     #[test]

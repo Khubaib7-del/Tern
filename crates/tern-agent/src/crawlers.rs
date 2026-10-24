@@ -145,7 +145,8 @@ fn plain_reader() -> Fetcher {
     R.get_or_init(Fetcher::new).clone()
 }
 
-fn saved_key(c: Crawler, secrets: Option<&dyn SecretStore>) -> Option<SecretString> {
+/// The saved key for `crawler`, if any.
+pub fn saved_key(c: Crawler, secrets: Option<&dyn SecretStore>) -> Option<SecretString> {
     secrets.and_then(|s| s.get(&key_name(c)).ok().flatten())
 }
 

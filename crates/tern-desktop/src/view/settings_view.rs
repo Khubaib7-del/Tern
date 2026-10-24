@@ -46,6 +46,7 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::Decision => AssetIcon::Signpost,
         Section::Evaluation => AssetIcon::FlaskConical,
         Section::Extensions => AssetIcon::Blocks,
+        Section::Instructions => AssetIcon::NotebookPen,
         Section::Search => AssetIcon::Globe,
         Section::Appearance => AssetIcon::Palette,
         Section::Study => AssetIcon::GraduationCap,
@@ -186,6 +187,8 @@ impl Workspace {
                 if !self.model.providers.loaded {
                     self.bridge.load_providers();
                 }
+                self.bridge.crawlers_load();
+                self.measure_cache();
                 let typed = self.searx_input.read(cx).value().to_string();
                 if typed.is_empty()
                     && let Some(u) = self.model.providers.prefs.search_url.clone()
@@ -194,6 +197,7 @@ impl Workspace {
                         .update(cx, |i, cx| i.set_value(u, window, cx));
                 }
             }
+            Section::Instructions => self.open_instructions(window, cx),
             Section::Tools | Section::Study | Section::Privacy | Section::About => {
                 self.show_settings(s);
             }
@@ -469,6 +473,7 @@ impl Workspace {
             Section::Decision => self.decision_screen(p, cx),
             Section::Evaluation => self.eval_screen(p, cx),
             Section::Extensions => self.customize_screen(p, window, cx),
+            Section::Instructions => self.instructions_page(p, cx),
             Section::Search => self.search_page(p, cx),
             Section::Appearance => self.appearance_screen(p, cx),
             Section::Study => self.page(s, p, None, vec![self.study_settings(p, cx)]),
@@ -655,6 +660,7 @@ impl Workspace {
                 self.section(Kind::Model, "Model providers", p, cx)
                     .into_any_element(),
             );
+            body.push(self.custom_provider_block(p, cx));
         }
         self.page(Section::Providers, p, None, body)
     }
@@ -1364,10 +1370,12 @@ impl Workspace {
                     .into_any_element(),
             );
         }
+        body.push(self.crawlers_card(p, cx));
         let cache = tern_agent::platform::AppPaths::discover()
             .ok()
             .map(|a| a.crawl_cache());
-        let size = cache.as_deref().map(dir_size).unwrap_or(0);
+        // Measured on opening the page and after a clear, never per frame.
+        let size = self.model.settings.cache_size.unwrap_or(0);
         let confirm = self.model.settings.confirm == Some("crawl-cache");
         let crawl_rows = vec![
             div()
@@ -1397,7 +1405,7 @@ impl Workspace {
                         .flex_col()
                         .child(div().text_sm().font_weight(FontWeight::MEDIUM).child("Tern Crawl"))
                         .child(div().text_xs().text_color(p.faint).child(
-                            "Reads every page Tern opens: HTML and PDFs, in reader form, with the sources kept.",
+                            "The built-in crawler, and the fallback when a hosted one fails: HTML and PDFs, in reader form, with the sources kept.",
                         )),
                 )
                 .into_any_element(),
@@ -1433,6 +1441,7 @@ impl Workspace {
                                 if let Ok(a) = tern_agent::platform::AppPaths::discover() {
                                     let _ = std::fs::remove_dir_all(a.crawl_cache());
                                 }
+                                this.measure_cache();
                                 this.model.toast_info("Page cache cleared");
                             }
                             cx.notify();
@@ -1442,7 +1451,7 @@ impl Workspace {
                 p,
             ),
         ];
-        body.push(Self::settings_card("Crawler", p, crawl_rows));
+        body.push(Self::settings_card("Tern Crawl", p, crawl_rows));
         self.page(Section::Search, p, None, body)
     }
 
@@ -1525,6 +1534,7 @@ impl Workspace {
                                 if let Ok(a) = tern_agent::platform::AppPaths::discover() {
                                     let _ = std::fs::remove_dir_all(a.crawl_cache());
                                 }
+                                this.measure_cache();
                                 this.model.toast_info("Page cache cleared");
                             }
                             cx.notify();
@@ -1765,7 +1775,7 @@ fn effect_line(e: tern_core::EffectClass) -> &'static str {
 }
 
 /// The size of everything under `dir`, in bytes (0 when it is missing).
-fn dir_size(dir: &std::path::Path) -> u64 {
+pub(super) fn dir_size(dir: &std::path::Path) -> u64 {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return 0;
     };

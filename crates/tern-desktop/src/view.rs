@@ -48,6 +48,7 @@ mod runs_view;
 mod scout_view;
 mod segmented;
 mod settings_view;
+mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
@@ -203,6 +204,8 @@ pub struct Workspace {
     /// Settings' search, server-address and filter fields, and its lists'
     /// scroll positions.
     settings_inputs: settings_view::SettingsInputs,
+    /// Custom providers, crawlers, instructions, MCP and skill forms.
+    setup_inputs: setup_view::SetupInputs,
     /// The first-run tour, while it shows.
     onboarding: Option<crate::onboarding::Onboarding>,
     /// Whether the tour was considered at launch (once per run).
@@ -411,6 +414,7 @@ impl Workspace {
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
         let (settings_inputs, settings_subs) = settings_view::SettingsInputs::new(window, cx);
+        let setup_inputs = setup_view::SetupInputs::new(window, cx);
         model.projects.collapsed = tern_agent::Preferences::load()
             .collapsed_projects
             .into_iter()
@@ -507,6 +511,7 @@ impl Workspace {
             resume_retry: None,
             rail_base: Default::default(),
             settings_inputs,
+            setup_inputs,
             onboarding: None,
             onboarding_checked: false,
             _subscriptions: {
@@ -865,6 +870,7 @@ impl Workspace {
                 }
                 crate::bridge::EvalMsg::Ran(r) => self.model.eval.finished(r),
             },
+            Msg::Setup(m) => self.on_setup(*m, window, cx),
             Msg::PrefsFailed(e) => self
                 .model
                 .toast_error(format!("Tern could not save your choice: {e}"), None),
@@ -3416,7 +3422,25 @@ impl Workspace {
                         })),
                 );
             }
-            if r.key_saved {
+            if kind == Kind::Model && tern_agent::providers::custom::is_custom(id) {
+                // Asks twice; the armed button is this provider's own.
+                let confirm = self.model.settings.confirm == Some(id);
+                actions = actions.child(
+                    Button::new(bid("delete"))
+                        .label(if confirm { "Click again to delete" } else { "Delete" })
+                        .ghost()
+                        .small()
+                        .disabled(busy_turn && is_default)
+                        .tooltip("Delete this custom provider and its key")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.model.settings.confirm(id) {
+                                this.model.providers.begin(kind, id, "Deleting…");
+                                this.bridge.custom_remove(id.to_owned());
+                            }
+                            cx.notify();
+                        })),
+                );
+            } else if r.key_saved {
                 actions = actions.child(
                     Button::new(bid("remove"))
                         .label("Remove")
