@@ -185,9 +185,54 @@ pub(super) fn sprite(
     alpha: f32,
 ) -> AnyElement {
     let strip = m.strip(state);
-    let w = h * m.frame_w / m.frame_h;
+    // Big drawings (Settings › Scout) use the large strips.
+    let path = m.sized(&strip.file, variant, h > 100.);
+    strip_frame(
+        path,
+        strip.frames,
+        index,
+        h * m.frame_w / m.frame_h,
+        h,
+        squash,
+        alpha,
+    )
+}
+
+/// The light rim behind Scout on dark themes, in step with its frame.
+fn rim(
+    m: &Manifest,
+    state: State,
+    index: u32,
+    h: f32,
+    squash: f32,
+    alpha: f32,
+) -> Option<AnyElement> {
+    let strip = m.strip(state);
+    let path = m.rim(&strip.file, h > 100.)?;
+    Some(strip_frame(
+        path,
+        strip.frames,
+        index,
+        h * m.frame_w / m.frame_h,
+        h,
+        squash,
+        alpha,
+    ))
+}
+
+/// Frame `index` of a horizontal strip, `w`×`h`, squashed at the feet.
+fn strip_frame(
+    path: String,
+    frames: u32,
+    index: u32,
+    w: f32,
+    h: f32,
+    squash: f32,
+    alpha: f32,
+) -> AnyElement {
     let (sw, sh) = (w * (1. + squash), h * (1. - squash * 0.8));
-    let path = SharedString::from(m.path(&strip.file, variant));
+    let path = SharedString::from(path);
+    let strip_frames = frames;
     div()
         .absolute()
         .bottom_0()
@@ -201,7 +246,7 @@ pub(super) fn sprite(
                 .absolute()
                 .top_0()
                 .left(px(-(index as f32) * sw))
-                .w(px(sw * strip.frames as f32))
+                .w(px(sw * strip_frames as f32))
                 .h(px(sh))
                 .object_fit(ObjectFit::Fill),
         )
@@ -236,6 +281,14 @@ pub(super) fn figure(m: &Manifest, variant: &str, f: &Frame, h: f32, dark: bool)
         .bottom(px(lift))
         .w(px(w))
         .h(px(h))
+        // On dark themes a light rim sits behind each drawing.
+        .when(dark, |d| {
+            d.children(
+                f.from
+                    .and_then(|(s, i)| rim(m, s, i, h, f.squash, 1. - f.mix)),
+            )
+            .children(rim(m, f.state, f.index, h, f.squash, f.mix.max(0.05)))
+        })
         .children(
             f.from
                 .map(|(s, i)| sprite(m, variant, s, i, h, f.squash, 1. - f.mix)),
@@ -248,7 +301,18 @@ pub(super) fn figure(m: &Manifest, variant: &str, f: &Frame, h: f32, dark: bool)
             h,
             f.squash,
             f.mix.max(0.05),
-        ));
+        ))
+        // The state's flag (a ?, a ✓, a !) drawn over the frame.
+        .children(m.strip(f.state).overlay.as_ref().map(|o| {
+            img(SharedString::from(m.sized(o, "normal", h > 100.)))
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(px(w))
+                .h(px(h))
+                .opacity(f.mix)
+                .object_fit(ObjectFit::Fill)
+        }));
     div()
         .relative()
         .w(px(w))

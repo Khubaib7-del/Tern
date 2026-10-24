@@ -602,6 +602,9 @@ mod tests {
                 right_open: Some(true),
                 sidebar_open: Some(false),
             },
+            scout_hidden: true,
+            scout_pos: Some((40, 600)),
+            scout_variant: Some("study".into()),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

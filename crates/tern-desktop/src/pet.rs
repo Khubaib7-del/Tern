@@ -194,6 +194,9 @@ pub struct Manifest {
     pub variants: Vec<(String, String)>,
     pub states: Vec<(State, Strip)>,
     pub placeholder: bool,
+    /// The file suffix of the large strips (`"@256"`), drawn when Scout is
+    /// shown big (Settings › Scout); the small strips serve the pet.
+    pub hi: Option<String>,
 }
 
 impl Manifest {
@@ -290,6 +293,7 @@ impl Manifest {
                 .get("placeholder")
                 .and_then(|x| x.as_bool())
                 .unwrap_or(false),
+            hi: v.get("hi").and_then(|x| x.as_str()).map(str::to_owned),
         })
     }
 
@@ -319,6 +323,7 @@ impl Manifest {
                     },
                 )],
                 placeholder: true,
+                hi: None,
             })
     }
 
@@ -352,6 +357,50 @@ impl Manifest {
         format!("{ASSET_PREFIX}{file}")
     }
 
+    /// The asset path of `file` in `variant` at the size it is drawn:
+    /// the large strip when `big` and there is one, the variant's own
+    /// strip before the normal one.
+    pub fn sized(&self, file: &str, variant: &str, big: bool) -> String {
+        let vs = self
+            .variants
+            .iter()
+            .find(|(n, _)| n == variant)
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        let hs = if big {
+            self.hi.as_deref().unwrap_or("")
+        } else {
+            ""
+        };
+        let (stem, ext) = file.rsplit_once('.').unwrap_or((file, "png"));
+        [
+            format!("{stem}{vs}{hs}.{ext}"),
+            format!("{stem}{vs}.{ext}"),
+            format!("{stem}{hs}.{ext}"),
+        ]
+        .into_iter()
+        .find(|f| bytes(f).is_some())
+        .map(|f| format!("{ASSET_PREFIX}{f}"))
+        .unwrap_or_else(|| format!("{ASSET_PREFIX}{file}"))
+    }
+
+    /// The light rim drawn behind `file` on dark themes (a silhouette one
+    /// pixel wider, `<stem>.rim.png`), so the charcoal cloak keeps its
+    /// edge; `None` when the art has none.
+    pub fn rim(&self, file: &str, big: bool) -> Option<String> {
+        let (stem, ext) = file.rsplit_once('.').unwrap_or((file, "png"));
+        let hs = if big {
+            self.hi.as_deref().unwrap_or("")
+        } else {
+            ""
+        };
+        [format!("{stem}.rim{hs}.{ext}"), format!("{stem}.rim.{ext}")]
+            .into_iter()
+            .find(|f| bytes(f).is_some())
+            .map(|f| format!("{ASSET_PREFIX}{f}"))
+    }
+
+    #[cfg(test)]
     pub fn variant_names(&self) -> impl Iterator<Item = &str> {
         self.variants.iter().map(|(n, _)| n.as_str())
     }
@@ -412,6 +461,7 @@ impl Animator {
         }
     }
 
+    #[cfg(test)]
     pub fn state(&self) -> State {
         self.state
     }
@@ -562,6 +612,18 @@ mod tests {
         assert!(m.variant_names().any(|v| v == "study"));
         assert!(m.path("idle.png", "study").ends_with("idle.study.png"));
         assert!(m.path("idle.png", "nope").ends_with("/idle.png"));
+        for big in [false, true] {
+            for v in ["normal", "study"] {
+                let p = m.sized("idle.png", v, big);
+                assert!(
+                    bytes(p.strip_prefix(ASSET_PREFIX).unwrap()).is_some(),
+                    "{p}"
+                );
+            }
+        }
+        if let Some(r) = m.rim("idle.png", true) {
+            assert!(bytes(r.strip_prefix(ASSET_PREFIX).unwrap()).is_some());
+        }
     }
 
     #[test]
