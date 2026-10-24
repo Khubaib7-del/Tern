@@ -57,6 +57,10 @@ pub struct ChatOptions {
     pub harness: Harness,
     /// When the chat folds older turns into a summary (see [`crate::compact`]).
     pub compaction: crate::compact::Compaction,
+    /// Tern's own tools turned off (Settings › Tools).
+    pub tools_off: Vec<String>,
+    /// Per-tool approvals chosen in Settings › Tools.
+    pub tool_modes: std::collections::BTreeMap<String, crate::Mode>,
 }
 
 const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -533,6 +537,7 @@ impl ChatSession {
     ) -> Result<Self, String> {
         let (provider, model, context_window) = connect_model(&opts, secrets).await?;
         let mut tools = ToolRegistry::new();
+        tools.turn_off(opts.tools_off.iter().map(String::as_str));
         let search = match opts.search.as_deref() {
             Some("off" | "none") => None,
             id => match search::connect(id, secrets, opts.search_url.as_deref()) {
@@ -587,6 +592,9 @@ impl ChatSession {
         let project = crate::rules::ProjectContext::load(root.as_deref());
         project.register(&mut tools);
         let mut gate = PolicyGate::default();
+        for (name, mode) in &opts.tool_modes {
+            gate.set_tool_mode(name, *mode);
+        }
         let mut mcp_notes = Vec::new();
         let mut mcp_servers = Vec::new();
         let mut mcp_offers = Vec::new();

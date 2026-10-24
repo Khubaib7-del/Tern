@@ -87,6 +87,41 @@ pub struct Preferences {
     pub accent: Option<String>,
     pub ui_font: Option<String>,
     pub text_size: Option<String>,
+    /// Row spacing: `comfortable` (`None`) or `compact`.
+    pub density: Option<String>,
+
+    /// The first-run onboarding was finished or skipped; it shows once.
+    pub onboarded: bool,
+    /// The model that turns text into vectors, as `provider/model`. `None`
+    /// leaves retrieval on Tern's own keyword scoring.
+    pub default_embedding_model: Option<String>,
+    /// A provider's server address when it is not the usual one (a local
+    /// server on another port, a proxy), by provider id.
+    pub base_urls: std::collections::BTreeMap<String, String>,
+    /// Tern's own tools turned off in Settings › Tools, by name.
+    pub tools_off: Vec<String>,
+    /// Per-tool approval in Settings › Tools: `allow`, `ask`, or `deny`,
+    /// by tool name. A tool not listed follows its effect class.
+    pub tool_modes: std::collections::BTreeMap<String, String>,
+}
+
+/// An approval choice as saved (`allow`, `ask`, `deny`).
+pub fn parse_mode(s: &str) -> Option<crate::Mode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "allow" => Some(crate::Mode::Allow),
+        "ask" => Some(crate::Mode::Ask),
+        "deny" => Some(crate::Mode::Deny),
+        _ => None,
+    }
+}
+
+/// The saved word for an approval choice.
+pub fn mode_word(m: crate::Mode) -> &'static str {
+    match m {
+        crate::Mode::Allow => "allow",
+        crate::Mode::Ask => "ask",
+        crate::Mode::Deny => "deny",
+    }
 }
 
 impl Preferences {
@@ -223,10 +258,71 @@ impl Preferences {
             .is_some_and(|u| !u.trim().is_empty())
     }
 
+    /// The saved server address for provider `id`, if one was set.
+    pub fn base_url(&self, id: &str) -> Option<&str> {
+        self.base_urls
+            .get(id)
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty())
+    }
+
+    /// Saves (or, when blank, forgets) provider `id`'s server address.
+    pub fn set_base_url(&mut self, id: &str, url: &str) {
+        let url = url.trim();
+        if url.is_empty() {
+            self.base_urls.remove(id);
+        } else {
+            self.base_urls.insert(id.to_owned(), url.to_owned());
+        }
+    }
+
+    /// Whether Tern's own tool `name` is on.
+    pub fn tool_on(&self, name: &str) -> bool {
+        !self.tools_off.iter().any(|t| t == name)
+    }
+
+    pub fn set_tool_on(&mut self, name: &str, on: bool) {
+        self.tools_off.retain(|t| t != name);
+        if !on {
+            self.tools_off.push(name.to_owned());
+            self.tools_off.sort();
+        }
+    }
+
+    /// The approval the user chose for tool `name`, if any.
+    pub fn tool_mode(&self, name: &str) -> Option<crate::Mode> {
+        self.tool_modes.get(name).and_then(|m| parse_mode(m))
+    }
+
+    /// Sets tool `name`'s approval; `None` goes back to its effect class.
+    pub fn set_tool_mode(&mut self, name: &str, mode: Option<crate::Mode>) {
+        match mode {
+            Some(m) => {
+                self.tool_modes
+                    .insert(name.to_owned(), mode_word(m).to_owned());
+            }
+            None => {
+                self.tool_modes.remove(name);
+            }
+        }
+    }
+
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
+        let base_url = self
+            .provider
+            .as_deref()
+            .and_then(|p| self.base_url(p))
+            .map(str::to_owned);
         ChatOptions {
             provider: self.provider.clone(),
+            base_url,
+            tools_off: self.tools_off.clone(),
+            tool_modes: self
+                .tool_modes
+                .iter()
+                .filter_map(|(k, v)| parse_mode(v).map(|m| (k.clone(), m)))
+                .collect(),
             model: self.model.clone(),
             search: self.effective_search(),
             search_url: self.search_url.clone(),
@@ -246,6 +342,45 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tools_base_urls_and_onboarding_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.json");
+        let mut p = Preferences::default();
+        assert!(!p.onboarded);
+        assert!(p.tool_on("web_search"));
+        p.set_tool_on("web_search", false);
+        p.set_tool_on("web_search", false);
+        assert_eq!(p.tools_off, vec!["web_search".to_owned()]);
+        p.set_tool_mode("vault_write", Some(crate::Mode::Allow));
+        p.set_tool_mode("read_url", Some(crate::Mode::Deny));
+        p.set_base_url("ollama", " http://10.0.0.2:11434 ");
+        p.set_base_url("groq", "   ");
+        p.onboarded = true;
+        p.default_embedding_model = Some("openai/text-embedding-3-small".into());
+        p.provider = Some("ollama".into());
+        p.save_to(&path).unwrap();
+        let back = Preferences::load_from(&path);
+        assert_eq!(back, p);
+        assert_eq!(back.base_url("ollama"), Some("http://10.0.0.2:11434"));
+        assert_eq!(back.base_url("groq"), None);
+        assert_eq!(back.tool_mode("vault_write"), Some(crate::Mode::Allow));
+        assert_eq!(back.tool_mode("web_search"), None);
+        let o = back.chat_options();
+        assert_eq!(o.base_url.as_deref(), Some("http://10.0.0.2:11434"));
+        assert_eq!(o.tools_off, vec!["web_search".to_owned()]);
+        assert_eq!(o.tool_modes.get("read_url"), Some(&crate::Mode::Deny));
+        p.set_tool_on("web_search", true);
+        p.set_tool_mode("vault_write", None);
+        assert!(p.tools_off.is_empty() && !p.tool_modes.contains_key("vault_write"));
+        // An old file without the new keys still reads.
+        std::fs::write(&path, r#"{"provider":"groq"}"#).unwrap();
+        let old = Preferences::load_from(&path);
+        assert!(!old.onboarded && old.tools_off.is_empty());
+        assert_eq!(parse_mode("ASK"), Some(crate::Mode::Ask));
+        assert_eq!(parse_mode("maybe"), None);
+    }
 
     #[test]
     fn searxng_without_an_address_is_unconfigured() {
@@ -304,6 +439,12 @@ mod tests {
             compact_off: false,
             compact_at_percent: Some(85),
             compact_keep_turns: Some(6),
+            density: Some("compact".into()),
+            onboarded: true,
+            default_embedding_model: None,
+            base_urls: Default::default(),
+            tools_off: vec!["read_url".into()],
+            tool_modes: Default::default(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

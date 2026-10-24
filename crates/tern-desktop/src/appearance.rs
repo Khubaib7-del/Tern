@@ -47,6 +47,37 @@ pub enum TextSize {
     Large,
 }
 
+/// How tightly rows sit: the chat list, the sidebar, Settings rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Density {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+impl Density {
+    pub const ALL: [Self; 2] = [Self::Comfortable, Self::Compact];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comfortable => "Comfortable",
+            Self::Compact => "Compact",
+        }
+    }
+    fn id(self) -> &'static str {
+        match self {
+            Self::Comfortable => "comfortable",
+            Self::Compact => "compact",
+        }
+    }
+    /// A list row's vertical padding in pixels.
+    pub fn row_pad(self) -> f32 {
+        match self {
+            Self::Comfortable => 4.,
+            Self::Compact => 2.,
+        }
+    }
+}
+
 /// One click on the Appearance screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -54,15 +85,17 @@ pub enum Choice {
     Accent(Accent),
     Font(FontChoice),
     Size(TextSize),
+    Density(Density),
 }
 
-/// The four choices together.
+/// The choices together.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Appearance {
     pub theme: ThemeChoice,
     pub accent: Accent,
     pub font: FontChoice,
     pub size: TextSize,
+    pub density: Density,
 }
 
 impl ThemeChoice {
@@ -187,6 +220,7 @@ impl Appearance {
             accent: parse(&Accent::ALL, Accent::id, p.accent.as_deref()),
             font: parse(&FontChoice::ALL, FontChoice::id, p.ui_font.as_deref()),
             size: parse(&TextSize::ALL, TextSize::id, p.text_size.as_deref()),
+            density: parse(&Density::ALL, Density::id, p.density.as_deref()),
         }
     }
 
@@ -197,6 +231,7 @@ impl Appearance {
         p.accent = keep(self.accent.id(), Accent::default().id());
         p.ui_font = keep(self.font.id(), FontChoice::default().id());
         p.text_size = keep(self.size.id(), TextSize::default().id());
+        p.density = keep(self.density.id(), Density::default().id());
     }
 
     /// Applies one click; `true` when something changed.
@@ -207,6 +242,7 @@ impl Appearance {
             Choice::Accent(a) => self.accent = a,
             Choice::Font(f) => self.font = f,
             Choice::Size(s) => self.size = s,
+            Choice::Density(d) => self.density = d,
         }
         *self != before
     }
@@ -227,6 +263,7 @@ impl Appearance {
             Choice::Accent(a) => self.accent == a,
             Choice::Font(f) => self.font == f,
             Choice::Size(s) => self.size == s,
+            Choice::Density(d) => self.density == d,
         }
     }
 }
@@ -248,6 +285,8 @@ mod tests {
         assert!(look.apply(Choice::Font(FontChoice::System)));
         assert!(look.apply(Choice::Size(TextSize::Large)));
         assert!(!look.apply(Choice::Size(TextSize::Large)), "no change");
+        assert!(look.apply(Choice::Density(Density::Compact)));
+        assert!(look.density.row_pad() < Density::Comfortable.row_pad());
         assert!(look.is(Choice::Accent(Accent::Slate)));
         assert_eq!(look.font.family(), ".SystemUIFont");
         assert_eq!(look.size.px(), 18.);
@@ -255,6 +294,7 @@ mod tests {
         look.save_to(&mut prefs);
         assert_eq!(prefs.theme.as_deref(), Some("light"));
         assert_eq!(prefs.accent.as_deref(), Some("slate"));
+        assert_eq!(prefs.density.as_deref(), Some("compact"));
         // Through JSON, as the file stores it.
         let json = serde_json::to_string(&prefs).unwrap();
         let back: Preferences = serde_json::from_str(&json).unwrap();

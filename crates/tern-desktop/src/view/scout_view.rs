@@ -193,7 +193,8 @@ impl Workspace {
     /// What Scout should be doing now: a preview from Appearance, else the
     /// run's state.
     pub(super) fn scout_mood(&self) -> Mood {
-        if self.model.screen == crate::model::Screen::Appearance
+        if self.model.screen == crate::model::Screen::Settings
+            && self.model.settings.section == crate::settings::Section::Appearance
             && let Some(m) = self.scout_preview
         {
             return m;

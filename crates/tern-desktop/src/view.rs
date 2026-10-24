@@ -8,6 +8,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::input::{Input, InputEvent, InputState, TextareaState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewMotion};
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _, TitleBar};
@@ -41,10 +42,12 @@ mod eval_view;
 mod explain_view;
 mod git_view;
 mod library_view;
+mod onboarding_view;
 mod panels_view;
 mod runs_view;
 mod scout_view;
 mod segmented;
+mod settings_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
@@ -197,6 +200,13 @@ pub struct Workspace {
     /// The scrolling child index of the first transcript entry (after the
     /// workspace chip), set as the transcript is built.
     rail_base: std::cell::Cell<usize>,
+    /// Settings' search, server-address and filter fields, and its lists'
+    /// scroll positions.
+    settings_inputs: settings_view::SettingsInputs,
+    /// The first-run tour, while it shows.
+    onboarding: Option<crate::onboarding::Onboarding>,
+    /// Whether the tour was considered at launch (once per run).
+    onboarding_checked: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -367,6 +377,8 @@ impl Workspace {
         });
         // Reopen the last chat that has messages; a new draft otherwise.
         bridge.launch(tern_agent::Harness::Research, None);
+        // The provider list decides whether the first-run tour shows.
+        bridge.load_providers();
         bridge.load_watches();
         // Due watches run a minute after start, then every 15 minutes, one
         // batch at a time.
@@ -391,9 +403,14 @@ impl Workspace {
         let look = crate::appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
         model.dark = look.is_dark(system_dark(window));
         crate::theme::apply_kit(model.dark, &look, Some(window), cx);
+        crate::theme::set_reduced_motion(
+            tern_agent::Preferences::load().wants_reduced_motion(),
+            cx,
+        );
         model.study = crate::study::StudyState::from_prefs(&tern_agent::Preferences::load());
         let (study_inputs, study_subs) = study_view::StudyInputs::new(window, cx);
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
+        let (settings_inputs, settings_subs) = settings_view::SettingsInputs::new(window, cx);
         model.projects.collapsed = tern_agent::Preferences::load()
             .collapsed_projects
             .into_iter()
@@ -489,6 +506,9 @@ impl Workspace {
             rail_scroll: None,
             resume_retry: None,
             rail_base: Default::default(),
+            settings_inputs,
+            onboarding: None,
+            onboarding_checked: false,
             _subscriptions: {
                 let mut subs = vec![
                     picker_sub,
@@ -503,6 +523,7 @@ impl Workspace {
                 ];
                 subs.extend(study_subs);
                 subs.extend(ext_subs);
+                subs.extend(settings_subs);
                 subs
             },
         }
@@ -725,11 +746,13 @@ impl Workspace {
             }
             Msg::Providers(rows, prefs, keychain) => {
                 self.model.providers.load(rows, *prefs, keychain);
+                self.consider_onboarding(window, cx);
                 self.refresh_models();
                 self.refresh_catalog();
             }
             Msg::Checked(kind, id, result) => {
                 let ok = result.is_ok();
+                self.onboarding_checked_key(kind, id, &result);
                 self.model.providers.checked(kind, id, result);
                 if ok {
                     self.key_input
@@ -1640,19 +1663,12 @@ impl Workspace {
     // ----- providers -----
 
     fn open_providers(&mut self, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Providers;
+        self.show_settings(crate::settings::Section::Providers);
         if !self.model.providers.loaded {
             self.bridge.load_providers();
         } else {
             self.refresh_models();
         }
-        cx.notify();
-    }
-
-    fn close_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Chat;
-        self.model.providers.cancel_edit();
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 
@@ -2155,79 +2171,19 @@ impl Workspace {
                         }
                     })),
             )
-            .child(rule())
-            .child(
-                Button::new("rail-customize")
-                    .icon(AssetIcon::Blocks)
-                    .ghost()
-                    .when(self.model.screen == Screen::Customize, |b| b.selected(true))
-                    .tooltip("Customize: skills, MCP servers, providers, instructions")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.screen == Screen::Customize {
-                            this.close_customize(window, cx);
-                        } else {
-                            this.open_customize(cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("rail-appearance")
-                    .icon(IconName::Palette)
-                    .ghost()
-                    .when(self.model.screen == Screen::Appearance, |b| {
-                        b.selected(true)
-                    })
-                    .tooltip("Appearance")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.screen == Screen::Appearance {
-                            this.close_appearance(window, cx);
-                        } else {
-                            this.open_appearance(cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("rail-decision")
-                    .icon(AssetIcon::Signpost)
-                    .ghost()
-                    .when(self.model.screen == Screen::Decision, |b| b.selected(true))
-                    .tooltip("Decision model")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.screen == Screen::Decision {
-                            this.close_decision(window, cx);
-                        } else {
-                            this.open_decision(cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new("rail-evaluation")
-                    .icon(AssetIcon::FlaskConical)
-                    .ghost()
-                    .when(self.model.screen == Screen::Evaluation, |b| {
-                        b.selected(true)
-                    })
-                    .tooltip("Evaluation")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.screen == Screen::Evaluation {
-                            this.close_eval(window, cx);
-                        } else {
-                            this.open_eval(cx);
-                        }
-                    })),
-            )
             .child(div().flex_1())
             .child(
                 Button::new("rail-settings")
                     .icon(IconName::Settings)
                     .ghost()
-                    .when(self.model.screen == Screen::Providers, |b| b.selected(true))
-                    .tooltip("Providers and keys")
+                    .when(self.model.screen == Screen::Settings, |b| b.selected(true))
+                    .tooltip("Settings (Ctrl+,)")
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if this.model.screen == Screen::Providers {
-                            this.close_providers(window, cx);
+                        if this.model.screen == Screen::Settings {
+                            this.close_settings(window, cx);
                         } else {
-                            this.open_providers(cx);
+                            let s = this.model.settings.section;
+                            this.open_settings(s, window, cx);
                         }
                     })),
             )
@@ -2300,7 +2256,7 @@ impl Workspace {
             .gap_1()
             .pl(px(if sub { 34. } else { 22. }))
             .pr_1()
-            .py(px(3.))
+            .py(px(self.look.density.row_pad() - 1.))
             .rounded_md()
             .text_sm()
             .text_color(if current { p.text } else { p.muted })
@@ -2388,7 +2344,7 @@ impl Workspace {
                 div()
                     .id("chat-list")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .px_2()
                     .flex()
                     .flex_col()
@@ -2817,6 +2773,7 @@ impl Workspace {
             .min_h_0()
             .child(scroller)
             .children(self.timeline_rail(p, cx))
+            .vertical_scrollbar(&self.scroll)
     }
 
     /// Over the composer after an answer stopped at the length limit.
@@ -3314,87 +3271,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn providers_screen(
-        &self,
-        p: Palette,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let st = &self.model.providers;
-        let mut column = div()
-            .w_full()
-            .max_w(px(COLUMN_MAX_W))
-            .flex()
-            .flex_col()
-            .gap_4()
-            .py_6()
-            .px_4()
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_4()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Providers"),
-                            )
-                            .child(div().text_sm().text_color(p.muted).child(
-                                "Bring your own keys. Tern tests a key before saving it, and keeps it only in your system keychain. Changing a default switches the open chat in place; its history stays.",
-                            )),
-                    )
-                    .child(
-                        Button::new("providers-done")
-                            .label("Back to chat")
-                            .ghost()
-                            .small()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.close_providers(window, cx)),
-                            ),
-                    ),
-            );
-        if let Some(e) = &st.keychain_error {
-            column = column.child(
-                div()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(format!("The keychain cannot be read on this computer: {e}")),
-            );
-        }
-        if !st.loaded {
-            column = column.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(Spinner::new().small().color(p.muted))
-                    .child("Reading the keychain…"),
-            );
-        } else {
-            column = column
-                .child(self.section(Kind::Model, "Models", p, cx))
-                .child(self.section(Kind::Search, "Web search", p, cx));
-        }
-        div()
-            .id("providers")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .items_center()
-            .child(column)
-    }
-
     fn section(
         &self,
         kind: Kind,
@@ -3528,6 +3404,18 @@ impl Workspace {
                         cx.notify();
                     })),
             );
+            if kind == Kind::Model {
+                actions = actions.child(
+                    Button::new(bid("address"))
+                        .label("Address")
+                        .ghost()
+                        .small()
+                        .tooltip("The server address, for a local server elsewhere or a proxy")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.edit_base_url(id, window, cx)
+                        })),
+                );
+            }
             if r.key_saved {
                 actions = actions.child(
                     Button::new(bid("remove"))
@@ -3617,98 +3505,13 @@ impl Workspace {
             );
         }
 
+        if kind == Kind::Model && self.model.settings.editing_url == Some(id) {
+            row = row.child(self.base_url_row(id, p, cx));
+        }
         if kind == Kind::Model && is_default {
-            row = row.child(self.model_picker(p, cx));
+            row = row.child(self.provider_model_list(p, cx));
         }
         row.into_any_element()
-    }
-
-    fn model_picker(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let st = &self.model.providers;
-        let chosen = st
-            .chosen_model()
-            .map(str::to_owned)
-            .or_else(|| self.model.connection.as_ref().map(|c| c.model.clone()));
-        let body: AnyElement = match &st.models {
-            None | Some(Models::Loading(_)) => div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_xs()
-                .text_color(p.muted)
-                .child(Spinner::new().small().color(p.muted))
-                .child("Listing models…")
-                .into_any_element(),
-            Some(Models::Failed(_, e)) => div()
-                .text_xs()
-                .text_color(p.muted)
-                .child(SharedString::from(format!("Could not list models: {e}")))
-                .into_any_element(),
-            Some(Models::Loaded(_, list)) if list.is_empty() => div()
-                .text_xs()
-                .text_color(p.muted)
-                .child("This provider lists no chat models.")
-                .into_any_element(),
-            Some(Models::Loaded(_, list)) => {
-                let busy = self.model.is_busy();
-                div()
-                    .id("model-list")
-                    .max_h(px(240.))
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .children(list.iter().enumerate().map(|(i, m)| {
-                        let selected = chosen.as_deref() == Some(m.id.as_str());
-                        let id = m.id.clone();
-                        div()
-                            .id(("model", i))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .text_sm()
-                            .cursor_pointer()
-                            .text_color(if selected { p.text } else { p.muted })
-                            .when(selected, |d| d.bg(p.hover))
-                            .hover(|d| d.bg(p.hover).text_color(p.text))
-                            .child(div().truncate().child(SharedString::from(m.id.clone())))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .text_xs()
-                                    .text_color(p.faint)
-                                    .when_some(m.context_window, |d, w| {
-                                        d.child(format!("{} context", crate::model::compact(w)))
-                                    })
-                                    .when(selected, |d| {
-                                        d.child(
-                                            gpui_kit::component::Icon::new(IconName::Check).small(),
-                                        )
-                                    }),
-                            )
-                            .when(!busy && !selected, |d| {
-                                d.on_click(cx.listener(move |this, _, _, cx| {
-                                    this.pick_model(id.clone(), cx)
-                                }))
-                            })
-                    }))
-                    .into_any_element()
-            }
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .pl(px(40.))
-            .child(div().text_xs().text_color(p.faint).child("Model"))
-            .child(body)
-            .into_any_element()
     }
 
     /// The run panel: one run in three views (Summary, Detailed, Raw).
@@ -3909,7 +3712,7 @@ impl Workspace {
                     .id("run-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .child(body),
             )
             .child(
@@ -4316,9 +4119,13 @@ impl Render for Workspace {
             Some(w) => w.palette(now),
             None => Palette::get(self.model.dark),
         };
-        let sidebar = self
-            .sidebar_slide
-            .frame(self.model.sidebar_open, now, reduced);
+        // Settings has its own section list: the chat list slides away
+        // while it shows and comes back after.
+        let sidebar = self.sidebar_slide.frame(
+            self.model.sidebar_open && self.model.screen != Screen::Settings,
+            now,
+            reduced,
+        );
         let panel = self
             .panel_slide
             .frame(self.model.run_panel_open, now, reduced);
@@ -4413,16 +4220,12 @@ impl Render for Workspace {
         let mut side = panel.map(|_| side_pane(self, cx));
         let screen_id: &'static str = match self.model.screen {
             Screen::Chat => "screen-chat",
-            Screen::Providers => "screen-providers",
+            Screen::Settings => "screen-settings",
             Screen::Editor => "screen-editor",
             Screen::Git => "screen-git",
-            Screen::Appearance => "screen-appearance",
             Screen::Watches => "screen-watches",
             Screen::Study => "screen-study",
-            Screen::Decision => "screen-decision",
             Screen::Library => "screen-library",
-            Screen::Customize => "screen-customize",
-            Screen::Evaluation => "screen-evaluation",
             Screen::Archived => "screen-archived",
         };
         let root = div()
@@ -4442,8 +4245,10 @@ impl Render for Workspace {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
-            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
-                this.panel_keys(e, cx);
+            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                if !this.settings_keys(e, window, cx) {
+                    this.panel_keys(e, cx);
+                }
             }))
             .child(self.title_bar(p, cx))
             .child(
@@ -4490,10 +4295,9 @@ impl Render for Workspace {
                                         }))
                                         .child(self.composer(p, cx)),
                                 },
-                                Screen::Providers => d.child(self.providers_screen(p, window, cx)),
+                                Screen::Settings => d.child(self.settings_screen(p, window, cx)),
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),
-                                Screen::Appearance => d.child(self.appearance_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
                                 Screen::Study => d
                                     .child(self.study_screen(p, window, cx))
@@ -4502,10 +4306,7 @@ impl Render for Workspace {
                                         self.model.study.view == crate::study::StudyView::Home,
                                         |d| d.child(self.composer(p, cx)),
                                     ),
-                                Screen::Decision => d.child(self.decision_screen(p, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
-                                Screen::Customize => d.child(self.customize_screen(p, window, cx)),
-                                Screen::Evaluation => d.child(self.eval_screen(p, cx)),
                                 Screen::Archived => d.child(self.archived_screen(p, cx)),
                             })
                             .with_animation(
@@ -4548,6 +4349,7 @@ impl Render for Workspace {
             .children(self.highlight_popover(p, cx))
             .children(self.undo_toast(p, cx))
             .children(self.toasts(p, cx))
+            .children(self.onboarding_modal(p, window, cx))
             .children(ripple);
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {

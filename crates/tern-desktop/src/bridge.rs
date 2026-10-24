@@ -1001,11 +1001,12 @@ impl Bridge {
     /// Tests a new key and saves it to the keychain only if it works.
     pub fn add_key(&self, kind: Kind, id: &'static str, key: SecretString) {
         let tx = self.tx.clone();
+        let base = Preferences::load().base_url(id).map(str::to_owned);
         self.rt.spawn(async move {
             let result = match setup::keychain() {
                 Err(e) => Err(format!("The keychain is not available: {e}")),
                 Ok(store) => match kind {
-                    Kind::Model => setup::add(id, key, store.as_ref(), None)
+                    Kind::Model => setup::add(id, key, store.as_ref(), base.as_deref())
                         .await
                         .map(|r| model_report(r.chat_models, r.models, r.latency_ms))
                         .map_err(|e| e.to_string()),
@@ -1025,7 +1026,7 @@ impl Bridge {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let result = match kind {
-                Kind::Model => setup::test(id, secrets, None)
+                Kind::Model => setup::test(id, secrets, Preferences::load().base_url(id))
                     .await
                     .map(|r| model_report(r.chat_models, r.models, r.latency_ms))
                     .map_err(|e| e.to_string()),
@@ -1199,11 +1200,12 @@ impl Bridge {
         self.rt.spawn(async move {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+            let base = Preferences::load().base_url(id).map(str::to_owned);
             let fetch = async {
                 if fresh {
-                    setup::models_fresh(id, secrets, None).await
+                    setup::models_fresh(id, secrets, base.as_deref()).await
                 } else {
-                    setup::models(id, secrets, None).await
+                    setup::models(id, secrets, base.as_deref()).await
                 }
             };
             let result = match tokio::time::timeout(MODELS_WAIT, fetch).await {

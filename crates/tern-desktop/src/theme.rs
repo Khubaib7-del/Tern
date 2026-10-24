@@ -7,7 +7,7 @@
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{App, Hsla, Window, rgb};
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::appearance::{Accent, Appearance};
 use crate::assets::MONO_FONT;
@@ -55,6 +55,69 @@ const LIGHT: [u32; 10] = [
 /// process-wide value, so every `Palette::get` (the main window, the
 /// popped-out side chat, the theme wipe) agrees.
 static ACCENT: AtomicU8 = AtomicU8::new(0);
+
+/// Whether motion is reduced, for the scrollbar's timing.
+static REDUCED: AtomicBool = AtomicBool::new(false);
+
+/// Turns reduced motion on or off for the scrollbars, and re-installs them.
+pub fn set_reduced_motion(on: bool, cx: &mut App) {
+    REDUCED.store(on, Ordering::Relaxed);
+    let dark = gpui_kit::component::Theme::global(cx).is_dark();
+    install_scrollbar(dark, cx);
+    cx.refresh_windows();
+}
+
+/// Tern's scrollbar (`crate::scrollbar`) on the kit's Base layer: thin
+/// and overlaid, hidden until the area scrolls, a rounded thumb in the
+/// theme's text colour at a low strength that widens under the pointer,
+/// no track.
+fn install_scrollbar(dark: bool, cx: &mut App) {
+    use crate::scrollbar::{self as sb, Thumb};
+    use gpui_kit::base::{
+        ScrollbarEntrance, ScrollbarMode, ScrollbarMotion, ScrollbarStyles, ScrollbarTheme,
+    };
+    let p = Palette::get(dark);
+    let t = sb::timing(REDUCED.load(Ordering::Relaxed));
+    let thumb = |s: Thumb| p.text.opacity(sb::thumb_alpha(dark, s));
+    let clear = gpui_kit::transparent_black();
+    let px = gpui_kit::px;
+    let styles = ScrollbarStyles::default()
+        .track(|s| s.bg(clear))
+        .track_hover(|s| s.bg(clear))
+        .track_active(|s| s.bg(clear))
+        .thumb(|s| {
+            s.bg(thumb(Thumb::Idle))
+                .width(px(sb::IDLE_W))
+                .inset(px(sb::INSET))
+                .radius(px(sb::radius(sb::IDLE_W)))
+                .min_length(px(sb::MIN_THUMB))
+        })
+        .thumb_hover(|s| {
+            s.bg(thumb(Thumb::Hover))
+                .width(px(sb::HOVER_W))
+                .inset(px(sb::INSET))
+                .radius(px(sb::radius(sb::HOVER_W)))
+                .min_length(px(sb::MIN_THUMB))
+        })
+        .thumb_active(|s| {
+            s.bg(thumb(Thumb::Drag))
+                .width(px(sb::HOVER_W))
+                .inset(px(sb::INSET))
+                .radius(px(sb::radius(sb::HOVER_W)))
+                .min_length(px(sb::MIN_THUMB))
+        });
+    let motion = ScrollbarMotion::default()
+        .with_idle(t.idle)
+        .with_enter(t.enter)
+        .with_exit(t.exit)
+        .with_expand(t.expand)
+        .with_entrance(ScrollbarEntrance::Fade)
+        .with_thumb_hover_entrance(ScrollbarEntrance::Fade);
+    gpui_kit::base::Theme::global_mut(cx).scrollbar = ScrollbarTheme::new()
+        .with_mode(ScrollbarMode::Scrolling)
+        .with_motion(motion)
+        .with_styles(styles);
+}
 
 /// Sets the accent every palette uses from now on.
 pub fn set_accent(a: Accent) {
@@ -116,6 +179,10 @@ pub fn apply_kit(dark: bool, look: &Appearance, window: Option<&mut Window>, cx:
     theme.colors.link = p.text;
     theme.colors.link_hover = p.accent;
     theme.colors.link_active = p.accent;
+    // The edits above go straight into the kit's theme; push them down to
+    // the Base layer, then put Tern's scrollbar over the kit's.
+    Theme::sync_base(cx);
+    install_scrollbar(dark, cx);
 }
 
 #[cfg(test)]

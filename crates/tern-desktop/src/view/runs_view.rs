@@ -5,6 +5,7 @@
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -463,7 +464,7 @@ impl Workspace {
                     div()
                         .id("watch-list")
                         .max_h(px(180.))
-                        .overflow_y_scroll()
+                        .overflow_y_scrollbar()
                         .px_2()
                         .pb_2()
                         .flex()
@@ -534,7 +535,7 @@ impl Workspace {
             .id("watches-screen")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .flex()
             .flex_col()
             .items_center()

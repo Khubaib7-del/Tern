@@ -3,27 +3,20 @@
 //! and Scout, with a button for each of its moods.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, Window, div, px, svg};
+use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, div, px, svg};
 
 use super::Workspace;
 use crate::appearance::{Accent, Choice, FontChoice, TextSize, ThemeChoice};
 use crate::assets::{self, MONO_FONT, SERIF_FONT, UI_FONT};
-use crate::model::Screen;
 use crate::scout::Mood;
 use crate::theme::Palette;
 
 impl Workspace {
     pub(super) fn open_appearance(&mut self, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Appearance;
-        cx.notify();
-    }
-
-    pub(super) fn close_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Chat;
-        self.scout_preview = None;
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
+        self.show_settings(crate::settings::Section::Appearance);
         cx.notify();
     }
 
@@ -164,13 +157,47 @@ impl Workspace {
                 .collect(),
             cx,
         );
+        let densities = row_of(
+            "look-density",
+            crate::appearance::Density::ALL
+                .iter()
+                .map(|&d| (d.label(), Choice::Density(d)))
+                .collect(),
+            cx,
+        );
+        let reduced = self.reduced_motion;
+        let motion = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    gpui_kit::component::switch::Switch::new("look-reduce-motion")
+                        .checked(reduced)
+                        .small()
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.reduced_motion =
+                                on || tern_agent::platform::os_reduces_motion();
+                            this.save_ui_prefs(|p| p.reduced_motion = on);
+                            crate::theme::set_reduced_motion(this.reduced_motion, cx);
+                            cx.notify();
+                        })),
+                )
+                .child(div().text_xs().text_color(p.faint).child(
+                    "Reduce motion: no slides, wipes, or flapping; scrollbars show and hide at once.",
+                ))
+                .into_any_element(),
+        ];
         let choices = div()
             .flex()
             .flex_col()
             .child(choice_row("Theme", themes))
             .child(choice_row("Accent", accents))
             .child(choice_row("Font", fonts))
-            .child(choice_row("Text size", sizes));
+            .child(choice_row("Text size", sizes))
+            .child(choice_row("Density", densities))
+            .child(choice_row("Motion", motion));
 
         let current = self.scout_mood();
         let moods = div()
@@ -193,10 +220,8 @@ impl Workspace {
             }));
 
         div()
-            .id("appearance-screen")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .child(
                 div()
                     .mx_auto()
@@ -364,6 +389,8 @@ impl Workspace {
                             ),
                     ),
             )
+            .overflow_y_scrollbar()
+            .id("appearance-screen")
             .into_any_element()
     }
 }
