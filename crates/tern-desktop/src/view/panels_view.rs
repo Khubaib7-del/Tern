@@ -335,6 +335,10 @@ impl Workspace {
             self.show_tab(tab, window, cx);
         }
         self.model.chat_deleted(id);
+        self.harness_memory.forget(id);
+        self.parked.retain(|_, s| *s != id);
+        let memory = self.harness_memory.clone();
+        self.save_ui_prefs(|p| memory.save_into(p));
         self.bridge.delete_chat(id);
         self.start_undo_timer(cx);
         cx.notify();

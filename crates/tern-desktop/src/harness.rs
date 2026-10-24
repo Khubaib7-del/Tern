@@ -21,14 +21,6 @@ pub fn key(h: Harness) -> &'static str {
     }
 }
 
-/// The other harness.
-pub fn other(h: Harness) -> Harness {
-    match h {
-        Harness::Research => Harness::Study,
-        Harness::Study => Harness::Research,
-    }
-}
-
 /// The switcher's two rows: name and one line on what it is for.
 pub fn label(h: Harness) -> (&'static str, &'static str) {
     match h {
@@ -170,7 +162,6 @@ mod tests {
         );
         // Unknown (a fresh draft): open where you are.
         assert_eq!(open(&all, Harness::Study, SessionId::new()), Open::Here);
-        assert_eq!(other(Harness::Study), Harness::Research);
     }
 
     #[test]
