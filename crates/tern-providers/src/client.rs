@@ -189,12 +189,11 @@ impl Provider {
         })
     }
 
-    /// Lists every model this key can use, every page of it, with what
-    /// each can do (see `docs/models.md`). Nothing is filtered out: retired
-    /// models come back marked, and the caller decides what to show.
     /// The models the provider lists, reused for [`LISTING_TTL`] after a
     /// fetch: opening or reopening a chat, switching models, and the picker
-    /// do not each go back to the network.
+    /// do not each go back to the network. A server on this computer
+    /// (Ollama, LM Studio) answers instantly and can change its models at
+    /// any moment, so its listing is never cached.
     pub async fn list_models_cached(&self) -> ProviderResult<Vec<ModelInfo>> {
         if let Some(m) = self.cached_models(LISTING_TTL) {
             return Ok(m);
@@ -205,7 +204,7 @@ impl Provider {
     /// The last listing fetched for this provider, address, and key, when
     /// it is younger than `max_age`.
     pub fn cached_models(&self, max_age: Duration) -> Option<Vec<ModelInfo>> {
-        let key = self.listing_key();
+        let key = self.listing_key()?;
         let cache = listings().lock().ok()?;
         let (at, list) = cache.get(&key)?;
         (at.elapsed() <= max_age).then(|| list.clone())
@@ -213,7 +212,9 @@ impl Provider {
 
     /// Drops the cached listing so the next call fetches it again.
     pub fn forget_cached_models(&self) {
-        let key = self.listing_key();
+        let Some(key) = self.listing_key() else {
+            return;
+        };
         if let Ok(mut c) = listings().lock() {
             c.remove(&key);
         }
@@ -221,16 +222,29 @@ impl Provider {
 
     /// The cache key: provider, address, and a fingerprint of the key (a
     /// new key may see other models). The key itself is never stored.
-    fn listing_key(&self) -> String {
+    /// `None` for a server on this computer, whose listing is not cached.
+    fn listing_key(&self) -> Option<String> {
+        let remote = url::Url::parse(&self.base_url).is_ok_and(|u| !is_loopback(&u));
+        if !remote {
+            return None;
+        }
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         if let Some(k) = &self.key {
             k.expose().hash(&mut h);
         }
-        format!("{}|{}|{:x}", self.spec.id, self.base_url, h.finish())
+        Some(format!(
+            "{}|{}|{:x}",
+            self.spec.id,
+            self.base_url,
+            h.finish()
+        ))
     }
 
-    /// Fetches the provider's model listing (and caches it).
+    /// Lists every model this key can use, every page of it, with what
+    /// each can do (see `docs/models.md`). Nothing is filtered out: retired
+    /// models come back marked, and the caller decides what to show. The
+    /// result is cached for [`Self::list_models_cached`].
     pub async fn list_models(&self) -> ProviderResult<Vec<ModelInfo>> {
         const MAX_PAGES: usize = 50;
         let what = "the models endpoint";
@@ -270,8 +284,8 @@ impl Provider {
         let mut models = crate::model::tidy_aliases(models);
         models.sort_by(|a, b| a.id.cmp(&b.id));
         models.dedup_by(|a, b| a.id == b.id);
-        if let Ok(mut c) = listings().lock() {
-            c.insert(self.listing_key(), (Instant::now(), models.clone()));
+        if let (Some(key), Ok(mut c)) = (self.listing_key(), listings().lock()) {
+            c.insert(key, (Instant::now(), models.clone()));
         }
         Ok(models)
     }
@@ -971,5 +985,22 @@ mod network_tests {
             network_reason(&[], "h", false, false, false, "plain"),
             "plain"
         );
+    }
+}
+
+#[cfg(test)]
+mod listing_cache_tests {
+    use super::Provider;
+
+    #[test]
+    fn a_server_on_this_computer_is_never_cached() {
+        let spec = crate::find("ollama").unwrap();
+        for url in ["http://localhost:11434/v1", "http://127.0.0.1:9/v1"] {
+            let p = Provider::new(spec, None, Some(url)).unwrap();
+            assert!(p.listing_key().is_none(), "{url}");
+            assert!(p.cached_models(super::LISTING_TTL).is_none());
+        }
+        let remote = Provider::new(spec, None, Some("https://models.example.com/v1")).unwrap();
+        assert!(remote.listing_key().is_some());
     }
 }

@@ -258,13 +258,13 @@ pub fn archive_session(id: SessionId) -> Result<(), String> {
     store.archive_session(id).map_err(|e| e.to_string())
 }
 
-/// The provider and model `opts` names, or the defaults: the first
-/// provider with a saved key and its first chat model. Also gives the
-/// model's context window when the listing has it.
 /// How long opening a chat waits for the model listing (only used for the
 /// context window and to refuse a non-chat model) before going on.
 const LISTING_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
+/// The provider and model `opts` names, or the defaults: the first
+/// provider with a saved key and its first chat model. Also gives the
+/// model's context window when the listing has it.
 pub(crate) async fn connect_model(
     opts: &ChatOptions,
     secrets: Option<&dyn SecretStore>,
