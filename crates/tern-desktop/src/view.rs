@@ -151,6 +151,8 @@ pub struct Workspace {
     keys: gpui_kit::FocusHandle,
     /// Explain in 3D tabs, by key, and the next key.
     explains: std::collections::HashMap<u32, crate::explain::ExplainState>,
+    /// What each explainer was asked, for Try again.
+    explain_asks: std::collections::HashMap<u32, tern_agent::explain::Ask>,
     next_explain: u32,
     /// When the explainer's tilt last eased.
     explain_at: Option<Instant>,
@@ -195,6 +197,11 @@ pub struct Workspace {
     tabs_menu_open: bool,
     /// The tab strip's + popover, with its search field, while open.
     tab_picker: Option<(Entity<InputState>, Subscription)>,
+    /// The + popover's highlighted row (0 is New chat).
+    tab_pick_sel: usize,
+    /// When a tab-strip popover last closed on a press outside it, so the
+    /// press on its own button does not reopen it at once.
+    popover_closed_at: Option<Instant>,
     /// The saved chat tabs were put back after launch.
     tabs_restored: bool,
     /// The other harness's chat tabs while this one is in front.
@@ -505,6 +512,7 @@ impl Workspace {
             study_ticker: None,
             keys: cx.focus_handle(),
             explains: Default::default(),
+            explain_asks: Default::default(),
             next_explain: 0,
             explain_at: None,
             explain_ticker: None,
@@ -532,6 +540,8 @@ impl Workspace {
             ctx_opened: Default::default(),
             tabs_menu_open: false,
             tab_picker: None,
+            tab_pick_sel: 0,
+            popover_closed_at: None,
             tabs_restored: false,
             parked_tabs: Default::default(),
             pending_pick: None,
@@ -1631,7 +1641,7 @@ impl Workspace {
             return;
         }
         if let Some(key) = closing.as_ref().and_then(|t| t.explain) {
-            self.explains.remove(&key);
+            self.drop_explain(key);
         }
         if let Some(tab) = self.tabs.close(i).cloned() {
             if was_explain && tab.id == self.current && !tab.is_explain() {

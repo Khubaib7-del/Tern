@@ -383,6 +383,9 @@ pub struct StudyState {
     pub materials_open: bool,
     /// The 3D explainer shown in the Explain tab (its key).
     pub explain: Option<u32>,
+    /// Why the Explain tab is waiting for a concept (the message asked to
+    /// explain was a quiz question).
+    pub explain_hint: Option<String>,
 }
 
 impl StudyState {

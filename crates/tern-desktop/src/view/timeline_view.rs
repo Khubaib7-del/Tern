@@ -49,32 +49,32 @@ impl Workspace {
         let ticks = timeline::ticks(&questions, on_screen);
         let gap = timeline::gap(ticks.len(), RAIL_MAX_H);
         let hovered = self.rail_hover;
-        let col =
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .children(ticks.into_iter().map(|t| {
-                    let ordinal = t.ordinal;
-                    let entry = t.entry;
-                    let on = hovered == Some(ordinal);
-                    let (w, color) = match (on, t.lit) {
-                        (true, _) => (18., p.text),
-                        (false, true) => (12., p.text.opacity(0.85)),
-                        (false, false) => (8., p.faint),
-                    };
-                    div()
-                        .id(("rail-tick", ordinal))
-                        .relative()
-                        .h(px(gap))
-                        .w(px(24.))
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .cursor_pointer()
-                        .child(div().h(px(2.)).w(px(w)).rounded_full().bg(color))
-                        .when(on, |d| {
-                            d.child(
+        let col = div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .children(ticks.into_iter().map(|t| {
+                let ordinal = t.ordinal;
+                let entry = t.entry;
+                let on = hovered == Some(ordinal);
+                let (w, color) = match (on, t.lit) {
+                    (true, _) => (18., p.text),
+                    (false, true) => (12., p.text.opacity(0.85)),
+                    (false, false) => (8., p.faint),
+                };
+                div()
+                    .id(("rail-tick", ordinal))
+                    .relative()
+                    .h(px(gap))
+                    .w(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .cursor_pointer()
+                    .child(div().h(px(2.)).w(px(w)).rounded_full().bg(color))
+                    .when(on, |d| {
+                        d.child(
+                            gpui_kit::deferred(
                                 div()
                                     .absolute()
                                     .right(px(28.))
@@ -101,20 +101,22 @@ impl Workspace {
                                         )
                                     })),
                             )
-                        })
-                        .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                            if *over {
-                                this.rail_hover = Some(ordinal);
-                            } else if this.rail_hover == Some(ordinal) {
-                                this.rail_hover = None;
-                            }
-                            cx.notify();
-                        }))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.glide_to_entry(entry, window);
-                            cx.notify();
-                        }))
-                }));
+                            .with_priority(3),
+                        )
+                    })
+                    .on_hover(cx.listener(move |this, over: &bool, _, cx| {
+                        if *over {
+                            this.rail_hover = Some(ordinal);
+                        } else if this.rail_hover == Some(ordinal) {
+                            this.rail_hover = None;
+                        }
+                        cx.notify();
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.glide_to_entry(entry, window);
+                        cx.notify();
+                    }))
+            }));
         Some(
             div()
                 .absolute()

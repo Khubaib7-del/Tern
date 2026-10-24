@@ -800,6 +800,23 @@ impl Model {
     }
 
     /// The text of a message or answer, for Copy.
+    /// The answer Explain in 3D should map when asked from answer `i`:
+    /// `i` itself, or, when it only asks the learner something (a quiz
+    /// question), the last answer before it that explains. `None` when
+    /// there is none.
+    pub fn explanatory_answer(&self, i: usize) -> Option<usize> {
+        let answers: Vec<(usize, &str)> = self.entries[..(i + 1).min(self.entries.len())]
+            .iter()
+            .enumerate()
+            .filter_map(|(k, e)| match e {
+                Entry::Assistant { text, .. } => Some((k, text.as_str())),
+                _ => None,
+            })
+            .collect();
+        let texts: Vec<&str> = answers.iter().map(|(_, t)| *t).collect();
+        tern_agent::explain::pick_explanatory(&texts).map(|k| answers[k].0)
+    }
+
     pub fn entry_text(&self, i: usize) -> Option<&str> {
         match self.entries.get(i)? {
             Entry::User { text, .. } | Entry::Assistant { text, .. } => Some(text),

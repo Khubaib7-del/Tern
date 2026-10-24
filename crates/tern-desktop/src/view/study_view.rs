@@ -614,10 +614,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // One explainer at a time in the Study window: the last one stops.
+        if let Some(old) = self.model.study.explain.take() {
+            self.drop_explain(old);
+        }
+        self.model.study.explain_hint = None;
         self.next_explain += 1;
         let key = self.next_explain;
         self.explains
             .insert(key, crate::explain::ExplainState::new(label));
+        self.explain_asks.insert(key, ask.clone());
         self.model.study.explain = Some(key);
         self.model.study.set_tab(StudyTab::Explain);
         self.model.screen = Screen::Study;
@@ -977,10 +983,16 @@ impl Workspace {
                     .into_any_element()
             })
             .collect();
-        let last_answer = self.model.entries.iter().rev().find_map(|e| match e {
-            crate::model::Entry::Assistant { text, .. } => Some(text.clone()),
-            _ => None,
-        });
+        // The last answer that explains something; a quiz question is
+        // skipped (it asks, it does not explain).
+        let last_answer = self
+            .model
+            .entries
+            .len()
+            .checked_sub(1)
+            .and_then(|i| self.model.explanatory_answer(i))
+            .and_then(|i| self.model.entry_text(i).map(str::to_owned));
+        let hint = self.model.study.explain_hint.clone();
         div()
             .id("explain-empty")
             .flex_1()
@@ -1001,6 +1013,19 @@ impl Workspace {
                     .child(div().text_sm().text_color(p.muted).child(
                         "Type a concept below and Tern builds a 3D scene you can turn, step through and save, with every step cited.",
                     ))
+                    .when_some(hint, |d, h| {
+                        d.child(
+                            div()
+                                .px_3()
+                                .py_1p5()
+                                .rounded(px(16.))
+                                .border_1()
+                                .border_color(p.border)
+                                .text_xs()
+                                .text_color(p.muted)
+                                .child(h),
+                        )
+                    })
                     .when(!topics.is_empty(), |d| {
                         d.child(div().text_xs().text_color(p.faint).child("From your topics"))
                             .child(div().flex().flex_wrap().gap_2().children(topics))

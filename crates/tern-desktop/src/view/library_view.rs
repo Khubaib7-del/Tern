@@ -431,41 +431,46 @@ impl Workspace {
                     )
                     .when(l.new_menu, |d| {
                         d.child(
-                            div()
-                                .absolute()
-                                .top(px(30.))
-                                .right_0()
-                                .w(px(240.))
-                                .p_1()
-                                .flex()
-                                .flex_col()
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(p.border)
-                                .bg(p.raised)
-                                .shadow_lg()
-                                .children(new_items.into_iter().map(|(key, label, ic)| {
-                                    div()
-                                        .id(SharedString::from(format!("lib-new-{key}")))
-                                        .flex()
-                                        .items_center()
-                                        .gap_2()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .text_sm()
-                                        .cursor_pointer()
-                                        .hover(move |d| d.bg(p.hover))
-                                        .child(
-                                            gpui_kit::component::Icon::new(ic)
-                                                .xsmall()
-                                                .text_color(p.muted),
-                                        )
-                                        .child(label)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.library_new(key, window, cx)
-                                        }))
-                                })),
+                            gpui_kit::deferred(
+                                div()
+                                    .id("lib-new-menu")
+                                    .absolute()
+                                    .top(px(30.))
+                                    .right_0()
+                                    .w(px(240.))
+                                    .p_1()
+                                    .flex()
+                                    .flex_col()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .bg(p.raised)
+                                    .shadow_lg()
+                                    .occlude()
+                                    .children(new_items.into_iter().map(|(key, label, ic)| {
+                                        div()
+                                            .id(SharedString::from(format!("lib-new-{key}")))
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .text_sm()
+                                            .cursor_pointer()
+                                            .hover(move |d| d.bg(p.hover))
+                                            .child(
+                                                gpui_kit::component::Icon::new(ic)
+                                                    .xsmall()
+                                                    .text_color(p.muted),
+                                            )
+                                            .child(label)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.library_new(key, window, cx)
+                                            }))
+                                    })),
+                            )
+                            .with_priority(3),
                         )
                     }),
             )

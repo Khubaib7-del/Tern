@@ -30,6 +30,7 @@ pub mod cards_io;
 pub mod explain3d;
 pub mod explain_answer;
 pub mod grade;
+pub mod labels;
 pub mod library;
 pub mod mastery;
 pub mod material;

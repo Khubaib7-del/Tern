@@ -228,43 +228,55 @@ impl Workspace {
                         .child(SharedString::from(format!("{n}")))
                         .child(gpui_kit::component::Icon::new(AssetIcon::ChevronDown).xsmall())
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.tabs_menu_open = !this.tabs_menu_open;
+                            if !this.popover_just_closed() {
+                                this.tabs_menu_open = !this.tabs_menu_open;
+                            }
                             cx.notify();
                         })),
                 )
                 .when(open, |d| {
                     d.child(
-                        div()
-                            .absolute()
-                            .top(px(32.))
-                            .right_0()
-                            .w(px(240.))
-                            .p_1()
-                            .flex()
-                            .flex_col()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(p.border)
-                            .bg(p.raised)
-                            .shadow_lg()
-                            .children(hidden.iter().map(|&i| {
-                                let title = self.tabs.list[i].title.clone();
-                                div()
-                                    .id(("tab-hidden", i))
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_sm()
-                                    .truncate()
-                                    .text_color(p.muted)
-                                    .cursor_pointer()
-                                    .hover(move |d| d.bg(p.hover).text_color(p.text))
-                                    .child(SharedString::from(title))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.tabs_menu_open = false;
-                                        this.focus_tab(i, window, cx);
-                                    }))
-                            })),
+                        gpui_kit::deferred(
+                            div()
+                                .id("tabs-more-menu")
+                                .absolute()
+                                .top(px(32.))
+                                .right_0()
+                                .w(px(240.))
+                                .p_1()
+                                .flex()
+                                .flex_col()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(p.border)
+                                .bg(p.raised)
+                                .shadow_lg()
+                                .occlude()
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.tabs_menu_open = false;
+                                    this.popover_closed_at = Some(std::time::Instant::now());
+                                    cx.notify();
+                                }))
+                                .children(hidden.iter().map(|&i| {
+                                    let title = self.tabs.list[i].title.clone();
+                                    div()
+                                        .id(("tab-hidden", i))
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_sm()
+                                        .truncate()
+                                        .text_color(p.muted)
+                                        .cursor_pointer()
+                                        .hover(move |d| d.bg(p.hover).text_color(p.text))
+                                        .child(SharedString::from(title))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.tabs_menu_open = false;
+                                            this.focus_tab(i, window, cx);
+                                        }))
+                                })),
+                        )
+                        .with_priority(3),
                     )
                 })
                 .into_any_element()
@@ -304,15 +316,26 @@ impl Workspace {
                                     this.toggle_tab_picker(window, cx)
                                 })),
                         )
-                        .children(self.tab_picker_view(p, cx)),
+                        // Drawn in the overlay layer, over the page.
+                        .children(
+                            self.tab_picker_view(p, cx)
+                                .map(|m| gpui_kit::deferred(m).with_priority(3)),
+                        ),
                 )
                 .into_any_element(),
         )
     }
 
     /// Opens or closes the + popover on the tab strip.
+    /// Whether a tab-strip popover closed on this same press.
+    fn popover_just_closed(&mut self) -> bool {
+        self.popover_closed_at
+            .take()
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(300))
+    }
+
     pub(super) fn toggle_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tab_picker.take().is_some() {
+        if self.tab_picker.take().is_some() || self.popover_just_closed() {
             cx.notify();
             return;
         }
@@ -321,8 +344,49 @@ impl Workspace {
                 .placeholder("Search this harness's chats")
         });
         input.update(cx, |i, cx| i.focus(window, cx));
-        let sub = cx.observe(&input, |_, _, cx| cx.notify());
+        let sub = cx.observe(&input, |this, _, cx| {
+            // A new search starts at its first row.
+            this.tab_pick_sel = 0;
+            cx.notify();
+        });
         self.tab_picker = Some((input, sub));
+        self.tab_pick_sel = 0;
+        cx.notify();
+    }
+
+    /// The + popover's keys: Up and Down move, Enter opens, Esc closes.
+    fn tab_picker_key(
+        &mut self,
+        e: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((input, _)) = &self.tab_picker else {
+            return;
+        };
+        let query = input.read(cx).value().to_string();
+        let rows = panels::pick_rows_for(&self.model.sessions, &self.tabs, &query);
+        // Row 0 is New chat, then the chats.
+        let n = rows.len() + 1;
+        match e.keystroke.key.as_str() {
+            "escape" => {
+                self.tab_picker = None;
+            }
+            "down" => self.tab_pick_sel = (self.tab_pick_sel + 1).min(n - 1),
+            "up" => self.tab_pick_sel = self.tab_pick_sel.saturating_sub(1),
+            "enter" => {
+                let sel = self.tab_pick_sel.min(n - 1);
+                self.tab_picker = None;
+                if sel == 0 {
+                    self.add_tab(window, cx);
+                } else if let Some(r) = rows.get(sel - 1) {
+                    let (id, title) = (r.id, r.title.clone());
+                    self.open_in_new_tab(id, &title, window, cx);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -333,12 +397,15 @@ impl Workspace {
         let (input, _) = self.tab_picker.as_ref()?;
         let query = input.read(cx).value().to_string();
         let rows = panels::pick_rows_for(&self.model.sessions, &self.tabs, &query);
+        let sel = self.tab_pick_sel;
         let row = move |id: SharedString,
                         icon: AssetIcon,
                         label: SharedString,
-                        meta: Option<&'static str>| {
+                        meta: Option<&'static str>,
+                        at: Option<usize>| {
             div()
                 .id(id)
+                .when(at.is_some() && at == Some(sel), |d| d.bg(p.hover))
                 .flex()
                 .items_center()
                 .gap_2()
@@ -369,7 +436,8 @@ impl Workspace {
         };
         let chats: Vec<AnyElement> = rows
             .into_iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(k, r)| {
                 let id = r.id;
                 let title = r.title.clone();
                 row(
@@ -377,6 +445,7 @@ impl Workspace {
                     AssetIcon::MessageCircle,
                     SharedString::from(r.title),
                     r.open.then_some("open"),
+                    Some(k + 1),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.tab_picker = None;
@@ -410,7 +479,11 @@ impl Workspace {
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.tab_picker = None;
+                    this.popover_closed_at = Some(std::time::Instant::now());
                     cx.notify();
+                }))
+                .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
+                    this.tab_picker_key(e, window, cx);
                 }))
                 .child(
                     row(
@@ -418,6 +491,7 @@ impl Workspace {
                         AssetIcon::Plus,
                         "New chat".into(),
                         Some("Ctrl+T"),
+                        Some(0),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.tab_picker = None;
@@ -458,6 +532,7 @@ impl Workspace {
                             AssetIcon::FileText,
                             "Report of this chat".into(),
                             None,
+                            None,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.tab_picker = None;
@@ -481,6 +556,7 @@ impl Workspace {
                         AssetIcon::Library,
                         "Library item".into(),
                         None,
+                        None,
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.tab_picker = None;
@@ -492,6 +568,7 @@ impl Workspace {
                         "pick-browser".into(),
                         AssetIcon::Globe,
                         "Browser".into(),
+                        None,
                         None,
                     )
                     .on_click(cx.listener(|this, _, window, cx| {

@@ -2276,6 +2276,23 @@ impl Workspace {
     /// in Research, in a tab of its own. Both use the same renderer.
     pub(super) fn explain_answer(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.model.action_menu = None;
+        // A quiz question (or any question to the learner) is not what to
+        // map: use the last answer before it that explains something.
+        let Some(i) = self.model.explanatory_answer(i) else {
+            let hint = "That message asks you a question, so there is nothing in it to map. Type what to explain below, or pick a topic.";
+            if self.model.harness == tern_agent::Harness::Study {
+                if let Some(old) = self.model.study.explain.take() {
+                    self.drop_explain(old);
+                }
+                self.model.study.set_tab(crate::study::StudyTab::Explain);
+                self.model.study.explain_hint = Some(hint.into());
+                self.model.screen = crate::model::Screen::Study;
+            } else {
+                self.model.toast_info(hint);
+            }
+            cx.notify();
+            return;
+        };
         let Some(text) = self.model.entry_text(i).map(str::to_owned) else {
             return;
         };
