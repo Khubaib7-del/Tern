@@ -24,7 +24,7 @@ use tern_core::EffectClass;
 use crate::mcp::trust::{Flag, scan};
 use crate::tools::{BoxFuture, Tool, ToolError, ToolOutput};
 
-const FILE: &str = "SKILL.md";
+pub(crate) const FILE: &str = "SKILL.md";
 const STATE: &str = "skills.json";
 /// Most characters of a skill body handed to the model.
 const BODY_LIMIT: usize = 40_000;

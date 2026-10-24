@@ -167,15 +167,11 @@ impl Preferences {
     }
 
     /// Reads the saved choices. Anything missing or malformed reads as none.
-    /// The process-wide parts (custom providers, the page reader, the
-    /// user's prompts) take effect at once.
     pub fn load_from(path: &Path) -> Self {
-        let p: Self = std::fs::read_to_string(path)
+        std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        p.apply_runtime();
-        p
+            .unwrap_or_default()
     }
 
     /// Puts the choices that are process-wide into effect: custom
@@ -185,6 +181,7 @@ impl Preferences {
     pub fn apply_runtime(&self) {
         tern_providers::custom::register_all(&self.custom_providers);
         crate::prompts::set_user(&self.system_prompts);
+        crate::decide::set_jobs_off(&self.decision.jobs_off);
         let keychain = match self.crawler.as_deref().and_then(crate::crawlers::Crawler::parse) {
             Some(c) if c.needs_key() => crate::providers::keychain().ok(),
             _ => None,
@@ -223,11 +220,15 @@ impl Preferences {
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
-    /// The saved choices from the default data directory.
+    /// The saved choices from the default data directory. The
+    /// process-wide parts (custom providers, the page reader, the user's
+    /// prompts, decision jobs) take effect at once.
     pub fn load() -> Self {
-        AppPaths::discover()
+        let p = AppPaths::discover()
             .map(|p| Self::load_from(&Self::path(&p)))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        p.apply_runtime();
+        p
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -358,7 +359,6 @@ impl Preferences {
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
         tern_providers::custom::register_all(&self.custom_providers);
-        crate::prompts::set_user(&self.system_prompts);
         let base_url = self
             .provider
             .as_deref()
@@ -495,6 +495,15 @@ mod tests {
             base_urls: Default::default(),
             tools_off: vec!["read_url".into()],
             tool_modes: Default::default(),
+            custom_providers: vec![tern_providers::CustomProvider {
+                id: "box".into(),
+                name: "Box".into(),
+                base_url: "http://localhost:8000/v1".into(),
+                ..Default::default()
+            }],
+            crawler: Some("jina".into()),
+            crawlers_off: vec!["fetch".into()],
+            system_prompts: [("global".to_owned(), "Be brief.".to_owned())].into(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

@@ -61,6 +61,7 @@ pub mod rules;
 pub mod run;
 pub mod search;
 pub mod side;
+pub mod skill_author;
 pub mod skills;
 pub mod sources;
 pub mod steer;

@@ -45,6 +45,81 @@ pub struct DecisionPrefs {
     pub timeout_ms: Option<u64>,
     /// Another address for the provider's API (a proxy or a test server).
     pub base_url: Option<String>,
+    /// Jobs the user switched off (`tool`, `rank`, `support`); see [`Job`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jobs_off: Vec<String>,
+}
+
+/// What the decision model decides, each with its own switch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Job {
+    /// Which tool a turn starts with (a hint in the system prompt).
+    Tool,
+    /// Which search results are read first.
+    Rank,
+    /// Whether a source's passage supports a claim, before the check.
+    Support,
+}
+
+impl Job {
+    pub const ALL: [Self; 3] = [Self::Tool, Self::Rank, Self::Support];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Rank => "rank",
+            Self::Support => "support",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tool => "Tool choice",
+            Self::Rank => "Page order",
+            Self::Support => "Passage support",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Tool => "Suggests the first tool for a message (search, read, vault, or none).",
+            Self::Rank => "Orders search results so the pages most worth reading are read first.",
+            Self::Support => "Pre-scores whether a cited passage backs a claim before the claim check.",
+        }
+    }
+}
+
+impl DecisionPrefs {
+    /// Whether `job` is switched on.
+    pub fn job_on(&self, job: Job) -> bool {
+        !self.jobs_off.iter().any(|j| j == job.id())
+    }
+
+    pub fn set_job(&mut self, job: Job, on: bool) {
+        self.jobs_off.retain(|j| j != job.id());
+        if !on {
+            self.jobs_off.push(job.id().to_owned());
+        }
+    }
+}
+
+fn jobs_off_store() -> &'static std::sync::RwLock<Vec<String>> {
+    static S: std::sync::OnceLock<std::sync::RwLock<Vec<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+/// Sets the switched-off jobs process-wide (from the preferences).
+pub fn set_jobs_off(off: &[String]) {
+    *jobs_off_store().write().unwrap_or_else(|e| e.into_inner()) = off.to_vec();
+}
+
+/// Whether `job` runs (process-wide setting).
+pub fn job_running(job: Job) -> bool {
+    !jobs_off_store()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|j| j == job.id())
 }
 
 impl DecisionPrefs {
@@ -282,7 +357,7 @@ pub async fn rank_hits(
     hits: &[SearchHit],
     seen: &(dyn Fn(&str) -> bool + Sync),
 ) -> (Vec<SearchHit>, Option<Decision>) {
-    if hits.len() < 2 || !decider.is_on() {
+    if hits.len() < 2 || !decider.is_on() || !job_running(Job::Rank) {
         return (hits.to_vec(), None);
     }
     let n = hits.len().min(60);
@@ -341,6 +416,9 @@ pub async fn next_tool_hint(
     tools: &[&str],
     attachments: usize,
 ) -> Option<(Option<String>, Decision)> {
+    if !job_running(Job::Tool) {
+        return None;
+    }
     let mut choices: Vec<Choice> = tools
         .iter()
         .filter(|t| matches!(**t, "web_search" | "read_url" | "vault_search"))
