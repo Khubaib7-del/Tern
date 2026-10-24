@@ -602,6 +602,9 @@ impl Workspace {
                             .rounded_lg()
                             .border_1()
                             .border_color(p.border)
+                            .child(super::wheel_first(
+                                &self.settings_inputs.onboarding_models_scroll,
+                            ))
                             .child(
                                 uniform_list(
                                     "ob-models",

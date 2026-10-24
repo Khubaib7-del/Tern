@@ -5078,3 +5078,47 @@ pub(crate) fn inner_list_bar(
             .viewport_from_layout(),
     )
 }
+
+/// Gives an inner scroll area (a bounded list inside a page that scrolls)
+/// the wheel first: put it inside the area, as an absolute child, with
+/// the area's scroll handle. The kit's scroll areas take the wheel before
+/// anything inside them sees it (in the capture phase), so a plain GPUI
+/// list inside one never scrolled with the wheel or a touchpad, only by
+/// its thumb. This takes the turn first, scrolls the list by it (lines or
+/// precise pixels), and keeps it from the page; at the list's ends the
+/// turn goes on to the page (`scrollbar::wheel_take`). Only the view is
+/// notified, once per turn that moved the list.
+pub(crate) fn wheel_first<H>(handle: &H) -> impl IntoElement
+where
+    H: gpui_kit::base::ScrollbarHandle + Clone,
+{
+    let handle = handle.clone();
+    gpui_kit::canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            let view = window.current_view();
+            window.on_mouse_event(move |e: &gpui_kit::ScrollWheelEvent, phase, window, cx| {
+                if phase != gpui_kit::DispatchPhase::Capture || !hitbox.should_handle_scroll(window)
+                {
+                    return;
+                }
+                let d = e.delta.pixel_delta(window.line_height());
+                let max = f32::from(handle.content_size().height)
+                    - f32::from(handle.viewport_bounds().size.height);
+                let at = handle.offset();
+                if let Some(y) = crate::scrollbar::wheel_take(
+                    f32::from(at.y),
+                    f32::from(d.x),
+                    f32::from(d.y),
+                    max,
+                ) {
+                    handle.set_offset(gpui_kit::point(at.x, px(y)));
+                    cx.stop_propagation();
+                    cx.notify(view);
+                }
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+}

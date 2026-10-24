@@ -783,10 +783,11 @@ impl Workspace {
                     .border_1()
                     .border_color(p.border)
                     .overflow_hidden()
-                    // The wheel over the box is the list's alone: it scrolls
-                    // the models and never chains to the page, at the ends
-                    // too, so the page does not lurch when the list stops.
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    // The wheel over the box scrolls the models first; at
+                    // the list's ends it goes on to the page.
+                    .child(super::wheel_first(
+                        &self.settings_inputs.provider_models_scroll,
+                    ))
                     .child(
                         uniform_list(
                             "provider-models",
@@ -1015,7 +1016,7 @@ impl Workspace {
                 .border_1()
                 .border_color(p.border)
                 .overflow_hidden()
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .child(super::wheel_first(&self.settings_inputs.catalog_scroll))
                 .child(
                     uniform_list(
                         "model-catalogue",
@@ -1097,7 +1098,7 @@ impl Workspace {
             .mx_3()
             .mb_2()
             .h(px((n as f32 * LIST_ROW_H).min(220.)))
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(super::wheel_first(&self.settings_inputs.role_scroll))
             .child(
                 uniform_list(
                     "role-choices",
