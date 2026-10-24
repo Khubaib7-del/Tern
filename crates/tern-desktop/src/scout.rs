@@ -329,15 +329,32 @@ impl Rig {
     /// Whether the next frame differs enough from this one to draw it
     /// right away. At rest only breathing moves, which a slower tick
     /// covers.
+    ///
+    /// Only change counts: a spring still moving, a blink, a nod, a kick,
+    /// or a reaction. A mood that holds still (Thinking, Blocked, NeedsYou)
+    /// is not busy once settled, so a long answer or an error does not
+    /// redraw the window every frame.
     pub fn busy(&self) -> bool {
-        let (lantern, raise, scroll, _, _, sit) = self.targets();
-        self.mood != Mood::Idle
-            || self.reacting().is_some()
+        let (lantern, raise, scroll, lx, ly, sit) = self.targets();
+        let ambient = self.ambient();
+        self.reacting().is_some()
             || self.blink_at.is_some()
-            || !self.lantern.settled(lantern)
+            || self.kick_at.is_some()
+            || self.mood == Mood::Ready
             || !self.raise.settled(raise)
             || !self.scroll.settled(scroll)
             || !self.sit.settled(sit)
+            || (!ambient
+                && (!self.lantern.settled(lantern)
+                    || !self.look_x.settled(lx)
+                    || !self.look_y.settled(ly)))
+    }
+
+    /// Moods that keep drifting (the eyes reading down a page, the lantern
+    /// swaying while searching). They are drawn on a slow tick, not every
+    /// frame.
+    pub fn ambient(&self) -> bool {
+        matches!(self.mood, Mood::Reading | Mood::Searching)
     }
 
     /// Seconds until the next blink, so an idle Scout can sleep until then.
@@ -421,6 +438,27 @@ mod tests {
         // Leaving Blocked does not nod.
         rig.set_mood(Mood::Idle);
         assert_eq!(rig.mood(), Mood::Idle);
+    }
+
+    #[test]
+    fn still_moods_stop_asking_for_frames() {
+        let mut rig = Rig::new(9);
+        rig.set_mood(Mood::Thinking);
+        assert!(rig.busy(), "moving into the pose");
+        // Settle, staying clear of a blink.
+        for _ in 0..40 {
+            run(&mut rig, 0.25);
+            if rig.blink_at.is_none() && !rig.busy() {
+                break;
+            }
+        }
+        assert!(
+            !rig.busy(),
+            "a long Thinking turn does not redraw every frame"
+        );
+        assert!(!rig.ambient());
+        rig.set_mood(Mood::Reading);
+        assert!(rig.ambient(), "reading drifts on a slow tick");
     }
 
     #[test]

@@ -46,6 +46,8 @@ mod runs_view;
 mod scout_view;
 mod segmented;
 mod study_view;
+mod timeline_view;
+mod toast_view;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -57,6 +59,9 @@ use crate::theme::Palette;
 
 pub(crate) const RAIL_W: f32 = 52.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
+/// The toast when the mic is clicked and no provider lists a voice model.
+pub const NO_VOICE_MODEL: &str = "No voice model available — add Groq, OpenAI or Mistral";
+
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
 
@@ -169,6 +174,29 @@ pub struct Workspace {
     ctx_opened: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
     /// The tab strip's "▾" menu of tabs that do not fit is open.
     tabs_menu_open: bool,
+    /// A model picked while the chat was busy, applied when it is free.
+    pending_pick: Option<(&'static str, String)>,
+    /// Streaming dictation while the mic records (and until its last
+    /// window comes back): the state, the voice model, the speech so far
+    /// (16 kHz mono), how far into the recording it has read, and the
+    /// timer that sends windows.
+    dictation: Option<crate::dictation::Dictation>,
+    dictation_model: Option<tern_agent::media::ModelRef>,
+    dictation_samples: Vec<f32>,
+    dictation_pos: usize,
+    dictation_task: Option<Task<()>>,
+    /// Wakes the window when a toast should come, go, or fade.
+    toast_wake: Option<Task<()>>,
+    /// The timeline tick under the pointer, and a smooth scroll in flight
+    /// (from, to, started).
+    rail_hover: Option<usize>,
+    rail_scroll: Option<(f32, f32, Instant)>,
+    /// A chat that was shown but whose model could not be reached: picking
+    /// a model reopens it instead of starting a new chat.
+    resume_retry: Option<SessionId>,
+    /// The scrolling child index of the first transcript entry (after the
+    /// workspace chip), set as the transcript is built.
+    rail_base: std::cell::Cell<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -450,6 +478,17 @@ impl Workspace {
             effort_drag: None,
             ctx_opened: Default::default(),
             tabs_menu_open: false,
+            pending_pick: None,
+            dictation: None,
+            dictation_model: None,
+            dictation_samples: Vec::new(),
+            dictation_pos: 0,
+            dictation_task: None,
+            toast_wake: None,
+            rail_hover: None,
+            rail_scroll: None,
+            resume_retry: None,
+            rail_base: Default::default(),
             _subscriptions: {
                 let mut subs = vec![
                     picker_sub,
@@ -487,11 +526,43 @@ impl Workspace {
                 self.current = Some(s.session_id());
                 self.tabs.set_active(s.session_id(), "New chat");
                 self.model.set_resume_offer(None, None);
+                self.model.switching_to = None;
+                self.resume_retry = None;
                 self.chat_shown(&s);
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
+                self.apply_pending_pick();
             }
+            Msg::Opening(id, turns) => {
+                // The chat shows at once; its model is still connecting.
+                // (On launch no chat is current yet: this one becomes it.)
+                if self.current.is_none() && matches!(self.model.phase, Phase::Connecting) {
+                    self.current = Some(id);
+                }
+                if self.current == Some(id) && self.session.is_none() {
+                    self.model.restore(&turns);
+                    self.request_icons();
+                    self.scroll.scroll_to_bottom();
+                }
+            }
+            Msg::ResumeFailed(id, e) => {
+                if self.current == Some(id) && self.session.is_none() {
+                    self.resume_retry = Some(id);
+                    self.model.switching_to = None;
+                    self.model.connect_failed(e.clone());
+                    self.model.toast_error(
+                        format!("This chat is shown, but its model could not be opened: {e} Pick a model to keep going."),
+                        Some(crate::toast::Retry::Connect),
+                    );
+                }
+            }
+            Msg::Dictated(seq, result) => self.dictated(seq, result, window, cx),
             Msg::Resumed(s, turns, recent) => {
+                self.resume_retry = None;
+                self.model.switching_to = None;
+                self.model
+                    .toasts
+                    .resolve(&crate::toast::Retry::Connect, Instant::now());
                 self.model.connected(Connection {
                     provider: s.provider_name().to_owned(),
                     model: s.model().to_owned(),
@@ -533,7 +604,7 @@ impl Workspace {
                 other => self.on_ext(other, cx),
             },
             Msg::Notice(text) => {
-                self.model.entries.push(Entry::Notice(text));
+                self.model.notice_line(text);
                 // A chat that would not reopen leaves no session; open a
                 // fresh one so the composer works.
                 if self.session.is_none() && matches!(self.model.phase, Phase::Connecting) {
@@ -549,12 +620,13 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.context = s.context();
+                self.model.switching_to = None;
                 if let Some(e) = failed {
                     self.model
-                        .notice_line(format!("The model was not changed: {e}"));
+                        .toast_error(format!("The model was not changed: {e}"), None);
                 } else {
-                    self.model.notice_line(format!(
-                        "Now answering with {} · {}. This chat and its history are kept.",
+                    self.model.toast_info(format!(
+                        "Now answering with {} · {}",
                         s.provider_name(),
                         s.model()
                     ));
@@ -573,13 +645,12 @@ impl Workspace {
                 self.model.context = usage;
                 match result {
                     Ok(Some(_)) => self.model.show_compaction_notice(),
-                    Ok(None) => self.model.entries.push(Entry::Notice(
-                        "Nothing to compact yet: the latest turns stay word for word.".into(),
-                    )),
+                    Ok(None) => self
+                        .model
+                        .toast_info("Nothing to compact yet: the latest turns stay word for word."),
                     Err(e) => self
                         .model
-                        .entries
-                        .push(Entry::Notice(format!("Compacting failed: {e}"))),
+                        .toast_error(format!("Compacting failed: {e}"), None),
                 }
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
@@ -645,6 +716,7 @@ impl Workspace {
                     self.ticker = None;
                 }
                 self.scroll.scroll_to_bottom();
+                self.apply_pending_pick();
                 // A message queued with Tab goes now.
                 if let Some(q) = self.queued.take() {
                     self.composer.update(cx, |c, cx| c.set_value(q, window, cx));
@@ -694,6 +766,24 @@ impl Workspace {
                         None => c.providers.push((id, Ok(list.clone()))),
                     }
                 }
+                match &result {
+                    Ok(_) => self
+                        .model
+                        .toasts
+                        .resolve(&crate::toast::Retry::Models(id), Instant::now()),
+                    // Only the picker's own tab gets a toast; it also shows
+                    // the reason with Retry in the list.
+                    Err(e)
+                        if self.model.composer.menu.is_none()
+                            && self.model.providers.default_id(Kind::Model) == Some(id) =>
+                    {
+                        self.model.toast_error(
+                            format!("Could not list {} models: {e}", self.provider_name(id)),
+                            Some(crate::toast::Retry::Models(id)),
+                        );
+                    }
+                    Err(_) => {}
+                }
                 self.model.providers.models_loaded(id, result)
             }
             Msg::Catalog(c) => {
@@ -720,8 +810,7 @@ impl Workspace {
                     }
                     Err(e) => self
                         .model
-                        .entries
-                        .push(Entry::Notice(format!("Voice input failed: {e}"))),
+                        .toast_error(format!("Voice input failed: {e}"), None),
                 }
             }
             Msg::Decision(m) => match *m {
@@ -753,9 +842,9 @@ impl Workspace {
                 }
                 crate::bridge::EvalMsg::Ran(r) => self.model.eval.finished(r),
             },
-            Msg::PrefsFailed(e) => self.model.entries.push(Entry::Notice(format!(
-                "Tern could not save your choice: {e}"
-            ))),
+            Msg::PrefsFailed(e) => self
+                .model
+                .toast_error(format!("Tern could not save your choice: {e}"), None),
             Msg::Study(m) => self.on_study(*m, window, cx),
             Msg::Watches(list, note, finished) => {
                 self.model.watches_loaded(list);
@@ -767,7 +856,7 @@ impl Workspace {
                     && self.model.screen == Screen::Chat
                     && !self.model.is_busy()
                 {
-                    self.model.entries.push(Entry::Notice(n));
+                    self.model.notice_line(n);
                 }
             }
         }
@@ -834,9 +923,7 @@ impl Workspace {
                         chat_model,
                     })
                 }
-                tern_agent::media::ImagePlan::Missing(why) => {
-                    self.model.entries.push(Entry::Notice(why))
-                }
+                tern_agent::media::ImagePlan::Missing(why) => self.model.notice_line(why),
             }
         }
         self.model.steering = Some(session.steering());
@@ -1058,10 +1145,13 @@ impl Workspace {
                     self.model.transcribing = true;
                     self.bridge.transcribe_file(via, a);
                 }
-                None => self.model.entries.push(Entry::Notice(format!(
-                    "{} is audio. Tern transcribes audio once a provider that lists a speech-to-text model is set up (Groq or OpenAI Whisper, Mistral Voxtral).",
-                    a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
-                ))),
+                None => self.model.toast_error(
+                    format!(
+                        "{} is audio. Tern transcribes audio once a provider that lists a speech-to-text model is set up (Groq or OpenAI Whisper, Mistral Voxtral).",
+                        a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                    ),
+                    None,
+                ),
             }
         }
         if paths.is_empty() {
@@ -1595,38 +1685,166 @@ impl Workspace {
         )
     }
 
-    /// Starts recording, or stops and sends the speech to the
-    /// speech-to-text model; the transcript lands in the composer.
-    fn toggle_mic(&mut self, cx: &mut Context<Self>) {
-        if let Some(rec) = self.recording.take() {
-            match (rec.stop(), self.stt_model()) {
-                (Ok(wav), Some(via)) => {
-                    self.model.transcribing = true;
-                    self.bridge.transcribe(via, wav, "speech.wav".into());
-                }
-                (Ok(_), None) => self.model.entries.push(Entry::Notice(
-                    "No speech-to-text model is available any more, so the recording was dropped."
-                        .into(),
-                )),
-                (Err(e), _) => self.model.entries.push(Entry::Notice(e)),
+    /// Starts recording, or stops it. Speech is transcribed while it is
+    /// spoken (see [`crate::dictation`]): the open phrase shows in grey
+    /// under the composer text, each finished phrase joins the text, and
+    /// stopping sends the last bit and commits it. While recording, the
+    /// model chip names the voice model.
+    fn toggle_mic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.recording.is_some() {
+            self.stop_mic(window, cx);
+            return;
+        }
+        let Some(via) = self.stt_model() else {
+            self.model.toast_error(NO_VOICE_MODEL, None);
+            cx.notify();
+            return;
+        };
+        match tern_agent::platform::mic::Recording::start() {
+            Ok(r) => {
+                self.recording = Some(r);
+                self.dictation = Some(crate::dictation::Dictation::new());
+                self.dictation_model = Some(via);
+                self.dictation_samples.clear();
+                self.dictation_pos = 0;
+                self.start_dictation_timer(window, cx);
             }
-        } else if self.stt_model().is_some() {
-            match tern_agent::platform::mic::Recording::start() {
-                Ok(r) => self.recording = Some(r),
-                Err(e) => self.model.entries.push(Entry::Notice(e)),
-            }
+            Err(e) => self.model.toast_error(e, None),
         }
         cx.notify();
     }
 
+    /// Stops the mic; the last window is sent and committed when it comes
+    /// back.
+    fn stop_mic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(rec) = self.recording.take() {
+            self.pull_speech(&rec);
+            rec.cancel();
+        }
+        if let Some(d) = self.dictation.as_mut() {
+            d.stop();
+        }
+        self.pump_dictation(window, cx);
+        cx.notify();
+    }
+
+    /// Reads the speech recorded since the last read.
+    fn pull_speech(&mut self, rec: &tern_agent::platform::mic::Recording) {
+        let (more, pos) = rec.speech_since(self.dictation_pos);
+        self.dictation_samples.extend(more);
+        self.dictation_pos = pos;
+    }
+
+    /// Every 400 ms while dictating: read new speech, send the next window
+    /// when it is due, and end when the last one is back.
+    fn start_dictation_timer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dictation_task = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(400))
+                    .await;
+                let go = this.update_in(cx, |this, window, cx| {
+                    if let Some(rec) = this.recording.take() {
+                        this.pull_speech(&rec);
+                        this.recording = Some(rec);
+                    }
+                    this.pump_dictation(window, cx)
+                });
+                if !matches!(go, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Sends the next window if one is due, moves committed text into the
+    /// composer, and finishes a stopped dictation whose last window is
+    /// back. Returns whether dictation goes on.
+    fn pump_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(d) = self.dictation.as_mut() else {
+            return false;
+        };
+        if let Some(req) = d.next_request(&self.dictation_samples)
+            && let Some(via) = self.dictation_model.clone()
+        {
+            let end = req.end.min(self.dictation_samples.len());
+            let start = req.start.min(end);
+            let wav = tern_agent::platform::audio::wav(
+                &self.dictation_samples[start..end],
+                tern_agent::platform::audio::SPEECH_RATE,
+            );
+            self.bridge.dictate(via, req.seq, wav);
+        }
+        self.commit_dictation(window, cx);
+        let finished = self
+            .dictation
+            .as_ref()
+            .is_some_and(|d| d.done(self.dictation_samples.len()));
+        if finished {
+            if let Some(e) = self.dictation.as_mut().and_then(|d| d.error.take()) {
+                self.model
+                    .toast_error(format!("Some speech could not be transcribed: {e}"), None);
+            }
+            self.dictation = None;
+            self.dictation_model = None;
+            self.dictation_samples = Vec::new();
+            self.dictation_pos = 0;
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
+    /// Finished phrases join the composer text (dark, editable).
+    fn commit_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self.dictation.as_mut().and_then(|d| d.take_committed()) else {
+            return;
+        };
+        let now = self.composer.read(cx).value().to_string();
+        let joined = if now.trim().is_empty() {
+            text
+        } else {
+            format!("{} {text}", now.trim_end())
+        };
+        self.model.on_composer_text(&joined);
+        self.composer
+            .update(cx, |c, cx| c.set_value(joined, window, cx));
+        cx.notify();
+    }
+
+    /// A window of dictation came back.
+    fn dictated(
+        &mut self,
+        seq: u64,
+        result: Result<String, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(d) = self.dictation.as_mut() {
+            d.on_result(seq, result);
+        }
+        self.pump_dictation(window, cx);
+    }
+
+    /// The open phrase's interim text, grey with a trailing ellipsis.
+    fn dictation_line(&self) -> Option<String> {
+        self.dictation.as_ref().and_then(|d| d.interim_line())
+    }
+
     /// Esc while recording: stop and throw the audio away.
     pub(crate) fn cancel_recording(&mut self) -> bool {
+        let had = self.dictation.is_some();
+        self.dictation = None;
+        self.dictation_model = None;
+        self.dictation_task = None;
+        self.dictation_samples = Vec::new();
+        self.dictation_pos = 0;
         match self.recording.take() {
             Some(r) => {
                 r.cancel();
                 true
             }
-            None => false,
+            None => had,
         }
     }
 
@@ -1644,8 +1862,9 @@ impl Workspace {
         {
             return;
         }
-        self.model.providers.models_loading(id);
-        self.bridge.models(id);
+        if !self.model.providers.show_models(id, Instant::now()) {
+            self.bridge.models(id, false);
+        }
     }
 
     /// Applies the current choices, saving them first. The open chat
@@ -1655,12 +1874,21 @@ impl Workspace {
         if self.model.is_busy() {
             return;
         }
-        match self.session.take() {
-            Some(s) => {
+        let reopen = self.resume_retry.filter(|id| self.current == Some(*id));
+        match (self.session.take(), reopen) {
+            (Some(s), _) => {
                 self.model.phase = Phase::Connecting;
                 self.bridge.swap(s, self.model.providers.prefs.clone());
             }
-            None => {
+            // A chat whose model could not be reached reopens with the
+            // new choice, keeping its transcript.
+            (None, Some(id)) => {
+                self.resume_retry = None;
+                self.model.phase = Phase::Connecting;
+                self.bridge
+                    .save_and_resume(self.model.providers.prefs.clone(), id);
+            }
+            (None, None) => {
                 self.model.connection = None;
                 self.model.new_chat();
                 self.model.phase = Phase::Connecting;
@@ -2532,48 +2760,63 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The chat. Each message is its own child of the scrolling area, so
+    /// the timeline rail can find where a message is and scroll to it.
     fn transcript(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut column = div()
-            .w_full()
-            .max_w(px(COLUMN_MAX_W))
-            .flex()
-            .flex_col()
-            .gap_5()
-            .py_6()
-            .px_4();
+        let wrap = |el: AnyElement| {
+            div()
+                .w_full()
+                .max_w(px(COLUMN_MAX_W))
+                .px_4()
+                .flex_none()
+                .child(el)
+                .into_any_element()
+        };
+        let mut items: Vec<AnyElement> = Vec::new();
         if let Some(chip) = self.workspace_chip(p, cx) {
-            column = column.child(chip);
+            items.push(wrap(chip));
         }
         if self.model.entries.is_empty() && !self.model.is_busy() {
-            column = column.child(self.empty_state(p, cx));
+            items.push(wrap(self.empty_state(p, cx)));
         }
+        self.rail_base.set(items.len());
         for (i, e) in self.model.entries.iter().enumerate() {
-            column = column.child(self.entry(i, e, p, cx));
+            items.push(wrap(self.entry(i, e, p, cx)));
         }
         // Thinking, the working rollup, and the answer so far, revealed at
         // reading pace.
         if let Some(live) = self.live_answer(p, cx) {
-            column = column.child(live);
+            items.push(wrap(live));
         }
         if let Some(card) = self.approval_card(p, cx) {
-            column = column.child(card);
+            items.push(wrap(card));
         }
         if let Some(card) = self.plan_card(p, cx) {
-            column = column.child(card);
+            items.push(wrap(card));
         }
         if let Some(line) = self.model.working_line() {
-            column = column.child(working_line(&line, p, self.reduced_motion, "transcript"));
+            items.push(wrap(
+                working_line(&line, p, self.reduced_motion, "transcript").into_any_element(),
+            ));
         }
-        div()
+        let scroller = div()
             .id("transcript")
-            .flex_1()
-            .min_h_0()
+            .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .flex()
             .flex_col()
             .items_center()
-            .child(column)
+            .gap_5()
+            .pt_6()
+            .pb_6()
+            .children(items);
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(scroller)
+            .children(self.timeline_rail(p, cx))
     }
 
     /// Over the composer after an answer stopped at the length limit.
@@ -2750,16 +2993,18 @@ impl Workspace {
     fn mic_button(&self, _p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let via = self.stt_model();
         let recording = self.recording.is_some();
+        let finishing = !recording && self.dictation.is_some();
         let (icon, tip, enabled): (AssetIcon, SharedString, bool) = match (&via, recording) {
             (_, true) => (
                 AssetIcon::CircleStop,
-                "Recording. Click or press Esc to stop".into(),
+                "Listening. Click to stop, Esc to throw it away".into(),
                 true,
             ),
+            (_, false) if finishing => (AssetIcon::Mic, "Finishing the transcript…".into(), false),
             (None, false) => (
                 AssetIcon::MicOff,
-                "Voice input needs a speech-to-text model. Add a key for a provider that lists one (Groq or OpenAI Whisper, Mistral Voxtral).".into(),
-                false,
+                "Voice input needs a speech-to-text model (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
+                true,
             ),
             (Some(v), false) if self.model.transcribing => (
                 AssetIcon::Mic,
@@ -2768,7 +3013,7 @@ impl Workspace {
             ),
             (Some(v), false) => (
                 AssetIcon::Mic,
-                format!("Speak instead of typing (transcribed by {v})").into(),
+                format!("Speak instead of typing (transcribed by {v} as you talk)").into(),
                 true,
             ),
         };
@@ -2779,7 +3024,7 @@ impl Workspace {
             .selected(recording)
             .disabled(!enabled)
             .tooltip(tip)
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_mic(cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_mic(window, cx)))
     }
 
     /// The composer's context ring: fills as the window does, turns amber
@@ -4041,6 +4286,8 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick_scout(window, cx);
         self.tick_explain(window);
+        self.tick_toasts(window, cx);
+        self.tick_rail_scroll(window);
         let now = Instant::now();
         // A flashcard turning over draws every frame until it lands.
         if self.model.screen == Screen::Study
@@ -4300,6 +4547,7 @@ impl Render for Workspace {
             )
             .children(self.highlight_popover(p, cx))
             .children(self.undo_toast(p, cx))
+            .children(self.toasts(p, cx))
             .children(ripple);
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {

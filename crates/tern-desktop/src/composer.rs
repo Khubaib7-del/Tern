@@ -335,9 +335,43 @@ pub fn pick_outcome(provider: &str, info: &tern_agent::providers::ModelInfo) -> 
 }
 
 /// The picker popover's width, its most height, and its provider column.
-pub const PICKER_W: f32 = 460.;
+pub const PICKER_W: f32 = 560.;
 pub const PICKER_MAX_H: f32 = 360.;
 pub const PICKER_LEFT_W: f32 = 148.;
+
+/// The toast for picking a speech-to-text model: it becomes the mic's
+/// model (the chat keeps its model).
+pub fn mic_pick_note(model: &str, provider: &str) -> String {
+    format!("Voice input now uses {model} ({provider}). The chat keeps its model.")
+}
+
+/// The toast for picking an OCR model.
+pub fn ocr_pick_note(model: &str, provider: &str) -> String {
+    format!("{model} ({provider}) now reads documents and pictures. The chat keeps its model.")
+}
+
+/// What a model pick does while the chat cannot switch yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickTiming {
+    /// Switch now.
+    Now,
+    /// An answer is running: switch when it ends.
+    AfterAnswer,
+    /// Another switch is landing: switch right after it.
+    AfterSwitch,
+}
+
+/// When a picked model can take over: now, after the running answer, or
+/// after the switch already under way.
+pub fn pick_timing(busy: bool, connecting: bool) -> PickTiming {
+    if busy {
+        PickTiming::AfterAnswer
+    } else if connecting {
+        PickTiming::AfterSwitch
+    } else {
+        PickTiming::Now
+    }
+}
 
 /// The popover's size in a window: the design size, shrunk to leave a
 /// 16 px margin on each side of a small window.
@@ -374,9 +408,39 @@ pub struct Composer {
     pub counts: HashMap<&'static str, usize>,
     /// A one-line note under the menu ("2 files were not PDFs").
     pub note: Option<String>,
+    /// The menu a press outside just closed, and when: the same press
+    /// landing on that menu's own chip must not open it again.
+    pub closed_outside: Option<(Menu, std::time::Instant)>,
 }
 
+/// A chip click this soon after a press outside closed its menu belongs to
+/// that same press.
+pub const REOPEN_GUARD: std::time::Duration = std::time::Duration::from_millis(350);
+
 impl Composer {
+    /// A press outside the open menu closes it (remembering which, so the
+    /// chip's own click in the same press does not reopen it).
+    pub fn close_outside(&mut self, now: std::time::Instant) {
+        if let Some(m) = self.menu {
+            self.closed_outside = Some((m, now));
+            self.close();
+        }
+    }
+
+    /// The chip for `menu` was clicked at `now`: opens or closes it, except
+    /// that a click finishing the press that just closed it does nothing,
+    /// so one click is one change.
+    pub fn toggle_at(&mut self, menu: Menu, now: std::time::Instant) {
+        if let Some((m, at)) = self.closed_outside.take()
+            && m == menu
+            && self.menu.is_none()
+            && now.saturating_duration_since(at) < REOPEN_GUARD
+        {
+            return;
+        }
+        self.toggle(menu);
+    }
+
     /// Opens `menu`, or closes it when it is the open one.
     pub fn toggle(&mut self, menu: Menu) {
         self.menu = if self.menu == Some(menu) {
@@ -830,6 +894,37 @@ mod tests {
     use super::*;
     use crate::providers::{ModelChoice, ServiceRow};
 
+    #[test]
+    fn one_click_on_the_effort_chip_is_one_change() {
+        let t0 = std::time::Instant::now();
+        let mut c = Composer::default();
+        c.toggle_at(Menu::Effort, t0);
+        assert_eq!(c.menu, Some(Menu::Effort));
+        // Pressing the chip while open: the press closes it (outside the
+        // slider), and the click of that same press must not reopen it.
+        c.close_outside(t0 + std::time::Duration::from_millis(500));
+        c.toggle_at(Menu::Effort, t0 + std::time::Duration::from_millis(560));
+        assert_eq!(c.menu, None);
+        // A later, separate click opens it again.
+        c.toggle_at(Menu::Effort, t0 + std::time::Duration::from_secs(2));
+        assert_eq!(c.menu, Some(Menu::Effort));
+        // A press outside that closed another menu does not swallow this one.
+        c.close_outside(t0 + std::time::Duration::from_secs(3));
+        c.toggle_at(Menu::Model, t0 + std::time::Duration::from_millis(3050));
+        assert_eq!(c.menu, Some(Menu::Model));
+    }
+
+    #[test]
+    fn picks_wait_for_a_running_answer_or_switch() {
+        assert_eq!(pick_timing(false, false), PickTiming::Now);
+        assert_eq!(pick_timing(true, false), PickTiming::AfterAnswer);
+        assert_eq!(pick_timing(false, true), PickTiming::AfterSwitch);
+        assert!(
+            mic_pick_note("whisper-large-v3", "Groq")
+                .starts_with("Voice input now uses whisper-large-v3 (Groq)")
+        );
+    }
+
     fn st() -> ProvidersState {
         let mut st = ProvidersState::default();
         let row = |id: &'static str, name: &'static str, saved: bool, local: bool| ServiceRow {
@@ -963,6 +1058,7 @@ mod tests {
         // The popover keeps its design size in a normal window and shrinks
         // in a small one, never past the window.
         assert_eq!(picker_size(1280., 820.), (PICKER_W, PICKER_MAX_H));
+        assert!(picker_size(500., 820.).0 <= 468.);
         let (w, h) = picker_size(400., 420.);
         assert!(w <= 400. - 32. && h <= 420.);
         const { assert!(PICKER_LEFT_W < PICKER_W / 2.) };

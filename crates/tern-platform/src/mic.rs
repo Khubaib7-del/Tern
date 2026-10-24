@@ -23,6 +23,11 @@ pub const MAX_SECONDS: u64 = 600;
 pub struct Recording {
     stop: mpsc::Sender<()>,
     done: JoinHandle<Result<Vec<u8>, String>>,
+    /// The samples so far (interleaved, at the device's rate), shared with
+    /// the audio callback so speech can be transcribed while it is spoken.
+    buf: Arc<Mutex<Vec<f32>>>,
+    channels: usize,
+    rate: u32,
 }
 
 impl Recording {
@@ -30,19 +35,46 @@ impl Recording {
     /// plain reason when there is no microphone or it cannot be opened.
     pub fn start() -> Result<Self, String> {
         let (stop, stopped) = mpsc::channel::<()>();
-        let (ready, is_ready) = mpsc::channel::<Result<(), String>>();
+        let (ready, is_ready) = mpsc::channel::<Result<(usize, u32), String>>();
+        let buf: Arc<Mutex<Vec<f32>>> = Arc::default();
+        let shared = buf.clone();
         let done = std::thread::Builder::new()
             .name("tern-mic".into())
-            .spawn(move || record(stopped, ready))
+            .spawn(move || record(stopped, ready, shared))
             .map_err(|e| format!("Could not start recording: {e}"))?;
         match is_ready.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => Ok(Self { stop, done }),
+            Ok(Ok((channels, rate))) => Ok(Self {
+                stop,
+                done,
+                buf,
+                channels,
+                rate,
+            }),
             Ok(Err(e)) => {
                 let _ = done.join();
                 Err(e)
             }
             Err(_) => Err("The microphone did not start.".into()),
         }
+    }
+
+    /// The speech recorded since position `from` (0 at the start), as
+    /// 16 kHz mono samples, and the position to read from next time. Lets
+    /// the app transcribe while the user is still speaking.
+    pub fn speech_since(&self, from: usize) -> (Vec<f32>, usize) {
+        let ch = self.channels.max(1);
+        let Ok(b) = self.buf.lock() else {
+            return (Vec::new(), from);
+        };
+        // Whole frames only, so channels never shift.
+        let end = b.len() - b.len() % ch;
+        let from = from.min(end) - from.min(end) % ch;
+        let mono = crate::audio::downmix(&b[from..end], ch);
+        drop(b);
+        (
+            crate::audio::resample(&mono, self.rate, crate::audio::SPEECH_RATE),
+            end,
+        )
     }
 
     /// Stops and returns the speech as a WAV file.
@@ -62,7 +94,8 @@ impl Recording {
 
 fn record(
     stopped: mpsc::Receiver<()>,
-    ready: mpsc::Sender<Result<(), String>>,
+    ready: mpsc::Sender<Result<(usize, u32), String>>,
+    buf: Arc<Mutex<Vec<f32>>>,
 ) -> Result<Vec<u8>, String> {
     let fail = |e: String| {
         let _ = ready.send(Err(e.clone()));
@@ -78,7 +111,6 @@ fn record(
     };
     let channels = config.channels() as usize;
     let rate: u32 = config.sample_rate();
-    let buf: Arc<Mutex<Vec<f32>>> = Arc::default();
     let errors: Arc<Mutex<Option<String>>> = Arc::default();
     let err_slot = errors.clone();
     let on_error = move |e: cpal::Error| {
@@ -123,7 +155,7 @@ fn record(
     if let Err(e) = stream.play() {
         return fail(format!("The microphone could not start: {e}"));
     }
-    let _ = ready.send(Ok(()));
+    let _ = ready.send(Ok((channels, rate)));
     let _ = stopped.recv_timeout(Duration::from_secs(MAX_SECONDS));
     drop(stream);
     if let Some(e) = errors.lock().ok().and_then(|mut e| e.take()) {

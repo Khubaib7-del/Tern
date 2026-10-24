@@ -65,7 +65,7 @@ impl Workspace {
                 if self.current == Some(session) && !self.model.is_busy() {
                     self.load_chat(session, cx);
                 }
-                self.model.entries.push(Entry::Notice(note));
+                self.model.notice_line(note);
             }
             ContMsg::SubMade(id) => {
                 let title = self
@@ -89,9 +89,8 @@ impl Workspace {
             ContMsg::Reported { parent, sub, note } => {
                 self.model.cont.background.retain(|s| *s != sub);
                 if self.current == Some(parent) {
-                    self.model.entries.push(Entry::Notice(format!(
-                        "↳ A background branch reported back: {note}"
-                    )));
+                    self.model
+                        .notice_line(format!("↳ A background branch reported back: {note}"));
                     if !self.model.is_busy() {
                         // Reopen so the parent's model reads the report too.
                         self.load_chat(parent, cx);
@@ -120,7 +119,7 @@ impl Workspace {
                 };
                 match self.model.cont.highlight.as_mut() {
                     Some(h) => h.note = Some(note),
-                    None => self.model.entries.push(Entry::Notice(note)),
+                    None => self.model.notice_line(note),
                 }
             }
             ContMsg::HandedOff(r) => match r {
@@ -134,13 +133,12 @@ impl Workspace {
                         self.tabs.add();
                         self.load_chat(id, cx);
                     }
-                    self.model.entries.push(Entry::Notice(format!(
-                        "{saved} and started this session from it alone."
-                    )));
+                    self.model
+                        .notice_line(format!("{saved} and started this session from it alone."));
                 }
-                Err(e) => self.model.entries.push(Entry::Notice(format!(
-                    "Tern could not hand off that chat: {e}"
-                ))),
+                Err(e) => self
+                    .model
+                    .notice_line(format!("Tern could not hand off that chat: {e}")),
             },
             ContMsg::Library {
                 request,
@@ -333,10 +331,10 @@ impl Workspace {
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
         self.model.cont.ids.branch_menu = None;
-        self.model.entries.push(Entry::Notice(format!(
+        self.model.notice_line(format!(
             "↳ Running “{}” in a background branch from Q{anchor}; it reports back here.",
             tern_agent::range::clip(&text, 80)
-        )));
+        ));
         self.bridge.sub_background(parent, anchor, text);
         cx.notify();
     }
@@ -754,9 +752,9 @@ impl Workspace {
                     self.model.run_panel_open = false;
                 }
             }
-            Err(e) => self.model.entries.push(Entry::Notice(format!(
-                "Tern could not pop the side chat out: {e}"
-            ))),
+            Err(e) => self
+                .model
+                .notice_line(format!("Tern could not pop the side chat out: {e}")),
         }
         cx.notify();
     }

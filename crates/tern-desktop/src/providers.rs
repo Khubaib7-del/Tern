@@ -132,8 +132,15 @@ pub struct ProvidersState {
     /// The row whose key field is open.
     pub editing: Option<(Kind, &'static str)>,
     notes: HashMap<(Kind, &'static str), Note>,
+    /// The listing the picker shows (the provider in view).
     pub models: Option<Models>,
+    /// Every provider's last good listing and when it came, so switching
+    /// picker tabs shows a list at once instead of "Loading models…".
+    cache: HashMap<&'static str, (std::time::Instant, Vec<ModelChoice>)>,
 }
+
+/// How long a provider's listing is shown without fetching it again.
+pub const MODELS_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl ProvidersState {
     pub fn load(&mut self, rows: Vec<ServiceRow>, prefs: Preferences, keychain: Option<String>) {
@@ -278,6 +285,7 @@ impl ProvidersState {
                         if self.models.as_ref().is_some_and(|m| m.provider() == id) {
                             self.models = None;
                         }
+                        self.cache.remove(id);
                     }
                     Kind::Search => self.prefs.forget_search(id),
                 }
@@ -307,24 +315,61 @@ impl ProvidersState {
         self.models = Some(Models::Loading(provider));
     }
 
+    /// Puts `provider`'s listing in view: from the cache when it is fresh
+    /// (returns `true`), else marks it loading (returns `false`, and the
+    /// caller fetches it).
+    pub fn show_models(&mut self, provider: &'static str, now: std::time::Instant) -> bool {
+        if let Some((at, list)) = self.cache.get(provider)
+            && now.saturating_duration_since(*at) < MODELS_TTL
+        {
+            self.models = Some(Models::Loaded(provider, list.clone()));
+            return true;
+        }
+        self.models_loading(provider);
+        false
+    }
+
+    /// Forgets a provider's cached listing (Retry, a new key).
+    pub fn forget_models(&mut self, provider: &str) {
+        self.cache.remove(provider);
+    }
+
     /// The listing for a provider: every model, whatever it is for. The
     /// picker groups them by category and offers non-chat models only for
     /// their own job.
+    ///
+    /// Listings can come back in any order (a tab clicked, then another,
+    /// and the default provider refreshed): each is cached, and only the
+    /// one for the provider in view replaces what the picker shows.
     pub fn models_loaded(
         &mut self,
         provider: &'static str,
         result: Result<Vec<ModelInfo>, String>,
     ) {
-        self.models = Some(match result {
+        let in_view = self
+            .models
+            .as_ref()
+            .is_none_or(|m| m.provider() == provider);
+        let shown = match result {
             Ok(list) => {
                 let mut choices: Vec<ModelChoice> =
                     list.into_iter().map(ModelChoice::new).collect();
                 choices.sort_by(|a, b| a.id.cmp(&b.id));
                 choices.dedup_by(|a, b| a.id == b.id);
+                self.cache
+                    .insert(provider, (std::time::Instant::now(), choices.clone()));
                 Models::Loaded(provider, choices)
             }
             Err(e) => Models::Failed(provider, e),
-        });
+        };
+        if in_view {
+            self.models = Some(shown);
+        }
+    }
+
+    /// The cached listing of `provider` (any age), for looking up a model.
+    pub fn cached(&self, provider: &str) -> Option<&[ModelChoice]> {
+        self.cache.get(provider).map(|(_, l)| l.as_slice())
     }
 
     /// The model a new chat uses on the default provider: the saved choice,
@@ -443,6 +488,33 @@ mod tests {
         assert_eq!(s.prefs.model, None);
         assert_eq!(s.models, None);
         assert_eq!(s.default_id(Kind::Model), None);
+    }
+
+    #[test]
+    fn late_listings_never_replace_the_tab_in_view() {
+        let mut s = state();
+        let t0 = std::time::Instant::now();
+        // Groq shows; the user clicks Mistral before Groq's refresh lands.
+        assert!(!s.show_models("groq", t0));
+        assert!(!s.show_models("mistral", t0));
+        s.models_loaded("groq", Ok(vec![ModelInfo::new("llama")]));
+        assert_eq!(
+            s.models,
+            Some(Models::Loading("mistral")),
+            "Mistral still loading"
+        );
+        s.models_loaded("groq", Err("down".into()));
+        assert_eq!(s.models, Some(Models::Loading("mistral")));
+        s.models_loaded("mistral", Ok(vec![ModelInfo::new("codestral")]));
+        assert!(matches!(&s.models, Some(Models::Loaded("mistral", l)) if l[0].id == "codestral"));
+        // Back to Groq: its listing is cached, so it shows at once.
+        assert!(s.show_models("groq", t0));
+        assert!(matches!(&s.models, Some(Models::Loaded("groq", l)) if l[0].id == "llama"));
+        assert_eq!(s.cached("mistral").map(<[_]>::len), Some(1));
+        // An old listing is fetched again; Retry forgets it.
+        assert!(!s.show_models("groq", t0 + MODELS_TTL + std::time::Duration::from_secs(1)));
+        s.forget_models("mistral");
+        assert!(!s.show_models("mistral", t0));
     }
 
     #[test]

@@ -22,6 +22,7 @@ mod commands;
 mod composer;
 mod continuity;
 mod decision;
+mod dictation;
 mod editor;
 mod evaluation;
 mod explain;
@@ -36,6 +37,8 @@ mod providers;
 mod scout;
 mod study;
 mod theme;
+mod timeline;
+mod toast;
 mod view;
 
 use gpui_kit::component::TitleBar;
