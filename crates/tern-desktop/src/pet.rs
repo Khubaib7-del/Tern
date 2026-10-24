@@ -340,6 +340,7 @@ impl Manifest {
 
     /// The asset path of `file` in `variant`, falling back to the normal
     /// file when the variant has no strip of its own.
+    #[cfg(test)]
     pub fn path(&self, file: &str, variant: &str) -> String {
         let suffix = self
             .variants
@@ -459,11 +460,6 @@ impl Animator {
             jiggle: Spring::new(0., SpringSpec::SCOUT),
             start: now,
         }
-    }
-
-    #[cfg(test)]
-    pub fn state(&self) -> State {
-        self.state
     }
 
     /// Moves to `state` with a crossfade and a small hop of a jiggle.
