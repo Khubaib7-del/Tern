@@ -33,6 +33,18 @@ pub(crate) fn enabled() -> bool {
         || std::env::args().any(|a| a == "--tour")
 }
 
+/// The tour window's size: `TERN_TOUR_SIZE` (`1024x728`), else 1600×1000,
+/// the screen the Linux recording uses.
+pub(crate) fn window_size() -> (f32, f32) {
+    std::env::var("TERN_TOUR_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        })
+        .unwrap_or((1600., 1000.))
+}
+
 /// A tour never touches the user's data or keys: without its own
 /// `TERN_TOUR_HOME`, the app runs itself again as a child with a fresh
 /// temp `TERN_HOME`, keys in memory (`TERN_SECRETS=memory`) and every
@@ -213,6 +225,7 @@ enum Act {
     QuickTurn,
     QuickFinish,
     Toasts,
+    ToastsClear,
     Dictation,
     DictationEnd,
     ContextRing,
@@ -635,6 +648,7 @@ fn script() -> Vec<Beat> {
         ),
         b(Act::CloseMenu, 300),
         scene("t49-toasts", "tern-only", "Toasts", Act::Toasts, 3500),
+        b(Act::ToastsClear, 600),
         scene(
             "t50-dictation",
             "tern-only",
@@ -754,27 +768,27 @@ fn script() -> Vec<Beat> {
             ));
         }
     }
-    v.push(b(Act::Settings(Section::Appearance), 600));
+    // Appearance's Scout previews (Scout is not drawn in Settings).
     v.push(scene(
-        "t70-scout",
+        "t70-scout-preview",
         "s99",
-        "Scout moods",
-        Act::Scout(Some(Mood::Searching)),
-        1300,
+        "Appearance: Scout mood preview",
+        Act::Settings(Section::Appearance),
+        600,
     ));
-    for m in [
-        Mood::Reading,
-        Mood::Verifying,
-        Mood::Thinking,
-        Mood::NeedsYou,
-        Mood::Studying,
-        Mood::Blocked,
-    ] {
-        v.push(b(Act::Scout(Some(m)), 1300));
+    for m in [Mood::Searching, Mood::Reading, Mood::NeedsYou] {
+        v.push(b(Act::Scout(Some(m)), 1000));
     }
     v.extend([
         b(Act::Scout(None), 300),
-        b(Act::CloseSettings, 600),
+        b(Act::CloseSettings, 300),
+        scene(
+            "t70b-scout-corner",
+            "s99",
+            "Scout in the corner (idle)",
+            Act::Nothing,
+            2500,
+        ),
         scene(
             "t71-narrow",
             "tern-only",
@@ -801,6 +815,9 @@ pub(super) struct Tour {
     connected: bool,
     /// Text of the answer streamed so far.
     streamed: String,
+    /// The Research transcript, put back after the Study visit (a harness
+    /// switch opens a fresh chat, and the tour has no stored one).
+    saved: Option<(Vec<crate::model::Entry>, tern_agent::Run)>,
     _task: Option<gpui_kit::Task<()>>,
 }
 
@@ -816,6 +833,7 @@ impl Tour {
             ],
             connected: false,
             streamed: String::new(),
+            saved: None,
             _task: None,
         }
     }
@@ -1303,7 +1321,13 @@ impl Workspace {
             Act::Archived => self.open_archived(cx),
             Act::Watches => self.model.screen = Screen::Watches,
             Act::Chat => self.model.screen = Screen::Chat,
-            Act::StudyOpen => self.choose_harness(Harness::Study, cx),
+            Act::StudyOpen => {
+                let kept = (self.model.entries.clone(), self.model.last_run.clone());
+                if let Some(t) = self.tour.as_mut() {
+                    t.saved = Some(kept);
+                }
+                self.choose_harness(Harness::Study, cx);
+            }
             Act::StudyTab(tab) => self.study_tab(tab, cx),
             Act::StudyMaterials => {
                 self.study_tab(StudyTab::Chat, cx);
@@ -1363,7 +1387,15 @@ impl Workspace {
                     self.explain_at = None;
                 }
             }
-            Act::Research => self.choose_harness(Harness::Research, cx),
+            Act::Research => {
+                self.choose_harness(Harness::Research, cx);
+                if let Some((entries, run)) = self.tour.as_mut().and_then(|t| t.saved.take()) {
+                    self.model.entries = entries;
+                    self.model.last_run = run;
+                    self.model.run_panel_open = true;
+                }
+                self.tour_connect();
+            }
             Act::Slash => self.set_composer("/", window, cx),
             Act::Mention => self.set_composer("Compare these @", window, cx),
             Act::TabPicker => self.toggle_tab_picker(window, cx),
@@ -1400,6 +1432,13 @@ impl Workspace {
             Act::CloseBrowser => {
                 self.model.browser.visible = false;
             }
+            Act::ToastsClear => {
+                let now = Instant::now();
+                let ids: Vec<u64> = self.model.toasts.shown().iter().map(|t| t.id).collect();
+                for id in ids {
+                    self.model.toasts.dismiss(id, now);
+                }
+            }
             Act::Toasts => {
                 self.model.toast_info("Report saved to your vault: Retrieval policies – sources.md");
                 self.model.toast_error(
@@ -1420,7 +1459,8 @@ impl Workspace {
             Act::DictationEnd => self.dictation = None,
             Act::ContextRing => self.ctx_opened.set(Some(Instant::now())),
             Act::Narrow(on) => {
-                let (w, h) = if on { (900., 1000.) } else { (1600., 1000.) };
+                let (full_w, h) = window_size();
+                let w = if on { full_w.min(900.) } else { full_w };
                 window.resize(size(px(w), px(h)));
             }
             Act::Quit => {

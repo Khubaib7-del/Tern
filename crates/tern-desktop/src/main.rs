@@ -102,9 +102,9 @@ fn main() {
                 }
             })
             .detach();
-            // The UI tour fills the 1600×1000 screen it is recorded on.
+            // The UI tour fills the screen it is recorded on.
             let (w, h) = if view::tour::enabled() {
-                (1600., 1000.)
+                view::tour::window_size()
             } else {
                 (1280., 820.)
             };

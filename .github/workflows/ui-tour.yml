@@ -56,8 +56,6 @@ jobs:
         run: cargo build --release --locked -p tern-desktop -p tern-browser
       - name: Record the tour
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           WGPU_BACKEND: vulkan
           WGPU_POWER_PREF: low
           RUST_BACKTRACE: "1"
@@ -67,6 +65,10 @@ jobs:
         run: |
           set -u
           mkdir -p out
+          # Lavapipe, Mesa's software Vulkan (Ubuntu 24.04 names it lvp_icd.json).
+          icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+          export VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd"
+          echo "Vulkan ICD: $icd"
           cat > tour.sh <<'EOS'
           set -u
           vulkaninfo --summary > out/vulkaninfo.txt 2>&1 || true
@@ -117,11 +119,13 @@ jobs:
         env:
           TERN_TOUR: "1"
           TERN_TOUR_HOME: ${{ runner.temp }}\tern-tour-home
+          # The runner's desktop is 1024×768; leave room for the taskbar.
+          TERN_TOUR_SIZE: 1024x720
         run: |
           choco install ffmpeg -y --no-progress | Out-Null
           New-Item -ItemType Directory -Force out | Out-Null
           $env:TERN_TOUR_LOG = "$PWD\out\scene-log.txt"
-          $ff = Start-Process ffmpeg -ArgumentList '-y','-loglevel','warning','-f','gdigrab','-framerate','30','-i','desktop','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','out\tern-current-tour-windows.mkv' -PassThru -RedirectStandardError out\ffmpeg.log
+          $ff = Start-Process ffmpeg -ArgumentList '-y','-loglevel','warning','-f','gdigrab','-framerate','30','-i','desktop','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','out\tern-current-tour-windows.mkv' -PassThru -WindowStyle Hidden -RedirectStandardError out\ffmpeg.log
           [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File out\rec_start_unix_ms.txt
           $p = Start-Process .\target\release\tern-desktop.exe -ArgumentList '--tour' -PassThru -RedirectStandardOutput out\tour-stdout.txt -RedirectStandardError out\tour-stderr.txt
           if (-not $p.WaitForExit(900000)) { $p.Kill() }
