@@ -386,7 +386,7 @@ impl Workspace {
     pub(super) fn customize_screen(
         &self,
         p: Palette,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = &self.model.customize;

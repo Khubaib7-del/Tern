@@ -20,8 +20,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FontWeight, SharedString, Subscription, UniformListScrollHandle,
-    Window, div, px, svg, uniform_list,
+    AnimationExt as _, AnyElement, Context, Entity, FontWeight, SharedString, Subscription,
+    UniformListScrollHandle, Window, div, px, svg, uniform_list,
 };
 
 use super::Workspace;
@@ -489,7 +489,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn narrow_results(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn narrow_results(&self, _p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let q = &self.model.settings.query;
         if q.trim().is_empty() {
             return None;
@@ -572,7 +572,7 @@ impl Workspace {
     }
 
     /// A titled group of rows on a card.
-    fn card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
+    fn settings_card(title: &'static str, p: Palette, rows: Vec<AnyElement>) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -1002,7 +1002,7 @@ impl Workspace {
             p,
             None,
             vec![
-                Self::card("Default model per job", p, roles),
+                Self::settings_card("Default model per job", p, roles),
                 catalogue_block,
             ],
         )
@@ -1264,7 +1264,7 @@ impl Workspace {
             p,
             None,
             vec![
-                Self::card("Built-in tools", p, rows),
+                Self::settings_card("Built-in tools", p, rows),
                 div()
                     .text_xs()
                     .text_color(p.faint)
@@ -1367,7 +1367,7 @@ impl Workspace {
                 p,
             ),
         ];
-        body.push(Self::card("Crawler", p, crawl_rows));
+        body.push(Self::settings_card("Crawler", p, crawl_rows));
         self.page(Section::Search, p, None, body)
     }
 
@@ -1495,9 +1495,9 @@ impl Workspace {
             p,
             None,
             vec![
-                Self::card("What leaves this computer", p, leaves),
-                Self::card("Where Tern keeps your data", p, storage),
-                Self::card("Delete", p, delete),
+                Self::settings_card("What leaves this computer", p, leaves),
+                Self::settings_card("Where Tern keeps your data", p, storage),
+                Self::settings_card("Delete", p, delete),
             ],
         )
     }
@@ -1611,8 +1611,8 @@ impl Workspace {
             None,
             vec![
                 lockup,
-                Self::card("Tern", p, info),
-                Self::card("Shortcuts", p, keys),
+                Self::settings_card("Tern", p, info),
+                Self::settings_card("Shortcuts", p, keys),
             ],
         )
     }

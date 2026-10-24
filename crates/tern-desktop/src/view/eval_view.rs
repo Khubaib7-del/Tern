@@ -9,7 +9,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px, svg};
+use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div, px, svg};
 use tern_agent::eval::{Change, EvalRun, Metric, RunSummary, SuiteKind, SuiteResult};
 
 use super::Workspace;
