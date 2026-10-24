@@ -628,6 +628,7 @@ impl Workspace {
         self.model.study.set_tab(StudyTab::Explain);
         self.model.screen = Screen::Study;
         self.bridge.explain_build(key, ask);
+        self.start_explain_loader(cx);
         self.keys.focus(window, cx);
         cx.notify();
     }

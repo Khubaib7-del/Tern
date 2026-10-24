@@ -158,6 +158,8 @@ pub struct Workspace {
     explain_at: Option<Instant>,
     /// Steps explainers on autoplay.
     explain_ticker: Option<Task<()>>,
+    /// Repaints the Explain loading line while a scene builds.
+    explain_loader: Option<Task<()>>,
     /// The side chat's question field.
     side_input: Entity<InputState>,
     /// The Library's search field.
@@ -516,6 +518,7 @@ impl Workspace {
             next_explain: 0,
             explain_at: None,
             explain_ticker: None,
+            explain_loader: None,
             note_input,
             address_input,
             git_inputs,

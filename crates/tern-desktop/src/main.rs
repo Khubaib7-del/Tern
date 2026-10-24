@@ -21,6 +21,7 @@ mod chatflow;
 mod commands;
 mod composer;
 mod continuity;
+mod crashlog;
 mod decision;
 mod dictation;
 mod editor;
@@ -57,6 +58,8 @@ pub(crate) const APP_ID: &str = "io.github.khubaib7_del.Tern";
 use view::Workspace;
 
 fn main() {
+    // Every panic is written to <data>/logs/crash.log first.
+    crashlog::install();
     let (bridge, rx) = match Bridge::new() {
         Ok(b) => b,
         Err(e) => {

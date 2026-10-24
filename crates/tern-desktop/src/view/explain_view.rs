@@ -12,7 +12,15 @@
 //! caption reads the step (or the node clicked): its text, the passage
 //! and its citations. Reduced motion jumps the camera, never spins it on,
 //! and switches steps without a fade.
+//!
+//! Every handler and the frame's own work run under `catch_unwind`: a
+//! panic here would otherwise unwind into the window procedure and abort
+//! the app on Windows. A caught one shows the error card instead. While the
+//! camera moves, frames reuse the last label layout (`crate::explain`) and
+//! the painter leaves out dashes and seam strokes; all of the scene's
+//! paths are drawn in one batch.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -23,8 +31,8 @@ use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, Context, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathBuilder, PinchEvent, Pixels, ScrollWheelEvent, SharedString, Window, canvas,
-    div, point, px,
+    MouseUpEvent, PathBuilder, PinchEvent, Pixels, ScrollWheelEvent, SharedString, Transformation,
+    Window, canvas, div, point, px, radians,
 };
 use tern_agent::explain::camera::Camera;
 use tern_agent::explain::labels::Rank;
@@ -32,7 +40,7 @@ use tern_agent::explain::{Drawing, Edge, FaceKind, Fit, ink_amount};
 
 use super::Workspace;
 use super::study_view::serif;
-use crate::explain::{ExplainState, KeyDid, MARGIN};
+use crate::explain::{ExplainState, KeyDid, LINK_FADED, MARGIN};
 use crate::model::Screen;
 use crate::motion::lerp_color;
 use crate::theme::Palette;
@@ -53,6 +61,10 @@ struct Paint {
     hover: Option<usize>,
     /// Leader lines from nodes to labels that moved away, stage pixels.
     leaders: Vec<Leader>,
+    /// How strongly each link is drawn (`Frame::links`).
+    links: Rc<Vec<f32>>,
+    /// The camera is moving: no dashes, no seam strokes.
+    moving: bool,
     canvas: Hsla,
     ink: Hsla,
     faint: Hsla,
@@ -65,6 +77,28 @@ struct Paint {
 /// Anything past it (or not a number) is skipped, so a path is never
 /// built from coordinates the tessellator cannot handle.
 const FAR: f32 = 50_000.0;
+/// A frame's own work slower than this is written to the log.
+const SLOW_FRAME: Duration = Duration::from_millis(50);
+/// How often the loading line repaints (about 12 times a second).
+const LOADER_TICK: Duration = Duration::from_millis(80);
+/// The loading hourglass turns over once per this long, then rests.
+const HOURGLASS_TURN: Duration = Duration::from_millis(1200);
+
+/// The loading hourglass's angle `since` the build started: a quick half
+/// turn, then a rest, like one being flipped. Still with reduced motion.
+fn hourglass_angle(since: Duration, reduced: bool) -> f32 {
+    if reduced {
+        return 0.0;
+    }
+    let period = HOURGLASS_TURN.as_secs_f32();
+    let t = since.as_secs_f32();
+    let flips = (t / period).floor();
+    let phase = (t - flips * period) / period;
+    // The first third turns; the rest rests.
+    let turn = crate::motion::ease((phase * 3.0).min(1.0));
+    (flips + turn) * std::f32::consts::PI
+}
+
 /// Longest link drawn dashed, pixels; longer ones are solid, so a dash
 /// pattern is never cut into an unbounded number of pieces.
 const DASH_MAX: f32 = 4_000.0;
@@ -198,8 +232,11 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             if let Some(p) = fill(&q) {
                 window.paint_path(p, c);
             }
-            // The same colour as a thin stroke closes the seams between facets.
-            if let Some(p) = stroke(&q, 0.6, true, None) {
+            // The same colour as a thin stroke closes the seams between
+            // facets; left out while the camera moves.
+            if !pt.moving
+                && let Some(p) = stroke(&q, 0.6, true, None)
+            {
                 window.paint_path(p, c);
             }
         }
@@ -214,12 +251,18 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             paint_edge(e, pt, &at, window);
         }
     }
-    // Links: dashed, with a head.
-    for l in &pt.drawing.links {
-        if let Some(p) = at(&[l.a, l.b]).and_then(|q| stroke(&q, 1.0, false, Some(4.0))) {
-            window.paint_path(p, pt.muted);
+    // Links: the step's dashed with a head; links between consecutive
+    // steps a light solid line; the rest nearly invisible, so a dense map
+    // is not a tangle. No dashes while the camera moves.
+    for (i, l) in pt.drawing.links.iter().enumerate() {
+        let weight = pt.links.get(i).copied().unwrap_or(LINK_FADED);
+        let strong = weight > 0.5;
+        let dash = (strong && !pt.moving).then_some(4.0);
+        let wid = if strong { 1.0 } else { 0.8 };
+        if let Some(p) = at(&[l.a, l.b]).and_then(|q| stroke(&q, wid, false, dash)) {
+            window.paint_path(p, pt.muted.opacity(weight));
         }
-        if let Some(p) = at(&l.head).and_then(|q| fill(&q)) {
+        if strong && let Some(p) = at(&l.head).and_then(|q| fill(&q)) {
             window.paint_path(p, pt.muted);
         }
     }
@@ -236,6 +279,12 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             window.paint_path(p, pt.faint);
         }
     }
+    // An invisible quad over the stage, above every path: the labels drawn
+    // after the canvas then sort above all the paths, so the renderer draws
+    // the scene's paths in one batch instead of one batch per label that
+    // happens to sit between two paths' draw orders (each batch clears and
+    // resolves a window-sized multisampled texture on Windows).
+    window.paint_quad(gpui_kit::fill(b, pt.canvas.opacity(0.004)));
 }
 
 impl Workspace {
@@ -255,6 +304,7 @@ impl Workspace {
         self.model.screen = Screen::Chat;
         self.explain_asks.insert(key, ask.clone());
         self.bridge.explain_build(key, ask);
+        self.start_explain_loader(cx);
         self.keys.focus(window, cx);
         cx.notify();
     }
@@ -267,6 +317,7 @@ impl Workspace {
         if let Some(s) = self.explains.get_mut(&key) {
             s.rebuild();
             self.bridge.explain_build(key, ask);
+            self.start_explain_loader(cx);
         }
         cx.notify();
     }
@@ -310,6 +361,56 @@ impl Workspace {
         }
     }
 
+    /// Runs `f` on tab `key`'s explainer, catching a panic: the tab then
+    /// shows its error card instead of the app aborting.
+    fn with_explain<R>(&mut self, key: u32, f: impl FnOnce(&mut ExplainState) -> R) -> Option<R> {
+        let s = self.explains.get_mut(&key)?;
+        match catch_unwind(AssertUnwindSafe(|| f(&mut *s))) {
+            Ok(r) => Some(r),
+            Err(_) => {
+                s.autoplay = false;
+                s.paint_failed.set(true);
+                None
+            }
+        }
+    }
+
+    /// Repaints the loading line while a scene is being built: about 12
+    /// times a second for the turning hourglass, once a second with
+    /// reduced motion (only the seconds change). One timer for every tab;
+    /// it stops when nothing is building.
+    pub(super) fn start_explain_loader(&mut self, cx: &mut Context<Self>) {
+        if self.explain_loader.is_some() {
+            return;
+        }
+        self.explain_loader = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let every = this
+                    .update(cx, |this, _| {
+                        if this.reduced_motion {
+                            Duration::from_secs(1)
+                        } else {
+                            LOADER_TICK
+                        }
+                    })
+                    .unwrap_or(LOADER_TICK);
+                cx.background_executor().timer(every).await;
+                let go = this.update(cx, |this, cx| {
+                    let any = this.explains.values().any(|s| s.building);
+                    if any {
+                        cx.notify();
+                    } else {
+                        this.explain_loader = None;
+                    }
+                    any
+                });
+                if !matches!(go, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+    }
+
     /// Eases the tilt and keeps frames coming while something moves.
     pub(super) fn tick_explain(&mut self, window: &mut Window) {
         let now = Instant::now();
@@ -333,15 +434,24 @@ impl Workspace {
             _ => return,
         };
         let reduced = self.reduced_motion;
-        if let Some(s) = self.explains.get_mut(&key) {
-            s.settle(dt, reduced);
-            if s.moving(now, reduced) {
-                window.request_animation_frame();
-            }
+        if self
+            .with_explain(key, |s| {
+                if s.paint_failed.get() {
+                    return false;
+                }
+                s.settle(dt, reduced);
+                s.moving(now, reduced)
+            })
+            .unwrap_or(false)
+        {
+            window.request_animation_frame();
         }
     }
 
-    /// Steps forward on autoplay while an explainer plays.
+    /// Steps forward on autoplay while an explainer plays: one timer for
+    /// every tab, started at most once (the guard below), stopped when no
+    /// tab plays. It only moves the step; the frames for the glide come
+    /// from `tick_explain`.
     fn start_explain_ticker(&mut self, cx: &mut Context<Self>) {
         if self.explain_ticker.is_some() {
             return;
@@ -354,11 +464,21 @@ impl Workspace {
                 let go = this.update(cx, |this, cx| {
                     let now = Instant::now();
                     let mut any = false;
+                    let mut moved_any = false;
                     for s in this.explains.values_mut() {
-                        if s.tick_autoplay(now) {
-                            cx.notify();
+                        match catch_unwind(AssertUnwindSafe(|| s.tick_autoplay(now))) {
+                            Ok(moved) => moved_any |= moved,
+                            Err(_) => {
+                                s.autoplay = false;
+                                s.paint_failed.set(true);
+                                moved_any = true;
+                            }
                         }
                         any |= s.autoplay;
+                    }
+                    if moved_any {
+                        this.explain_at = None;
+                        cx.notify();
                     }
                     if !any {
                         this.explain_ticker = None;
@@ -374,35 +494,37 @@ impl Workspace {
 
     fn explain_step(&mut self, key: u32, by: i32, cx: &mut Context<Self>) {
         let now = Instant::now();
-        if let Some(s) = self.explains.get_mut(&key) {
+        self.with_explain(key, |s| {
             s.autoplay = false;
             if by > 0 {
                 s.next(now);
             } else {
                 s.back(now);
             }
-        }
+        });
         cx.notify();
     }
 
     fn explain_play(&mut self, key: u32, cx: &mut Context<Self>) {
-        if let Some(s) = self.explains.get_mut(&key) {
+        let playing = self.with_explain(key, |s| {
             s.toggle_autoplay(Instant::now());
-            if s.autoplay {
-                self.start_explain_ticker(cx);
-            }
+            s.autoplay
+        });
+        if playing == Some(true) {
+            self.start_explain_ticker(cx);
         }
         cx.notify();
     }
 
     fn explain_keys(&mut self, key: u32, e: &gpui_kit::KeyDownEvent, cx: &mut Context<Self>) {
         let reduced = self.reduced_motion;
-        let did = match self.explains.get_mut(&key) {
-            Some(s) => {
-                s.reduced = reduced;
-                s.key(e.keystroke.key.as_str(), Instant::now())
-            }
-            None => return,
+        let name = e.keystroke.key.clone();
+        let Some(did) = self.with_explain(key, |s| {
+            s.reduced = reduced;
+            s.key(name.as_str(), Instant::now())
+        }) else {
+            cx.notify();
+            return;
         };
         match did {
             KeyDid::Nothing => return,
@@ -446,11 +568,15 @@ impl Workspace {
     /// A press on the stage ended: a click reads the node under it.
     fn explain_release(&mut self, key: u32, window: &mut Window, cx: &mut Context<Self>) {
         let reduced = self.reduced_motion;
-        if let Some(s) = self.explains.get_mut(&key)
-            && s.camera.dragging()
-        {
+        let released = self.with_explain(key, |s| {
+            if !s.camera.dragging() {
+                return false;
+            }
             s.reduced = reduced;
             s.release(Instant::now());
+            true
+        });
+        if released.is_none_or(|r| r) {
             // The spin after a drag needs frames.
             self.explain_at = None;
             window.request_animation_frame();
@@ -664,9 +790,12 @@ impl Workspace {
                         })
                         .into_any_element()
                 } else {
-                    // Building: a still line, not an animation, so the
-                    // window is not redrawn every frame while the model
-                    // thinks.
+                    // Building: an hourglass that turns over, where the
+                    // build is, and the seconds so far. A timer repaints it
+                    // about 12 times a second (`start_explain_loader`), not
+                    // every frame.
+                    let since = s.building_for(now);
+                    let stage = self.bridge.explain_stage(key).unwrap_or_default().text();
                     div()
                         .flex()
                         .flex_wrap()
@@ -674,8 +803,21 @@ impl Workspace {
                         .gap_2()
                         .text_sm()
                         .text_color(p.muted)
-                        .child(gpui_kit::component::Icon::new(AssetIcon::Hourglass).small())
-                        .child("Building the scene from your sources… a local model can take a minute.")
+                        .child(
+                            gpui_kit::component::Icon::new(AssetIcon::Hourglass)
+                                .small()
+                                .transform(Transformation::rotate(radians(hourglass_angle(
+                                    since,
+                                    self.reduced_motion,
+                                )))),
+                        )
+                        .child(SharedString::from(format!("{stage} {} s", since.as_secs())))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child("A local model can take a minute."),
+                        )
                         .child(
                             Button::new(("x3d-cancel", key as usize))
                                 .icon(AssetIcon::X)
@@ -713,10 +855,28 @@ impl Workspace {
         // laid out again only when the camera, the size, or the step moved.
         let bounds = s.bounds.clone();
         let [_, _, bw, bh] = bounds.get();
-        let frame = s.frame(bw.max(0.0), bh.max(0.0));
-        let lit: Vec<f32> = (0..scene.parts.len())
-            .map(|i| s.lit(i, now, reduced))
-            .collect();
+        // A panic here would abort the app from the window procedure: catch
+        // it and show the error card instead.
+        let computed = catch_unwind(AssertUnwindSafe(|| {
+            let started = Instant::now();
+            let f = s.frame_at(bw.max(0.0), bh.max(0.0), now);
+            let lit = s.lit_all(now, reduced);
+            let took = started.elapsed();
+            if took > SLOW_FRAME {
+                crate::crashlog::note(&format!(
+                    "Explain in 3D: a frame took {} ms ({} parts, {} links, {} label layouts so far)",
+                    took.as_millis(),
+                    scene.parts.len(),
+                    scene.links.len(),
+                    s.solves.get()
+                ));
+            }
+            (f, lit)
+        }));
+        let Ok((frame, lit)) = computed else {
+            s.paint_failed.set(true);
+            return self.explain_view(key, p, cx);
+        };
         let (label_els, leaders): (Vec<AnyElement>, Vec<Leader>) = match frame
             .as_ref()
             .filter(|_| bw > 1.0)
@@ -772,6 +932,8 @@ impl Workspace {
             lit,
             hover: s.hover,
             leaders,
+            links: frame.as_ref().map(|f| f.links.clone()).unwrap_or_default(),
+            moving: frame.as_ref().is_some_and(|f| f.moving),
             canvas: p.canvas,
             ink: p.text,
             faint: p.faint,
@@ -808,10 +970,10 @@ impl Workspace {
                 .tooltip("Back to the first view (0)")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let reduced = this.reduced_motion;
-                    if let Some(s) = this.explains.get_mut(&key) {
+                    this.with_explain(key, |s| {
                         s.reduced = reduced;
                         s.reset_view();
-                    }
+                    });
                     this.explain_at = None;
                     window.request_animation_frame();
                     cx.notify();
@@ -837,36 +999,48 @@ impl Workspace {
                     return;
                 };
                 let reduced = this.reduced_motion;
-                if let Some(s) = this.explains.get_mut(&key) {
+                let pressed = e.pressed_button.is_some();
+                // 0: nothing, 1: repaint, 2: repaint and keep frames coming.
+                let did = this.with_explain(key, |s| {
                     s.reduced = reduced;
                     let dragging = s.camera.dragging();
                     // A press released outside the window ends the drag.
-                    if dragging && e.pressed_button.is_none() {
+                    if dragging && !pressed {
                         s.release(Instant::now());
-                        cx.notify();
-                        return;
+                        return 1;
                     }
                     if mx < 0.0 || my < 0.0 || mx > w || my > h {
                         if !dragging && s.hover.is_some() {
                             s.leave();
-                            cx.notify();
+                            return 1;
                         }
-                        return;
+                        return 0;
                     }
                     if s.point(mx, my, w, h, Instant::now()) || dragging {
+                        2
+                    } else {
+                        0
+                    }
+                });
+                match did {
+                    Some(0) => {}
+                    Some(1) => cx.notify(),
+                    _ => {
                         window.request_animation_frame();
                         cx.notify();
                     }
                 }
             }))
             .on_hover(cx.listener(move |this, over: &bool, _, cx| {
-                if !*over
-                    && let Some(s) = this.explains.get_mut(&key)
-                    && !s.camera.dragging()
-                {
-                    s.leave();
-                    cx.notify();
+                if *over {
+                    return;
                 }
+                this.with_explain(key, |s| {
+                    if !s.camera.dragging() {
+                        s.leave();
+                    }
+                });
+                cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -878,14 +1052,15 @@ impl Workspace {
                         return;
                     };
                     let reduced = this.reduced_motion;
-                    if let Some(s) = this.explains.get_mut(&key) {
+                    let (clicks, shift) = (e.click_count, e.modifiers.shift);
+                    this.with_explain(key, |s| {
                         s.reduced = reduced;
-                        if e.click_count >= 2 {
+                        if clicks >= 2 {
                             s.double_click(mx, my, w, h);
                         } else {
-                            s.press(mx, my, e.modifiers.shift, Instant::now());
+                            s.press(mx, my, shift, Instant::now());
                         }
-                    }
+                    });
                     this.explain_at = None;
                     window.request_animation_frame();
                     cx.notify();
@@ -900,9 +1075,7 @@ impl Workspace {
                     else {
                         return;
                     };
-                    if let Some(s) = this.explains.get_mut(&key) {
-                        s.press(mx, my, true, Instant::now());
-                    }
+                    this.with_explain(key, |s| s.press(mx, my, true, Instant::now()));
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -940,11 +1113,11 @@ impl Workspace {
                 };
                 let dy = f32::from(e.delta.pixel_delta(px(20.)).y);
                 let reduced = this.reduced_motion;
-                if let Some(s) = this.explains.get_mut(&key) {
+                this.with_explain(key, |s| {
                     s.reduced = reduced;
                     // Away from you zooms in.
                     s.wheel(-dy, mx, my, w, h);
-                }
+                });
                 this.explain_at = None;
                 window.request_animation_frame();
                 cx.notify();
@@ -956,10 +1129,11 @@ impl Workspace {
                     return;
                 };
                 let reduced = this.reduced_motion;
-                if let Some(s) = this.explains.get_mut(&key) {
+                let delta = e.delta;
+                this.with_explain(key, |s| {
                     s.reduced = reduced;
-                    s.pinch(e.delta, mx, my, w, h);
-                }
+                    s.pinch(delta, mx, my, w, h);
+                });
                 this.explain_at = None;
                 window.request_animation_frame();
                 cx.notify();
@@ -1061,10 +1235,10 @@ impl Workspace {
                 .when(j == i, |d| d.bg(p.accent))
                 .when(j != i, |d| d.border_1().border_color(p.faint))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if let Some(s) = this.explains.get_mut(&key) {
+                    this.with_explain(key, |s| {
                         s.autoplay = false;
                         s.go(j, Instant::now());
-                    }
+                    });
                     this.explain_at = None;
                     window.request_animation_frame();
                     cx.notify();
@@ -1092,10 +1266,10 @@ impl Workspace {
                     .hover(move |d| d.text_color(p.text))
                     .child(name)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(s) = this.explains.get_mut(&key) {
+                        this.with_explain(key, |s| {
                             s.autoplay = false;
                             s.go(at, Instant::now());
-                        }
+                        });
                         this.explain_at = None;
                         window.request_animation_frame();
                         cx.notify();

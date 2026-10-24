@@ -169,3 +169,31 @@ fn eval_harness_is_headless_and_below_the_agent() {
         assert!(!eval.contains(f), "tern-eval must not depend on {f}");
     }
 }
+
+#[test]
+fn the_windows_icon_is_embedded_at_build_time_only() {
+    // tern-desktop, tern and tern-browser carry the Tern icon and version
+    // information through build.rs; the resource compiler never links in.
+    let crates_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    for name in ["tern-desktop", "tern-tui", "tern-browser"] {
+        let dir = crates_dir.join(name);
+        let doc: toml::Table = std::fs::read_to_string(dir.join("Cargo.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let windows = &doc["target"]["cfg(windows)"];
+        assert!(
+            windows["build-dependencies"].get("winresource").is_some(),
+            "{name}"
+        );
+        assert!(
+            windows
+                .get("dependencies")
+                .is_none_or(|d| d.get("winresource").is_none())
+        );
+        assert!(doc["dependencies"].get("winresource").is_none(), "{name}");
+        let build = std::fs::read_to_string(dir.join("build.rs")).unwrap();
+        assert!(build.contains("assets/brand/tern.ico"), "{name}");
+    }
+    assert!(crates_dir.join("../assets/brand/tern.ico").exists());
+}
