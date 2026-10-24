@@ -29,8 +29,8 @@ use crate::topics::definition;
 
 /// The floor is GRID × GRID units.
 pub const GRID: f32 = 12.0;
-pub const MAX_PARTS: usize = 10;
-pub const MAX_STEPS: usize = 8;
+pub const MAX_PARTS: usize = 20;
+pub const MAX_STEPS: usize = 20;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,7 +75,7 @@ impl Shape {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Part {
     pub id: String,
     pub label: String,
@@ -87,6 +87,10 @@ pub struct Part {
     pub size: [f32; 3],
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
+    /// How advanced it is: 0 Foundations … 4 Advanced and implications
+    /// (`crate::explain_answer::LEVELS`).
+    #[serde(default)]
+    pub level: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -97,7 +101,7 @@ pub struct Link {
     pub label: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Step {
     pub caption: String,
     /// Part ids this step highlights.
@@ -105,6 +109,12 @@ pub struct Step {
     pub parts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
+    /// How advanced the step is (0 to 4); steps go from basics up.
+    #[serde(default)]
+    pub level: u8,
+    /// The passage it explains, citations kept (answer scenes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub passage: String,
 }
 
 impl Step {
@@ -187,10 +197,10 @@ impl Scene {
 /// `concept` lets the model pick one from the passages.
 pub fn scene_prompt(concept: &str, sources: &[Source]) -> (String, String) {
     let system = format!(
-        "You design an isometric explainer diagram that teaches one concept to a student, using only the numbered passages from their own materials. Build the concept as a small machine of 3 to {max} parts on a {g} × {g} floor grid: \"at\" is [x, y, z] in grid units (the viewer looks from the corner where x and y are large; z is up), \"size\" is [width, depth, height], parts 1 to 4 units wide and 0.3 to 4 tall, not overlapping. Shapes: \"block\" (a stage, component, or actor), \"cylinder\" (a store, pool, or reservoir), \"plate\" (a flat base or layer; other parts may stand on it), \"arrow\" (a flow; its size is [dx, dy, thickness]), \"label\" (a floating note). Connect parts that hand something to each other. Then write 3 to {steps} steps that walk through how it works, in order: each highlights the parts it is about, has a caption of one or two sentences, and names the passage it comes from as \"source\": \"S2\". Use only what the passages say. Reply with JSON only: {{\"concept\": \"…\", \"summary\": \"one sentence\", \"parts\": [{{\"id\": \"p1\", \"label\": \"…\", \"shape\": \"block\", \"at\": [1, 1, 0], \"size\": [2, 2, 1.5], \"note\": \"what it is\"}}], \"links\": [{{\"from\": \"p1\", \"to\": \"p2\", \"label\": \"what moves\"}}], \"steps\": [{{\"caption\": \"…\", \"parts\": [\"p1\"], \"source\": \"S1\"}}]}}",
-        max = MAX_PARTS.min(8),
+        "You design an isometric explainer diagram that teaches one concept to a student, using only the numbered passages from their own materials. Build the concept as a small machine of 4 to {max} parts on a {g} × {g} floor grid: \"at\" is [x, y, z] in grid units (the viewer looks from the corner where x and y are large; z is up), \"size\" is [width, depth, height], parts 1 to 4 units wide and 0.3 to 4 tall, not overlapping. Shapes: \"block\" (a stage, component, or actor), \"cylinder\" (a store, pool, or reservoir), \"plate\" (a flat base or layer; other parts may stand on it), \"arrow\" (a flow; its size is [dx, dy, thickness]), \"label\" (a floating note). Connect parts that hand something to each other. Then write 4 to {steps} steps that walk through it from the basics to the advanced parts: each highlights the parts it is about, has a caption of one or two sentences, a \"level\" (0 foundations, 1 core idea, 2 mechanism, 3 details and edge cases, 4 advanced), and names the passage it comes from as \"source\": \"S2\". Use only what the passages say. Reply with JSON only: {{\"concept\": \"…\", \"summary\": \"one sentence\", \"parts\": [{{\"id\": \"p1\", \"label\": \"…\", \"shape\": \"block\", \"at\": [1, 1, 0], \"size\": [2, 2, 1.5], \"note\": \"what it is\"}}], \"links\": [{{\"from\": \"p1\", \"to\": \"p2\", \"label\": \"what moves\"}}], \"steps\": [{{\"caption\": \"…\", \"parts\": [\"p1\"], \"level\": 0, \"source\": \"S1\"}}]}}",
+        max = MAX_PARTS.min(14),
         g = GRID as u32,
-        steps = MAX_STEPS - 1,
+        steps = 12,
     );
     let ask = if concept.trim().is_empty() {
         "Pick the single most important mechanism or idea in these passages.".to_owned()
@@ -314,6 +324,7 @@ pub fn parse_scene(
             note: field(item, &["note", "description", "role", "what"])
                 .map(|s| clip(s, 160))
                 .unwrap_or_default(),
+            level: 0,
         };
         tidy(&mut p);
         parts.push(p);
@@ -368,10 +379,20 @@ pub fn parse_scene(
             .iter()
             .filter_map(|r| find(r))
             .collect();
+        let level = s
+            .get("level")
+            .and_then(|l| {
+                l.as_u64()
+                    .or_else(|| l.as_str().and_then(|t| t.trim().parse().ok()))
+            })
+            .unwrap_or(0)
+            .min(4) as u8;
         steps.push(Step {
             caption: clip(caption, 320),
             parts: lit,
             anchor: source_of(s, sources).map(|x| x.anchor.clone()),
+            level,
+            passage: String::new(),
         });
     }
     if steps.is_empty() {
@@ -385,9 +406,12 @@ pub fn parse_scene(
                 },
                 parts: vec![p.id.clone()],
                 anchor: None,
+                ..Step::default()
             })
             .collect();
     }
+    // Basics first: a stable sort keeps the model's order inside a level.
+    steps.sort_by_key(|s| s.level);
     let concept = field(&v, &["concept", "title", "name"])
         .map(str::to_owned)
         .unwrap_or_else(|| one_line(concept));
@@ -555,6 +579,7 @@ pub fn fallback_scene(concept: &str, sources: &[Source], topic: Option<&str>, no
         at: [x0 - 0.4, 4.2, 0.0],
         size: [pitch * n as f32 + 0.3, 3.4, 0.35],
         note: String::new(),
+        level: 0,
     }];
     let mut steps = Vec::new();
     let lead = picked
@@ -578,6 +603,7 @@ pub fn fallback_scene(concept: &str, sources: &[Source], topic: Option<&str>, no
         },
         parts: Vec::new(),
         anchor: None,
+        ..Step::default()
     });
     for (i, (term, sent, src)) in picked.iter().enumerate() {
         let lower = term.to_lowercase();
@@ -595,11 +621,13 @@ pub fn fallback_scene(concept: &str, sources: &[Source], topic: Option<&str>, no
             at: [x0 + i as f32 * pitch, 4.9, 0.35],
             size: [1.8, 1.8, h],
             note: clip(sent, 160),
+            level: 0,
         });
         steps.push(Step {
             caption: clip(sent, 240),
             parts: vec![id],
             anchor: src.map(|s| s.anchor.clone()),
+            ..Step::default()
         });
     }
     steps[0].parts = parts.iter().skip(1).map(|p| p.id.clone()).collect();

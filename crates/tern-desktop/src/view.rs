@@ -42,6 +42,7 @@ mod eval_view;
 mod explain_view;
 mod git_view;
 mod library_view;
+mod runmap_view;
 mod onboarding_view;
 mod panels_view;
 mod runs_view;
@@ -98,6 +99,8 @@ pub struct Workspace {
     /// Reads the browser helper while it runs (`watch_web`).
     web_timer: Option<Task<()>>,
     web_ticking: bool,
+    /// The run panel's Graph view: pointer and draw-in state.
+    graph: runmap_view::GraphUi,
     /// The harness switcher's popover is open, and when it opened.
     switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
@@ -484,6 +487,7 @@ impl Workspace {
             web: crate::webview::Host::shared(),
             web_timer: None,
             web_ticking: false,
+            graph: Default::default(),
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -3972,6 +3976,7 @@ impl Workspace {
                 RunView::Workers => self.run_workers(run, p, cx),
                 RunView::Ledger => self.run_ledger(run, p, cx),
                 RunView::Decisions => self.run_decisions(run, p),
+                RunView::Graph => self.run_graph(run, p, cx),
             }
         };
         div()
@@ -4370,6 +4375,12 @@ impl Render for Workspace {
         self.tick_scout(window, cx);
         self.tick_explain(window);
         self.sync_web(window, cx);
+        // The Graph view draws in each time it opens.
+        if self.model.run_panel.view == RunView::Graph && self.model.run_panel_open {
+            self.graph.opened.get_or_insert_with(Instant::now);
+        } else {
+            self.graph.opened = None;
+        }
         self.tick_toasts(window, cx);
         self.tick_rail_scroll(window);
         let now = Instant::now();

@@ -36,6 +36,7 @@ mod motion;
 mod onboarding;
 mod panels;
 mod providers;
+mod runmap;
 mod scout;
 mod scrollbar;
 mod settings;

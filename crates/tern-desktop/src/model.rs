@@ -204,6 +204,9 @@ pub enum RunView {
     Ledger,
     /// What the decision model decided, and why.
     Decisions,
+    /// FIG 1 · RUN MAP: the run as an isometric figure, and spend over
+    /// time (`crate::runmap`).
+    Graph,
 }
 
 impl RunView {
@@ -213,7 +216,13 @@ impl RunView {
         if run.deep.is_some() {
             v.push(Self::Workers);
         }
-        v.extend([Self::Detailed, Self::Raw, Self::Report, Self::Ledger]);
+        v.extend([
+            Self::Detailed,
+            Self::Raw,
+            Self::Report,
+            Self::Graph,
+            Self::Ledger,
+        ]);
         if !run.decisions.is_empty() {
             v.push(Self::Decisions);
         }
@@ -229,6 +238,7 @@ impl RunView {
             Self::Report => "Report",
             Self::Ledger => "Ledger",
             Self::Decisions => "Decisions",
+            Self::Graph => "Graph",
         }
     }
 }
@@ -2550,7 +2560,7 @@ mod tests {
         let run = m.panel_run();
         assert_eq!(RunView::for_run(run)[1], RunView::Workers);
         assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
-        assert_eq!(RunView::for_run(&Run::new()).len(), 5);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 6);
         // A normal turn after a deep one goes back to the summary.
         m.finish_turn(
             &outcome(TurnState::Completed, Some("A [1]."), None),
