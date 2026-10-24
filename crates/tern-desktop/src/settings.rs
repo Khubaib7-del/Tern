@@ -112,7 +112,6 @@ impl Section {
             Self::About => "about",
         }
     }
-
 }
 
 /// One searchable setting: where it lives, its name, and other words for it.
@@ -361,7 +360,6 @@ pub fn nav_width(window_w: f32) -> f32 {
         NAV_ICONS_W
     }
 }
-
 
 /// The Settings screen's own state.
 #[derive(Clone, Debug, Default)]
