@@ -1296,6 +1296,26 @@ impl Bridge {
         });
     }
 
+    /// Adds a web page or online PDF as a material (read with Tern Crawl).
+    pub fn study_add_link(&self, url: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = async {
+                let store = StudyStore::discover()?;
+                let mut lib = store.load()?;
+                let m = st::add_link(&store, &mut lib, &url).await?;
+                st::ensure_topics(&store, &mut lib)?;
+                Ok::<_, String>((lib, format!("Added {}.", m.name)))
+            }
+            .await;
+            let m = match r {
+                Ok((lib, note)) => StudyMsg::Library(Ok(lib), Some(note), None),
+                Err(e) => StudyMsg::Library(Err(e), None, None),
+            };
+            Self::study_send(&tx, m);
+        });
+    }
+
     /// Adds the latest research report of `chat` (`last` for the newest).
     pub fn study_add_report(&self, chat: String) {
         let tx = self.tx.clone();

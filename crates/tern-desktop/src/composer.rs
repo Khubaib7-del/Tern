@@ -105,6 +105,17 @@ impl Mode {
         self == Self::Deep
     }
 
+    /// The message as the user wrote it: the Study mode's instruction (see
+    /// [`Mode::study_prefix`]) taken off the front when it is there, so a
+    /// reopened Study chat shows the bubble, and its reply quote, as sent.
+    pub fn strip_study_prefix(message: &str) -> &str {
+        STUDY
+            .iter()
+            .filter_map(|m| m.study_prefix())
+            .find_map(|p| message.strip_prefix(p))
+            .map_or(message, |rest| rest.trim_start_matches('\n'))
+    }
+
     /// The instruction a Study mode puts before the message, so the same
     /// chat model answers in that style.
     pub fn study_prefix(self) -> Option<&'static str> {
@@ -985,6 +996,20 @@ mod tests {
         assert!(Mode::Deep.is_deep());
         assert!(Mode::Quiz.study_prefix().unwrap().starts_with("Quiz mode"));
         assert!(Mode::Chat.study_prefix().is_none());
+        // A reopened Study chat drops the mode line and keeps the quote
+        // block whole, so the bubble shows a quote chip, not raw tags.
+        let sent = format!(
+            "{}\n\n{}",
+            Mode::Tutor.study_prefix().unwrap(),
+            tern_agent::reply::compose(Some("An earlier answer."), "Why?")
+        );
+        let plain = Mode::strip_study_prefix(&sent);
+        assert!(plain.starts_with("<in_reply_to>"));
+        assert_eq!(
+            tern_agent::reply::split(plain),
+            (Some("An earlier answer."), "Why?")
+        );
+        assert_eq!(Mode::strip_study_prefix("Just text"), "Just text");
         for m in Mode::for_harness(Harness::Research) {
             assert!(!m.line().is_empty());
         }

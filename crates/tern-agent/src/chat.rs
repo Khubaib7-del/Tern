@@ -121,6 +121,8 @@ pub struct ChatSession {
     /// context is estimated from the shorter history).
     compaction: crate::compact::Compaction,
     compacted: Option<crate::compact::Compacted>,
+    /// Why the last compaction folded nothing (for the toast).
+    compact_skip: Option<String>,
     calls_at_compaction: Option<usize>,
 }
 
@@ -658,6 +660,7 @@ impl ChatSession {
             workspace_logged: false,
             compaction: opts.compaction,
             compacted: None,
+            compact_skip: None,
             calls_at_compaction: None,
             ledger: UsageLedger::default(),
             tools,
@@ -1236,6 +1239,11 @@ impl ChatSession {
         self.compaction = c;
     }
 
+    /// Why the last compaction found nothing to fold, in plain words.
+    pub fn compact_skip(&self) -> Option<&str> {
+        self.compact_skip.as_deref()
+    }
+
     /// The chat's last compaction, if it has one.
     pub fn compacted(&self) -> Option<&crate::compact::Compacted> {
         self.compacted.as_ref()
@@ -1267,11 +1275,29 @@ impl ChatSession {
             .map_err(|e| e.to_string())?;
         let turns = live_turns(&events);
         let prior = crate::compact::last(&events);
-        let keep = self.compaction.keep_turns;
-        let fold = crate::compact::plan(&turns, prior.as_ref(), keep);
+        let ctx = self.context();
+        let pressure = auto
+            || ctx
+                .fraction()
+                .is_some_and(|f| f >= crate::compact::PRESSURE);
+        let plan = crate::compact::plan_for(
+            &turns,
+            prior.as_ref(),
+            self.compaction.keep_turns,
+            self.context_window,
+            pressure,
+        );
+        let keep = plan.kept;
+        let fold = plan.fold;
         if fold.is_empty() {
+            let overhead = ctx
+                .window
+                .filter(|w| *w > 0)
+                .map(|w| (ctx.parts.system + ctx.parts.tools) as f32 / w as f32);
+            self.compact_skip = plan.skip.map(|s| s.message(overhead));
             return Ok(None);
         }
+        self.compact_skip = None;
         let folding: Vec<&PastTurn> = turns.iter().filter(|t| fold.contains(&t.number)).collect();
         let req = crate::compact::request(&self.model, prior.as_ref(), &folding);
         let reply = self.provider.chat(&req).await.map_err(|e| e.to_string())?;

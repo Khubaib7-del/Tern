@@ -29,6 +29,119 @@ pub enum StudyView {
     Deck,
 }
 
+/// The Study window's modes, as the tab bar at its top shows them (v2:
+/// `Flashcards │ Quiz │ Viva`, with the chat and Explain in 3D beside
+/// them). One window: the tab picks what the centre shows, and the
+/// composer at the bottom stays the Study chat's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StudyTab {
+    /// The Study chat; materials and topics when it is empty.
+    #[default]
+    Chat,
+    Cards,
+    Quiz,
+    Viva,
+    /// Explain in 3D.
+    Explain,
+}
+
+impl StudyTab {
+    pub const ALL: [StudyTab; 5] = [
+        StudyTab::Chat,
+        StudyTab::Cards,
+        StudyTab::Quiz,
+        StudyTab::Viva,
+        StudyTab::Explain,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "Chat",
+            Self::Cards => "Flashcards",
+            Self::Quiz => "Quiz",
+            Self::Viva => "Viva",
+            Self::Explain => "Explain in 3D",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    /// Whether the mode works from the user's materials (an empty library
+    /// shows the add-material empty state instead of the tool).
+    pub fn needs_materials(self) -> bool {
+        matches!(self, Self::Quiz | Self::Viva)
+    }
+
+    /// The tab a Study view belongs to.
+    pub fn of(view: StudyView) -> Self {
+        match view {
+            StudyView::Home | StudyView::Tutor => Self::Chat,
+            StudyView::Cards | StudyView::Deck => Self::Cards,
+            StudyView::Quiz => Self::Quiz,
+            StudyView::Viva => Self::Viva,
+        }
+    }
+}
+
+/// What a message typed in the Study composer asks for, when it names a
+/// mode ("quiz me on paging", "flashcards for chapter 3", "explain TLBs
+/// in 3D"): the tab to switch to, and what is left as its subject.
+pub fn intent(text: &str) -> Option<(StudyTab, String)> {
+    let t = text.trim();
+    let low = t.to_lowercase();
+    let rules: [(&[&str], StudyTab); 4] = [
+        (
+            &["in 3d", "3d model", "in three d", "explain in 3d"],
+            StudyTab::Explain,
+        ),
+        (
+            &["quiz me", "test me", "give me a quiz", "start a quiz"],
+            StudyTab::Quiz,
+        ),
+        (
+            &["viva", "examine me", "oral exam", "mock exam"],
+            StudyTab::Viva,
+        ),
+        (
+            &[
+                "flashcards",
+                "flashcard",
+                "flash cards",
+                "flash card",
+                "review my cards",
+                "make cards",
+                "anki",
+            ],
+            StudyTab::Cards,
+        ),
+    ];
+    for (keys, tab) in rules {
+        if let Some(k) = keys.iter().find(|k| low.contains(*k)) {
+            let at = low.find(k).unwrap_or(0);
+            let mut rest = format!("{} {}", &t[..at], &t[at + k.len()..]);
+            for filler in ["on ", "about ", "for ", "of "] {
+                let trimmed = rest.trim_start();
+                if trimmed.to_lowercase().starts_with(filler) {
+                    rest = trimmed[filler.len()..].to_owned();
+                }
+            }
+            let subject = rest
+                .trim()
+                .trim_start_matches(|c: char| !c.is_alphanumeric())
+                .trim_end_matches(|c: char| !c.is_alphanumeric() && c != ')')
+                .to_owned();
+            let subject = subject
+                .strip_prefix("explain ")
+                .map(str::to_owned)
+                .unwrap_or(subject);
+            return Some((tab, subject));
+        }
+    }
+    None
+}
+
 /// How long the card takes to turn over.
 pub const FLIP: Duration = Duration::from_millis(320);
 
@@ -264,6 +377,12 @@ pub struct StudyState {
     pub editing: Option<String>,
     /// The local clock's offset from UTC, for "today".
     pub offset: i64,
+    /// The mode the one Study window shows.
+    pub tab: StudyTab,
+    /// The materials and topics panel is open over the chat.
+    pub materials_open: bool,
+    /// The 3D explainer shown in the Explain tab (its key).
+    pub explain: Option<u32>,
 }
 
 impl StudyState {
@@ -298,6 +417,50 @@ impl StudyState {
     pub fn fail(&mut self, msg: String) {
         self.busy = None;
         self.notice = Some(msg);
+    }
+
+    /// Switches the window's mode. A tool already under way (a quiz, a
+    /// viva, a review) is kept, so moving between tabs never loses it.
+    /// Shows a Study view (from the Library, a deck row, a review's
+    /// end) with its tab lit.
+    pub fn show(&mut self, view: StudyView) {
+        self.view = view;
+        self.tab = StudyTab::of(view);
+    }
+
+    pub fn set_tab(&mut self, tab: StudyTab) {
+        self.tab = tab;
+        self.notice = None;
+        self.view = match tab {
+            StudyTab::Chat if self.view == StudyView::Tutor => StudyView::Tutor,
+            StudyTab::Chat | StudyTab::Explain => StudyView::Home,
+            StudyTab::Cards if matches!(self.view, StudyView::Cards | StudyView::Deck) => self.view,
+            StudyTab::Cards if self.review.is_some() => StudyView::Cards,
+            StudyTab::Cards => StudyView::Deck,
+            StudyTab::Quiz => StudyView::Quiz,
+            StudyTab::Viva => StudyView::Viva,
+        };
+        if tab == StudyTab::Viva && self.viva.as_ref().is_some_and(|v| v.report.is_some()) {
+            self.viva = None;
+        }
+    }
+
+    /// The one-line status v2 puts in its status bar: `6 due today ·
+    /// recall 78%`, or what to do first when there is nothing yet.
+    pub fn status_line(&self, now: i64) -> String {
+        if self.library.materials.is_empty() && self.deck.cards.is_empty() {
+            return "Add a PDF, notes or a link to start".into();
+        }
+        let due = self.due(None, now);
+        let mut parts = vec![if due == 0 {
+            "nothing due".to_owned()
+        } else {
+            format!("{due} due today")
+        }];
+        if !self.library.topics.is_empty() {
+            parts.push(format!("recall {:.0}%", self.library.overall() * 100.));
+        }
+        parts.join(" · ")
     }
 
     pub fn go_home(&mut self) {
@@ -773,5 +936,53 @@ mod tests {
             notes: vec![],
             method: "offline estimate".into(),
         }
+    }
+
+    #[test]
+    fn tabs_keep_a_tool_under_way() {
+        let mut s = StudyState::new();
+        assert_eq!(s.tab, StudyTab::Chat);
+        s.set_tab(StudyTab::Quiz);
+        assert_eq!((s.tab, s.view), (StudyTab::Quiz, StudyView::Quiz));
+        s.set_tab(StudyTab::Cards);
+        assert_eq!(s.view, StudyView::Deck);
+        s.view = StudyView::Cards;
+        s.set_tab(StudyTab::Viva);
+        s.set_tab(StudyTab::Cards);
+        assert_eq!(s.view, StudyView::Deck, "no review was open");
+        s.view = StudyView::Tutor;
+        s.set_tab(StudyTab::Chat);
+        assert_eq!(s.view, StudyView::Tutor, "the tutor stays in the chat tab");
+        s.set_tab(StudyTab::Explain);
+        assert_eq!(s.view, StudyView::Home);
+        for t in StudyTab::ALL {
+            assert_eq!(StudyTab::ALL[t.index()], t);
+        }
+        assert_eq!(StudyTab::of(StudyView::Deck), StudyTab::Cards);
+        assert!(StudyTab::Quiz.needs_materials() && !StudyTab::Chat.needs_materials());
+    }
+
+    #[test]
+    fn the_composer_can_drive_a_mode() {
+        assert_eq!(
+            intent("Quiz me on paging"),
+            Some((StudyTab::Quiz, "paging".into()))
+        );
+        assert_eq!(
+            intent("explain TLB lookups in 3D"),
+            Some((StudyTab::Explain, "TLB lookups".into()))
+        );
+        assert_eq!(
+            intent("Flashcards for chapter 3").map(|i| i.0),
+            Some(StudyTab::Cards)
+        );
+        assert_eq!(intent("Examine me").map(|i| i.0), Some(StudyTab::Viva));
+        assert_eq!(intent("What is a page table?"), None);
+    }
+
+    #[test]
+    fn the_status_line_says_what_to_do_first() {
+        let s = StudyState::new();
+        assert!(s.status_line(0).starts_with("Add a PDF"));
     }
 }

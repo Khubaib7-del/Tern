@@ -47,6 +47,27 @@ impl Mood {
     }
 }
 
+/// Scout's size in the sidebar corner, in pixels (v2 draws it at 56;
+/// it was 40, which read as an icon rather than a companion).
+pub const CORNER: f32 = 64.;
+
+/// The word beside Scout for its state, as v2's states are named
+/// (searching, reading, verifying, thinking, needs you, done, study).
+/// Idle shows nothing.
+pub fn state_line(mood: Mood) -> Option<&'static str> {
+    match mood {
+        Mood::Idle => None,
+        Mood::NeedsYou => Some("needs you"),
+        Mood::Blocked => Some("blocked"),
+        Mood::Searching => Some("searching"),
+        Mood::Reading => Some("reading"),
+        Mood::Verifying => Some("verifying"),
+        Mood::Thinking => Some("thinking"),
+        Mood::Studying => Some("studying"),
+        Mood::Ready => Some("done"),
+    }
+}
+
 /// How long the Ready nod lasts before Scout settles to idle.
 pub const READY_SECS: f32 = 1.6;
 /// How long Scout reacts to a flashcard answer.
@@ -473,5 +494,23 @@ mod tests {
         assert!(spread > 0.1, "a head shake: {spread}");
         run(&mut rig, 2.0);
         assert!(rig.reacting().is_none());
+    }
+
+    #[test]
+    fn the_corner_is_bigger_and_names_each_state() {
+        const { assert!(CORNER >= 56.) };
+        assert_eq!(state_line(Mood::Idle), None);
+        assert_eq!(state_line(Mood::Ready), Some("done"));
+        assert_eq!(state_line(Mood::NeedsYou), Some("needs you"));
+        for m in [
+            Mood::Searching,
+            Mood::Reading,
+            Mood::Verifying,
+            Mood::Thinking,
+            Mood::Studying,
+            Mood::Blocked,
+        ] {
+            assert!(state_line(m).is_some(), "{m:?}");
+        }
     }
 }

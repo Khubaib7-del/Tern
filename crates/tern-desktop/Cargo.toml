@@ -20,6 +20,12 @@ tern-core.workspace = true
 tern-agent = { workspace = true, features = ["mic"] }
 gpui-kit = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+raw-window-handle = "0.6"
+
+# The built-in browser's page engine: WebView2 on Windows, WKWebView on
+# macOS (docs/decisions/0010-browser-engine.md). Linux shows the reader.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+wry = { version = "0.57", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true

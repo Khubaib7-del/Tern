@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, Context, Hsla, PathBuilder, Pixels, Point, Window, canvas, div, point,
-    px,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, Context, Hsla, PathBuilder, Pixels,
+    Point, SharedString, Window, canvas, div, point, px,
 };
 
 use super::Workspace;
@@ -256,7 +256,8 @@ impl Workspace {
         use crate::model::Screen;
         match self.model.screen {
             Screen::Settings => false,
-            Screen::Study => true,
+            // The flashcard review draws Scout beside the card.
+            Screen::Study if self.model.study.view == crate::study::StudyView::Cards => true,
             _ => self.model.sidebar_open,
         }
     }
@@ -283,13 +284,42 @@ impl Workspace {
     /// Scout's corner at the foot of the chats sidebar. Nothing is printed
     /// under it; the pose carries the state. The tooltip names it.
     pub(super) fn scout_corner(&self, p: Palette) -> AnyElement {
+        let mood = self.scout.mood();
+        let state = crate::scout::state_line(mood);
         div()
             .id("scout")
             .px_3()
             .py_2()
             .flex()
             .items_end()
-            .child(self.scout_figure(40., p))
+            .gap_2()
+            .child(self.scout_figure(crate::scout::CORNER, p))
+            // What Scout is doing, in a word, beside it (v2's corner). It
+            // cross-fades when the state changes; idle says nothing.
+            .when_some(state, |d, line| {
+                d.child(
+                    div()
+                        .pb_1()
+                        .text_xs()
+                        .font_family(crate::assets::MONO_FONT)
+                        .text_color(if mood == crate::scout::Mood::NeedsYou {
+                            p.accent
+                        } else {
+                            p.faint
+                        })
+                        .child(line)
+                        .with_animation(
+                            SharedString::from(format!("scout-state-{line}")),
+                            Animation::new(if self.reduced_motion {
+                                Duration::ZERO
+                            } else {
+                                crate::motion::UI
+                            })
+                            .with_easing(crate::motion::ease),
+                            |d, t| d.opacity(t),
+                        ),
+                )
+            })
             .tooltip({
                 let label = self.scout.mood().label();
                 move |window, cx| {

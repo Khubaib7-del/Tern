@@ -88,6 +88,15 @@ pub struct Workspace {
     searx_input: Entity<InputState>,
     /// The chat each harness last had open, so switching back reopens it.
     parked: std::collections::HashMap<tern_agent::Harness, SessionId>,
+    /// Where each harness was left (chat, draft, scroll, panels), kept in
+    /// the preferences so it survives a restart (`crate::harness`).
+    harness_memory: crate::harness::Memory,
+    /// The place to put back once the harness's chat has loaded.
+    pending_restore: Option<(tern_agent::Harness, tern_agent::prefs::LastChat)>,
+    /// The browser's page engine (`crate::webview`).
+    web: crate::webview::Shared,
+    /// The harness switcher's popover is open, and when it opened.
+    switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
     rename_input: Entity<InputState>,
     renaming: Option<SessionId>,
@@ -415,6 +424,7 @@ impl Workspace {
         let (ext_inputs, ext_subs) = customize_view::ExtInputs::new(window, cx);
         let (settings_inputs, settings_subs) = settings_view::SettingsInputs::new(window, cx);
         let setup_inputs = setup_view::SetupInputs::new(window, cx);
+        let harness_memory = crate::harness::Memory::from_prefs(&tern_agent::Preferences::load());
         model.projects.collapsed = tern_agent::Preferences::load()
             .collapsed_projects
             .into_iter()
@@ -456,6 +466,13 @@ impl Workspace {
             key_input,
             searx_input,
             parked: Default::default(),
+            harness_memory: harness_memory.clone(),
+            pending_restore: Some((
+                tern_agent::Harness::Research,
+                harness_memory.get(tern_agent::Harness::Research).clone(),
+            )),
+            switcher: None,
+            web: crate::webview::Host::shared(),
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -543,7 +560,7 @@ impl Workspace {
                     search: s.search_name().map(str::to_owned),
                     context_window: s.context_window(),
                 });
-                self.model.sessions = recent;
+                self.model.set_sessions(recent);
                 self.model.mcp_offers = s.mcp_offers().to_vec();
                 if !self.model.customize.loaded {
                     // Skills for the `/` menu.
@@ -557,6 +574,7 @@ impl Workspace {
                 self.chat_shown(&s);
                 self.session = Some(s);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
+                self.apply_restore(window, cx);
                 self.apply_pending_pick();
             }
             Msg::Opening(id, turns) => {
@@ -569,6 +587,7 @@ impl Workspace {
                     self.model.restore(&turns);
                     self.request_icons();
                     self.scroll.scroll_to_bottom();
+                    self.apply_restore(window, cx);
                 }
             }
             Msg::ResumeFailed(id, e) => {
@@ -607,7 +626,7 @@ impl Workspace {
                     .map(|r| r.title.clone())
                     .unwrap_or_else(|| "Chat".into());
                 self.tabs.set_active(s.session_id(), &title);
-                self.model.sessions = recent;
+                self.model.set_sessions(recent);
                 self.current = Some(s.session_id());
                 self.model.set_resume_offer(s.checkpoint().as_ref(), None);
                 self.model.cont.ids.anchor = self
@@ -623,6 +642,7 @@ impl Workspace {
                 self.session = Some(s);
                 self.scroll.scroll_to_bottom();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
+                self.apply_restore(window, cx);
             }
             Msg::Cont(m) => self.on_cont(*m, window, cx),
             Msg::Ext(m) => match *m {
@@ -663,7 +683,7 @@ impl Workspace {
                 for r in &recent {
                     self.tabs.retitle(r.id, &r.title);
                 }
-                self.model.sessions = recent;
+                self.model.set_sessions(recent);
             }
             Msg::ConnectFailed(e) => self.model.connect_failed(e),
             Msg::Compacted(s, result, usage) => {
@@ -671,9 +691,11 @@ impl Workspace {
                 self.model.context = usage;
                 match result {
                     Ok(Some(_)) => self.model.show_compaction_notice(),
-                    Ok(None) => self
-                        .model
-                        .toast_info("Nothing to compact yet: the latest turns stay word for word."),
+                    Ok(None) => self.model.toast_info(
+                        s.compact_skip()
+                            .unwrap_or("Nothing to compact yet: your recent turns already fit.")
+                            .to_owned(),
+                    ),
                     Err(e) => self
                         .model
                         .toast_error(format!("Compacting failed: {e}"), None),
@@ -732,7 +754,7 @@ impl Workspace {
                     s.checkpoint().filter(|_| out.answer.is_none()).as_ref(),
                     Some((out.state, out.reason.as_deref())),
                 );
-                self.model.sessions = recent;
+                self.model.set_sessions(recent);
                 if !s.is_draft() {
                     self.bridge.remember(s.harness(), s.session_id());
                     self.model.composer.remember(&s.session_id().to_string());
@@ -904,6 +926,17 @@ impl Workspace {
             cx.notify();
             return;
         }
+        // In Study, a message that names a mode ("quiz me on paging",
+        // "explain TLBs in 3D") switches the window to it and starts it.
+        if self.model.harness == Harness::Study {
+            let typed = self.composer.read(cx).value().to_string();
+            if self.study_intent(&typed, window, cx) {
+                self.composer
+                    .update(cx, |c, cx| c.set_value("", window, cx));
+                cx.notify();
+                return;
+            }
+        }
         if self.session.is_none() {
             return;
         }
@@ -914,8 +947,10 @@ impl Workspace {
         let Some(session) = self.session.take() else {
             return;
         };
-        // Asked from the Study tools: the answer shows in the Study chat.
-        if self.model.screen == Screen::Study {
+        // Asked in Study: the answer shows in the Study window's chat.
+        if self.model.harness == Harness::Study {
+            self.model.study.set_tab(crate::study::StudyTab::Chat);
+            self.model.study.materials_open = false;
             self.model.screen = Screen::Chat;
         }
         let mut session = session;
@@ -1411,7 +1446,15 @@ impl Workspace {
     }
 
     /// Reopens a chat from the list. Ignored mid-turn or for the open chat.
+    /// A chat of the other harness never opens here: the window switches
+    /// harness first and opens it there.
     fn open_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        if let crate::harness::Open::SwitchTo(h) =
+            crate::harness::open(&self.model.all_sessions, self.model.harness, id)
+        {
+            self.switch_harness(h, Some(id), cx);
+            return;
+        }
         // From an explainer, a chat that is already open is only focused.
         if self.tabs.active_tab().is_explain()
             && let Some(i) = self.tabs.list.iter().position(|t| t.id == Some(id))
@@ -1598,6 +1641,7 @@ impl Workspace {
             self.show_tab(tab, window, cx);
         }
         self.model.sessions.retain(|s| s.id != id);
+        self.model.all_sessions.retain(|s| s.id != id);
         self.bridge.archive(id);
         cx.notify();
     }
@@ -1970,39 +2014,8 @@ impl Workspace {
     // ----- pieces -----
 
     fn title_bar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
-        let harness = self.model.harness;
-        let hs = [Harness::Research, Harness::Study];
-        let segs: Vec<segmented::Segment> = hs
-            .iter()
-            .map(|&h| segmented::Segment {
-                label: if h == Harness::Study {
-                    "Study"
-                } else {
-                    "Research"
-                }
-                .into(),
-                glyph: assets::glyph(if h == Harness::Study {
-                    "study"
-                } else {
-                    "research"
-                }),
-            })
-            .collect();
-        let switch = self.segmented(
-            "harness",
-            &segs,
-            hs.iter().position(|&h| h == harness).unwrap_or(0),
-            segmented::Look {
-                framed: true,
-                fill: false,
-                small: true,
-            },
-            p,
-            std::rc::Rc::new(move |this: &mut Self, i, _, cx| {
-                this.choose_harness(hs[i], cx);
-            }),
-            cx,
-        );
+        // The harness switcher lives at the top of the sidebar (like the
+        // ChatGPT / Codex app switcher), not in the title bar.
         TitleBar::new().child(
             div()
                 .flex()
@@ -2035,7 +2048,7 @@ impl Workspace {
                         .child(div().occlude().child(self.workspace_button(p, cx)))
                         .children(self.git_chip(p, cx)),
                 )
-                .child(div().occlude().child(switch))
+                .child(div().flex_1())
                 .child(
                     div()
                         .flex()
@@ -2322,6 +2335,132 @@ impl Workspace {
         self.with_row_menu(row, ix, id, sub, p, cx)
     }
 
+    /// The harness switcher at the top of the sidebar: the harness's name
+    /// as a title with a chevron; it opens a rounded popover with one row
+    /// per harness (bold name, a muted line on what it is for, a check on
+    /// the active one) that fades and slides in on the house curve.
+    fn harness_switcher(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.model.harness;
+        let (name, _) = crate::harness::label(active);
+        let open = self.switcher.is_some();
+        let title = div()
+            .id("harness-switcher")
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .rounded_lg()
+            .cursor_pointer()
+            .when(open, |d| d.bg(p.hover))
+            .hover(|d| d.bg(p.hover))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text)
+                    .when(active == Harness::Study, |d| {
+                        d.font_family(assets::SERIF_FONT)
+                            .font_weight(FontWeight::NORMAL)
+                            .text_xl()
+                    })
+                    .child(name),
+            )
+            .child(
+                gpui_kit::component::Icon::new(IconName::ChevronDown)
+                    .size(px(14.))
+                    .text_color(p.muted),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.switcher = match this.switcher {
+                    Some(_) => None,
+                    None => Some(std::time::Instant::now()),
+                };
+                cx.notify();
+            }));
+        let menu = open.then(|| {
+            let rows = [Harness::Research, Harness::Study].map(|h| {
+                let (n, line) = crate::harness::label(h);
+                let on = h == active;
+                div()
+                    .id(SharedString::from(format!("harness-row-{n}")))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.text)
+                                    .child(n),
+                            )
+                            .child(div().text_xs().text_color(p.muted).truncate().child(line)),
+                    )
+                    .when(on, |d| {
+                        d.child(
+                            gpui_kit::component::Icon::new(IconName::Check)
+                                .size(px(15.))
+                                .text_color(p.text),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.switcher = None;
+                        this.choose_harness(h, cx);
+                        cx.notify();
+                    }))
+            });
+            let dur = if self.reduced_motion {
+                Duration::ZERO
+            } else {
+                motion::UI
+            };
+            div()
+                .id("harness-menu")
+                .absolute()
+                .top(px(48.))
+                .left(px(8.))
+                .right(px(8.))
+                .p_1()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .rounded_xl()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.raised)
+                .shadow_lg()
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.switcher = None;
+                    cx.notify();
+                }))
+                .children(rows)
+                .with_animation(
+                    "harness-menu-in",
+                    Animation::new(dur).with_easing(motion::ease),
+                    |d, t| d.opacity(t).mt(px((1. - t) * -6.)),
+                )
+                .into_any_element()
+        });
+        div()
+            .px_2()
+            .pt_2()
+            .child(title)
+            .children(menu.map(|m| gpui_kit::deferred(m).with_priority(2)))
+            .into_any_element()
+    }
+
     fn sidebar(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let order = crate::continuity::tree(&self.model.sessions);
         let rows = self
@@ -2336,9 +2475,11 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
+            .relative()
             .bg(p.sidebar)
             .border_r_1()
             .border_color(p.border)
+            .child(self.harness_switcher(p, cx))
             .child(self.projects_header(p, cx))
             .children(self.project_name_field(None, p))
             .child(
@@ -2380,14 +2521,27 @@ impl Workspace {
                 .when_some(quote.clone(), |d, q| {
                     d.child(
                         div()
+                            // The quoted reply as a chip over the bubble:
+                            // a reply arrow and one line of the quote.
                             .max_w(px(COLUMN_MAX_W * 0.8))
-                            .pl_2()
-                            .border_l_2()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .px_2p5()
+                            .py_1()
+                            .rounded_full()
+                            .border_1()
                             .border_color(p.border)
+                            .bg(p.raised.opacity(0.5))
                             .text_xs()
                             .text_color(p.muted)
-                            .line_clamp(2)
-                            .child(SharedString::from(q)),
+                            .child(div().flex_none().text_color(p.faint).child("↩"))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(SharedString::from(q.replace('\n', " "))),
+                            ),
                     )
                 })
                 .when(!chips.is_empty(), |d| {
@@ -4112,6 +4266,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick_scout(window, cx);
         self.tick_explain(window);
+        self.sync_web(window, cx);
         self.tick_toasts(window, cx);
         self.tick_rail_scroll(window);
         let now = Instant::now();
@@ -4299,13 +4454,18 @@ impl Render for Workspace {
                             .overflow_hidden()
                             .when(!panels.shows_centre(), |d| d.hidden())
                             .map(|d| match self.model.screen {
+                                Screen::Chat
+                                    if self.model.harness == Harness::Study
+                                        && self.active_explain().is_none() =>
+                                {
+                                    d.child(self.study_window(p, window, cx))
+                                }
                                 Screen::Chat => match self.active_explain() {
                                     Some(key) => d
                                         .children(self.tab_strip(p, cx))
                                         .child(self.explain_view(key, p, cx)),
                                     None => d
                                         .children(self.tab_strip(p, cx))
-                                        .children(self.study_chat_header(p, cx))
                                         .child(self.transcript(p, cx))
                                         .children(self.range_bar(p, cx).map(|b| {
                                             div()
@@ -4322,13 +4482,7 @@ impl Render for Workspace {
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),
                                 Screen::Git => d.child(self.git_screen(p, cx)),
                                 Screen::Watches => d.child(self.watches_screen(p, cx)),
-                                Screen::Study => d
-                                    .child(self.study_screen(p, window, cx))
-                                    // Asking from the tools goes to the Study chat.
-                                    .when(
-                                        self.model.study.view == crate::study::StudyView::Home,
-                                        |d| d.child(self.composer(p, cx)),
-                                    ),
+                                Screen::Study => d.child(self.study_window(p, window, cx)),
                                 Screen::Library => d.child(self.library_screen(p, cx)),
                                 Screen::Archived => d.child(self.archived_screen(p, cx)),
                             })
@@ -4778,4 +4932,22 @@ fn mark(line: &WorkingLine, color: Hsla, still: bool, at: &'static str) -> AnyEl
             )
             .into_any_element(),
     }
+}
+
+/// A bounded inner list's scrollbar (the expanded provider's models, the
+/// model catalogue, a role's choices): drawn whenever the list overflows,
+/// not only while it scrolls, so the box reads as scrollable at a glance.
+/// The look is still Tern's thin thumb from `theme::install_scrollbar`;
+/// only the show mode differs from the app's scroll-to-reveal default.
+pub(crate) fn inner_list_bar(
+    id: &'static str,
+    handle: &gpui_kit::UniformListScrollHandle,
+) -> impl IntoElement {
+    use gpui_kit::base::{Scrollbar, ScrollbarMode};
+    div().absolute().inset_0().child(
+        Scrollbar::vertical(handle)
+            .id(id)
+            .mode(ScrollbarMode::Always)
+            .viewport_from_layout(),
+    )
 }

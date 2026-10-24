@@ -149,7 +149,7 @@ impl Workspace {
             LibraryKind::Deck | LibraryKind::File => {
                 self.choose_harness(tern_agent::Harness::Study, cx);
                 if it.kind() == LibraryKind::Deck {
-                    self.model.study.view = StudyView::Deck;
+                    self.model.study.show(StudyView::Deck);
                 }
             }
             LibraryKind::Scene => {
@@ -207,7 +207,7 @@ impl Workspace {
             }
             "deck" => {
                 self.choose_harness(tern_agent::Harness::Study, cx);
-                self.model.study.view = StudyView::Deck;
+                self.model.study.show(StudyView::Deck);
             }
             _ => {
                 // Upload: files become study materials (and Library files).
