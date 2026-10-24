@@ -4,6 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #55)
+
+Explain in 3D no longer freezes and closes the app on Play, Next or zoom (Windows), the loading line shows it is working, and the Windows taskbar shows the Tern mark.
+
+- **Play, Next and zooming froze Tern, then it closed (Windows).** Any camera or step change hung the window: after the click it never repainted (the Play button never turned into Pause) and the process ended about 8 s later. It could not be reproduced here (no Windows GPU build in this sandbox), so this is what the code did and what changed:
+  - Each camera position was its own cached frame, so every frame of a glide, a zoom or an orbit projected the scene again and laid every label out again, then built every path again: the seam stroke of every face, each dashed link cut into its dashes, and so on, at the display rate.
+  - The labels drawn over the canvas sat between the paths' draw orders, so the renderer split the scene's paths into many batches. On Windows each batch clears and resolves a window-sized multisampled texture.
+  - Only the canvas painter was guarded against panics. A panic in a click, wheel or key handler, in the step timer, or in the frame's own work unwinds into the window procedure, and on Windows the process aborts. Windows Error Reporting then holds the frozen window for a few seconds before it closes, which is what the recording shows.
+  - **Now**: labels are laid out once for where the camera is going, right away for a new step, pointer node or stage size, and 150 ms after the camera's target last moved for a drag, a wheel turn or a pinch (`RELAYOUT_AFTER`). In between, each label rides with its node. A step costs one layout, not one per glide frame. While the camera moves the painter leaves out dashes and seam strokes, and an invisible quad above the paths keeps them in one batch. `labels::place` takes at most 64 labels (`MAX_LABELS`), so its work is bounded. Label text size moves in half-pixel steps. Every handler (step, Play, keys, wheel, pinch, pointer, dots, levels, Reset), the autoplay timer and the frame's work run under `catch_unwind`; a panic shows the error card with **Try again**. Play is one timer for all tabs, started at most once.
+  - **For the next report**: every panic is written with its place and a backtrace to `<data>/logs/crash.log` (`crashlog`), and an Explain frame slower than 50 ms is noted in `<data>/logs/tern.log`. Both stay on this computer.
+- **Less tangled maps**: a link touching the step's nodes is drawn in full (dashed, with a head), a link joining two consecutive steps is drawn lightly, and the rest are nearly invisible.
+- **Loading**: the hourglass turns over (repainted about 12 times a second by a timer, not every frame; still with reduced motion, when only the seconds change). The line says where the build is ("Gathering your sources…", "Asking the model… (part 2 of 3)", "Reading the reply…", "Laying out the scene…"; `tern_agent::explain::Stage`, carried on the build's cancel token) and how many seconds it has taken.
+- **Windows icon**: `tern-desktop.exe`, `tern.exe` and `tern-browser.exe` embed the Tern mark (`assets/brand/tern.ico`: 16, 24, 32, 48, 64 and 256 px, white on black, the small sizes sharpened) and version information through a `build.rs` with `winresource`, a Windows-only build dependency. GPUI's window class uses icon resource 1, so the taskbar and title bar show it. The browser helper sets it on its tao window too.
+- Tests: every step and the whole Play run on a 20-node, 16-step, densely linked scene (one layout per step, each frame within a time budget), zoom, pinch and key sequences (no layout until the target stays put, then one), an orbit drag, the links' weights, degenerate scenes (everything on one spot, NaN and huge numbers, 200 parts, one part) through steps, Play, zoom and odd stage sizes, `labels::place` with 1,000 labels, the build stages, and the icon resources in `dependency_rules`.
+
 ### Fixed (PR #54)
 
 Explain in 3D no longer freezes or crashes the app, popovers draw over the page, and scenes are readable.
