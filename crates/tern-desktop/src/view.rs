@@ -146,6 +146,8 @@ pub struct Workspace {
     pet_preview_anim: std::cell::RefCell<crate::pet::Animator>,
     scout_hidden: bool,
     scout_variant: Option<String>,
+    /// The flashcard stack's swipe (`crate::swipe`).
+    card_swipe: std::cell::RefCell<crate::swipe::Swipe>,
     /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
     presses: press::Presses,
     /// The empty state's mark (`crate::mark`), and when it started playing.
@@ -566,6 +568,7 @@ impl Workspace {
             mark_anim: std::rc::Rc::new(crate::mark::MarkAnim::embedded()),
             mark_since: Instant::now(),
             presses: Default::default(),
+            card_swipe: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
             view_id: cx.entity_id(),
@@ -4927,6 +4930,12 @@ impl Render for Workspace {
                 this.browser_pane(p, cx)
             } else if side_docked {
                 this.side_panel(p, cx)
+            } else if this.model.harness == tern_agent::Harness::Study
+                && this.model.screen == Screen::Study
+            {
+                // v2 s14: in Study the rail shows decks, what is due and
+                // recall, not a research run.
+                this.study_rail(p, cx)
             } else {
                 this.run_panel(p, cx).into_any_element()
             }

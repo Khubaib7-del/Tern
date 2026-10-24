@@ -46,6 +46,7 @@ mod scout;
 mod scrollbar;
 mod settings;
 mod study;
+mod swipe;
 mod theme;
 mod timeline;
 mod toast;

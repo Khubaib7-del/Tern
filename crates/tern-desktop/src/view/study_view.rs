@@ -2097,12 +2097,18 @@ impl Workspace {
                             .when(reveal && is_answer, |d| {
                                 d.child(glyph("verdict-supported", 14., p.accent))
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                // One click picks and grades (v2 s14).
+                                let mut submit = false;
                                 if let Some(run) = &mut this.model.study.quiz
                                     && run.graded().is_none()
                                     && !run.grading
                                 {
                                     run.picked = Some(value.clone());
+                                    submit = true;
+                                }
+                                if submit {
+                                    this.quiz_submit(window, cx);
                                 }
                                 cx.notify();
                             })),
@@ -2123,7 +2129,22 @@ impl Workspace {
                 }
             }
         }
+        let one_click = matches!(
+            q.kind,
+            QuestionKind::MultipleChoice | QuestionKind::TrueFalse
+        );
         match graded {
+            None if one_click => {
+                if run.grading {
+                    card = card.child(
+                        div()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child("Checking…"),
+                    );
+                }
+            }
             None => {
                 card = card.child(
                     div().pt_1().flex().items_center().gap_2().child(
@@ -2189,8 +2210,148 @@ impl Workspace {
                     );
             }
         }
+        // The progress bar: answered questions, on a spring.
+        let answered = run.index as f32 + if graded.is_some() { 1. } else { 0. };
+        let frac = self.glide("quiz-progress", answered / run.total().max(1) as f32);
+        col = col.child(
+            div()
+                .h(px(4.))
+                .w_full()
+                .rounded_full()
+                .bg(p.hover)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui_kit::relative(frac.clamp(0., 1.)))
+                        .rounded_full()
+                        .bg(p.accent),
+                ),
+        );
         col = col.child(card);
         col.into_any_element()
+    }
+
+    /// The Study right rail (v2 s14): decks, what is due today, recall,
+    /// and the three ways in. Replaces the run panel while Study shows.
+    pub(super) fn study_rail(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let s = &self.model.study;
+        let now_i = tern_agent::study::now();
+        let stats = s.deck.stats(now_i, s.offset);
+        let stat = |label: &'static str, value: String| {
+            div()
+                .flex()
+                .justify_between()
+                .py_1()
+                .text_sm()
+                .child(div().text_color(p.muted).child(label))
+                .child(div().text_color(p.text).child(SharedString::from(value)))
+        };
+        let quizzes = &s.library.quizzes;
+        let recall = if quizzes.is_empty() {
+            "—".to_owned()
+        } else {
+            let pct: f32 = quizzes
+                .iter()
+                .rev()
+                .take(5)
+                .map(|q| 100. * q.score / q.total.max(1) as f32)
+                .sum::<f32>()
+                / quizzes.iter().rev().take(5).count() as f32;
+            format!("{pct:.0}%")
+        };
+        let topics: Vec<AnyElement> = s
+            .library
+            .topics
+            .iter()
+            .take(8)
+            .map(|t| {
+                let due = s.due(Some(t.id.as_str()), now_i);
+                let id = t.id.clone();
+                div()
+                    .id(SharedString::from(format!("rail-deck-{}", t.id)))
+                    .flex()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .text_sm()
+                    .child(div().truncate().text_color(p.text).child(t.title.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if due > 0 { p.accent } else { p.faint })
+                            .child(SharedString::from(format!("{due} due"))),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.start_review(Some(id.clone()), window, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .id("study-rail")
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .bg(p.warm.opacity(0.06))
+            .child(serif("Study", p).text_lg())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(stat("Due today", stats.due_today.to_string()))
+                    .child(stat("Reviewed today", stats.reviewed_today.to_string()))
+                    .child(stat("Cards", stats.total.to_string()))
+                    .child(stat("Recall (last quizzes)", recall)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        self.press(
+                            "rail-review",
+                            Button::new("rail-review")
+                                .capsule()
+                                .label("Review due")
+                                .small()
+                                .primary()
+                                .disabled(stats.due_today == 0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_review(None, window, cx)
+                                })),
+                        ),
+                    )
+                    .child(
+                        self.press(
+                            "rail-quiz",
+                            Button::new("rail-quiz")
+                                .capsule()
+                                .label("Quiz")
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.study.view = StudyView::Quiz;
+                                    cx.notify();
+                                })),
+                        ),
+                    ),
+            )
+            .child(div().text_xs().text_color(p.faint).child("Decks"))
+            .children(topics)
+            .children(s.busy.as_ref().map(|b| {
+                div()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(SharedString::from(b.clone()))
+            }))
+            .into_any_element()
     }
 
     fn quiz_summary(

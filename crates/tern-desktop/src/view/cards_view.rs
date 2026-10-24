@@ -59,6 +59,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The pointer left the card: a swipe answers it (right Good, left
+    /// Again); anything shorter springs it home.
+    fn card_released(&mut self, armed: bool, cx: &mut Context<Self>) {
+        let dir = self.card_swipe.borrow_mut().release(armed, Instant::now());
+        match dir {
+            Some(crate::swipe::Dir::Right) => self.rate_card(Rating::Good, cx),
+            Some(crate::swipe::Dir::Left) => self.rate_card(Rating::Again, cx),
+            None => cx.notify(),
+        }
+    }
+
     pub(super) fn flip_card(&mut self, cx: &mut Context<Self>) {
         self.model.study.flip(Instant::now());
         cx.notify();
@@ -294,8 +305,20 @@ impl Workspace {
             CardKind::Cloze => "Fill the gap",
             CardKind::Why => "Explain why",
         };
+        // The stack (v2 s14): the top card follows a drag, rubber-bands
+        // until it is turned, and swipes right for Good, left for Again.
+        let armed = back && run.flipped;
+        let (shift, moving) = {
+            let mut sw = self.card_swipe.borrow_mut();
+            (sw.offset(armed, now), sw.moving())
+        };
+        if moving {
+            self.anim_pending.set(true);
+        }
         let face = div()
             .id("flashcard")
+            .relative()
+            .left(px(shift))
             .w(px(CARD_W * width))
             .min_h(px(220.))
             .overflow_hidden()
@@ -308,7 +331,21 @@ impl Workspace {
             .border_color(if back { p.accent } else { p.border })
             .bg(p.canvas)
             .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| this.flip_card(cx)))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, e: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.card_swipe
+                        .borrow_mut()
+                        .press(f32::from(e.position.x), Instant::now());
+                    cx.notify();
+                }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                // The click that ends a drag is not a tap.
+                if !this.card_swipe.borrow().dragged() {
+                    this.flip_card(cx);
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -319,7 +356,52 @@ impl Workspace {
                     .child(SharedString::from(due_label(card, now_i))),
             )
             .when(width > 0.3, |d| d.child(side));
-        col = col.child(div().flex().justify_center().child(face));
+        // Up to three cards peek out under the top one.
+        let peeks = left.saturating_sub(1).min(3);
+        let under = (1..=peeks).rev().map(|k| {
+            let k = k as f32;
+            div()
+                .absolute()
+                .top(px(8. * k))
+                .left(px(14. * k))
+                .right(px(14. * k))
+                .bottom(px(-8. * k))
+                .rounded(px(PILL))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .opacity(1. - 0.22 * k)
+        });
+        let stack = div()
+            .id("card-stack")
+            .relative()
+            .w(px(CARD_W))
+            .pb(px(8. * peeks as f32))
+            .children(under)
+            .child(face)
+            .on_mouse_move(
+                cx.listener(move |this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                    let mut sw = this.card_swipe.borrow_mut();
+                    if sw.pressed() {
+                        sw.move_to(f32::from(e.position.x), Instant::now());
+                        drop(sw);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.card_released(armed, cx)
+                }),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.card_released(armed, cx)
+                }),
+            );
+        col = col.child(div().flex().justify_center().child(stack));
         if !back || !run.flipped {
             col = col.child(
                 div().flex().justify_center().child(
@@ -353,7 +435,7 @@ impl Workspace {
                 .text_color(p.faint)
                 .flex()
                 .justify_center()
-                .child("Space turns the card · 1 Again · 2 Hard · 3 Good · 4 Easy"),
+                .child("Space turns the card · swipe right Good, left Again · 1 Again · 2 Hard · 3 Good · 4 Easy"),
         )
         .into_any_element()
     }
