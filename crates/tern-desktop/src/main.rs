@@ -32,6 +32,7 @@ mod gauge;
 mod git;
 mod harness;
 mod layout;
+mod mark;
 mod model;
 mod motion;
 mod onboarding;

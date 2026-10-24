@@ -1,0 +1,14 @@
+{
+  "frame": [
+    192,
+    152
+  ],
+  "themes": {
+    "dark": "mark_still_dark.png",
+    "light": "mark_still_light.png"
+  },
+  "frames": 1,
+  "fps": 1,
+  "loop": true,
+  "placeholder": true
+}

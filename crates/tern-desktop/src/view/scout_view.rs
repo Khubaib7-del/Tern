@@ -39,10 +39,27 @@ impl Workspace {
         // next frame (about 10 a second), only while that page shows.
         let previewing = self.model.screen == crate::model::Screen::Settings
             && self.model.settings.section == crate::settings::Section::Scout;
-        if previewing && !self.reduced_motion && self.pet_preview_wake.is_none() {
+        // The empty state's mark plays while an empty chat shows.
+        let empty = self.model.screen == crate::model::Screen::Chat
+            && self.model.entries.is_empty()
+            && !self.model.is_busy();
+        if !empty {
+            self.mark_since = now;
+        }
+        let wait = if previewing {
+            Some(100)
+        } else if empty && self.mark_anim.animated() {
+            Some(self.mark_anim.frame_ms())
+        } else {
+            None
+        };
+        if let Some(wait) = wait
+            && !self.reduced_motion
+            && self.pet_preview_wake.is_none()
+        {
             self.pet_preview_wake = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_millis(100))
+                    .timer(std::time::Duration::from_millis(wait))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.pet_preview_wake = None;

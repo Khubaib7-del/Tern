@@ -148,7 +148,11 @@ pub struct Workspace {
     scout_variant: Option<String>,
     /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
     presses: press::Presses,
-    /// Wakes Settings › Scout for the preview's next strip frame.
+    /// The empty state's mark (`crate::mark`), and when it started playing.
+    mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
+    mark_since: Instant,
+    /// Wakes Settings › Scout's preview or the empty state's mark for its
+    /// next strip frame.
     pet_preview_wake: Option<Task<()>>,
     /// The approved plan's step count and its fold spring.
     plan_folded: Option<(usize, crate::motion::Spring)>,
@@ -559,6 +563,8 @@ impl Workspace {
             scout_hidden: tern_agent::Preferences::load().scout_hidden,
             scout_variant: tern_agent::Preferences::load().scout_variant,
             pet_preview_wake: None,
+            mark_anim: std::rc::Rc::new(crate::mark::MarkAnim::embedded()),
+            mark_since: Instant::now(),
             presses: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
@@ -3243,27 +3249,64 @@ impl Workspace {
             ),
             Phase::Offline(reason) => ("Tern could not open a model", reason.clone()),
             _ if self.model.harness == tern_agent::Harness::Study => (
-                "What are we studying?",
-                "Ask Tern to explain, quiz, or test you. This chat is kept apart from Research."
+                "Start a study session",
+                "Learn from your notes: Tern explains, quizzes and tests you, kept apart from Research."
                     .into(),
             ),
             _ => (
-                "What are we researching?",
+                "Start a research session",
                 match self.model.connection.as_ref().and_then(|c| c.search.as_deref()) {
-                    Some(s) => format!("Ask a question. Tern searches with {s}, reads, and cites."),
+                    Some(s) => format!(
+                        "Ask a question. Tern plans, searches with {s}, reads, and cites every claim."
+                    ),
                     None => "Ask a question. Web search is off, so answers come from the model alone."
                         .into(),
                 },
             ),
+        };
+        let ready = !offline && !matches!(self.model.phase, Phase::Connecting);
+        let study = self.model.harness == tern_agent::Harness::Study;
+        let chips: Vec<AnyElement> = if ready {
+            crate::mark::suggestions(study)
+                .iter()
+                .enumerate()
+                .map(|(i, &(label, prompt))| {
+                    let id = SharedString::from(format!("suggest-{i}"));
+                    let chip = div()
+                        .id(id.clone())
+                        .px_3()
+                        .py_1()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(p.border)
+                        .text_sm()
+                        .text_color(p.muted)
+                        .cursor_pointer()
+                        .hover(|d| d.bg(p.hover).text_color(p.text))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.composer.update(cx, |c, cx| {
+                                c.set_value(prompt.to_owned(), window, cx);
+                                c.focus(window, cx);
+                            });
+                            cx.notify();
+                        }));
+                    self.press(id, chip).into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
         div()
             .flex()
             .flex_col()
             .items_center()
             .gap_2()
-            .pt(px(140.))
+            .pt(px(110.))
+            .child(self.empty_mark(p))
             .child(
                 div()
+                    .pt_2()
                     .text_xl()
                     .font_weight(FontWeight::MEDIUM)
                     .child(headline),
@@ -3276,6 +3319,17 @@ impl Workspace {
                     .text_center()
                     .child(detail),
             )
+            .when(!chips.is_empty(), |d| {
+                d.child(
+                    div()
+                        .pt_3()
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap_2()
+                        .children(chips),
+                )
+            })
             .when(offline, |d| {
                 d.child(
                     div().pt_2().child(
@@ -3287,6 +3341,32 @@ impl Workspace {
                     ),
                 )
             })
+            .into_any_element()
+    }
+
+    /// The empty state's dithered Tern mark, animated in place (wing beat,
+    /// tail flick, body shiver) unless motion is reduced.
+    fn empty_mark(&self, p: Palette) -> AnyElement {
+        let m = &self.mark_anim;
+        let dark = p.canvas.l < 0.5;
+        let (path, index, frames) =
+            m.frame(dark, self.mark_since, Instant::now(), self.reduced_motion);
+        let (w, h) = m.display_size(96.);
+        div()
+            .w(px(w))
+            .h(px(h))
+            .flex_none()
+            .overflow_hidden()
+            .relative()
+            .child(
+                gpui_kit::img(SharedString::from(path))
+                    .absolute()
+                    .top_0()
+                    .left(px(-(index as f32) * w))
+                    .w(px(w * frames as f32))
+                    .h(px(h))
+                    .object_fit(gpui_kit::ObjectFit::Fill),
+            )
             .into_any_element()
     }
 
