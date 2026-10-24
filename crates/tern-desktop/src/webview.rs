@@ -27,10 +27,6 @@ use std::time::{Duration, Instant};
 
 use tern_core::browser_ipc::{Command, Event, Rect, helper_file_name};
 
-/// Whether this build can run a real engine (it needs the helper binary
-/// next to Tern; [`Host`] falls back when it is missing).
-pub const AVAILABLE: bool = true;
-
 /// How long the helper has to report ready before the pane falls back to
 /// the reader view.
 pub const START_TIMEOUT: Duration = Duration::from_secs(5);
@@ -271,14 +267,6 @@ impl Host {
 
     pub fn reload(&self) {
         self.send(Command::Reload);
-    }
-
-    pub fn back(&self) {
-        self.send(Command::Back);
-    }
-
-    pub fn forward(&self) {
-        self.send(Command::Forward);
     }
 
     /// Pops the page out into its own window (or docks it back).

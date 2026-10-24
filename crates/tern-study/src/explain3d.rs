@@ -672,7 +672,7 @@ pub struct View {
 /// floor (about 6° and 86°).
 pub const ELEVATION: (f32, f32) = (0.1, 1.5);
 /// The base elevation `View::pitch` adds to (30°).
-pub const BASE_ELEVATION: f32 = 0.523_598_8;
+pub const BASE_ELEVATION: f32 = std::f32::consts::FRAC_PI_6;
 
 impl View {
     /// The view for a pointer at `(px, py)`, each -1 to 1 from the centre:

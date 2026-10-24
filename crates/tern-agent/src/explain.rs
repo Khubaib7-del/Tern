@@ -414,7 +414,7 @@ mod tests {
         assert!(note.unwrap().contains("could not be read"));
         // No 5,000-character cut: the end of a long answer is on the map.
         let mut long = String::new();
-        for i in 0..60 {
+        for i in 0..150 {
             long.push_str(&format!(
                 "## Part {i}\nSection {i} covers one more mechanism of paging in detail.\n\n"
             ));

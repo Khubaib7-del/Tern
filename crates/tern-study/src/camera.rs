@@ -21,8 +21,8 @@ pub const ZOOM: (f32, f32) = (0.35, 5.0);
 /// How close focusing a node comes, at least.
 pub const FOCUS_ZOOM: f32 = 1.8;
 /// A key press: 15° of turn, 5° of tilt, a fifth of zoom.
-pub const KEY_YAW: f32 = 0.261_799_4;
-pub const KEY_PITCH: f32 = 0.087_266_46;
+pub const KEY_YAW: f32 = std::f32::consts::PI / 12.0;
+pub const KEY_PITCH: f32 = std::f32::consts::PI / 36.0;
 pub const KEY_ZOOM: f32 = 1.2;
 /// A press that moves less than this many pixels is a click, not a drag.
 pub const CLICK_SLOP: f32 = 4.0;
