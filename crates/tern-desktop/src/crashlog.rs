@@ -118,7 +118,7 @@ pub fn exit_meaning(code: i32) -> &'static str {
         0xC000_0374 => "heap corruption",
         0xC000_001D => "illegal instruction",
         0xC000_0094 => "integer divide by zero",
-        0x887A_0005 | 0x887A_0006 | 0x887A_0007 => "the graphics device was removed or reset",
+        0x887A_0005..=0x887A_0007 => "the graphics device was removed or reset",
         0x4000_0015 => "abort() (STATUS_FATAL_APP_EXIT)",
         3 => "abort()",
         101 => "a panic on the main thread",
