@@ -1725,6 +1725,11 @@ impl Bridge {
         });
     }
 
+    /// Where tab `key`'s build is, while it runs.
+    pub fn explain_stage(&self, key: u32) -> Option<explain::Stage> {
+        self.explain_jobs.lock().ok()?.get(&key).map(|c| c.stage())
+    }
+
     /// Stops the scene being built for tab `key` (its tab closed, or
     /// Cancel was pressed).
     pub fn explain_cancel(&self, key: u32) {

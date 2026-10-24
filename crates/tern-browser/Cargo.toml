@@ -21,3 +21,7 @@ workspace = true
 tern-core.workspace = true
 tao = "0.37"
 wry = "0.57"
+
+# Embeds the icon and version information into the .exe (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

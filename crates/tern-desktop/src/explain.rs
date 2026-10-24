@@ -7,9 +7,18 @@
 //! `tern_agent::explain`; this decides what the next frame shows. Walking
 //! the steps (Prev, Next, Play) moves the camera level by level onto each
 //! step's nodes.
+//!
+//! Camera changes stay cheap. Labels are laid out (`labels::place`) once
+//! for where the camera is going: right away when the step, the pointer's
+//! node or the stage size changes, and [`RELAYOUT_AFTER`] after the camera's
+//! target last moved for a drag, a wheel turn or a pinch. In between, every
+//! frame carries the last layout along with its nodes (each label moved by
+//! as much as its node moved), so a glide, a zoom or an orbit never lays
+//! labels out per frame.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -28,6 +37,36 @@ pub const STEP_FADE: Duration = Duration::from_millis(400);
 pub const AUTOPLAY: Duration = Duration::from_millis(3600);
 /// Room around the drawing, in pixels.
 pub const MARGIN: f32 = 36.0;
+/// How long the camera's target must stay put (after a drag, a wheel turn
+/// or a pinch) before labels are laid out again for it.
+pub const RELAYOUT_AFTER: Duration = Duration::from_millis(150);
+/// How strongly a link is drawn when it is not about the step on screen:
+/// nearly invisible, so the step's own links read.
+pub const LINK_FADED: f32 = 0.07;
+/// How strongly a link joining two consecutive steps is drawn.
+pub const LINK_FLOW: f32 = 0.3;
+
+/// The last label layout: where the camera was going when it was made, and
+/// where each part's label anchor was then (stage pixels), so later frames
+/// move each label with its node instead of laying them out again.
+#[derive(Debug)]
+struct Solve {
+    /// Step, pointer node, picked node and stage size.
+    structure: u64,
+    /// The camera target it was laid out for.
+    pose: u64,
+    anchors: Vec<Option<(f32, f32)>>,
+    labels: Rc<Vec<Placed>>,
+    font: f32,
+    /// Counts layouts, so a frame made from a new one is a new frame.
+    id: u64,
+}
+
+fn hash_of(f: impl FnOnce(&mut std::collections::hash_map::DefaultHasher)) -> u64 {
+    let mut k = std::collections::hash_map::DefaultHasher::new();
+    f(&mut k);
+    k.finish()
+}
 
 /// One frame's drawing and placed labels, kept until the camera, the
 /// stage size, the step, or the pointer's node changes: a still scene
@@ -42,6 +81,12 @@ pub struct Frame {
     pub labels: Rc<Vec<Placed>>,
     /// Label text size, pixels.
     pub font: f32,
+    /// How strongly each of `drawing.links` is drawn (1 for the step's
+    /// links, [`LINK_FADED`] for the rest).
+    pub links: Rc<Vec<f32>>,
+    /// The camera is on its way: the painter leaves out what only matters
+    /// when still (dashes, seam strokes).
+    pub moving: bool,
 }
 
 /// What the side caption reads: the step on screen, or the node picked.
@@ -100,9 +145,17 @@ pub struct ExplainState {
     pub bounds: Rc<Cell<[f32; 4]>>,
     /// The last frame's drawing and labels ([`Frame`]).
     frame: RefCell<Option<Rc<Frame>>>,
+    /// The last label layout ([`Solve`]).
+    solve: RefCell<Option<Solve>>,
+    /// The camera target last seen, and since when.
+    target_seen: Cell<(u64, Option<Instant>)>,
+    /// Label layouts made so far, for tests and the slow-frame log.
+    pub solves: Cell<u64>,
     /// Set when drawing the scene failed; the tab shows an error card
     /// instead of drawing again.
     pub paint_failed: Rc<Cell<bool>>,
+    /// When the build in progress started, for the loading line.
+    building_since: Option<Instant>,
 }
 
 impl ExplainState {
@@ -126,18 +179,37 @@ impl ExplainState {
             saved: None,
             bounds: Rc::new(Cell::new([0.0; 4])),
             frame: RefCell::new(None),
+            solve: RefCell::new(None),
+            target_seen: Cell::new((0, None)),
+            solves: Cell::new(0),
             paint_failed: Rc::new(Cell::new(false)),
+            building_since: Some(Instant::now()),
+        }
+    }
+
+    /// How long the scene has been building (zero once built).
+    pub fn building_for(&self, now: Instant) -> Duration {
+        match self.building_since {
+            Some(t) if self.building => now.saturating_duration_since(t),
+            _ => Duration::ZERO,
         }
     }
 
     /// Building again (Try again): back to the loading state.
     pub fn rebuild(&mut self) {
         self.building = true;
+        self.building_since = Some(Instant::now());
         self.error = None;
         self.note = None;
         self.scene = None;
         self.paint_failed.set(false);
+        self.forget_frames();
+    }
+
+    fn forget_frames(&self) {
         self.frame.replace(None);
+        self.solve.replace(None);
+        self.target_seen.set((0, None));
     }
 
     /// The first view: an answer's map is turned so its levels are rows
@@ -166,7 +238,7 @@ impl ExplainState {
 
     pub fn ready(&mut self, r: Result<(Scene, Option<String>), String>, now: Instant) {
         self.building = false;
-        self.frame.replace(None);
+        self.forget_frames();
         self.paint_failed.set(false);
         match r {
             Ok((mut scene, note)) => {
@@ -441,7 +513,72 @@ impl ExplainState {
         let fading = self
             .step_at
             .is_some_and(|t| now.saturating_duration_since(t) < STEP_FADE);
-        fading || self.camera.moving()
+        fading || self.camera.moving() || self.relayout_pending()
+    }
+
+    /// Labels are still laid out for an older camera target: one more
+    /// layout is due once the target has stayed put.
+    pub fn relayout_pending(&self) -> bool {
+        let Some(s) = self.solve.borrow().as_ref().map(|s| s.pose) else {
+            return false;
+        };
+        s != self.target_key()
+    }
+
+    fn target_key(&self) -> u64 {
+        let t = &self.camera.target;
+        hash_of(|k| {
+            for v in [
+                t.yaw, t.pitch, t.zoom, t.pan.0, t.pan.1, t.centre.0, t.centre.1,
+            ]
+            .into_iter()
+            .chain(t.pivot)
+            {
+                v.to_bits().hash(k);
+            }
+        })
+    }
+
+    /// How lit every part is now ([`ExplainState::lit`] for all of them,
+    /// the step's sets worked out once).
+    pub fn lit_all(&self, now: Instant, reduced: bool) -> Vec<f32> {
+        let Some(s) = &self.scene else {
+            return Vec::new();
+        };
+        let cur = s.lit(self.step);
+        let old = s.lit(self.prev);
+        let t = match self.step_at {
+            Some(at) if !reduced => motion::progress(at, STEP_FADE, now),
+            _ => 1.0,
+        };
+        (0..s.parts.len())
+            .map(|p| match (cur.contains(&p), old.contains(&p)) {
+                (true, true) => 1.0,
+                (true, false) => t,
+                (false, true) => 1.0 - t,
+                (false, false) => 0.0,
+            })
+            .collect()
+    }
+
+    /// How strongly the link from part `from` to part `to` is drawn: in
+    /// full when it touches the step's parts; lightly ([`LINK_FLOW`]) when
+    /// it joins two consecutive steps (the walk from one step to the
+    /// next); nearly invisible ([`LINK_FADED`]) otherwise, so a dense map
+    /// does not read as a tangle.
+    pub fn link_weight(&self, from: usize, to: usize) -> f32 {
+        let Some(s) = &self.scene else {
+            return LINK_FADED;
+        };
+        let cur = s.lit(self.step);
+        if cur.contains(&from) || cur.contains(&to) {
+            return 1.0;
+        }
+        let first = |p: usize| (0..s.steps.len()).find(|&i| s.lit(i).contains(&p));
+        match (first(from), first(to)) {
+            (Some(a), Some(b)) if a.abs_diff(b) == 1 => LINK_FLOW,
+            _ => LINK_FADED,
+        }
     }
 
     /// The step number (from 1) each part is first lit in: the short
@@ -500,57 +637,151 @@ impl ExplainState {
     /// This frame's drawing and labels for a `w` × `h` stage, from the
     /// cache when nothing that moves them changed. `None` before a scene.
     pub fn frame(&self, w: f32, h: f32) -> Option<Rc<Frame>> {
+        self.frame_at(w, h, Instant::now())
+    }
+
+    /// [`ExplainState::frame`] at `now`. Labels are laid out at most once
+    /// per step, pointer node or size change, and once per camera target
+    /// that has stayed put for [`RELAYOUT_AFTER`]; otherwise the last
+    /// layout moves with its nodes.
+    pub fn frame_at(&self, w: f32, h: f32, now: Instant) -> Option<Rc<Frame>> {
         let s = self.scene.as_ref()?;
+        let structure = hash_of(|k| {
+            (self.step, self.hover, self.picked).hash(k);
+            w.to_bits().hash(k);
+            h.to_bits().hash(k);
+        });
+        // When did the camera's target last move?
+        let target = self.target_key();
+        let (seen, since) = self.target_seen.get();
+        let since = if seen == target {
+            since.unwrap_or(now)
+        } else {
+            self.target_seen.set((target, Some(now)));
+            now
+        };
+        let due = match self.solve.borrow().as_ref() {
+            None => true,
+            Some(old) if old.structure != structure => true,
+            Some(old) => {
+                old.pose != target && now.saturating_duration_since(since) >= RELAYOUT_AFTER
+            }
+        };
+        if due {
+            self.lay_out_labels(s, w, h, structure, target);
+        }
+        let solve = self.solve.borrow();
+        let solve = solve.as_ref()?;
         let view = self.view();
         let fit = self.fit(w, h);
-        let key = {
-            use std::hash::{Hash, Hasher};
-            let mut k = std::collections::hash_map::DefaultHasher::new();
+        let moving = self.camera.moving();
+        let key = hash_of(|k| {
             for v in [view.yaw, view.pitch, fit.scale, fit.dx, fit.dy, w, h]
                 .into_iter()
                 .chain(view.pivot.unwrap_or_default())
             {
-                v.to_bits().hash(&mut k);
+                v.to_bits().hash(k);
             }
-            (view.lift, self.step, self.hover, self.picked).hash(&mut k);
-            k.finish()
-        };
+            (
+                view.lift,
+                self.step,
+                self.hover,
+                self.picked,
+                solve.id,
+                moving,
+            )
+                .hash(k);
+        });
         if let Some(f) = self.frame.borrow().as_ref().filter(|f| f.key == key) {
             return Some(f.clone());
         }
         let drawing = project(s, view);
-        let font = labels::label_size(self.camera.zoom());
-        let ranks = self.ranks();
-        let nums = self.step_numbers();
-        let ins: Vec<LabelIn> = drawing
+        // Each label moves by as much as its node moved since the layout.
+        let mut now_at: Vec<Option<(f32, f32)>> = vec![None; s.parts.len()];
+        for l in &drawing.labels {
+            if let Some(slot) = now_at.get_mut(l.part) {
+                *slot = Some(fit.at(l.at));
+            }
+        }
+        let labels: Vec<Placed> = solve
             .labels
             .iter()
-            .map(|l| {
-                let part = &s.parts[l.part];
-                let short = match (part.shape, nums.get(l.part).copied().flatten()) {
-                    (Shape::Label, _) | (_, None) => String::new(),
-                    (_, Some(n)) => n.to_string(),
+            .filter_map(|l| {
+                let a0 = solve.anchors.get(l.part).copied().flatten()?;
+                let a1 = now_at.get(l.part).copied().flatten()?;
+                let (dx, dy) = (a1.0 - a0.0, a1.1 - a0.1);
+                let p = Placed {
+                    x: l.x + dx,
+                    y: l.y + dy,
+                    leader: l.leader.map(|(_, z)| (a1, (z.0 + dx, z.1 + dy))),
+                    ..l.clone()
                 };
-                LabelIn {
-                    part: l.part,
-                    anchor: fit.at(l.at),
-                    full: l.text.clone(),
-                    short,
-                    rank: ranks.get(l.part).copied().unwrap_or(Rank::Rest),
-                }
+                let ok = [p.x, p.y].iter().all(|v| v.is_finite() && v.abs() < 1e5);
+                ok.then_some(p)
             })
             .collect();
-        let placed = labels::place(&ins, w, h, &Metrics::for_size(font));
+        let links = drawing
+            .links
+            .iter()
+            .map(|l| self.link_weight(l.from, l.to))
+            .collect();
         let f = Rc::new(Frame {
             key,
             drawing: Rc::new(drawing),
             fit,
             size: (w, h),
-            labels: Rc::new(placed),
-            font,
+            labels: Rc::new(labels),
+            font: solve.font,
+            links: Rc::new(links),
+            moving,
         });
         self.frame.replace(Some(f.clone()));
         Some(f)
+    }
+
+    /// Lays the labels out once, for where the camera is going.
+    fn lay_out_labels(&self, s: &Scene, w: f32, h: f32, structure: u64, pose: u64) {
+        let view = self.camera.target_view(self.hover);
+        let fit = self.camera.target_fit(w, h, MARGIN);
+        let drawing = project(s, view);
+        // Half-pixel steps, so the text is not re-rasterised at every zoom.
+        let font = (labels::label_size(self.camera.target.zoom) * 2.0).round() / 2.0;
+        let ranks = self.ranks();
+        let nums = self.step_numbers();
+        let mut anchors: Vec<Option<(f32, f32)>> = vec![None; s.parts.len()];
+        let ins: Vec<LabelIn> = drawing
+            .labels
+            .iter()
+            .filter_map(|l| {
+                let part = s.parts.get(l.part)?;
+                let anchor = fit.at(l.at);
+                if let Some(slot) = anchors.get_mut(l.part) {
+                    *slot = Some(anchor);
+                }
+                let short = match (part.shape, nums.get(l.part).copied().flatten()) {
+                    (Shape::Label, _) | (_, None) => String::new(),
+                    (_, Some(n)) => n.to_string(),
+                };
+                Some(LabelIn {
+                    part: l.part,
+                    anchor,
+                    full: l.text.clone(),
+                    short,
+                    rank: ranks.get(l.part).copied().unwrap_or(Rank::Rest),
+                })
+            })
+            .collect();
+        let placed = labels::place(&ins, w, h, &Metrics::for_size(font));
+        let id = self.solves.get() + 1;
+        self.solves.set(id);
+        self.solve.replace(Some(Solve {
+            structure,
+            pose,
+            anchors,
+            labels: Rc::new(placed),
+            font,
+            id,
+        }));
     }
 
     /// What the side caption reads now.
@@ -891,5 +1122,280 @@ mod tests {
         assert!(!s.point(1.0, 1.0, 0.0, 0.0, Instant::now()));
         s.rebuild();
         assert!(s.building && s.scene.is_none());
+    }
+
+    /// A scene like the one that froze on Windows: 20 parts (blocks and
+    /// cylinders) in five levels, 16 steps, densely linked.
+    fn dense() -> Scene {
+        use tern_agent::explain::Link;
+        let parts: Vec<Part> = (0..20)
+            .map(|i| Part {
+                id: format!("n{i}"),
+                label: format!("IPv6 concept number {i} with a long name"),
+                shape: if i % 3 == 0 {
+                    Shape::Cylinder
+                } else {
+                    Shape::Block
+                },
+                at: [1.0 + (i % 5) as f32 * 2.2, 1.0 + (i / 5) as f32 * 2.6, 0.0],
+                size: [1.6, 1.6, 1.0 + (i % 4) as f32 * 0.3],
+                note: format!("node {i}"),
+                level: (i / 4) as u8,
+            })
+            .collect();
+        let mut links = Vec::new();
+        for i in 0..20 {
+            for d in 1..=3 {
+                let j = (i + d * 3) % 20;
+                links.push(Link {
+                    from: format!("n{i}"),
+                    to: format!("n{j}"),
+                    label: String::new(),
+                });
+            }
+        }
+        let steps: Vec<Step> = (0..16)
+            .map(|k| Step {
+                caption: format!("Step {k}"),
+                parts: if k % 4 == 3 {
+                    vec![format!("n{k}"), format!("n{}", k + 4)]
+                } else {
+                    vec![format!("n{k}")]
+                },
+                anchor: None,
+                level: (k / 4) as u8,
+                passage: format!("Passage {k}."),
+            })
+            .collect();
+        Scene {
+            id: "dense".into(),
+            concept: "IPv6 Mapping & Operation".into(),
+            summary: String::new(),
+            parts,
+            links,
+            steps,
+            topic: None,
+            written_by: "model".into(),
+            created_at: 0,
+        }
+    }
+
+    const FRAME: Duration = Duration::from_millis(16);
+    /// Most any one frame may take here. Release builds take well under a
+    /// millisecond; this leaves room for a debug build on a slow runner.
+    const FRAME_BUDGET: Duration = Duration::from_millis(40);
+
+    /// Runs frames at 60 a second until nothing moves (at most `cap`),
+    /// ticking autoplay like the app does. Returns the frames run.
+    fn run_frames(s: &mut ExplainState, t: &mut Instant, w: f32, h: f32, cap: usize) -> usize {
+        for n in 0..cap {
+            *t += FRAME;
+            s.tick_autoplay(*t);
+            s.settle(FRAME.as_secs_f32(), false);
+            let started = Instant::now();
+            let f = s.frame_at(w, h, *t).expect("a frame");
+            let took = started.elapsed();
+            assert!(took < FRAME_BUDGET, "frame {n} took {took:?}");
+            assert!(f.labels.iter().all(|l| l.x.is_finite() && l.y.is_finite()));
+            assert_eq!(f.links.len(), f.drawing.links.len());
+            if !s.moving(*t, false) && !s.autoplay {
+                return n + 1;
+            }
+        }
+        cap
+    }
+
+    fn dense_ready() -> (ExplainState, Instant) {
+        let t0 = Instant::now();
+        let mut s = ExplainState::new("ipv6");
+        s.ready(Ok((dense(), None)), t0);
+        (s, t0)
+    }
+
+    #[test]
+    fn every_step_of_a_dense_scene_lays_labels_out_once() {
+        let (mut s, mut t) = dense_ready();
+        let (w, h) = (330.0, 455.0);
+        run_frames(&mut s, &mut t, w, h, 120);
+        assert_eq!(s.solves.get(), 1);
+        for k in 1..16 {
+            assert!(s.next(t));
+            let before = s.solves.get();
+            let frames = run_frames(&mut s, &mut t, w, h, 600);
+            assert!(frames < 600, "step {k} never settled");
+            assert_eq!(
+                s.solves.get(),
+                before + 1,
+                "step {k}: one layout for the glide, not one per frame"
+            );
+            let f = s.frame_at(w, h, t).unwrap();
+            // The step's nodes are labelled in full.
+            for p in s.scene.as_ref().unwrap().lit(k) {
+                assert!(f.labels.iter().any(|l| l.part == p && l.full), "step {k}");
+            }
+        }
+        assert!(!s.next(t), "stops at the last step");
+        // Back again, step by step.
+        while s.back(t) {
+            run_frames(&mut s, &mut t, w, h, 600);
+        }
+        assert_eq!(s.step, 0);
+    }
+
+    #[test]
+    fn play_runs_the_whole_dense_scene_on_one_clock() {
+        let (mut s, mut t) = dense_ready();
+        let (w, h) = (330.0, 455.0);
+        s.toggle_autoplay(t);
+        let frames = run_frames(&mut s, &mut t, w, h, 16 * 400);
+        assert!(!s.autoplay, "stops at the end");
+        assert_eq!(s.step, 15);
+        // Fifteen moves of AUTOPLAY each, no faster.
+        let ran = FRAME * frames as u32;
+        assert!(ran >= AUTOPLAY * 15, "{ran:?}");
+        assert!(s.solves.get() <= 17, "{}", s.solves.get());
+        // Play again from the end starts over; Pause stops at once.
+        s.toggle_autoplay(t);
+        assert_eq!(s.step, 0);
+        s.toggle_autoplay(t);
+        assert!(!s.autoplay);
+        assert!(!s.tick_autoplay(t + AUTOPLAY * 2));
+        assert_eq!(s.step, 0);
+    }
+
+    #[test]
+    fn zooming_carries_labels_and_lays_out_once_it_settles() {
+        let (mut s, mut t) = dense_ready();
+        let (w, h) = (640.0, 420.0);
+        run_frames(&mut s, &mut t, w, h, 60);
+        let base = s.solves.get();
+        let f0 = s.frame_at(w, h, t).unwrap();
+        let first = f0.labels[0].clone();
+        // A burst of wheel turns, one a frame, in and then out.
+        for i in 0..40 {
+            // Small turns, so the zoom never reaches its limit (where the
+            // target would stop moving and a layout would be due).
+            let dy = if i < 25 { -20.0 } else { 15.0 };
+            s.wheel(dy, 300.0, 200.0, w, h);
+            t += FRAME;
+            s.settle(FRAME.as_secs_f32(), false);
+            let started = Instant::now();
+            let f = s.frame_at(w, h, t).unwrap();
+            assert!(started.elapsed() < FRAME_BUDGET);
+            // Labels ride with their nodes: same layout, moved.
+            assert_eq!(s.solves.get(), base, "no layout while the wheel turns");
+            if let Some(l) = f.labels.iter().find(|l| l.part == first.part) {
+                assert_eq!(l.text, first.text);
+            }
+        }
+        // Once the target stays put, one layout for it.
+        run_frames(&mut s, &mut t, w, h, 600);
+        assert_eq!(s.solves.get(), base + 1);
+        assert!(!s.relayout_pending());
+        // Pinches and the keyboard behave the same.
+        for i in 0..20 {
+            s.pinch(0.01, 100.0, 100.0, w, h);
+            s.key(if i % 2 == 0 { "+" } else { "-" }, t);
+            t += FRAME;
+            s.settle(FRAME.as_secs_f32(), false);
+            s.frame_at(w, h, t).unwrap();
+        }
+        assert_eq!(s.solves.get(), base + 1);
+        run_frames(&mut s, &mut t, w, h, 600);
+        assert_eq!(s.solves.get(), base + 2);
+    }
+
+    #[test]
+    fn orbiting_carries_labels_and_lays_out_after_release() {
+        let (mut s, mut t) = dense_ready();
+        let (w, h) = (640.0, 420.0);
+        run_frames(&mut s, &mut t, w, h, 60);
+        let base = s.solves.get();
+        s.press(300.0, 200.0, false, t);
+        for i in 1..=60 {
+            t += FRAME;
+            s.point(300.0 - i as f32 * 12.0, 200.0 + i as f32, w, h, t);
+            s.settle(FRAME.as_secs_f32(), false);
+            s.frame_at(w, h, t).unwrap();
+        }
+        assert_eq!(s.solves.get(), base, "no layout per drag move");
+        s.release(t);
+        run_frames(&mut s, &mut t, w, h, 2000);
+        assert_eq!(s.solves.get(), base + 1, "one layout once the spin stops");
+    }
+
+    #[test]
+    fn only_the_steps_links_are_drawn_strongly() {
+        let (mut s, t) = dense_ready();
+        let f = s.frame_at(640.0, 420.0, t).unwrap();
+        let strong = f.links.iter().filter(|w| **w > 0.5).count();
+        assert!(strong > 0 && strong < f.links.len() / 4, "{strong}");
+        let cur = s.scene.as_ref().unwrap().lit(0);
+        for (l, w) in f.drawing.links.iter().zip(f.links.iter()) {
+            let touches = cur.contains(&l.from) || cur.contains(&l.to);
+            assert_eq!(*w == 1.0, touches);
+            assert!([1.0, LINK_FLOW, LINK_FADED].contains(w));
+        }
+        assert!(f.links.iter().filter(|w| **w == LINK_FADED).count() > f.links.len() / 2);
+        s.next(t);
+        let g = s.frame_at(640.0, 420.0, t).unwrap();
+        assert_ne!(f.links, g.links, "the strong links follow the step");
+    }
+
+    #[test]
+    fn degenerate_scenes_survive_steps_play_and_zoom() {
+        let mut scenes = Vec::new();
+        // Everything on one spot.
+        let mut pile = dense();
+        for p in &mut pile.parts {
+            p.at = [6.0, 6.0, 0.0];
+        }
+        scenes.push(pile);
+        // NaN and huge numbers, links to nowhere, a step with no parts.
+        let mut bad = dense();
+        bad.parts[0].at = [f32::NAN, 1e30, f32::INFINITY];
+        bad.parts[1].size = [f32::NAN, 0.0, -5.0];
+        bad.links.push(tern_agent::explain::Link {
+            from: "n0".into(),
+            to: "nowhere".into(),
+            label: String::new(),
+        });
+        bad.steps[3].parts.clear();
+        scenes.push(bad);
+        // Far more than the caps, all labels identical.
+        let mut big = dense();
+        for i in 20..200 {
+            let mut p = big.parts[i % 20].clone();
+            p.id = format!("m{i}");
+            big.parts.push(p);
+            big.steps.push(Step {
+                parts: vec![format!("m{i}")],
+                ..Step::default()
+            });
+        }
+        scenes.push(big);
+        // One part, one step.
+        let mut one = dense();
+        one.parts.truncate(1);
+        one.steps.truncate(1);
+        scenes.push(one);
+        for (i, sc) in scenes.into_iter().enumerate() {
+            let mut t = Instant::now();
+            let mut s = ExplainState::new("x");
+            s.ready(Ok((sc, None)), t);
+            for (w, h) in [(640.0, 420.0), (0.0, 0.0), (3.0, 900.0)] {
+                s.toggle_autoplay(t);
+                run_frames(&mut s, &mut t, w, h, 40 * 260);
+                for _ in 0..10 {
+                    s.wheel(-300.0, 10.0, 10.0, w, h);
+                    s.double_click(w / 2.0, h / 2.0, w, h);
+                    s.next(t);
+                    run_frames(&mut s, &mut t, w, h, 30);
+                }
+                s.reset_view();
+                run_frames(&mut s, &mut t, w, h, 600);
+            }
+            assert!(s.camera.now.zoom.is_finite(), "scene {i}");
+        }
     }
 }

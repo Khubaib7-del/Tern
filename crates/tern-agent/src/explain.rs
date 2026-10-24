@@ -13,7 +13,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use tern_providers::ChatMessage;
@@ -58,10 +58,62 @@ pub struct Ask {
     pub context: Option<String>,
 }
 
+/// Where a build is, for the loading line: shown as "Asking the model…",
+/// "Reading the reply…", "Laying out the scene…".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stage {
+    /// Gathering the passages, before any model call.
+    #[default]
+    Starting,
+    /// Waiting on model call `part` (from 1) of `of`.
+    Asking { part: u8, of: u8 },
+    /// Reading the model's reply.
+    Reading,
+    /// Laying out and tidying the scene.
+    Laying,
+}
+
+impl Stage {
+    fn pack(self) -> u32 {
+        match self {
+            Stage::Starting => 0,
+            Stage::Asking { part, of } => 1 | (u32::from(part) << 8) | (u32::from(of) << 16),
+            Stage::Reading => 2,
+            Stage::Laying => 3,
+        }
+    }
+
+    fn unpack(v: u32) -> Self {
+        match v & 0xff {
+            1 => Stage::Asking {
+                part: ((v >> 8) & 0xff) as u8,
+                of: ((v >> 16) & 0xff) as u8,
+            },
+            2 => Stage::Reading,
+            3 => Stage::Laying,
+            _ => Stage::Starting,
+        }
+    }
+
+    /// The loading line's words.
+    pub fn text(self) -> String {
+        match self {
+            Stage::Starting => "Gathering your sources…".into(),
+            Stage::Asking { part, of } if of > 1 => {
+                format!("Asking the model… (part {part} of {of})")
+            }
+            Stage::Asking { .. } => "Asking the model…".into(),
+            Stage::Reading => "Reading the reply…".into(),
+            Stage::Laying => "Laying out the scene…".into(),
+        }
+    }
+}
+
 /// Stops a scene being built: checked after every model call, so a
 /// closed tab or a new build never waits on (or receives) the old one.
+/// It also carries the build's [`Stage`], so the tab can say where it is.
 #[derive(Clone, Debug, Default)]
-pub struct Cancel(Arc<AtomicBool>);
+pub struct Cancel(Arc<AtomicBool>, Arc<AtomicU32>);
 
 impl Cancel {
     pub fn new() -> Self {
@@ -79,6 +131,15 @@ impl Cancel {
     /// Whether `other` is this same token (not a copy of its state).
     pub fn same(&self, other: &Cancel) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    /// Where the build is.
+    pub fn stage(&self) -> Stage {
+        Stage::unpack(self.1.load(Ordering::Relaxed))
+    }
+
+    pub fn set_stage(&self, s: Stage) {
+        self.1.store(s.pack(), Ordering::Relaxed);
     }
 }
 
@@ -146,6 +207,7 @@ pub async fn build_with(
     if cancel.is_cancelled() {
         return Err(CANCELLED.into());
     }
+    cancel.set_stage(Stage::Laying);
     guard("tidy the scene", || sanitize(&mut scene))?;
     Ok((scene, note))
 }
@@ -221,11 +283,13 @@ async fn build_inner(
     let mut scene = None;
     if let Some(e) = engine {
         let (system, user) = scene_prompt(&concept, &sources);
+        cancel.set_stage(Stage::Asking { part: 1, of: 1 });
         match ask_model(e, system, user, 2500).await {
             Ok(text) => {
                 if cancel.is_cancelled() {
                     return Err(CANCELLED.into());
                 }
+                cancel.set_stage(Stage::Reading);
                 scene = guard("read the model's scene", || {
                     parse_scene(&text, &concept, &sources, tid, at)
                 })
@@ -290,6 +354,7 @@ async fn build_answer_with(
         guard("map this answer", || answer_scene(answer, title, at)).map(|s| (s, note))
     };
     let Some(e) = engine else {
+        cancel.set_stage(Stage::Laying);
         return fallback(None);
     };
     let parts = guard("split this answer", || chunks(answer))?;
@@ -307,10 +372,15 @@ async fn build_answer_with(
             let share = (n_all * part.chars().count()).div_ceil(total);
             chunk_prompt(part, concept, k, parts.len(), share)
         };
+        cancel.set_stage(Stage::Asking {
+            part: (k + 1).min(255) as u8,
+            of: parts.len().min(255) as u8,
+        });
         let reply = ask_model(e, system, user, 4000).await;
         if cancel.is_cancelled() {
             return Err(CANCELLED.into());
         }
+        cancel.set_stage(Stage::Reading);
         match reply {
             Ok(text) => match guard("read the model's map", || {
                 parse_answer_scene(&text, concept, at)
@@ -595,9 +665,16 @@ mod tests {
         c.cancel();
         let r = build_with(&store, &mut lib, Some(&e), &ask, &c).await;
         assert_eq!(r.unwrap_err(), CANCELLED);
-        let (s, _) = build_with(&store, &mut lib, Some(&e), &ask, &Cancel::new())
+        let token = Cancel::new();
+        assert_eq!(token.stage(), Stage::Starting);
+        let (s, _) = build_with(&store, &mut lib, Some(&e), &ask, &token)
             .await
             .unwrap();
+        assert_eq!(
+            token.stage(),
+            Stage::Laying,
+            "the token says where it got to"
+        );
         assert!(s.parts.iter().all(|p| p.at.iter().all(|v| v.is_finite())));
         // Small models' near-JSON is read, not thrown away.
         let sloppy = "```json\n{'concept': 'x', 'nodes': [{'label': 'a', 'level': 'Foundations'}, {'label': 'b'}, {'label': 'c'}, {'label': 'd'},]}\n```";
@@ -609,5 +686,29 @@ mod tests {
             guard("x", || -> u8 { panic!("boom") }).unwrap_err(),
             "Tern could not x (boom)."
         );
+    }
+
+    #[test]
+    fn stages_round_trip_and_read_plainly() {
+        let c = Cancel::new();
+        for st in [
+            Stage::Starting,
+            Stage::Asking { part: 2, of: 3 },
+            Stage::Reading,
+            Stage::Laying,
+        ] {
+            c.set_stage(st);
+            assert_eq!(c.stage(), st);
+        }
+        assert_eq!(Stage::Asking { part: 1, of: 1 }.text(), "Asking the model…");
+        assert_eq!(
+            Stage::Asking { part: 2, of: 3 }.text(),
+            "Asking the model… (part 2 of 3)"
+        );
+        assert_eq!(Stage::Laying.text(), "Laying out the scene…");
+        // A copy shares the stage, as the bridge and the build do.
+        let d = c.clone();
+        d.set_stage(Stage::Reading);
+        assert_eq!(c.stage(), Stage::Reading);
     }
 }

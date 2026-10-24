@@ -195,6 +195,33 @@ impl Camera {
         }
     }
 
+    /// The view the camera is going to, with `lift` raised: where labels
+    /// are laid out while it is on its way.
+    pub fn target_view(&self, lift: Option<usize>) -> View {
+        View {
+            yaw: self.target.yaw,
+            pitch: self.target.pitch,
+            lift,
+            pivot: Some(self.target.pivot),
+        }
+    }
+
+    /// [`Camera::fit`] for where the camera is going.
+    pub fn target_fit(&self, w: f32, h: f32, margin: f32) -> Fit {
+        let base = Fit::new(self.home_bounds, w, h, margin).scale;
+        let scale = base * self.target.zoom;
+        let f = Fit {
+            scale,
+            dx: w / 2.0 + self.target.pan.0 - self.target.centre.0 * scale,
+            dy: h / 2.0 + self.target.pan.1 - self.target.centre.1 * scale,
+        };
+        if [f.scale, f.dx, f.dy].iter().all(|v| v.is_finite()) && f.scale > 0.0 {
+            f
+        } else {
+            Fit::new(self.home_bounds, w, h, margin)
+        }
+    }
+
     /// The zoom now, for sizing labels.
     pub fn zoom(&self) -> f32 {
         self.now.zoom

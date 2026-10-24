@@ -108,8 +108,14 @@ fn build_window(
         .with_inner_size(LogicalSize::new(1100., 800.));
     #[cfg(target_os = "windows")]
     let b = {
-        use tao::platform::windows::WindowBuilderExtWindows as _;
-        let b = b.with_skip_taskbar(docked);
+        use tao::platform::windows::{IconExtWindows as _, WindowBuilderExtWindows as _};
+        // The Tern mark embedded by build.rs (resource 1), for a
+        // standalone window's title bar and taskbar button.
+        let icon = tao::window::Icon::from_resource(1, None).ok();
+        let b = b
+            .with_window_icon(icon.clone())
+            .with_taskbar_icon(icon)
+            .with_skip_taskbar(docked);
         // An owned window stays above Tern's, minimises with it, and
         // never takes a taskbar button of its own.
         match args.owner {

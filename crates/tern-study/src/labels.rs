@@ -84,6 +84,11 @@ pub fn label_size(zoom: f32) -> f32 {
 
 /// Room kept between labels, in pixels.
 const GAP: f32 = 3.0;
+/// Most labels placed in one call; the rest (least important first) are
+/// left out. With a fixed number of spots per label this bounds the work
+/// at `MAX_LABELS² × spots` box tests (about 66,000), well under a
+/// millisecond, whatever the scene holds.
+pub const MAX_LABELS: usize = 64;
 /// Padding inside a label's box.
 const PAD: f32 = 8.0;
 
@@ -121,6 +126,7 @@ pub fn place(labels: &[LabelIn], w: f32, h: f32, m: &Metrics) -> Vec<Placed> {
             .then(lb.anchor.1.total_cmp(&la.anchor.1))
             .then(a.cmp(&b))
     });
+    order.truncate(MAX_LABELS);
     let mut out: Vec<Placed> = Vec::new();
     let mut taken: Vec<(f32, f32, f32, f32)> = Vec::new();
     for i in order {
@@ -304,5 +310,28 @@ mod tests {
         assert_eq!(label_size(100.0), 15.0);
         assert_eq!(label_size(0.01), 11.0);
         assert_eq!(label_size(f32::NAN), 12.0);
+    }
+
+    #[test]
+    fn work_is_bounded_however_many_labels_come_in() {
+        // A thousand labels piled on one spot: capped, fast, no overlaps.
+        let ls: Vec<LabelIn> = (0..1000)
+            .map(|i| {
+                label(
+                    i,
+                    300.0,
+                    200.0,
+                    if i < 30 { Rank::Near } else { Rank::Rest },
+                )
+            })
+            .collect();
+        let m = Metrics::for_size(12.0);
+        let t = std::time::Instant::now();
+        let p = place(&ls, 600.0, 400.0, &m);
+        let took = t.elapsed();
+        assert!(p.len() <= MAX_LABELS);
+        no_overlaps(&p);
+        // Generous for a debug build on a slow runner; release is ~0.1 ms.
+        assert!(took.as_millis() < 250, "{took:?}");
     }
 }
