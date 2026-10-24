@@ -5,6 +5,7 @@
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
@@ -799,7 +800,7 @@ impl Workspace {
             .id("archived-screen")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .flex()
             .justify_center()
             .child(

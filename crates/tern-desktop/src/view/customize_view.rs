@@ -7,6 +7,7 @@
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -22,7 +23,6 @@ use super::Workspace;
 use crate::assets::{self, MONO_FONT};
 use crate::bridge::{ExtMsg, McpChange, ProjectChange, SkillChange};
 use crate::extensions::{CustomizeTab, Note, ServerGlyph, TreeRow, server_glyph};
-use crate::model::Screen;
 use crate::theme::Palette;
 
 const PAGE_MAX_W: f32 = 820.;
@@ -199,20 +199,13 @@ impl Workspace {
     // ----- Customize -----
 
     pub(super) fn open_customize(&mut self, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Customize;
+        self.show_settings(crate::settings::Section::Extensions);
         if !self.model.customize.loaded {
             self.bridge.ext_load();
         }
         if self.model.customize.tab == CustomizeTab::Instructions {
             self.refresh_instructions(cx);
         }
-        cx.notify();
-    }
-
-    pub(super) fn close_customize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Chat;
-        self.model.customize.preview = None;
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 
@@ -393,7 +386,7 @@ impl Workspace {
     pub(super) fn customize_screen(
         &self,
         p: Palette,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let c = &self.model.customize;
@@ -411,31 +404,25 @@ impl Workspace {
                         div()
                             .text_xl()
                             .font_weight(FontWeight::MEDIUM)
-                            .child("Customize"),
+                            .child("MCP & Skills"),
                     )
                     .child(div().text_sm().text_color(p.muted).child(
-                        "Skills Tern loads when a task needs them, MCP servers it may call, the providers it talks to, and exactly what the model is told.",
+                        "Skills Tern loads when a task needs them, MCP servers it may call, and exactly what the model is told. Providers have their own page.",
                     )),
-            )
-            .child(
-                Button::new("customize-done")
-                    .label("Back to chat")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.close_customize(window, cx))),
             );
-        let tabs = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .children(CustomizeTab::ALL.map(|t| {
-                Button::new(SharedString::from(format!("customize-tab-{}", t.label())))
-                    .label(t.label())
-                    .ghost()
-                    .small()
-                    .selected(c.tab == t)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_customize_tab(t, cx)))
-            }));
+        let tabs = div().flex().items_center().gap_1().children(
+            CustomizeTab::ALL
+                .into_iter()
+                .filter(|t| *t != CustomizeTab::Providers)
+                .map(|t| {
+                    Button::new(SharedString::from(format!("customize-tab-{}", t.label())))
+                        .label(t.label())
+                        .ghost()
+                        .small()
+                        .selected(c.tab == t)
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_customize_tab(t, cx)))
+                }),
+        );
         let note = c.note.as_ref().map(|n| {
             let (text, working, failed) = match n {
                 Note::Working(t) => (t.clone(), true, false),
@@ -453,9 +440,8 @@ impl Workspace {
                 .child(SharedString::from(text))
         });
         let body: AnyElement = match c.tab {
-            CustomizeTab::Skills => self.skills_tab(p, cx),
+            CustomizeTab::Skills | CustomizeTab::Providers => self.skills_tab(p, cx),
             CustomizeTab::Mcp => self.mcp_tab(p, cx),
-            CustomizeTab::Providers => self.providers_screen(p, window, cx).into_any_element(),
             CustomizeTab::Instructions => self.instructions_tab(p, cx),
         };
         div()
@@ -463,9 +449,7 @@ impl Workspace {
             .size_full()
             .child(
                 div()
-                    .id("customize-scroll")
                     .size_full()
-                    .overflow_y_scroll()
                     .child(
                         div()
                             .w_full()
@@ -480,7 +464,9 @@ impl Workspace {
                             .child(tabs)
                             .children(note)
                             .child(body),
-                    ),
+                    )
+                    .overflow_y_scrollbar()
+                    .id("customize-scroll"),
             )
             .children(self.trust_sheet(p, cx))
             .into_any_element()
@@ -958,7 +944,7 @@ impl Workspace {
             .id("trust-sheet")
             .w(px(640.))
             .max_h(px(620.))
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .flex()
             .flex_col()
             .gap_3()

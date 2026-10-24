@@ -1239,7 +1239,7 @@ impl Workspace {
 
     /// The Study group of settings: questions per quiz, difficulty, viva
     /// length, and whether to use the model.
-    fn study_settings(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn study_settings(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let s = &self.model.study;
         let row = |label: &'static str| {
             div()

@@ -6,6 +6,7 @@
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -1459,7 +1460,7 @@ impl Workspace {
             .p_1()
             .border_r_1()
             .border_color(p.border)
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .children(providers.into_iter().enumerate().map(|(i, e)| {
                 let id = e.id;
                 let on = Some(e.id) == shown;
@@ -1569,7 +1570,7 @@ impl Workspace {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .children(items)
                     .into_any_element()
             }

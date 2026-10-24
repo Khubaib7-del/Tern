@@ -92,7 +92,75 @@ pub struct ToolRegistry {
     /// The turn's mode: tools it does not allow are hidden. `None` shows
     /// every tool.
     mode: Option<crate::workspace::TurnMode>,
+    /// Tools the user turned off in Settings › Tools: never registered,
+    /// whichever path tries to add them (a workspace opened later, web
+    /// search switched back on).
+    off: std::collections::BTreeSet<String>,
 }
+
+/// One of Tern's own tools, as Settings › Tools lists it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BuiltinTool {
+    pub name: &'static str,
+    /// What it does, in a few words.
+    pub label: &'static str,
+    pub effect: EffectClass,
+}
+
+/// Tern's own tools (MCP tools are listed per server). Settings › Tools
+/// shows these with an on/off switch and an Ask / Allow / Deny choice.
+pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
+    BuiltinTool {
+        name: "web_search",
+        label: "Search the web",
+        effect: EffectClass::Network,
+    },
+    BuiltinTool {
+        name: "read_url",
+        label: "Read a web page (Tern Crawl)",
+        effect: EffectClass::Network,
+    },
+    BuiltinTool {
+        name: "vault_search",
+        label: "Search your vault notes",
+        effect: EffectClass::Read,
+    },
+    BuiltinTool {
+        name: "vault_read",
+        label: "Read a vault note",
+        effect: EffectClass::Read,
+    },
+    BuiltinTool {
+        name: "vault_write",
+        label: "Write a vault note",
+        effect: EffectClass::Write,
+    },
+    BuiltinTool {
+        name: "files_list",
+        label: "List workspace files",
+        effect: EffectClass::Read,
+    },
+    BuiltinTool {
+        name: "file_read",
+        label: "Read a workspace file",
+        effect: EffectClass::Read,
+    },
+    BuiltinTool {
+        name: "file_search",
+        label: "Search workspace files",
+        effect: EffectClass::Read,
+    },
+    BuiltinTool {
+        name: "file_write",
+        label: "Write a workspace file",
+        effect: EffectClass::Write,
+    },
+    BuiltinTool {
+        name: "load_skill",
+        label: "Load a skill",
+        effect: EffectClass::Read,
+    },
+];
 
 impl ToolRegistry {
     pub fn new() -> Self {
@@ -101,8 +169,19 @@ impl ToolRegistry {
 
     /// Adds a tool. A second tool with the same name replaces the first.
     pub fn register(&mut self, tool: impl Tool + 'static) -> &mut Self {
-        self.tools.insert(tool.name(), Box::new(tool));
+        if !self.off.contains(tool.name()) {
+            self.tools.insert(tool.name(), Box::new(tool));
+        }
         self
+    }
+
+    /// Turns tools off: takes them out now and keeps them out of every
+    /// later [`Self::register`].
+    pub fn turn_off<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for n in names {
+            self.tools.remove(n);
+            self.off.insert(n.to_owned());
+        }
     }
 
     /// Takes a tool out (a chat whose web search was turned off).
@@ -237,5 +316,31 @@ mod tests {
         );
         assert!(validate(&schema(), &json!({"query": "x", "rm": true})).is_err());
         assert!(validate(&schema(), &json!("query")).is_err());
+    }
+
+    #[test]
+    fn tools_turned_off_stay_out() {
+        let mut t = ToolRegistry::new();
+        t.register(crate::web::ReadUrlTool::default());
+        assert!(t.get("read_url").is_some());
+        t.turn_off(["read_url"]);
+        assert!(t.get("read_url").is_none());
+        // A later path that adds it again is ignored.
+        t.register(crate::web::ReadUrlTool::default());
+        assert!(t.get("read_url").is_none() && t.is_empty());
+    }
+
+    #[test]
+    fn the_builtin_list_names_each_tool_once() {
+        let mut names: Vec<_> = BUILTIN_TOOLS.iter().map(|t| t.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), BUILTIN_TOOLS.len());
+        let read = crate::web::ReadUrlTool::default();
+        let row = BUILTIN_TOOLS
+            .iter()
+            .find(|t| t.name == read.name())
+            .unwrap();
+        assert_eq!(row.effect, read.effect());
     }
 }

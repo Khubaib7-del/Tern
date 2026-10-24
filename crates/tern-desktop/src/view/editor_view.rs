@@ -7,6 +7,7 @@ use std::time::Duration;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -179,7 +180,7 @@ impl Workspace {
                     .id("note-list")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .px_1()
                     .flex()
                     .flex_col()
@@ -259,7 +260,7 @@ impl Workspace {
                 .id("note-preview-body")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .px_6()
                 .py_4()
                 .child(

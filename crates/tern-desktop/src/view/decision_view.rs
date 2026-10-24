@@ -5,6 +5,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
@@ -16,7 +17,6 @@ use tern_core::SecretString;
 use super::Workspace;
 use crate::assets;
 use crate::decision::{RowNote, RowView};
-use crate::model::Screen;
 use crate::theme::Palette;
 
 const PAGE_MAX_W: f32 = 760.;
@@ -60,17 +60,10 @@ fn local_logo(p: Palette) -> AnyElement {
 
 impl Workspace {
     pub(super) fn open_decision(&mut self, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Decision;
+        self.show_settings(crate::settings::Section::Decision);
         if !self.model.decision.loaded {
             self.bridge.decision_load();
         }
-        cx.notify();
-    }
-
-    pub(super) fn close_decision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Chat;
-        self.model.decision.editing = None;
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 
@@ -138,13 +131,6 @@ impl Workspace {
                     .child(div().text_sm().text_color(p.muted).child(
                         "A fast scorer beside the chat model for fixed choices: which page to read first, which tool fits, whether a passage supports a claim, what to run now. Hard checks always override its score. Changes apply to new chats.",
                     )),
-            )
-            .child(
-                Button::new("decision-done")
-                    .label("Back to chat")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.close_decision(window, cx))),
             );
         let mode_button = |m: Mode, cx: &mut Context<Self>| {
             Button::new(SharedString::from(format!("decision-mode-{}", m.label())))
@@ -322,14 +308,14 @@ impl Workspace {
             )
         };
         div()
-            .id("decision-model")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
             .child(column)
+            .overflow_y_scrollbar()
+            .id("decision-model")
             .into_any_element()
     }
 

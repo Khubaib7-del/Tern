@@ -109,6 +109,8 @@ pub use workspace::{TurnMode, Workspace};
 /// OS details the front ends need, from `tern-platform` (front ends depend
 /// on `tern-agent` and `tern-core` only).
 pub mod platform {
+    /// Where Tern keeps data, settings, and caches (Settings › Privacy).
+    pub use tern_platform::AppPaths;
     /// Speech WAV helpers for the mic.
     pub use tern_platform::audio;
     /// The microphone (the `mic` feature).

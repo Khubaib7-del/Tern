@@ -21,26 +21,20 @@ use crate::providers::ProvidersState;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Chat,
-    Providers,
+    /// Settings: providers, models, tools, the decision model,
+    /// evaluation, MCP and skills, search and the crawler, appearance,
+    /// Study, privacy, about (`crate::settings`).
+    Settings,
     /// The vault's notes.
     Editor,
     /// The vault repository: checkpoints, branches, push, pull requests.
     Git,
-    /// The palette, type, glyphs, and Scout, for review.
-    Appearance,
     /// Questions on watch and what changed since their last run.
     Watches,
     /// The Study harness: materials, topics, tutor, quizzes, viva.
     Study,
-    /// Decision model settings: off, local, or a remote provider.
-    Decision,
     /// The Library of everything.
     Library,
-    /// Skills, MCP servers, providers, and the effective instructions.
-    Customize,
-    /// Evaluation runs: scores per suite, failures, the diff against the
-    /// run before.
-    Evaluation,
     /// Archived chats, and deleted ones until the trash is emptied.
     Archived,
 }
@@ -276,6 +270,9 @@ pub struct Model {
     /// Short notes from Tern (model switches, saved choices, errors),
     /// shown as toasts over the window instead of lines in the chat.
     pub toasts: crate::toast::Toasts,
+    /// The Settings screen, and the screen Back returns to.
+    pub settings: crate::settings::SettingsState,
+    pub settings_back: Screen,
     /// The model a switch is under way to, for the chip.
     pub switching_to: Option<String>,
     pub phase: Phase,
@@ -476,6 +473,8 @@ impl Model {
             dark: true,
             stopping: false,
             screen: Screen::Chat,
+            settings: Default::default(),
+            settings_back: Screen::Chat,
             providers: ProvidersState::default(),
             decision: Default::default(),
             eval: Default::default(),

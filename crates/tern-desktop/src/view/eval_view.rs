@@ -5,16 +5,16 @@
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div, px, svg};
+use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div, px, svg};
 use tern_agent::eval::{Change, EvalRun, Metric, RunSummary, SuiteKind, SuiteResult};
 
 use super::Workspace;
 use crate::assets;
 use crate::evaluation::short_time;
-use crate::model::Screen;
 use crate::theme::Palette;
 
 const PAGE_MAX_W: f32 = 880.;
@@ -76,16 +76,10 @@ fn kind_tile(kind: SuiteKind, p: Palette) -> AnyElement {
 
 impl Workspace {
     pub(super) fn open_eval(&mut self, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Evaluation;
+        self.show_settings(crate::settings::Section::Evaluation);
         if !self.model.eval.loaded {
             self.bridge.eval_load(None);
         }
-        cx.notify();
-    }
-
-    pub(super) fn close_eval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.model.screen = Screen::Chat;
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 
@@ -128,13 +122,6 @@ impl Workspace {
                             .small()
                             .disabled(st.running)
                             .on_click(cx.listener(|this, _, _, cx| this.eval_start(cx))),
-                    )
-                    .child(
-                        Button::new("eval-done")
-                            .label("Back to chat")
-                            .ghost()
-                            .small()
-                            .on_click(cx.listener(|this, _, window, cx| this.close_eval(window, cx))),
                     ),
             );
         let status: AnyElement = if st.running {
@@ -199,14 +186,14 @@ impl Workspace {
             }
         }
         div()
-            .id("evaluation")
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
             .child(column)
+            .overflow_y_scrollbar()
+            .id("evaluation")
             .into_any_element()
     }
 
