@@ -32,6 +32,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - name: Explain in 3D steps on a 1 MB stack (GPUI-free simulation)
+        run: cargo test --locked -p tern-desktop --bin tern-desktop -- step_changes_run_on_a_one_megabyte_stack
       - name: tern doctor
         shell: pwsh
         run: |

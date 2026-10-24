@@ -18,8 +18,12 @@
 //! the app on Windows. A caught one shows the error card instead. While the
 //! camera moves, frames reuse the last label layout (`crate::explain`) and
 //! the painter leaves out dashes and seam strokes; all of the scene's
-//! paths are drawn in one batch.
+//! paths are drawn in one batch. Only sane paths reach the renderer: every
+//! point finite and near the stage, at most [`MAX_POINTS`] points a path,
+//! no empty paths, and at most [`MAX_PATHS`] paths a frame. Each step
+//! change is noted for the crash log (`crate::crashlog::breadcrumb`).
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -103,8 +107,36 @@ fn hourglass_angle(since: Duration, reduced: bool) -> f32 {
 /// pattern is never cut into an unbounded number of pieces.
 const DASH_MAX: f32 = 4_000.0;
 
-/// The points in window pixels, or `None` when any is not finite, is
-/// absurdly far, or the shape lies wholly outside the `w` × `h` stage.
+/// Most points one path may have; a face, an edge or a link has a few
+/// dozen, so anything longer is not drawn.
+const MAX_POINTS: usize = 256;
+/// Most paths one frame draws. A dense scene draws a few thousand; past
+/// this the rest are left out, so the renderer's path buffers stay small.
+const MAX_PATHS: usize = 12_000;
+
+/// Paints `p` in `c` while the frame's path budget lasts, and only when it
+/// has triangles and a sane, finite size.
+fn put(window: &mut Window, budget: &Cell<usize>, p: gpui_kit::Path<Pixels>, c: Hsla) {
+    let left = budget.get();
+    if left == 0 || p.vertices.is_empty() {
+        return;
+    }
+    let b = p.bounds;
+    let size = [f32::from(b.size.width), f32::from(b.size.height)];
+    let sane = size
+        .iter()
+        .all(|v| v.is_finite() && *v >= 0.0 && *v < 2.0 * FAR)
+        && size.iter().any(|v| *v > 0.0);
+    if !sane {
+        return;
+    }
+    budget.set(left - 1);
+    window.paint_path(p, c);
+}
+
+/// The points in window pixels, or `None` when there are too many, any is
+/// not finite, is absurdly far, or the shape lies wholly outside the
+/// `w` × `h` stage.
 fn on_stage(
     pts: &[(f32, f32)],
     f: &Fit,
@@ -112,7 +144,7 @@ fn on_stage(
     w: f32,
     h: f32,
 ) -> Option<Vec<gpui_kit::Point<Pixels>>> {
-    if pts.is_empty() {
+    if pts.is_empty() || pts.len() > MAX_POINTS {
         return None;
     }
     let mut out = Vec::with_capacity(pts.len());
@@ -183,7 +215,7 @@ fn fill(pts: &[gpui_kit::Point<Pixels>]) -> Option<gpui_kit::Path<Pixels>> {
 }
 
 /// One hairline: in the accent when its part is lit or hovered.
-fn paint_edge(e: &Edge, pt: &Paint, at: ToStage<'_>, window: &mut Window) {
+fn paint_edge(e: &Edge, pt: &Paint, at: ToStage<'_>, budget: &Cell<usize>, window: &mut Window) {
     let lit = e.part.and_then(|i| pt.lit.get(i).copied()).unwrap_or(0.0);
     let hovered = e.part.is_some() && e.part == pt.hover;
     let (c, wid) = if lit > 0.5 || hovered {
@@ -192,7 +224,7 @@ fn paint_edge(e: &Edge, pt: &Paint, at: ToStage<'_>, window: &mut Window) {
         (pt.ink.opacity(0.85), 0.9)
     };
     if let Some(p) = at(&e.pts).and_then(|q| stroke(&q, wid, e.closed, None)) {
-        window.paint_path(p, c);
+        put(window, budget, p, c);
     }
 }
 
@@ -207,10 +239,11 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
         _ => pt.camera.fit(w, h, MARGIN),
     };
     let at = |pts: &[(f32, f32)]| on_stage(pts, &f, o, w, h);
+    let budget = &Cell::new(MAX_PATHS);
     // The floor grid: the faintest hairlines.
     for e in &pt.drawing.grid {
         if let Some(p) = at(&e.pts).and_then(|q| stroke(&q, 0.6, false, None)) {
-            window.paint_path(p, pt.faint.opacity(0.35));
+            put(window, budget, p, pt.faint.opacity(0.35));
         }
     }
     // The solid machine, back to front, with the Hairline overlay: each
@@ -230,25 +263,25 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
         }
         if let Some(q) = at(&face.pts) {
             if let Some(p) = fill(&q) {
-                window.paint_path(p, c);
+                put(window, budget, p, c);
             }
             // The same colour as a thin stroke closes the seams between
             // facets; left out while the camera moves.
             if !pt.moving
                 && let Some(p) = stroke(&q, 0.6, true, None)
             {
-                window.paint_path(p, c);
+                put(window, budget, p, c);
             }
         }
         for &ei in after.get(i).into_iter().flatten() {
             if let Some(e) = pt.drawing.edges.get(ei) {
-                paint_edge(e, pt, &at, window);
+                paint_edge(e, pt, &at, budget, window);
             }
         }
     }
     for &ei in after.last().into_iter().flatten() {
         if let Some(e) = pt.drawing.edges.get(ei) {
-            paint_edge(e, pt, &at, window);
+            paint_edge(e, pt, &at, budget, window);
         }
     }
     // Links: the step's dashed with a head; links between consecutive
@@ -260,10 +293,10 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
         let dash = (strong && !pt.moving).then_some(4.0);
         let wid = if strong { 1.0 } else { 0.8 };
         if let Some(p) = at(&[l.a, l.b]).and_then(|q| stroke(&q, wid, false, dash)) {
-            window.paint_path(p, pt.muted.opacity(weight));
+            put(window, budget, p, pt.muted.opacity(weight));
         }
         if strong && let Some(p) = at(&l.head).and_then(|q| fill(&q)) {
-            window.paint_path(p, pt.muted);
+            put(window, budget, p, pt.muted);
         }
     }
     // Leaders from nodes to labels that had to move.
@@ -276,7 +309,7 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             .iter()
             .all(|v| v.is_finite() && v.abs() < FAR);
         if finite && let Some(p) = stroke(&q, 0.8, false, None) {
-            window.paint_path(p, pt.faint);
+            put(window, budget, p, pt.faint);
         }
     }
     // An invisible quad over the stage, above every path: the labels drawn
@@ -359,6 +392,7 @@ impl Workspace {
             let title = s.title();
             self.tabs.retitle_explain(key, &title);
         }
+        self.crumb_step(key);
     }
 
     /// Runs `f` on tab `key`'s explainer, catching a panic: the tab then
@@ -372,6 +406,21 @@ impl Workspace {
                 s.paint_failed.set(true);
                 None
             }
+        }
+    }
+
+    /// Notes the step on screen for the crash log's "last action".
+    fn crumb_step(&self, key: u32) {
+        if let Some(s) = self.explains.get(&key)
+            && let Some(sc) = &s.scene
+        {
+            crate::crashlog::breadcrumb(&format!(
+                "Explain in 3D: step {} of {} ({} parts, {} links)",
+                s.step + 1,
+                sc.steps.len(),
+                sc.parts.len(),
+                sc.links.len()
+            ));
         }
     }
 
@@ -477,6 +526,9 @@ impl Workspace {
                         any |= s.autoplay;
                     }
                     if moved_any {
+                        if let Some(k) = this.active_explain() {
+                            this.crumb_step(k);
+                        }
                         this.explain_at = None;
                         cx.notify();
                     }
@@ -502,6 +554,7 @@ impl Workspace {
                 s.back(now);
             }
         });
+        self.crumb_step(key);
         cx.notify();
     }
 
@@ -528,6 +581,7 @@ impl Workspace {
         };
         match did {
             KeyDid::Nothing => return,
+            KeyDid::Step => self.crumb_step(key),
             KeyDid::Play if self.explains.get(&key).is_some_and(|s| s.autoplay) => {
                 self.start_explain_ticker(cx);
             }
@@ -1239,6 +1293,7 @@ impl Workspace {
                         s.autoplay = false;
                         s.go(j, Instant::now());
                     });
+                    this.crumb_step(key);
                     this.explain_at = None;
                     window.request_animation_frame();
                     cx.notify();
@@ -1270,6 +1325,7 @@ impl Workspace {
                             s.autoplay = false;
                             s.go(at, Instant::now());
                         });
+                        this.crumb_step(key);
                         this.explain_at = None;
                         window.request_animation_frame();
                         cx.notify();
