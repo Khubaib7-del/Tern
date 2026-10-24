@@ -1,11 +1,11 @@
 {
   "format": 1,
   "frame": [
-    160,
-    192
+    96,
+    96
   ],
-  "baseline": 184,
-  "placeholder": true,
+  "baseline": 91.5,
+  "hi": "@256",
   "variants": {
     "normal": "",
     "study": ".study"
@@ -13,63 +13,140 @@
   "states": {
     "idle": {
       "file": "idle.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
-    },
-    "searching": {
-      "file": "searching.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
-    },
-    "reading": {
-      "file": "reading.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
-    },
-    "needs_you": {
-      "file": "needs_you.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
-    },
-    "done": {
-      "file": "done.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": false
-    },
-    "study": {
-      "file": "study.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
+      "frames": 6,
+      "fps": 4,
+      "loop": true,
+      "durations_ms": [
+        700,
+        500,
+        130,
+        700,
+        600,
+        600
+      ]
     },
     "thinking": {
       "file": "thinking.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
+      "frames": 6,
+      "fps": 5,
+      "loop": true,
+      "durations_ms": [
+        220,
+        160,
+        220,
+        160,
+        600,
+        400
+      ]
+    },
+    "searching": {
+      "file": "searching.png",
+      "frames": 6,
+      "fps": 5,
+      "loop": true,
+      "durations_ms": [
+        260,
+        300,
+        260,
+        220,
+        300,
+        260
+      ]
+    },
+    "reading": {
+      "file": "reading.png",
+      "frames": 4,
+      "fps": 3,
+      "loop": true,
+      "durations_ms": [
+        900,
+        700,
+        450,
+        500
+      ]
     },
     "verifying": {
       "file": "verifying.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
+      "frames": 4,
+      "fps": 4,
+      "loop": true,
+      "durations_ms": [
+        450,
+        350,
+        350,
+        250
+      ]
+    },
+    "needs_you": {
+      "file": "needs_you.png",
+      "frames": 6,
+      "fps": 6,
+      "loop": true,
+      "durations_ms": [
+        200,
+        160,
+        180,
+        180,
+        180,
+        220
+      ],
+      "loop_start": 2,
+      "overlay": "overlay_needs_you.png"
+    },
+    "done": {
+      "file": "done.png",
+      "frames": 6,
+      "fps": 8,
+      "loop": true,
+      "durations_ms": [
+        160,
+        100,
+        160,
+        100,
+        120,
+        600
+      ],
+      "overlay": "overlay_done.png"
     },
     "blocked": {
       "file": "blocked.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
+      "frames": 4,
+      "fps": 3,
+      "loop": true,
+      "durations_ms": [
+        500,
+        700,
+        400,
+        900
+      ],
+      "overlay": "overlay_blocked.png"
+    },
+    "study": {
+      "file": "study.png",
+      "frames": 6,
+      "fps": 4,
+      "loop": true,
+      "durations_ms": [
+        700,
+        400,
+        160,
+        700,
+        400,
+        160
+      ]
     },
     "sleeping": {
       "file": "sleeping.png",
-      "frames": 1,
-      "fps": 1,
-      "loop": true
+      "frames": 4,
+      "fps": 2,
+      "loop": true,
+      "durations_ms": [
+        900,
+        900,
+        1100,
+        1100
+      ]
     }
-  }
+  },
+  "source": "Scout clay sprites v2: 96 px strips for the pet, @256 for Settings > Scout; Study trim recoloured to the warm paper tone"
 }
