@@ -4,6 +4,25 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added and changed (PR #51)
+
+Settings review: providers, logos, custom providers, crawlers, MCP and skills, instructions, the decision model.
+
+- **Logos**: every provider, search service, crawler, decision model, and MCP template row shows its real coloured logo (Firecrawl, Jina, Cerebras, Fireworks, Together, Voyage, Jev, SubQ, GitHub, Notion, Figma, Context7, the MCP mark and more; sources and licences in `assets/brands/NOTICE.md`). One-colour marks (OpenAI, xAI, Ollama, GitHub, Notion…) are drawn white on the dark theme and near-black on the light one. Source rows, MCP server tiles, the `/` menu, and the Evaluation page use the coloured marks too. Only custom providers keep a letter tile.
+- **Custom providers** (Settings › Providers): **Add custom provider** (OpenAI-compatible or Anthropic-compatible, name, base URL, API key, optional headers) saves and tests it; **Paste config** reads a provider's JSON (one provider, a `models.json`, an opencode provider map, or a list) and lists every problem before anything is saved. Keys go to the keychain, never to the settings file. Custom rows have **Delete** (asks twice; removes the key and any choice that used it). Custom providers are registered for the whole app at once, so the model picker, chats, and the CLI use them.
+- **Search & Crawlers**: search services and crawlers are two groups. Crawlers lists Tern Crawl (the default and the fallback), Firecrawl, Jina Reader, and a plain fetch, each with its logo, a one-line explanation, Add key (tested before it is saved) and Test, an on/off switch, and **Default**. The page cache's size is measured when the page opens and after Clear, not on every frame.
+- **MCP**: a templates gallery with logos (fill in what a template needs, then Add), an Add server form (command with arguments and environment variables, or an HTTP URL with headers), and **Paste JSON** for `mcpServers` (Claude Desktop, Cursor), `servers` (VS Code), and `context_servers` (Zed). Added servers stay off until their trust preview is read; the on/off control is a switch.
+- **Skills**: **New skill** (a `SKILL.md` editor: name, description, instructions, checked before saving), **Import from GitHub** (a skill folder or a repository of them, read through GitHub's contents API), and templates to start from; each skill has an on/off switch and Remove.
+- **Instructions** (a new Settings section): Tern's built-in Research and Study prompts, read-only with Copy; your own instructions for every chat, for Research, and for Study, each with Save and Reset to default. Yours are added after Tern's own prompt and appear in the effective instructions as their own piece; a project's `TERN.md` still applies.
+- **Decision model page**: one line on what the decision model is for, a sliding Off / Local / Remote control, the providers with Add key and Test, a switch per job (tool choice, page order, passage support), and the last run's decisions.
+- **Preferences take effect at once**: every save puts custom providers, the default crawler, your instructions, and the decision jobs into effect without a restart.
+- **Providers**: the default provider's model list scrolls in its own 280 px box; Settings no longer asks for frames while Scout is hidden; the Tools page puts each tool on two lines with an icon; Appearance shows only what can be changed.
+- **Agent**: `crawlers` (reader choice, keys, test, fallback), `prompts` (built-in and user prompts per harness), `skill_author` (editor, GitHub import, templates), `mcp::presets` (templates, Add form parsing, pasted configs), `decide::Job` switches; `tern-providers::custom` (custom provider parsing, validation, and run-time registry); `tern-crawl` Firecrawl and Jina Reader clients and a GitHub folder reader.
+
+### Fixed (PR #51)
+
+- **Scout** shows its Verifying pose during claim checks (it used the Reading pose).
+
 ### Added and changed (PR #50)
 
 Settings and the first-run tour, the provider panel's lag, and scrollbars everywhere.
