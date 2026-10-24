@@ -45,6 +45,7 @@ mod frame;
 mod git_view;
 mod library_view;
 mod onboarding_view;
+mod palette_view;
 mod panels_view;
 mod pet_view;
 mod press;
@@ -277,6 +278,8 @@ pub struct Workspace {
     rail_hover: Option<usize>,
     /// The rail already opened by itself for the run under way.
     rail_auto: bool,
+    /// The Ctrl+K command palette, while open.
+    cmdk: Option<palette_view::CmdK>,
     rail_scroll: Option<(f32, f32, Instant)>,
     /// A chat that was shown but whose model could not be reached: picking
     /// a model reopens it instead of starting a new chat.
@@ -661,6 +664,7 @@ impl Workspace {
             toast_wake: None,
             rail_hover: None,
             rail_auto: false,
+            cmdk: None,
             rail_scroll: None,
             resume_retry: None,
             rail_base: Default::default(),
@@ -5085,7 +5089,10 @@ impl Render for Workspace {
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.settings_keys(e, window, cx) && !this.scout_keys(e, cx) {
+                if !this.palette_keys(e, window, cx)
+                    && !this.settings_keys(e, window, cx)
+                    && !this.scout_keys(e, cx)
+                {
                     this.panel_keys(e, cx);
                 }
             }))
@@ -5188,6 +5195,7 @@ impl Render for Workspace {
             .children(self.undo_toast(p, cx))
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
+            .children(self.palette_overlay(p, cx))
             .children(ripple);
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
