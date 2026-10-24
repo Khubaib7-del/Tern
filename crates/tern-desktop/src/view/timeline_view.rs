@@ -113,7 +113,7 @@ impl Workspace {
                         cx.notify();
                     }))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.glide_to_entry(entry, window);
+                        this.glide_to_entry(entry, window, cx);
                         cx.notify();
                     }))
             }));
@@ -131,7 +131,7 @@ impl Workspace {
     }
 
     /// Starts a smooth scroll that puts entry `entry` near the top.
-    fn glide_to_entry(&mut self, entry: usize, window: &mut Window) {
+    fn glide_to_entry(&mut self, entry: usize, window: &mut Window, cx: &mut Context<Self>) {
         let child = self.rail_base.get() + entry;
         let Some(item) = self.scroll.bounds_for_item(child) else {
             self.scroll.scroll_to_top_of_item(child);
@@ -150,7 +150,7 @@ impl Workspace {
             return;
         }
         self.rail_scroll = Some((from, to, Instant::now()));
-        window.request_animation_frame();
+        super::frame::next_frame(window, cx);
     }
 
     fn set_scroll_y(&self, y: f32) {
@@ -159,7 +159,7 @@ impl Workspace {
     }
 
     /// Moves a glide on; draws the next frame only while it runs.
-    pub(super) fn tick_rail_scroll(&mut self, window: &mut Window) {
+    pub(super) fn tick_rail_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((from, to, at)) = self.rail_scroll else {
             return;
         };
@@ -168,7 +168,7 @@ impl Workspace {
         if t >= 1.0 {
             self.rail_scroll = None;
         } else {
-            window.request_animation_frame();
+            super::frame::next_frame(window, cx);
         }
     }
 }

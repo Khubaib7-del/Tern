@@ -232,7 +232,7 @@ impl Workspace {
             return;
         }
         if self.scout.busy() {
-            window.request_animation_frame();
+            super::frame::next_frame(window, cx);
         } else if self.scout_wake.is_none() {
             // A drifting mood wakes about 15 times a second; a still one
             // sleeps until its next blink.

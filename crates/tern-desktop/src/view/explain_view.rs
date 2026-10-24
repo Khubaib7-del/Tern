@@ -461,7 +461,7 @@ impl Workspace {
     }
 
     /// Eases the tilt and keeps frames coming while something moves.
-    pub(super) fn tick_explain(&mut self, window: &mut Window) {
+    pub(super) fn tick_explain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         let dt = self
             .explain_at
@@ -493,7 +493,7 @@ impl Workspace {
             })
             .unwrap_or(false)
         {
-            window.request_animation_frame();
+            super::frame::next_frame(window, cx);
         }
     }
 
@@ -633,7 +633,7 @@ impl Workspace {
         if released.is_none_or(|r| r) {
             // The spin after a drag needs frames.
             self.explain_at = None;
-            window.request_animation_frame();
+            super::frame::next_frame(window, cx);
             cx.notify();
         }
     }
@@ -996,6 +996,7 @@ impl Workspace {
             dark: self.model.dark,
         };
         let failed_cell = s.paint_failed.clone();
+        let me = cx.entity_id();
         let readout = s.hover.and_then(|i| scene.parts.get(i)).map(|part| {
             div()
                 .absolute()
@@ -1029,7 +1030,7 @@ impl Workspace {
                         s.reset_view();
                     });
                     this.explain_at = None;
-                    window.request_animation_frame();
+                    super::frame::next_frame(window, cx);
                     cx.notify();
                 })),
         );
@@ -1080,7 +1081,7 @@ impl Workspace {
                     Some(0) => {}
                     Some(1) => cx.notify(),
                     _ => {
-                        window.request_animation_frame();
+                        super::frame::next_frame(window, cx);
                         cx.notify();
                     }
                 }
@@ -1116,7 +1117,7 @@ impl Workspace {
                         }
                     });
                     this.explain_at = None;
-                    window.request_animation_frame();
+                    super::frame::next_frame(window, cx);
                     cx.notify();
                 }),
             )
@@ -1173,7 +1174,7 @@ impl Workspace {
                     s.wheel(-dy, mx, my, w, h);
                 });
                 this.explain_at = None;
-                window.request_animation_frame();
+                super::frame::next_frame(window, cx);
                 cx.notify();
             }))
             .on_pinch(cx.listener(move |this, e: &PinchEvent, window, cx| {
@@ -1189,7 +1190,7 @@ impl Workspace {
                     s.pinch(delta, mx, my, w, h);
                 });
                 this.explain_at = None;
-                window.request_animation_frame();
+                super::frame::next_frame(window, cx);
                 cx.notify();
             }))
             .child(
@@ -1205,7 +1206,7 @@ impl Workspace {
                         if now != bounds.get() {
                             bounds.set(now);
                             // Labels follow the new size next frame.
-                            window.request_animation_frame();
+                            super::frame::next_frame_for(window, me);
                         }
                         // A panic here would unwind into the window
                         // procedure and abort the app: catch it, and show
@@ -1216,7 +1217,7 @@ impl Workspace {
                         .is_ok();
                         if !ok {
                             failed_cell.set(true);
-                            window.request_animation_frame();
+                            super::frame::next_frame_for(window, me);
                         }
                     },
                 )
@@ -1295,7 +1296,7 @@ impl Workspace {
                     });
                     this.crumb_step(key);
                     this.explain_at = None;
-                    window.request_animation_frame();
+                    super::frame::next_frame(window, cx);
                     cx.notify();
                 }))
         });
@@ -1327,7 +1328,7 @@ impl Workspace {
                         });
                         this.crumb_step(key);
                         this.explain_at = None;
-                        window.request_animation_frame();
+                        super::frame::next_frame(window, cx);
                         cx.notify();
                     }))
             });
@@ -1347,7 +1348,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.explain_step(key, -1, cx);
                         this.explain_at = None;
-                        window.request_animation_frame();
+                        super::frame::next_frame(window, cx);
                     })),
             )
             .child(
@@ -1368,7 +1369,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.explain_play(key, cx);
                         this.explain_at = None;
-                        window.request_animation_frame();
+                        super::frame::next_frame(window, cx);
                     })),
             )
             .child(
@@ -1382,7 +1383,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.explain_step(key, 1, cx);
                         this.explain_at = None;
-                        window.request_animation_frame();
+                        super::frame::next_frame(window, cx);
                     })),
             )
             .child(
