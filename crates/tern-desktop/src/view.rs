@@ -3369,7 +3369,7 @@ impl Workspace {
         let dark = p.canvas.l < 0.5;
         let (path, index, frames) =
             m.frame(dark, self.mark_since, Instant::now(), self.reduced_motion);
-        let (w, h) = m.display_size(96.);
+        let (w, h) = m.display_size(m.frame_h);
         div()
             .id("empty-mark")
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
