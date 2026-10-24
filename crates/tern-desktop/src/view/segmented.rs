@@ -69,8 +69,143 @@ pub(super) struct Look {
     pub small: bool,
 }
 
+/// Which rows each growing list has shown, so only new ones grow in.
+#[derive(Default)]
+pub(super) struct Grown {
+    seen: std::collections::HashMap<(&'static str, String), (Instant, usize)>,
+    /// Rows first seen in the current frame, per group, for the stagger.
+    fresh: std::collections::HashMap<&'static str, (Instant, usize)>,
+    /// How many frames each group has drawn (the first ones load the list).
+    settling_frames: std::collections::HashMap<&'static str, u32>,
+    drawn_at: std::collections::HashMap<&'static str, Instant>,
+}
+
+impl Grown {
+    fn fresh_in_frame(&mut self, group: &'static str, now: Instant) -> usize {
+        let e = self.fresh.entry(group).or_insert((now, 0));
+        if now.saturating_duration_since(e.0) > std::time::Duration::from_millis(8) {
+            *e = (now, 0);
+        }
+        e.1 += 1;
+        e.1 - 1
+    }
+
+    /// Counts frames per group: a list is "live" after its first second,
+    /// so the rows a list loads with never animate.
+    fn touch(&mut self, group: &'static str) {
+        let now = Instant::now();
+        let last = self.drawn_at.insert(group, now);
+        if last
+            .is_none_or(|t| now.saturating_duration_since(t) > std::time::Duration::from_millis(4))
+        {
+            *self.settling_frames.entry(group).or_default() += 1;
+        }
+    }
+
+    fn live(&self, group: &'static str) -> bool {
+        self.settling_frames.get(group).is_some_and(|n| *n >= 2)
+    }
+}
+
 impl Workspace {
     /// Where control `key`'s highlight is this frame, heading for `target`.
+    /// An invisible layer that records where its parent was laid out
+    /// under (`group`, `i`), read next frame by [`Self::underline`].
+    pub(super) fn measure(&self, group: &'static str, i: usize) -> impl IntoElement + use<> {
+        let store = self.measured.clone();
+        let view = self.view_id;
+        gpui_kit::canvas(
+            move |b, window, _| {
+                // Moved or new: draw once more so the underline follows.
+                if store.borrow_mut().insert((group, i), b) != Some(b) {
+                    super::frame::next_frame_for(window, view);
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    /// A 2 px underline that springs to item `active` of `group`, placed
+    /// in the row measured as (`group`, `usize::MAX`). One underline per
+    /// row (v2's layoutId), so switching tabs slides rather than blinks.
+    pub(super) fn underline(
+        &self,
+        group: &'static str,
+        key_x: &'static str,
+        key_w: &'static str,
+        active: Option<usize>,
+        color: gpui_kit::Hsla,
+    ) -> Option<AnyElement> {
+        let (row, tab) = {
+            let m = self.measured.borrow();
+            (
+                m.get(&(group, usize::MAX)).copied()?,
+                m.get(&(group, active?)).copied()?,
+            )
+        };
+        let x = self.glide(key_x, f32::from(tab.origin.x - row.origin.x));
+        let w = self.glide(key_w, f32::from(tab.size.width));
+        Some(
+            div()
+                .absolute()
+                .bottom_0()
+                .left(px(x))
+                .w(px(w.max(0.)))
+                .h(px(2.))
+                .bg(color)
+                .into_any_element(),
+        )
+    }
+
+    /// A row that grows in the first time it appears (v2's `appear`: a
+    /// new sub-session or source row eases from 0 to its height and fades
+    /// in), staggered 40 ms when several arrive together. Rows already
+    /// there when the list first draws do not animate.
+    pub(super) fn grow_in(&self, group: &'static str, key: String, row: AnyElement) -> AnyElement {
+        let now = Instant::now();
+        let mut rows = self.grown.borrow_mut();
+        let k = (group, key);
+        let (since, ix) = match rows.seen.get(&k) {
+            Some(&v) => v,
+            None => {
+                // Rows the list loads with are just there; later ones grow.
+                let v = if rows.live(group) {
+                    (now, rows.fresh_in_frame(group, now))
+                } else {
+                    (
+                        now.checked_sub(std::time::Duration::from_secs(5))
+                            .unwrap_or(now),
+                        0,
+                    )
+                };
+                rows.seen.insert(k, v);
+                v
+            }
+        };
+        rows.touch(group);
+        drop(rows);
+        let f = crate::motion::staggered(
+            since,
+            ix,
+            std::time::Duration::from_millis(40),
+            crate::motion::UI,
+            now,
+            self.reduced_motion,
+        );
+        if f >= 1. {
+            return row;
+        }
+        self.anim_pending.set(true);
+        div()
+            .overflow_hidden()
+            .max_h(px(44. * f))
+            .opacity(f)
+            .child(row)
+            .into_any_element()
+    }
+
     pub(super) fn glide(&self, key: &'static str, target: f32) -> f32 {
         let mut map = self.glides.borrow_mut();
         let g = map.entry(key).or_insert_with(|| Glide::new(target));

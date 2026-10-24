@@ -58,14 +58,45 @@ impl Workspace {
             if self.model.dark { 0.62 } else { 0.46 },
             1.,
         );
-        let items = shown.iter().map(|t| {
+        // Each toast rides a spring in and out (`motion::Presence`).
+        let mut springs = self.toast_springs.borrow_mut();
+        springs.retain(|id, _| shown.iter().any(|t| t.id == *id));
+        let mut moving = false;
+        let fs: Vec<f32> = shown
+            .iter()
+            .map(|t| {
+                let pr = springs.entry(t.id).or_insert_with(|| {
+                    crate::motion::Presence::new(true, true, crate::motion::SpringSpec::UI)
+                });
+                let f = pr.frame(t.leaving.is_none(), now, reduced).unwrap_or(0.);
+                moving |= pr.moving();
+                f
+            })
+            .collect();
+        drop(springs);
+        if moving {
+            self.anim_pending.set(true);
+        }
+        // Never over the composer: the stack sits above it (measured last
+        // frame), and narrows with the chat column.
+        let window_h = self.window_h;
+        let above = self
+            .measured
+            .borrow()
+            .get(&("composer", 0))
+            .filter(|_| self.model.screen == crate::model::Screen::Chat)
+            .map(|b| window_h - f32::from(b.origin.y) + 10.)
+            .unwrap_or(20.)
+            .max(20.);
+        let width = TOAST_W.min((self.centre_w - 24.).max(220.));
+        let items = shown.iter().zip(fs).map(|(t, f)| {
             let id = t.id;
-            let f = crate::motion::ease(t.presence(now, reduced));
+            let f = f.clamp(0., 1.1);
             let error = t.level == Level::Error;
             let retry = t.retry.clone();
             div()
                 .id(("toast", id as usize))
-                .w(px(TOAST_W))
+                .w(px(width))
                 .flex()
                 .items_start()
                 .gap_2()
@@ -77,7 +108,7 @@ impl Workspace {
                 .border_color(if error { red.opacity(0.6) } else { p.border })
                 .bg(p.raised)
                 .shadow_lg()
-                .opacity(f)
+                .opacity(f.min(1.))
                 // Slides up 8 px as it comes in, down as it goes.
                 .mt(px((1. - f) * 8.))
                 .occlude()
@@ -123,7 +154,7 @@ impl Workspace {
         Some(
             div()
                 .absolute()
-                .bottom(px(96.))
+                .bottom(px(above))
                 .right(px(20.))
                 .flex()
                 .flex_col()

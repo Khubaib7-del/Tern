@@ -377,6 +377,15 @@ pub fn pick_rows(
         .collect()
 }
 
+/// Below this chat-column width the composer's chip row goes compact
+/// (the mode shows its icon only, the model chip is capped) so it stays
+/// on one row.
+pub const COMPOSER_COMPACT_W: f32 = 760.;
+
+pub fn composer_compact(centre_w: f32) -> bool {
+    centre_w > 0. && centre_w < COMPOSER_COMPACT_W
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

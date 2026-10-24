@@ -1,7 +1,7 @@
 //! Appearance: only what you can change. Theme, accent, font, text size,
-//! density, and motion; each applies at once and is saved. (The design
-//! system's specimens — type, glyphs, logos, Scout's moods, the palette —
-//! are not settings, so they are not here.)
+//! density, and motion; each applies at once and is saved. Scout is drawn
+//! here too, live, with its moods to preview (v2 s16 shows the companion
+//! beside the look settings); picking a mood is a preview, not a setting.
 
 use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
@@ -11,6 +11,18 @@ use super::Workspace;
 use crate::appearance::{Accent, Choice, FontChoice, TextSize, ThemeChoice};
 use crate::settings::Section;
 use crate::theme::Palette;
+
+/// The moods Appearance can preview, in v2's order.
+const SCOUT_MOODS: [crate::scout::Mood; 8] = [
+    crate::scout::Mood::Idle,
+    crate::scout::Mood::Thinking,
+    crate::scout::Mood::Searching,
+    crate::scout::Mood::Reading,
+    crate::scout::Mood::Verifying,
+    crate::scout::Mood::NeedsYou,
+    crate::scout::Mood::Blocked,
+    crate::scout::Mood::Studying,
+];
 
 impl Workspace {
     pub(super) fn open_appearance(&mut self, cx: &mut Context<Self>) {
@@ -182,12 +194,70 @@ impl Workspace {
             one(motion),
             p,
         )];
+        // Scout, live: tap a mood to watch it move into that pose.
+        let current = self.scout.mood();
+        let moods: Vec<AnyElement> = SCOUT_MOODS
+            .iter()
+            .map(|&m| {
+                let on = current == m;
+                div()
+                    .id(SharedString::from(format!("look-scout-{}", m.label())))
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .border_1()
+                    .border_color(if on { p.muted } else { p.border })
+                    .text_color(if on { p.text } else { p.muted })
+                    .when(on, |d| d.bg(p.hover))
+                    .hover(move |d| d.bg(p.hover))
+                    .child(m.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.scout_preview = Some(m);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let scout_rows = vec![
+            div()
+                .flex()
+                .items_center()
+                .gap_4()
+                .py_2()
+                .child(
+                    div()
+                        .flex_none()
+                        .rounded_lg()
+                        .bg(p.sidebar)
+                        .p_2()
+                        .child(self.scout_figure(crate::scout::CORNER, p)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.muted)
+                                .child("Scout shows what Tern is doing from the sidebar's corner. Pick a mood to preview it."),
+                        )
+                        .child(div().flex().flex_wrap().gap_1().children(moods)),
+                )
+                .into_any_element(),
+        ];
         self.page(
             Section::Appearance,
             p,
             None,
             vec![
                 Self::settings_card("Look", p, look_rows),
+                Self::settings_card("Scout", p, scout_rows),
                 Self::settings_card("Text", p, type_rows),
                 Self::settings_card("Motion", p, motion_rows),
             ],

@@ -562,9 +562,12 @@ impl Workspace {
                 }))
         });
         let ready = self.model.is_ready() || busy;
+        let compact = crate::layout::composer_compact(self.centre_w);
         div().w_full().flex().justify_center().px_4().pb_4().child(
             div()
                 .id("composer-box")
+                .relative()
+                .child(self.measure("composer", 0))
                 .w_full()
                 .max_w(px(super::COLUMN_MAX_W))
                 .flex()
@@ -614,24 +617,38 @@ impl Workspace {
                         .text_color(p.faint)
                         .child(SharedString::from(t))
                 }))
+                // One row, never two: narrow windows drop the mode's label
+                // and cap the model chip instead of wrapping (v2's
+                // single chip row; Brief §2).
                 .child(
                     div()
                         .flex()
-                        .flex_wrap()
                         .items_center()
                         .justify_between()
                         .gap_1()
                         .px_1()
-                        .child(self.left_controls(p, cx))
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_shrink(1.)
+                                .min_w_0()
+                                .overflow_hidden()
+                                .child(self.left_controls(p, cx)),
+                        )
                         .child(
                             div()
                                 .flex()
-                                .flex_wrap()
+                                .flex_none()
                                 .items_center()
                                 .justify_end()
                                 .gap_1()
-                                .min_w_0()
-                                .children(self.model_chip(p, cx))
+                                .children(self.model_chip(p, cx).map(|c| {
+                                    div()
+                                        .min_w_0()
+                                        .max_w(px(if compact { 150. } else { 260. }))
+                                        .overflow_hidden()
+                                        .child(c)
+                                }))
                                 .children(self.effort_chip(p, cx))
                                 .children(self.search_chip(p, cx))
                                 .child(self.context_ring(p, cx))
@@ -707,7 +724,11 @@ impl Workspace {
             .child(
                 Button::new("mode")
                     .icon(mode_icon(mode))
-                    .label(mode.name())
+                    .label(if crate::layout::composer_compact(self.centre_w) {
+                        ""
+                    } else {
+                        mode.name()
+                    })
                     .ghost()
                     .small()
                     .dropdown_caret(true)

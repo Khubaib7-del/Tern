@@ -106,13 +106,25 @@ pub(super) fn paint_scout(
         window.paint_path(p, ink);
     }
 
-    // The face opening, and the eyes inside it.
+    // The face opening, and the eyes inside it. Turning to face you
+    // (needs you) opens the face a little wider and spaces the eyes, the
+    // way a head turned square-on reads at this size.
+    let f = pose.front;
     let look = (pose.look_x * 1.6, pose.look_y * 1.4);
-    if let Some(p) = poly(b, &ellipse(24.0 + look.0 * 0.3, y(22.0), 6.4, 7.0), None) {
+    if let Some(p) = poly(
+        b,
+        &ellipse(
+            24.0 + look.0 * 0.3 * (1.0 - f),
+            y(22.0),
+            6.4 + f * 0.6,
+            7.0 + f * 0.3,
+        ),
+        None,
+    ) {
         window.paint_path(p, face);
     }
-    let h = (2.6 * pose.eyes_open).max(0.45);
-    for ex in [21.4, 26.6] {
+    let h = (2.6 * pose.eyes_open).max(0.45) * (1.0 + f * 0.12);
+    for ex in [21.4 - f * 0.5, 26.6 + f * 0.5] {
         let (x0, y0) = (ex + look.0, y(21.6) + look.1);
         let eye = [
             (x0 - 0.85, y0 - h / 2.0),
@@ -148,9 +160,17 @@ pub(super) fn paint_scout(
         window.paint_path(p, ink);
     }
     if pose.lit {
+        // The flame fades up and down with the glow spring; at full glow
+        // a soft halo shows the lantern is held up for you.
         let c = rotate(&[(hook.0, hook.1 + 5.4)], hook, pose.lantern)[0];
-        if let Some(p) = poly(b, &ellipse(c.0, c.1, 1.1, 1.4), None) {
-            window.paint_path(p, flame);
+        let g = pose.glow;
+        if g > 0.6
+            && let Some(p) = poly(b, &ellipse(c.0, c.1, 3.4 * g, 3.8 * g), None)
+        {
+            window.paint_path(p, flame.opacity(0.18 * (g - 0.6) / 0.4));
+        }
+        if let Some(p) = poly(b, &ellipse(c.0, c.1, 0.5 + 0.6 * g, 0.6 + 0.8 * g), None) {
+            window.paint_path(p, flame.opacity(g.clamp(0.0, 1.0)));
         }
     }
 
@@ -255,10 +275,32 @@ impl Workspace {
     pub(super) fn scout_on_screen(&self) -> bool {
         use crate::model::Screen;
         match self.model.screen {
-            Screen::Settings => false,
+            // Appearance draws Scout as a preview of its moods.
+            Screen::Settings => self.model.settings.section == crate::settings::Section::Appearance,
             // The flashcard review draws Scout beside the card.
             Screen::Study if self.model.study.view == crate::study::StudyView::Cards => true,
             _ => self.model.sidebar_open,
+        }
+    }
+
+    /// The pointer moved: Scout's eyes follow it while it is near (v2's
+    /// corner). Only a pointer near Scout redraws anything.
+    pub(super) fn scout_pointer(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(b) = self.scout_bounds.get() else {
+            return;
+        };
+        if !self.scout_on_screen() {
+            return;
+        }
+        let was = self.scout.watching();
+        let face = point(
+            b.origin.x + b.size.width * 0.5,
+            b.origin.y + b.size.height * 0.45,
+        );
+        self.scout
+            .set_pointer(Some((f32::from(at.x - face.x), f32::from(at.y - face.y))));
+        if was || self.scout.watching() {
+            cx.notify();
         }
     }
 
@@ -266,6 +308,7 @@ impl Workspace {
     pub(super) fn scout_figure(&self, size: f32, p: Palette) -> AnyElement {
         let pose = self.scout.pose();
         let (ink, face, flame) = (p.text, p.sidebar, p.accent);
+        let seen = self.scout_bounds.clone();
         div()
             .size(px(size))
             .flex_none()
@@ -273,6 +316,7 @@ impl Workspace {
                 canvas(
                     |_, _, _: &mut App| (),
                     move |bounds, _, window, _: &mut App| {
+                        seen.set(Some(bounds));
                         paint_scout(bounds, pose, ink, face, flame, window)
                     },
                 )

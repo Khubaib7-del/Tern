@@ -18,6 +18,11 @@ use tern_agent::{ResearchPlan, Run, WorkerRow, WorkerStatus};
 use super::Workspace;
 use crate::theme::Palette;
 
+/// The plan card's height as it folds (v2's max-height 420), and the
+/// one line it folds into.
+const PLAN_CARD_H: f32 = 420.;
+const PLAN_LINE_H: f32 = 32.;
+
 impl Workspace {
     /// Hands the plan to the window: one text field per sub-question for
     /// editing, then the card.
@@ -51,6 +56,13 @@ impl Workspace {
 
     /// Sends the user's answer to the waiting run.
     pub(super) fn answer_plan(&mut self, answer: PlanAnswer, cx: &mut Context<Self>) {
+        // The card folds into one line (v2 s04: max-height 420 → 30).
+        if let PlanAnswer::Run(plan) = &answer {
+            let mut fold =
+                crate::motion::Spring::new(PLAN_CARD_H, crate::motion::SpringSpec::PANEL);
+            fold.retarget(PLAN_LINE_H, std::time::Instant::now());
+            self.plan_folded = Some((plan.sub_questions.len(), fold));
+        }
         if let Some(r) = self.plan_reply.take() {
             let _ = r.send(answer);
         }
@@ -88,6 +100,45 @@ impl Workspace {
             out.sub_questions.push(s);
         }
         Some(out)
+    }
+
+    /// The approved plan, folded to one line, while its run goes. It
+    /// shrinks from the card's height on a spring the moment Run is hit.
+    pub(super) fn plan_folded_line(&self, p: Palette) -> Option<AnyElement> {
+        if !self.model.is_busy() || self.model.pending_plan().is_some() {
+            return None;
+        }
+        let (n, fold) = self.plan_folded.as_ref()?;
+        let mut fold = *fold;
+        let h = fold.frame(PLAN_LINE_H, std::time::Instant::now(), self.reduced_motion);
+        if fold.moving() {
+            self.anim_pending.set(true);
+        }
+        let open = ((h - PLAN_LINE_H) / (PLAN_CARD_H - PLAN_LINE_H)).clamp(0., 1.);
+        Some(
+            div()
+                .id("plan-folded")
+                .w_full()
+                .h(px(h.max(PLAN_LINE_H)))
+                .overflow_hidden()
+                .flex()
+                .items_start()
+                .gap_2()
+                .px_3()
+                .py(px(6.))
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border.opacity(0.4 + 0.6 * open))
+                .bg(p.raised.opacity(open))
+                .text_sm()
+                .text_color(p.muted)
+                .child(div().text_color(p.accent).child("✓"))
+                .child(SharedString::from(format!(
+                    "Plan approved · {n} step{}",
+                    if *n == 1 { "" } else { "s" }
+                )))
+                .into_any_element(),
+        )
     }
 
     /// The plan card in the transcript while a plan waits.

@@ -64,6 +64,9 @@ use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
+/// Rail icons that can carry the active marker (Chats, Library, Editor,
+/// Browser, Git, Settings).
+const RAIL_SLOTS: usize = 6;
 pub(crate) const RAIL_W: f32 = 52.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
@@ -133,6 +136,32 @@ pub struct Workspace {
     scout_beat: usize,
     scout_wake: Option<Task<()>>,
     scout_preview: Option<crate::scout::Mood>,
+    /// Where Scout was last painted (its figure's bounds), so the eyes can
+    /// follow the pointer.
+    scout_bounds: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
+    /// The approved plan's step count and its fold spring.
+    plan_folded: Option<(usize, crate::motion::Spring)>,
+    /// Rows that have grown in already, per list (`view/segmented.rs`).
+    grown: std::cell::RefCell<segmented::Grown>,
+    /// Each toast's spring, by toast id.
+    toast_springs: std::cell::RefCell<std::collections::HashMap<u64, crate::motion::Presence>>,
+    /// The window's height this frame, for placing overlays.
+    window_h: f32,
+    /// This view's own id, for measuring canvases that ask for a frame
+    /// when what they measured moved (`view/frame.rs`).
+    view_id: gpui_kit::EntityId,
+    /// Where measured elements (tabs, rail tabs) were laid out last frame,
+    /// by (group, index), for sliding underlines (`view/segmented.rs`).
+    measured: std::rc::Rc<
+        std::cell::RefCell<
+            std::collections::HashMap<(&'static str, usize), gpui_kit::Bounds<gpui_kit::Pixels>>,
+        >,
+    >,
+    /// Where each rail icon and the rail itself were laid out last frame
+    /// (window coordinates), for the sliding active marker.
+    rail_slots: std::rc::Rc<
+        std::cell::RefCell<[Option<gpui_kit::Bounds<gpui_kit::Pixels>>; RAIL_SLOTS + 1]>,
+    >,
     reduced_motion: bool,
     /// The Appearance choices, applied and saved on each click.
     look: crate::appearance::Appearance,
@@ -512,6 +541,14 @@ impl Workspace {
             scout_beat: 0,
             scout_wake: None,
             scout_preview: None,
+            scout_bounds: Default::default(),
+            rail_slots: Default::default(),
+            measured: Default::default(),
+            view_id: cx.entity_id(),
+            toast_springs: Default::default(),
+            grown: Default::default(),
+            plan_folded: None,
+            window_h: 0.,
             reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
             look,
             model,
@@ -2326,6 +2363,33 @@ impl Workspace {
     /// The left rail: tight groups of icons 4 px apart with a short rule
     /// between groups (chats, work surfaces, tools), settings at the foot.
     fn rail(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let slots = self.rail_slots.clone();
+        let view = self.view_id;
+        // Records where slot `i` was laid out (the rail itself is the last
+        // slot), so the marker knows where to slide next frame.
+        let measured = move |i: usize, el: AnyElement| -> AnyElement {
+            let slots = slots.clone();
+            div()
+                .relative()
+                .flex_none()
+                .child(el)
+                .child(
+                    gpui_kit::canvas(
+                        move |b, window, _| {
+                            if let Some(s) = slots.borrow_mut().get_mut(i)
+                                && s.replace(b) != Some(b)
+                            {
+                                frame::next_frame_for(window, view);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element()
+        };
+        let marker = self.rail_marker(p);
         let rule = || {
             div()
                 .w(px(18.))
@@ -2335,6 +2399,7 @@ impl Workspace {
                 .flex_none()
         };
         div()
+            .relative()
             .w(px(RAIL_W))
             .h_full()
             .flex()
@@ -2343,6 +2408,21 @@ impl Workspace {
             .gap(px(crate::layout::RAIL_GAP))
             .py_2()
             .bg(p.rail)
+            .child({
+                let slots = self.rail_slots.clone();
+                let view = self.view_id;
+                gpui_kit::canvas(
+                    move |b, window, _| {
+                        if slots.borrow_mut()[RAIL_SLOTS].replace(b) != Some(b) {
+                            frame::next_frame_for(window, view);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0()
+            })
+            .children(marker)
             .border_r_1()
             .border_color(p.border)
             .child(
@@ -2352,7 +2432,8 @@ impl Workspace {
                     .tooltip("New chat")
                     .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
             )
-            .child(
+            .child(measured(
+                0,
                 Button::new("rail-chats")
                     .icon(IconName::Inbox)
                     .ghost()
@@ -2360,9 +2441,11 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.model.sidebar_open = !this.model.sidebar_open;
                         cx.notify();
-                    })),
-            )
-            .child(
+                    }))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                1,
                 Button::new("rail-library")
                     .icon(AssetIcon::Library)
                     .ghost()
@@ -2374,10 +2457,12 @@ impl Workspace {
                         } else {
                             this.open_library(cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
             .child(rule())
-            .child(
+            .child(measured(
+                2,
                 Button::new("rail-editor")
                     .icon(IconName::FileText)
                     .ghost()
@@ -2389,9 +2474,11 @@ impl Workspace {
                         } else {
                             this.open_editor(window, cx);
                         }
-                    })),
-            )
-            .child(
+                    }))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                3,
                 Button::new("rail-browser")
                     .icon(IconName::Globe)
                     .ghost()
@@ -2400,9 +2487,11 @@ impl Workspace {
                         |b| b.selected(true),
                     )
                     .tooltip("Browser")
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))),
-            )
-            .child(
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                4,
                 Button::new("rail-git")
                     .icon(AssetIcon::GitBranch)
                     .ghost()
@@ -2414,10 +2503,12 @@ impl Workspace {
                         } else {
                             this.open_git(window, cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
             .child(div().flex_1())
-            .child(
+            .child(measured(
+                5,
                 Button::new("rail-settings")
                     .icon(IconName::Settings)
                     .ghost()
@@ -2430,8 +2521,46 @@ impl Workspace {
                             let s = this.model.settings.section;
                             this.open_settings(s, window, cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
+    }
+
+    /// Which rail icon stands for the screen showing (v2's ribbon bar).
+    fn rail_active(&self) -> Option<usize> {
+        match self.model.screen {
+            Screen::Settings => Some(5),
+            Screen::Git => Some(4),
+            Screen::Editor => Some(2),
+            Screen::Library => Some(1),
+            _ if self.model.browser.visible && self.model.run_panel_open => Some(3),
+            Screen::Chat | Screen::Watches | Screen::Archived | Screen::Study => Some(0),
+        }
+    }
+
+    /// The 2 px bar on the active icon's left edge. One bar for the whole
+    /// rail: it springs from icon to icon (`motion::Glide`), even down to
+    /// Settings at the foot.
+    fn rail_marker(&self, p: Palette) -> Option<AnyElement> {
+        let i = self.rail_active()?;
+        let slots = self.rail_slots.borrow();
+        let rail = slots[RAIL_SLOTS]?;
+        let slot = slots[i]?;
+        let h = f32::from(slot.size.height) * 0.56;
+        let target =
+            f32::from(slot.origin.y - rail.origin.y) + (f32::from(slot.size.height) - h) / 2.;
+        let y = self.glide("rail-marker", target);
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(y))
+                .w(px(2.))
+                .h(px(h))
+                .rounded_r(px(1.))
+                .bg(p.accent)
+                .into_any_element(),
+        )
     }
 
     /// The lockup: the mark, TERN, and the harness in italic serif.
@@ -2471,6 +2600,8 @@ impl Workspace {
         let sub = s.parent.is_some();
         let planned = s.plan.is_some();
         let running = self.model.cont.background.contains(&id);
+        let needs_you = current && self.model.scout_mood() == crate::scout::Mood::NeedsYou;
+        let age = crate::rows::age_label(&s.created_at, crate::rows::now_secs());
         if self.renaming == Some(id) {
             return div()
                 .id(("chat", ix))
@@ -2539,6 +2670,23 @@ impl Workspace {
                     .child(SharedString::from(s.title.clone())),
             )
             .when(running, |d| d.child(Spinner::new().xsmall()))
+            // v2's one mark: ◆ when this chat is waiting on you.
+            .when(needs_you, |d| {
+                d.child(div().flex_none().text_xs().text_color(p.accent).child("◆"))
+            })
+            // The age, quiet, on the right; it gives way to the menu on
+            // hover.
+            .when(!running && !needs_you, |d| {
+                d.children(age.map(|a| {
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .font_family(crate::assets::MONO_FONT)
+                        .text_color(p.faint)
+                        .group_hover("chat-row", |d| d.opacity(0.))
+                        .child(SharedString::from(a))
+                }))
+            })
             .when(planned && !running, |d| {
                 d.child(
                     Button::new(("run-sub", ix))
@@ -2563,7 +2711,8 @@ impl Workspace {
                     .child(self.row_menu_button(ix, id, cx)),
             )
             .into_any_element();
-        self.with_row_menu(row, ix, id, sub, p, cx)
+        let row = self.with_row_menu(row, ix, id, sub, p, cx);
+        self.grow_in("chat-rows", id.to_string(), row)
     }
 
     /// The harness switcher at the top of the sidebar: the harness's name
@@ -3135,6 +3284,9 @@ impl Workspace {
         }
         if let Some(card) = self.plan_card(p, cx) {
             items.push(wrap(card));
+        }
+        if let Some(line) = self.plan_folded_line(p) {
+            items.push(wrap(line));
         }
         if let Some(line) = self.model.working_line() {
             items.push(wrap(
@@ -4521,6 +4673,7 @@ impl Render for Workspace {
         {
             frame::next_frame(window, cx);
         }
+        self.window_h = f32::from(window.viewport_size().height);
         let layout = Layout::for_width(f32::from(window.viewport_size().width));
         if Layout::sidebar_squeezed(self.last_layout, layout) {
             self.model.sidebar_open = false;
@@ -4544,9 +4697,13 @@ impl Render for Workspace {
             now,
             reduced,
         );
-        let panel = self
-            .panel_slide
-            .frame(self.model.run_panel_open, now, reduced);
+        // Settings is a screen of its own (v2 s16): the right rail slides
+        // away too, so nothing beside it re-renders while it scrolls.
+        let panel = self.panel_slide.frame(
+            self.model.run_panel_open && self.model.screen != Screen::Settings,
+            now,
+            reduced,
+        );
         if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
             frame::next_frame(window, cx);
         }
@@ -4657,6 +4814,7 @@ impl Render for Workspace {
             .on_mouse_move(
                 cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
                     this.panel_drag_move(f32::from(e.position.x), window, cx);
+                    this.scout_pointer(e.position, cx);
                 }),
             )
             .on_mouse_up(

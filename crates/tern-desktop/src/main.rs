@@ -38,6 +38,7 @@ mod onboarding;
 mod panels;
 mod providers;
 mod restore;
+mod rows;
 mod runmap;
 mod scout;
 mod scrollbar;

@@ -173,8 +173,10 @@ impl Workspace {
                 .pr_1()
                 .text_sm()
                 .cursor_pointer()
+                .relative()
                 .border_b_2()
-                .border_color(if on { p.accent } else { p.canvas.opacity(0.) })
+                .border_color(p.canvas.opacity(0.))
+                .child(self.measure("tabs", i))
                 .text_color(if on { p.text } else { p.muted })
                 .when(!on, |d| d.hover(move |d| d.text_color(p.text)))
                 .when(busy && !on, |d| d.opacity(0.5))
@@ -292,12 +294,22 @@ impl Workspace {
                 .border_color(p.border)
                 .child(
                     div()
+                        .relative()
                         .flex()
                         .items_end()
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .children(shown_tabs),
+                        .child(self.measure("tabs", usize::MAX))
+                        .children(shown_tabs)
+                        // One underline that springs between tabs.
+                        .children(self.underline(
+                            "tabs",
+                            "tabs-underline-x",
+                            "tabs-underline-w",
+                            shown.contains(&active).then_some(active),
+                            p.accent,
+                        )),
                 )
                 .children(more)
                 .child(
