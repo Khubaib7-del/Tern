@@ -101,6 +101,8 @@ pub struct Camera {
     /// The first view's drawing bounds (projected), which set the base
     /// scale and centre so turning never rescales the drawing.
     home_bounds: (f32, f32, f32, f32),
+    /// The first view's turn and tilt.
+    home_view: (f32, f32),
     /// Spin left by a drag, radians a second (turn, tilt).
     spin: (f32, f32),
     drag: Option<DragState>,
@@ -120,20 +122,31 @@ impl Camera {
     /// A camera at the first view of a drawing with `home_bounds` (the
     /// scene projected with `View::default()`).
     pub fn new(home_bounds: (f32, f32, f32, f32)) -> Self {
-        let home = Self::home_pose(home_bounds);
+        Self::framed(home_bounds, 0.0, 0.0)
+    }
+
+    /// A camera whose first view is turned by `yaw` and tilted by `pitch`
+    /// and framed on `bounds` (the figure projected with that view, so it
+    /// fills the stage: zoom to fit).
+    pub fn framed(bounds: (f32, f32, f32, f32), yaw: f32, pitch: f32) -> Self {
+        let home_bounds = safe_bounds(bounds);
+        let ok = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let home_view = (ok(yaw), clamp_pitch(ok(pitch)));
+        let home = Self::home_pose(home_bounds, home_view);
         Self {
             now: home,
             target: home,
             home_bounds,
+            home_view,
             spin: (0.0, 0.0),
             drag: None,
         }
     }
 
-    fn home_pose(b: (f32, f32, f32, f32)) -> Pose {
+    fn home_pose(b: (f32, f32, f32, f32), v: (f32, f32)) -> Pose {
         Pose {
-            yaw: 0.0,
-            pitch: 0.0,
+            yaw: v.0,
+            pitch: v.1,
             zoom: 1.0,
             pan: (0.0, 0.0),
             pivot: [GRID / 2.0, GRID / 2.0, 0.0],
@@ -143,7 +156,7 @@ impl Camera {
 
     /// Back to the first view.
     pub fn reset(&mut self, reduced: bool) {
-        self.target = Self::home_pose(self.home_bounds);
+        self.target = Self::home_pose(self.home_bounds, self.home_view);
         self.spin = (0.0, 0.0);
         if reduced {
             self.now = self.target;
@@ -152,7 +165,7 @@ impl Camera {
 
     /// Whether the camera is at (and going to) the first view.
     pub fn at_home(&self) -> bool {
-        let h = Self::home_pose(self.home_bounds);
+        let h = Self::home_pose(self.home_bounds, self.home_view);
         close(&self.now, &h) && close(&self.target, &h)
     }
 
@@ -170,11 +183,21 @@ impl Camera {
     pub fn fit(&self, w: f32, h: f32, margin: f32) -> Fit {
         let base = Fit::new(self.home_bounds, w, h, margin).scale;
         let scale = base * self.now.zoom;
-        Fit {
+        let f = Fit {
             scale,
             dx: w / 2.0 + self.now.pan.0 - self.now.centre.0 * scale,
             dy: h / 2.0 + self.now.pan.1 - self.now.centre.1 * scale,
+        };
+        if [f.scale, f.dx, f.dy].iter().all(|v| v.is_finite()) && f.scale > 0.0 {
+            f
+        } else {
+            Fit::new(self.home_bounds, w, h, margin)
         }
+    }
+
+    /// The zoom now, for sizing labels.
+    pub fn zoom(&self) -> f32 {
+        self.now.zoom
     }
 
     pub fn dragging(&self) -> bool {
@@ -195,6 +218,9 @@ impl Camera {
     /// The pointer moved to `(x, y)`, `dt` seconds after the last move.
     /// Returns whether the camera moved.
     pub fn drag_to(&mut self, x: f32, y: f32, dt: f32) -> bool {
+        if !(x.is_finite() && y.is_finite()) {
+            return false;
+        }
         let Some(d) = self.drag.as_mut() else {
             return false;
         };
@@ -225,8 +251,7 @@ impl Camera {
                 }
             }
             Drag::Pan => {
-                self.target.pan.0 += dx;
-                self.target.pan.1 += dy;
+                self.target.pan = clamp_pan((self.target.pan.0 + dx, self.target.pan.1 + dy));
                 self.now.pan = self.target.pan;
             }
         }
@@ -258,11 +283,14 @@ impl Camera {
         let z1 = (z0 * factor).clamp(ZOOM.0, ZOOM.1);
         let r = z1 / z0;
         let (sx, sy) = (x - w / 2.0, y - h / 2.0);
+        if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite()) {
+            return;
+        }
         self.target.zoom = z1;
-        self.target.pan = (
+        self.target.pan = clamp_pan((
             sx * (1.0 - r) + self.target.pan.0 * r,
             sy * (1.0 - r) + self.target.pan.1 * r,
-        );
+        ));
         if reduced {
             self.now = self.target;
         }
@@ -304,6 +332,9 @@ impl Camera {
 
     /// Turns about `point` (floor units) and moves in on it, centred.
     pub fn focus(&mut self, point: [f32; 3], reduced: bool) {
+        if !point.iter().all(|v| v.is_finite()) {
+            return;
+        }
         self.target.pivot = point;
         self.target.centre = (0.0, 0.0);
         self.target.pan = (0.0, 0.0);
@@ -316,6 +347,9 @@ impl Camera {
 
     /// Like [`Camera::focus`], keeping the zoom: for walking the steps.
     pub fn glide_to(&mut self, point: [f32; 3], reduced: bool) {
+        if !point.iter().all(|v| v.is_finite()) {
+            return;
+        }
         self.target.pivot = point;
         self.target.centre = (0.0, 0.0);
         self.target.pan = (0.0, 0.0);
@@ -358,6 +392,18 @@ impl Camera {
         if close(&self.now, &self.target) {
             self.now = self.target;
         }
+        // Never let a bad number through to the drawing: back home.
+        if !finite(&self.now)
+            || !finite(&self.target)
+            || !self.spin.0.is_finite()
+            || !self.spin.1.is_finite()
+        {
+            let home = Self::home_pose(self.home_bounds, self.home_view);
+            self.now = home;
+            self.target = home;
+            self.spin = (0.0, 0.0);
+            return false;
+        }
         self.moving()
     }
 
@@ -365,6 +411,50 @@ impl Camera {
     pub fn moving(&self) -> bool {
         self.spin != (0.0, 0.0) || !close(&self.now, &self.target)
     }
+}
+
+/// Farthest the view pans, in pixels, either way.
+pub const PAN_MAX: f32 = 20_000.0;
+
+fn clamp_pan(p: (f32, f32)) -> (f32, f32) {
+    let c = |v: f32| {
+        if v.is_finite() {
+            v.clamp(-PAN_MAX, PAN_MAX)
+        } else {
+            0.0
+        }
+    };
+    (c(p.0), c(p.1))
+}
+
+/// Bounds a camera can frame: finite, ordered, at least a unit each way.
+fn safe_bounds(b: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    if ![b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()) || b.0 > b.2 || b.1 > b.3 {
+        return (-1.0, -1.0, 1.0, 1.0);
+    }
+    let grow = |lo: f32, hi: f32| {
+        if hi - lo < 1.0 {
+            let c = (lo + hi) / 2.0;
+            (c - 0.5, c + 0.5)
+        } else {
+            (lo, hi)
+        }
+    };
+    let (x0, x1) = grow(b.0, b.2);
+    let (y0, y1) = grow(b.1, b.3);
+    (x0, y0, x1, y1)
+}
+
+fn finite(p: &Pose) -> bool {
+    p.yaw.is_finite()
+        && p.pitch.is_finite()
+        && p.zoom.is_finite()
+        && p.zoom > 0.0
+        && p.pan.0.is_finite()
+        && p.pan.1.is_finite()
+        && p.pivot.iter().all(|v| v.is_finite())
+        && p.centre.0.is_finite()
+        && p.centre.1.is_finite()
 }
 
 fn close(a: &Pose, b: &Pose) -> bool {
@@ -618,5 +708,39 @@ mod tests {
         assert!((c.now.yaw - KEY_YAW).abs() < 1e-6);
         c.focus(part_centre(&s.parts[0]), true);
         assert!(!c.moving(), "reduced motion: already there");
+    }
+
+    #[test]
+    fn bad_numbers_never_reach_the_drawing() {
+        // Degenerate bounds: NaN, reversed, a single point.
+        for b in [
+            (f32::NAN, 0.0, 1.0, 1.0),
+            (5.0, 5.0, 1.0, 1.0),
+            (2.0, 2.0, 2.0, 2.0),
+            (0.0, 0.0, f32::INFINITY, 1.0),
+        ] {
+            let c = Camera::new(b);
+            let f = c.fit(640.0, 480.0, 36.0);
+            assert!(
+                f.scale.is_finite() && f.scale > 0.0 && f.dx.is_finite(),
+                "{b:?}"
+            );
+        }
+        let mut c = Camera::new((0.0, 0.0, 10.0, 10.0));
+        // NaN input is ignored.
+        c.focus([f32::NAN, 0.0, 0.0], false);
+        c.glide_to([0.0, f32::INFINITY, 0.0], false);
+        c.zoom_at(2.0, f32::NAN, 0.0, 100.0, 100.0, false);
+        c.begin_drag(Drag::Pan, 0.0, 0.0);
+        assert!(!c.drag_to(f32::NAN, 1.0, 0.016));
+        // A huge pan is clamped.
+        assert!(c.drag_to(1e9, 1e9, 0.016));
+        assert!(c.target.pan.0 <= PAN_MAX);
+        c.end_drag(false);
+        // A pose gone bad (forced here) goes home on the next tick.
+        c.target.zoom = f32::NAN;
+        assert!(!c.tick(0.016, false));
+        assert!(c.at_home());
+        assert!(c.fit(640.0, 480.0, 36.0).scale.is_finite());
     }
 }

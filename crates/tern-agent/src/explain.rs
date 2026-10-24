@@ -10,17 +10,25 @@
 //! The scene model, its parsing and fallback, the projection, and the SVG
 //! writer are in `tern-study`.
 
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use tern_providers::ChatMessage;
 
 /// The camera (orbit, zoom, pan, focus), GPUI-free.
 pub use tern_study::camera;
-pub use tern_study::explain_answer::{LEVELS, citations};
+pub use tern_study::explain_answer::{
+    LEVELED_PITCH, LEVELED_YAW, LEVELS, citations, is_question_turn, pick_explanatory,
+};
 pub use tern_study::explain3d::{
     Drawing, Edge, Face, FaceKind, Fit, GRID, Link, Part, Scene, Shape, Step, SvgStyle, View, hit,
-    ink_amount, mix, part_centre, parts_centre, project, to_svg,
+    ink_amount, mix, part_centre, parts_centre, project, sanitize, to_svg,
 };
+/// Where labels go on screen, GPUI-free.
+pub use tern_study::labels;
 use tern_study::material::{Anchor, Source};
 
 use crate::study::{
@@ -50,6 +58,68 @@ pub struct Ask {
     pub context: Option<String>,
 }
 
+/// Stops a scene being built: checked after every model call, so a
+/// closed tab or a new build never waits on (or receives) the old one.
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(Arc<AtomicBool>);
+
+impl Cancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Whether `other` is this same token (not a copy of its state).
+    pub fn same(&self, other: &Cancel) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// What a cancelled build returns.
+pub const CANCELLED: &str = "Cancelled.";
+
+/// Longest one model call for a scene may take; past it Tern maps the
+/// answer itself, so a slow local model never leaves the tab spinning.
+pub const MODEL_WAIT: Duration = Duration::from_secs(150);
+
+/// Runs `f`, turning a panic into an error: building a scene must never
+/// take the app down.
+fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(|p| {
+        let why = p
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "an internal error".into());
+        format!("Tern could not {what} ({why}).")
+    })
+}
+
+/// One model call with [`MODEL_WAIT`].
+async fn ask_model(
+    e: &StudyEngine,
+    system: String,
+    user: String,
+    max_tokens: u32,
+) -> Result<String, String> {
+    match tokio::time::timeout(
+        MODEL_WAIT,
+        e.ask(system, vec![ChatMessage::user(user)], max_tokens, 0.3, None),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => Err(format!("it took longer than {} s", MODEL_WAIT.as_secs())),
+    }
+}
+
 /// Builds a scene. Returns it (not yet saved) and, when the model was
 /// tried and not used, why.
 pub async fn build(
@@ -58,13 +128,43 @@ pub async fn build(
     engine: Option<&StudyEngine>,
     ask: &Ask,
 ) -> Result<(Scene, Option<String>), String> {
+    build_with(store, lib, engine, ask, &Cancel::new()).await
+}
+
+/// [`build`] that stops when `cancel` is set, and whose scene is always
+/// safe to draw ([`sanitize`]): every number finite, everything on the
+/// floor, steps naming real parts. A panic while building comes back as
+/// an error, never as a crash.
+pub async fn build_with(
+    store: &StudyStore,
+    lib: &mut StudyLibrary,
+    engine: Option<&StudyEngine>,
+    ask: &Ask,
+    cancel: &Cancel,
+) -> Result<(Scene, Option<String>), String> {
+    let (mut scene, note) = build_inner(store, lib, engine, ask, cancel).await?;
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.into());
+    }
+    guard("tidy the scene", || sanitize(&mut scene))?;
+    Ok((scene, note))
+}
+
+async fn build_inner(
+    store: &StudyStore,
+    lib: &mut StudyLibrary,
+    engine: Option<&StudyEngine>,
+    ask: &Ask,
+    cancel: &Cancel,
+) -> Result<(Scene, Option<String>), String> {
     use tern_study::explain3d::{fallback_scene, parse_scene, scene_prompt};
     // A chat answer is mapped whole, basics to advanced.
     if ask.topic.is_none()
         && let Some(text) = ask.context.as_deref().filter(|t| !t.trim().is_empty())
     {
         let at = now();
-        let (mut scene, note) = build_answer(engine, text, ask.concept.trim(), at).await;
+        let (mut scene, note) =
+            build_answer_with(engine, text, ask.concept.trim(), at, cancel).await?;
         scene.id = new_id(store, at);
         return Ok((scene, note));
     }
@@ -121,12 +221,16 @@ pub async fn build(
     let mut scene = None;
     if let Some(e) = engine {
         let (system, user) = scene_prompt(&concept, &sources);
-        match e
-            .ask(system, vec![ChatMessage::user(user)], 2500, 0.3, None)
-            .await
-        {
+        match ask_model(e, system, user, 2500).await {
             Ok(text) => {
-                scene = parse_scene(&text, &concept, &sources, tid, at);
+                if cancel.is_cancelled() {
+                    return Err(CANCELLED.into());
+                }
+                scene = guard("read the model's scene", || {
+                    parse_scene(&text, &concept, &sources, tid, at)
+                })
+                .ok()
+                .flatten();
                 if scene.is_none() {
                     note = Some("The model's scene could not be read; Tern built one from your materials instead.".into());
                 }
@@ -138,7 +242,15 @@ pub async fn build(
             }
         }
     }
-    let mut scene = scene.unwrap_or_else(|| fallback_scene(&concept, &sources, tid, at));
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.into());
+    }
+    let mut scene = match scene {
+        Some(s) => s,
+        None => guard("build a scene from your materials", || {
+            fallback_scene(&concept, &sources, tid, at)
+        })?,
+    };
     scene.id = new_id(store, at);
     Ok((scene, note))
 }
@@ -154,7 +266,17 @@ pub async fn build_answer(
     answer: &str,
     title: &str,
     at: i64,
-) -> (Scene, Option<String>) {
+) -> Result<(Scene, Option<String>), String> {
+    build_answer_with(engine, answer, title, at, &Cancel::new()).await
+}
+
+async fn build_answer_with(
+    engine: Option<&StudyEngine>,
+    answer: &str,
+    title: &str,
+    at: i64,
+    cancel: &Cancel,
+) -> Result<(Scene, Option<String>), String> {
     use tern_study::explain_answer::{
         answer_prompt, answer_scene, chunk_prompt, chunks, merge, parse_answer_scene, passages,
         target_nodes,
@@ -164,18 +286,20 @@ pub async fn build_answer(
     } else {
         title
     };
-    let fallback = || answer_scene(answer, title, at);
-    let Some(e) = engine else {
-        return (fallback(), None);
+    let fallback = |note: Option<String>| {
+        guard("map this answer", || answer_scene(answer, title, at)).map(|s| (s, note))
     };
-    let parts = chunks(answer);
+    let Some(e) = engine else {
+        return fallback(None);
+    };
+    let parts = guard("split this answer", || chunks(answer))?;
     let mut maps = Vec::new();
     let total = answer.chars().count().max(1);
-    let n_all = {
+    let n_all = guard("size the map", || {
         let ps = passages(answer);
         let heads = ps.iter().filter(|p| p.heading.is_some()).count();
         target_nodes(answer, ps.len(), heads)
-    };
+    })?;
     for (k, part) in parts.iter().enumerate() {
         let (system, user) = if parts.len() == 1 {
             answer_prompt(part, concept)
@@ -183,32 +307,35 @@ pub async fn build_answer(
             let share = (n_all * part.chars().count()).div_ceil(total);
             chunk_prompt(part, concept, k, parts.len(), share)
         };
-        match e
-            .ask(system, vec![ChatMessage::user(user)], 4000, 0.3, None)
-            .await
-        {
-            Ok(text) => match parse_answer_scene(&text, concept, at) {
+        let reply = ask_model(e, system, user, 4000).await;
+        if cancel.is_cancelled() {
+            return Err(CANCELLED.into());
+        }
+        match reply {
+            Ok(text) => match guard("read the model's map", || {
+                parse_answer_scene(&text, concept, at)
+            })
+            .ok()
+            .flatten()
+            {
                 Some(s) => maps.push(s),
                 None => {
-                    return (
-                        fallback(),
-                        Some("The model's map could not be read; Tern mapped the answer itself instead.".into()),
-                    );
+                    return fallback(Some(
+                        "The model's map could not be read; Tern mapped the answer itself instead."
+                            .into(),
+                    ));
                 }
             },
             Err(err) => {
-                return (
-                    fallback(),
-                    Some(format!(
-                        "The model could not be reached ({err}); Tern mapped the answer itself instead."
-                    )),
-                );
+                return fallback(Some(format!(
+                    "The model could not be reached ({err}); Tern mapped the answer itself instead."
+                )));
             }
         }
     }
-    match merge(maps, at) {
-        Some(s) => (s, None),
-        None => (fallback(), None),
+    match guard("merge the maps", || merge(maps, at)).ok().flatten() {
+        Some(s) => Ok((s, None)),
+        None => fallback(None),
     }
 }
 
@@ -453,5 +580,34 @@ mod tests {
         .await
         .unwrap();
         assert!(s.steps[1].caption.contains("do not describe"));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_build_stops_and_scenes_are_sanitized() {
+        let (_d, store, mut lib) = setup();
+        let reply = r#"{"concept": "x", "nodes": [{"label": "a"}, {"label": "b"}, {"label": "c"}, {"label": "d"}]}"#;
+        let e = StudyEngine::with_model(Arc::new(Script(Mutex::new(reply.into()))), "m", "T");
+        let ask = Ask {
+            context: Some("Some answer text that explains a thing.".into()),
+            ..Ask::default()
+        };
+        let c = Cancel::new();
+        c.cancel();
+        let r = build_with(&store, &mut lib, Some(&e), &ask, &c).await;
+        assert_eq!(r.unwrap_err(), CANCELLED);
+        let (s, _) = build_with(&store, &mut lib, Some(&e), &ask, &Cancel::new())
+            .await
+            .unwrap();
+        assert!(s.parts.iter().all(|p| p.at.iter().all(|v| v.is_finite())));
+        // Small models' near-JSON is read, not thrown away.
+        let sloppy = "```json\n{'concept': 'x', 'nodes': [{'label': 'a', 'level': 'Foundations'}, {'label': 'b'}, {'label': 'c'}, {'label': 'd'},]}\n```";
+        let e = StudyEngine::with_model(Arc::new(Script(Mutex::new(sloppy.into()))), "m", "T");
+        let (s, note) = build(&store, &mut lib, Some(&e), &ask).await.unwrap();
+        assert!(note.is_none(), "{note:?}");
+        assert_eq!(s.written_by, "model");
+        assert_eq!(
+            guard("x", || -> u8 { panic!("boom") }).unwrap_err(),
+            "Tern could not x (boom)."
+        );
     }
 }

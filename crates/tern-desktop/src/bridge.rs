@@ -322,6 +322,8 @@ pub struct Bridge {
     study_engine: std::sync::Arc<std::sync::Mutex<Option<StudyEngine>>>,
     /// The open side chat.
     side: cont::SideSlot,
+    /// Explain in 3D scenes being built, by tab key, to cancel.
+    explain_jobs: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u32, explain::Cancel>>>,
 }
 
 impl Bridge {
@@ -341,6 +343,7 @@ impl Bridge {
                 tx,
                 study_engine: Default::default(),
                 side: Default::default(),
+                explain_jobs: Default::default(),
             },
             rx,
         ))
@@ -1681,20 +1684,55 @@ impl Bridge {
 
     // ---- Explain in 3D ----
 
-    /// Builds a scene for tab `key`.
+    /// Builds a scene for tab `key` on the runtime, never on the UI
+    /// thread: a build already running for the tab is cancelled first, a
+    /// cancelled build sends nothing, and a panic while building comes
+    /// back as an error for the tab, not a crash.
     pub fn explain_build(&self, key: u32, ask: explain::Ask) {
         let tx = self.tx.clone();
         let cache = self.study_engine.clone();
-        self.rt.spawn(async move {
+        let cancel = explain::Cancel::new();
+        if let Ok(mut jobs) = self.explain_jobs.lock()
+            && let Some(old) = jobs.insert(key, cancel.clone())
+        {
+            old.cancel();
+        }
+        let jobs = self.explain_jobs.clone();
+        let inner = cancel.clone();
+        let job = self.rt.spawn(async move {
             let engine = study_engine(&cache).await;
-            let r = async {
-                let store = StudyStore::discover()?;
-                let mut lib = store.load()?;
-                explain::build(&store, &mut lib, engine.as_ref(), &ask).await
+            let store = StudyStore::discover()?;
+            let mut lib = store.load()?;
+            explain::build_with(&store, &mut lib, engine.as_ref(), &ask, &inner).await
+        });
+        self.rt.spawn(async move {
+            let r = match job.await {
+                Ok(r) => r,
+                Err(e) if e.is_panic() => Err(
+                    "Tern hit an internal error while building this scene. Try again, or explain a shorter answer.".into(),
+                ),
+                Err(_) => Err(explain::CANCELLED.into()),
+            };
+            if let Ok(mut j) = jobs.lock()
+                && j.get(&key).is_some_and(|c| c.same(&cancel))
+            {
+                j.remove(&key);
             }
-            .await;
+            if cancel.is_cancelled() {
+                return;
+            }
             Self::study_send(&tx, StudyMsg::Explain(key, r));
         });
+    }
+
+    /// Stops the scene being built for tab `key` (its tab closed, or
+    /// Cancel was pressed).
+    pub fn explain_cancel(&self, key: u32) {
+        if let Ok(mut jobs) = self.explain_jobs.lock()
+            && let Some(c) = jobs.remove(&key)
+        {
+            c.cancel();
+        }
     }
 
     /// Saves a scene to the study library (JSON and SVG), and to the vault

@@ -13,12 +13,12 @@
 //! and its citations. Reduced motion jumps the camera, never spins it on,
 //! and switches steps without a fade.
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -27,7 +27,8 @@ use gpui_kit::{
     div, point, px,
 };
 use tern_agent::explain::camera::Camera;
-use tern_agent::explain::{Drawing, Edge, FaceKind, ink_amount};
+use tern_agent::explain::labels::Rank;
+use tern_agent::explain::{Drawing, Edge, FaceKind, Fit, ink_amount};
 
 use super::Workspace;
 use super::study_view::serif;
@@ -38,10 +39,12 @@ use crate::theme::Palette;
 
 /// Colours and amounts the painter needs, captured for the frame.
 struct Paint {
-    drawing: Drawing,
+    drawing: Rc<Drawing>,
     camera: Camera,
     lit: Vec<f32>,
     hover: Option<usize>,
+    /// Leader lines from nodes to labels that moved away, stage pixels.
+    leaders: Vec<((f32, f32), (f32, f32))>,
     canvas: Hsla,
     ink: Hsla,
     faint: Hsla,
@@ -50,26 +53,72 @@ struct Paint {
     dark: bool,
 }
 
-fn stroke(
+/// Farthest from the stage a point may be and still be drawn, pixels.
+/// Anything past it (or not a number) is skipped, so a path is never
+/// built from coordinates the tessellator cannot handle.
+const FAR: f32 = 50_000.0;
+/// Longest link drawn dashed, pixels; longer ones are solid, so a dash
+/// pattern is never cut into an unbounded number of pieces.
+const DASH_MAX: f32 = 4_000.0;
+
+/// The points in window pixels, or `None` when any is not finite, is
+/// absurdly far, or the shape lies wholly outside the `w` × `h` stage.
+fn on_stage(
     pts: &[(f32, f32)],
-    f: &tern_agent::explain::Fit,
+    f: &Fit,
     o: (f32, f32),
+    w: f32,
+    h: f32,
+) -> Option<Vec<gpui_kit::Point<Pixels>>> {
+    if pts.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(pts.len());
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for p in pts {
+        let (x, y) = f.at(*p);
+        if !(x.is_finite() && y.is_finite()) || x.abs() > FAR || y.abs() > FAR {
+            return None;
+        }
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+        out.push(point(px(o.0 + x), px(o.1 + y)));
+    }
+    let off = x1 < -2.0 || y1 < -2.0 || x0 > w + 2.0 || y0 > h + 2.0;
+    (!off).then_some(out)
+}
+
+fn stroke(
+    pts: &[gpui_kit::Point<Pixels>],
     w: f32,
     closed: bool,
     dash: Option<f32>,
 ) -> Option<gpui_kit::Path<Pixels>> {
     let mut pb = PathBuilder::stroke(px(w));
     if let Some(d) = dash {
-        pb = pb.dash_array(&[px(d), px(d * 0.8)]);
+        let len: f32 = pts
+            .windows(2)
+            .map(|s| {
+                let (dx, dy) = (
+                    f32::from(s[1].x) - f32::from(s[0].x),
+                    f32::from(s[1].y) - f32::from(s[0].y),
+                );
+                dx.hypot(dy)
+            })
+            .sum();
+        if len.is_finite() && len > 1.0 && len < DASH_MAX {
+            pb = pb.dash_array(&[px(d), px(d * 0.8)]);
+        }
     }
     let (first, rest) = pts.split_first()?;
-    let at = |p: (f32, f32)| {
-        let (x, y) = f.at(p);
-        point(px(o.0 + x), px(o.1 + y))
-    };
-    pb.move_to(at(*first));
+    if rest.is_empty() {
+        return None;
+    }
+    pb.move_to(*first);
     for p in rest {
-        pb.line_to(at(*p));
+        pb.line_to(*p);
     }
     if closed {
         pb.close();
@@ -77,20 +126,15 @@ fn stroke(
     pb.build().ok()
 }
 
-fn fill(
-    pts: &[(f32, f32)],
-    f: &tern_agent::explain::Fit,
-    o: (f32, f32),
-) -> Option<gpui_kit::Path<Pixels>> {
+fn fill(pts: &[gpui_kit::Point<Pixels>]) -> Option<gpui_kit::Path<Pixels>> {
+    if pts.len() < 3 {
+        return None;
+    }
     let mut pb = PathBuilder::fill();
     let (first, rest) = pts.split_first()?;
-    let at = |p: (f32, f32)| {
-        let (x, y) = f.at(p);
-        point(px(o.0 + x), px(o.1 + y))
-    };
-    pb.move_to(at(*first));
+    pb.move_to(*first);
     for p in rest {
-        pb.line_to(at(*p));
+        pb.line_to(*p);
     }
     pb.close();
     pb.build().ok()
@@ -100,8 +144,7 @@ fn fill(
 fn paint_edge(
     e: &Edge,
     pt: &Paint,
-    f: &tern_agent::explain::Fit,
-    o: (f32, f32),
+    at: &dyn Fn(&[(f32, f32)]) -> Option<Vec<gpui_kit::Point<Pixels>>>,
     window: &mut Window,
 ) {
     let lit = e.part.and_then(|i| pt.lit.get(i).copied()).unwrap_or(0.0);
@@ -111,7 +154,7 @@ fn paint_edge(
     } else {
         (pt.ink.opacity(0.85), 0.9)
     };
-    if let Some(p) = stroke(&e.pts, f, o, wid, e.closed, None) {
+    if let Some(p) = at(&e.pts).and_then(|q| stroke(&q, wid, e.closed, None)) {
         window.paint_path(p, c);
     }
 }
@@ -119,10 +162,14 @@ fn paint_edge(
 fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
     let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
     let o = (f32::from(b.origin.x), f32::from(b.origin.y));
+    if !(w > 1.0 && h > 1.0) {
+        return;
+    }
     let f = pt.camera.fit(w, h, MARGIN);
+    let at = |pts: &[(f32, f32)]| on_stage(pts, &f, o, w, h);
     // The floor grid: the faintest hairlines.
     for e in &pt.drawing.grid {
-        if let Some(p) = stroke(&e.pts, &f, o, 0.6, false, None) {
+        if let Some(p) = at(&e.pts).and_then(|q| stroke(&q, 0.6, false, None)) {
             window.paint_path(p, pt.faint.opacity(0.35));
         }
     }
@@ -141,27 +188,46 @@ fn paint(b: Bounds<Pixels>, pt: &Paint, window: &mut Window) {
             };
             c = lerp_color(c, pt.accent, lit * k);
         }
-        if let Some(p) = fill(&face.pts, &f, o) {
-            window.paint_path(p, c);
+        if let Some(q) = at(&face.pts) {
+            if let Some(p) = fill(&q) {
+                window.paint_path(p, c);
+            }
+            // The same colour as a thin stroke closes the seams between facets.
+            if let Some(p) = stroke(&q, 0.6, true, None) {
+                window.paint_path(p, c);
+            }
         }
-        // The same colour as a thin stroke closes the seams between facets.
-        if let Some(p) = stroke(&face.pts, &f, o, 0.6, true, None) {
-            window.paint_path(p, c);
-        }
-        for &ei in &after[i] {
-            paint_edge(&pt.drawing.edges[ei], pt, &f, o, window);
+        for &ei in after.get(i).into_iter().flatten() {
+            if let Some(e) = pt.drawing.edges.get(ei) {
+                paint_edge(e, pt, &at, window);
+            }
         }
     }
-    for &ei in &after[pt.drawing.faces.len()] {
-        paint_edge(&pt.drawing.edges[ei], pt, &f, o, window);
+    for &ei in after.last().into_iter().flatten() {
+        if let Some(e) = pt.drawing.edges.get(ei) {
+            paint_edge(e, pt, &at, window);
+        }
     }
     // Links: dashed, with a head.
     for l in &pt.drawing.links {
-        if let Some(p) = stroke(&[l.a, l.b], &f, o, 1.0, false, Some(4.0)) {
+        if let Some(p) = at(&[l.a, l.b]).and_then(|q| stroke(&q, 1.0, false, Some(4.0))) {
             window.paint_path(p, pt.muted);
         }
-        if let Some(p) = fill(&l.head, &f, o) {
+        if let Some(p) = at(&l.head).and_then(|q| fill(&q)) {
             window.paint_path(p, pt.muted);
+        }
+    }
+    // Leaders from nodes to labels that had to move.
+    for (a, z) in &pt.leaders {
+        let q = [
+            point(px(o.0 + a.0), px(o.1 + a.1)),
+            point(px(o.0 + z.0), px(o.1 + z.1)),
+        ];
+        let finite = [a.0, a.1, z.0, z.1]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() < FAR);
+        if finite && let Some(p) = stroke(&q, 0.8, false, None) {
+            window.paint_path(p, pt.faint);
         }
     }
 }
@@ -181,9 +247,44 @@ impl Workspace {
         self.tabs.open_explain(key, &state.title());
         self.explains.insert(key, state);
         self.model.screen = Screen::Chat;
+        self.explain_asks.insert(key, ask.clone());
         self.bridge.explain_build(key, ask);
         self.keys.focus(window, cx);
         cx.notify();
+    }
+
+    /// Builds tab `key`'s scene again from what it was asked.
+    pub(super) fn retry_explain(&mut self, key: u32, cx: &mut Context<Self>) {
+        let Some(ask) = self.explain_asks.get(&key).cloned() else {
+            return;
+        };
+        if let Some(s) = self.explains.get_mut(&key) {
+            s.rebuild();
+            self.bridge.explain_build(key, ask);
+        }
+        cx.notify();
+    }
+
+    /// Stops building tab `key`'s scene; the tab says so and offers Try
+    /// again.
+    pub(super) fn cancel_explain(&mut self, key: u32, cx: &mut Context<Self>) {
+        self.bridge.explain_cancel(key);
+        if let Some(s) = self.explains.get_mut(&key)
+            && s.building
+        {
+            s.ready(
+                Err("Stopped. Try again when you are ready.".into()),
+                Instant::now(),
+            );
+        }
+        cx.notify();
+    }
+
+    /// Forgets tab `key`'s explainer, stopping its build.
+    pub(super) fn drop_explain(&mut self, key: u32) {
+        self.bridge.explain_cancel(key);
+        self.explains.remove(&key);
+        self.explain_asks.remove(&key);
     }
 
     /// The explainer in the active tab, if it is one.
@@ -358,36 +459,55 @@ impl Workspace {
         };
         let now = Instant::now();
         let reduced = self.reduced_motion;
+        let title: SharedString = s
+            .scene
+            .as_ref()
+            .map(|x| x.concept.clone())
+            .unwrap_or_else(|| s.asked.clone())
+            .into();
+        // The header: the title takes the room left and wraps to two
+        // lines, then ends in "…"; the buttons keep their place on the
+        // right and move to a row of their own when the tab is narrow.
         let header = div()
             .flex()
+            .flex_wrap()
             .items_start()
-            .justify_between()
             .gap_3()
+            .flex_none()
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .min_w_0()
+                    .flex_1()
+                    .min_w(px(220.))
                     .child(
                         div()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap_2()
+                            .min_w_0()
                             .child(
-                                gpui_kit::component::Icon::new(AssetIcon::Cuboid)
-                                    .small()
-                                    .text_color(p.accent),
+                                div().pt(px(6.)).flex_none().child(
+                                    gpui_kit::component::Icon::new(AssetIcon::Cuboid)
+                                        .small()
+                                        .text_color(p.accent),
+                                ),
                             )
                             .child(
-                                serif(
-                                    s.scene
-                                        .as_ref()
-                                        .map(|x| x.concept.clone())
-                                        .unwrap_or_else(|| s.asked.clone()),
-                                    p,
-                                )
-                                .text_2xl(),
+                                serif(title.clone(), p)
+                                    .id(("x3d-title", key as usize))
+                                    .text_2xl()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .line_clamp(2)
+                                    .text_ellipsis()
+                                    .tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(
+                                            title.to_string(),
+                                        )
+                                        .build(window, cx)
+                                    }),
                             ),
                     )
                     .children(s.scene.as_ref().map(|x| {
@@ -409,8 +529,9 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .gap_1()
                     .flex_none()
+                    .ml_auto()
+                    .gap_1()
                     .child(
                         Button::new(("x3d-save", key as usize))
                             .icon(AssetIcon::Save)
@@ -464,13 +585,17 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_3()
-            .size_full()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
             .px_4()
-            .py_4()
+            .py_3()
             .child(header);
         for line in [&s.note, &s.saved].into_iter().flatten() {
             col = col.child(
                 div()
+                    .flex_none()
                     .px_3()
                     .py_1p5()
                     .rounded(px(16.))
@@ -481,82 +606,165 @@ impl Workspace {
                     .child(line.clone()),
             );
         }
-        let Some(scene) = &s.scene else {
-            let body = if let Some(e) = &s.error {
-                div()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(e.clone())
-                    .into_any_element()
-            } else {
-                div()
+        let failed = s.paint_failed.get();
+        let error = s.error.clone().or_else(|| {
+            failed.then(|| {
+                "This scene could not be drawn. Nothing was lost; try building it again.".to_owned()
+            })
+        });
+        let can_retry = self.explain_asks.contains_key(&key);
+        let scene = match &s.scene {
+            Some(scene) if !failed => scene,
+            _ => {
+                let body = if let Some(e) = error {
+                    div()
+                        .id(("x3d-error", key as usize))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .max_w(px(560.))
+                        .p_4()
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_color(p.border)
+                        .bg(p.raised)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(p.text)
+                                .child(
+                                    gpui_kit::component::Icon::new(AssetIcon::TriangleAlert)
+                                        .small()
+                                        .text_color(p.muted),
+                                )
+                                .child("Explain in 3D could not show this scene"),
+                        )
+                        .child(div().text_sm().text_color(p.muted).child(e))
+                        .when(can_retry, |d| {
+                            d.child(
+                                div().flex().gap_2().child(
+                                    Button::new(("x3d-retry", key as usize))
+                                        .icon(AssetIcon::RefreshCw)
+                                        .label("Try again")
+                                        .small()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.retry_explain(key, cx);
+                                        })),
+                                ),
+                            )
+                        })
+                        .into_any_element()
+                } else {
+                    // Building: a still line, not an animation, so the
+                    // window is not redrawn every frame while the model
+                    // thinks.
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(p.muted)
+                        .child(gpui_kit::component::Icon::new(AssetIcon::Hourglass).small())
+                        .child("Building the scene from your sources… a local model can take a minute.")
+                        .child(
+                            Button::new(("x3d-cancel", key as usize))
+                                .icon(AssetIcon::X)
+                                .label("Cancel")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_explain(key, cx);
+                                })),
+                        )
+                        .into_any_element()
+                };
+                return div()
+                    .id(("x3d", key as usize))
                     .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_sm()
-                    .text_color(p.muted)
-                    .child(Spinner::new().small())
-                    .child("Picking the parts and steps from your sources…")
-                    .into_any_element()
-            };
-            return col.child(body).into_any_element();
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(col.child(body))
+                    .into_any_element();
+            }
         };
         if !scene.summary.is_empty() {
             col = col.child(
                 div()
+                    .flex_none()
                     .text_sm()
                     .text_color(p.muted)
+                    .line_clamp(2)
                     .child(scene.summary.clone()),
             );
         }
-        // The drawing.
-        let drawing = s.drawing().unwrap_or_default();
+        // The drawing and its labels, from the frame cache: projected and
+        // laid out again only when the camera, the size, or the step moved.
+        let bounds = s.bounds.clone();
+        let [_, _, bw, bh] = bounds.get();
+        let frame = s.frame(bw.max(0.0), bh.max(0.0));
         let lit: Vec<f32> = (0..scene.parts.len())
             .map(|i| s.lit(i, now, reduced))
             .collect();
-        let bounds = s.bounds.clone();
-        let [_, _, bw, bh] = bounds.get();
-        let labels: Vec<AnyElement> = if bw > 1.0 {
-            let f = s.fit(bw, bh);
-            drawing
-                .labels
-                .iter()
-                .filter(|l| {
-                    let (x, y) = f.at(l.at);
-                    x > -80.0 && y > -20.0 && x < bw + 80.0 && y < bh + 20.0
-                })
-                .map(|l| {
-                    let (x, y) = f.at(l.at);
-                    let on = lit.get(l.part).copied().unwrap_or(0.0) > 0.5
-                        || s.hover == Some(l.part)
-                        || s.picked == Some(l.part);
-                    div()
-                        .absolute()
-                        .left(px(x - 80.))
-                        .top(px(y - 18.))
-                        .w(px(160.))
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .px_1()
-                                .text_xs()
-                                .bg(p.canvas.opacity(0.75))
-                                .rounded_sm()
+        let (label_els, leaders): (Vec<AnyElement>, Vec<((f32, f32), (f32, f32))>) = match frame
+            .as_ref()
+            .filter(|_| bw > 1.0)
+        {
+            Some(f) => {
+                let font = f.font;
+                let els = f
+                    .labels
+                    .iter()
+                    .map(|l| {
+                        let on =
+                            l.rank == Rank::Focus || lit.get(l.part).copied().unwrap_or(0.0) > 0.5;
+                        let base = div()
+                            .absolute()
+                            .left(px(l.x))
+                            .top(px(l.y))
+                            .w(px(l.w))
+                            .h(px(l.h))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(font))
+                            .rounded_sm();
+                        if l.full {
+                            base.bg(p.canvas.opacity(0.85))
                                 .text_color(if on { p.accent } else { p.text })
-                                .child(l.text.clone()),
-                        )
-                        .into_any_element()
-                })
-                .collect()
-        } else {
-            Vec::new()
+                                .child(div().truncate().child(SharedString::from(l.text.clone())))
+                                .into_any_element()
+                        } else {
+                            base.rounded_full()
+                                .border_1()
+                                .border_color(p.border)
+                                .bg(p.raised)
+                                .text_color(p.muted)
+                                .child(SharedString::from(l.text.clone()))
+                                .into_any_element()
+                        }
+                    })
+                    .collect();
+                let leaders = f.labels.iter().filter_map(|l| l.leader).collect();
+                (els, leaders)
+            }
+            None => (Vec::new(), Vec::new()),
         };
+        let drawing = frame
+            .as_ref()
+            .map(|f| f.drawing.clone())
+            .unwrap_or_else(|| Rc::new(s.drawing().unwrap_or_default()));
         let pt = Paint {
             drawing,
             camera: s.camera.clone(),
             lit,
             hover: s.hover,
+            leaders,
             canvas: p.canvas,
             ink: p.text,
             faint: p.faint,
@@ -564,6 +772,7 @@ impl Workspace {
             accent: p.accent,
             dark: self.model.dark,
         };
+        let failed_cell = s.paint_failed.clone();
         let readout = s.hover.and_then(|i| scene.parts.get(i)).map(|part| {
             div()
                 .absolute()
@@ -606,7 +815,7 @@ impl Workspace {
             .relative()
             .flex_1()
             .min_w_0()
-            .min_h(px(320.))
+            .min_h(px(160.))
             .rounded(px(16.))
             .border_1()
             .border_color(p.border)
@@ -763,12 +972,22 @@ impl Workspace {
                             // Labels follow the new size next frame.
                             window.request_animation_frame();
                         }
-                        paint(b, &pt, window);
+                        // A panic here would unwind into the window
+                        // procedure and abort the app: catch it, and show
+                        // an error card instead of drawing again.
+                        let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            paint(b, &pt, window)
+                        }))
+                        .is_ok();
+                        if !ok {
+                            failed_cell.set(true);
+                            window.request_animation_frame();
+                        }
                     },
                 )
                 .size_full(),
             )
-            .children(labels)
+            .children(label_els)
             .children(readout)
             .child(reset);
         // The side caption: the step, or the node clicked.
@@ -941,9 +1160,17 @@ impl Workspace {
             .flex()
             .gap_3()
             .flex_1()
-            .min_h(px(320.))
+            .min_h(px(160.))
             .child(stage)
             .children(side);
+        // How to drive the camera, behind a "?" instead of a long line.
+        let help = Button::new(("x3d-help", key as usize))
+            .icon(AssetIcon::CircleQuestionMark)
+            .ghost()
+            .xsmall()
+            .tooltip(
+                "Drag to turn · right- or Shift-drag to pan · scroll or pinch to zoom · double-click a node to focus · click a node to read it · arrows turn, + − zoom, 0 resets · [ ] step, Space plays",
+            );
         div()
             .id(("x3d", key as usize))
             .key_context("Explain3d")
@@ -955,11 +1182,18 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(col.child(body).child(bar).child(
-                div().text_xs().text_color(p.faint).child(
-                    "Drag to turn · right- or Shift-drag to pan · scroll or pinch to zoom · double-click a node to focus · click a node to read it · arrows turn, + − zoom, 0 resets · [ ] step, Space plays.",
+            .overflow_hidden()
+            .child(
+                col.child(body).child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(bar))
+                        .child(help),
                 ),
-            ))
+            )
             .into_any_element()
     }
 }

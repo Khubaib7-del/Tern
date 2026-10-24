@@ -652,6 +652,75 @@ pub fn fallback_scene(concept: &str, sources: &[Source], topic: Option<&str>, no
     }
 }
 
+// ---- Safety ------------------------------------------------------------
+
+/// Most parts and steps a scene keeps, whoever wrote it.
+pub const MAX_SCENE_PARTS: usize = 40;
+pub const MAX_SCENE_STEPS: usize = 40;
+
+/// Makes any scene safe to project and draw: every number finite and on
+/// the floor, sizes sensible, ids unique, at most [`MAX_SCENE_PARTS`]
+/// parts and [`MAX_SCENE_STEPS`] steps, links and steps naming only parts
+/// that exist, levels 0 to 4, and at least one step when there are parts.
+/// A saved scene from an older version or a model's odd numbers can then
+/// never reach the renderer as NaN or as a figure miles wide.
+pub fn sanitize(scene: &mut Scene) {
+    fn fin(v: f32, d: f32) -> f32 {
+        if v.is_finite() { v } else { d }
+    }
+    scene.parts.truncate(MAX_SCENE_PARTS);
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for (i, p) in scene.parts.iter_mut().enumerate() {
+        if p.id.trim().is_empty() || seen.contains(&p.id) {
+            let mut id = format!("p{}", i + 1);
+            while seen.contains(&id) {
+                id.push('_');
+            }
+            p.id = id;
+        }
+        seen.insert(p.id.clone());
+        p.label = clip(&p.label, 60);
+        p.level = p.level.min(4);
+        for v in p.at.iter_mut() {
+            *v = fin(*v, 0.0);
+        }
+        let d = p.shape.default_size();
+        for (k, v) in p.size.iter_mut().enumerate() {
+            *v = fin(*v, d[k]);
+        }
+        tidy(p);
+        p.at[2] = p.at[2].clamp(0.0, GRID);
+    }
+    let ids: BTreeSet<String> = scene.parts.iter().map(|p| p.id.clone()).collect();
+    scene
+        .links
+        .retain(|l| l.from != l.to && ids.contains(&l.from) && ids.contains(&l.to));
+    scene.links.truncate(MAX_SCENE_PARTS * 3);
+    scene.steps.truncate(MAX_SCENE_STEPS);
+    for st in &mut scene.steps {
+        st.parts.retain(|id| ids.contains(id));
+        st.level = st.level.min(4);
+    }
+    if scene.steps.is_empty() {
+        scene.steps = scene
+            .parts
+            .iter()
+            .filter(|p| p.shape != Shape::Label)
+            .take(MAX_SCENE_STEPS)
+            .map(|p| Step {
+                caption: if p.note.is_empty() {
+                    p.label.clone()
+                } else {
+                    p.note.clone()
+                },
+                parts: vec![p.id.clone()],
+                level: p.level,
+                ..Step::default()
+            })
+            .collect();
+    }
+}
+
 // ---- Drawing -----------------------------------------------------------
 
 /// The camera: the isometric angle plus a small tilt from the pointer.
@@ -770,14 +839,19 @@ struct Cam {
 
 impl Cam {
     fn new(v: View) -> Self {
-        let a = 45f32.to_radians() + v.yaw;
-        let e = (BASE_ELEVATION + v.pitch).clamp(ELEVATION.0, ELEVATION.1);
+        let ok = |x: f32| if x.is_finite() { x } else { 0.0 };
+        let a = 45f32.to_radians() + ok(v.yaw);
+        let e = (BASE_ELEVATION + ok(v.pitch)).clamp(ELEVATION.0, ELEVATION.1);
+        let pivot = v
+            .pivot
+            .filter(|p| p.iter().all(|x| x.is_finite()))
+            .unwrap_or([GRID / 2.0, GRID / 2.0, 0.0]);
         Self {
             ca: a.cos(),
             sa: a.sin(),
             se: e.sin(),
             ce: e.cos(),
-            pivot: v.pivot.unwrap_or([GRID / 2.0, GRID / 2.0, 0.0]),
+            pivot,
         }
     }
 
@@ -1080,11 +1154,52 @@ pub fn project(scene: &Scene, view: View) -> Drawing {
     for l in &d.labels {
         grow((l.at.0, l.at.1 - 0.6));
     }
-    if b.0 > b.2 {
+    if b.0 > b.2 || ![b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()) {
         b = (0.0, 0.0, 1.0, 1.0);
     }
     d.bounds = b;
     d
+}
+
+impl Drawing {
+    /// The bounds of the figure itself (faces, edges and labels, not the
+    /// floor grid): what zoom-to-fit frames. `None` for an empty scene.
+    pub fn figure_bounds(&self) -> Option<(f32, f32, f32, f32)> {
+        let mut b = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let mut grow = |q: (f32, f32)| {
+            if q.0.is_finite() && q.1.is_finite() {
+                b.0 = b.0.min(q.0);
+                b.1 = b.1.min(q.1);
+                b.2 = b.2.max(q.0);
+                b.3 = b.3.max(q.1);
+            }
+        };
+        for f in &self.faces {
+            f.pts.iter().copied().for_each(&mut grow);
+        }
+        for e in &self.edges {
+            e.pts.iter().copied().for_each(&mut grow);
+        }
+        for l in &self.labels {
+            grow(l.at);
+            grow((l.at.0, l.at.1 - 0.6));
+        }
+        if b.0 > b.2 || b.1 > b.3 {
+            return None;
+        }
+        // A single point or a flat line still gets some size.
+        let pad = |lo: f32, hi: f32| {
+            if hi - lo < 1.0 {
+                let c = (lo + hi) / 2.0;
+                (c - 0.5, c + 0.5)
+            } else {
+                (lo, hi)
+            }
+        };
+        let (x0, x1) = pad(b.0, b.2);
+        let (y0, y1) = pad(b.1, b.3);
+        Some((x0, y0, x1, y1))
+    }
 }
 
 /// Scales a drawing into a box.
@@ -1098,6 +1213,17 @@ pub struct Fit {
 impl Fit {
     /// Fits `bounds` into `w` × `h` with `margin` on every side, centred.
     pub fn new(bounds: (f32, f32, f32, f32), w: f32, h: f32, margin: f32) -> Self {
+        let ok = [bounds.0, bounds.1, bounds.2, bounds.3, w, h, margin]
+            .iter()
+            .all(|v| v.is_finite());
+        if !ok {
+            return Self {
+                scale: 1.0,
+                dx: 0.0,
+                dy: 0.0,
+            };
+        }
+        let margin = margin.clamp(0.0, (w.min(h) / 2.0 - 1.0).max(0.0));
         let (bw, bh) = (
             (bounds.2 - bounds.0).max(1e-3),
             (bounds.3 - bounds.1).max(1e-3),
@@ -1566,6 +1692,121 @@ mod tests {
         // A cylinder outlines its rim and silhouette, not every facet.
         let rim = d.edges.iter().filter(|e| e.part == Some(1)).count();
         assert!(rim < 20, "{rim}");
+    }
+
+    #[test]
+    fn degenerate_scenes_are_made_safe_to_draw() {
+        let part = |id: &str, at: [f32; 3], size: [f32; 3], shape: Shape| Part {
+            id: id.into(),
+            label: id.into(),
+            shape,
+            at,
+            size,
+            ..Part::default()
+        };
+        // NaN and infinite numbers, a duplicate id, a link to nowhere, a
+        // step naming a missing part, no other steps.
+        let mut s = Scene {
+            id: "x".into(),
+            concept: "c".into(),
+            summary: String::new(),
+            parts: vec![
+                part(
+                    "a",
+                    [f32::NAN, 1.0, f32::INFINITY],
+                    [f32::NAN, -3.0, 1e30],
+                    Shape::Block,
+                ),
+                part("a", [2.0, 2.0, 0.0], [2.0, 2.0, 1.0], Shape::Cylinder),
+                part("t", [f32::NEG_INFINITY, 3.0, 0.0], [1.0; 3], Shape::Label),
+                part("r", [4.0, 4.0, 0.0], [0.0, 0.0, f32::NAN], Shape::Arrow),
+            ],
+            links: vec![
+                Link {
+                    from: "a".into(),
+                    to: "gone".into(),
+                    label: String::new(),
+                },
+                Link {
+                    from: "a".into(),
+                    to: "a".into(),
+                    label: String::new(),
+                },
+            ],
+            steps: vec![],
+            topic: None,
+            written_by: "model".into(),
+            created_at: 0,
+        };
+        sanitize(&mut s);
+        assert_eq!(s.parts[1].id, "p2", "duplicate ids made unique");
+        assert!(s.links.is_empty());
+        assert!(!s.steps.is_empty(), "one step per part when none came");
+        for p in &s.parts {
+            assert!(
+                p.at.iter().chain(p.size.iter()).all(|v| v.is_finite()),
+                "{p:?}"
+            );
+            assert!(p.at[0] >= 0.0 && p.at[0] <= GRID);
+        }
+        let d = project(&s, View::default());
+        let all = d
+            .faces
+            .iter()
+            .flat_map(|f| f.pts.iter())
+            .chain(d.edges.iter().flat_map(|e| e.pts.iter()));
+        assert!(all.into_iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+        let b = d.figure_bounds().unwrap();
+        assert!(b.2 - b.0 >= 1.0 && b.3 - b.1 >= 1.0);
+        // No parts at all: still a drawing (the floor), no figure.
+        let mut empty = Scene {
+            parts: vec![],
+            links: vec![],
+            steps: vec![],
+            ..s.clone()
+        };
+        sanitize(&mut empty);
+        assert!(empty.steps.is_empty());
+        let d = project(&empty, View::default());
+        assert!(d.figure_bounds().is_none());
+        assert!(d.bounds.0.is_finite());
+        // Every part on one spot, and a view with a NaN turn.
+        let mut pile = s.clone();
+        for p in &mut pile.parts {
+            p.at = [5.0, 5.0, 0.0];
+        }
+        let d = project(
+            &pile,
+            View {
+                yaw: f32::NAN,
+                pivot: Some([f32::NAN; 3]),
+                ..View::default()
+            },
+        );
+        assert!(
+            d.faces
+                .iter()
+                .flat_map(|f| f.pts.iter())
+                .all(|p| p.0.is_finite() && p.1.is_finite())
+        );
+        let f = Fit::new(d.bounds, 400.0, 300.0, 36.0);
+        assert!(f.scale.is_finite() && f.dx.is_finite());
+        let f = Fit::new((0.0, 0.0, f32::NAN, 1.0), 400.0, 300.0, 36.0);
+        assert_eq!(f.scale, 1.0);
+        let f = Fit::new((0.0, 0.0, 1.0, 1.0), 10.0, 10.0, 36.0);
+        assert!(
+            f.scale > 0.0,
+            "a stage smaller than its margins still draws"
+        );
+        // Too many parts and steps are cut.
+        let mut big = s.clone();
+        big.parts = (0..100)
+            .map(|i| part(&format!("q{i}"), [1.0; 3], [1.0; 3], Shape::Block))
+            .collect();
+        big.steps = (0..100).map(|_| Step::default()).collect();
+        sanitize(&mut big);
+        assert_eq!(big.parts.len(), MAX_SCENE_PARTS);
+        assert_eq!(big.steps.len(), MAX_SCENE_STEPS);
     }
 
     #[test]

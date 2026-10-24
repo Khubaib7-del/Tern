@@ -183,8 +183,223 @@ pub fn capitalise(s: &str) -> String {
 }
 
 /// The first JSON value in `text`: the whole text, a fenced block, or from
-/// the first `{` or `[` to its matching close.
+/// the first `{` or `[` to its matching close. Small models' near-JSON is
+/// read too ([`repair_json`]): code fences, text before and after, single
+/// quotes, curly quotes, unquoted keys, trailing commas, Python's
+/// `True`/`False`/`None`, and a reply cut off before its closing brackets.
 pub fn json_in(text: &str) -> Option<Value> {
+    if let Some(v) = strict_json_in(text) {
+        return Some(v);
+    }
+    let fixed = repair_json(text)?;
+    serde_json::from_str(&fixed)
+        .ok()
+        .or_else(|| close_cut_json(&fixed))
+}
+
+/// The text inside the first code fence, when there is one.
+fn fenced(text: &str) -> Option<&str> {
+    let a = text.find("```")?;
+    let rest = &text[a + 3..];
+    // Skip the language tag on the fence line.
+    let body = match rest.find('\n') {
+        Some(nl) => &rest[nl + 1..],
+        None => rest,
+    };
+    Some(match body.find("```") {
+        Some(b) => &body[..b],
+        None => body,
+    })
+}
+
+/// Rewrites near-JSON as JSON, from the first `{` or `[` to its matching
+/// close (or the end, when the reply was cut off): single-quoted strings
+/// become double-quoted, curly quotes straight, bare keys quoted, Python
+/// literals JSON ones, and trailing commas go. `None` when there is no
+/// `{` or `[`. Brackets left open are closed at the end.
+pub fn repair_json(text: &str) -> Option<String> {
+    let src = fenced(text)
+        .filter(|f| f.contains(['{', '[']))
+        .unwrap_or(text);
+    let src: String = src
+        .chars()
+        .map(|c| match c {
+            '\u{201c}' | '\u{201d}' => '"',
+            '\u{2018}' | '\u{2019}' => '\'',
+            c => c,
+        })
+        .collect();
+    let start = src.find(['{', '['])?;
+    let chars: Vec<char> = src[start..].chars().collect();
+    let mut out = String::with_capacity(chars.len() + 8);
+    let mut stack: Vec<char> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '"' | '\'' => {
+                // A string in either quote, written with double quotes.
+                let q = c;
+                out.push('"');
+                i += 1;
+                let mut closed = false;
+                while i < chars.len() {
+                    let d = chars[i];
+                    if d == '\\' {
+                        if let Some(&e) = chars.get(i + 1) {
+                            if e == '\'' {
+                                out.push('\'');
+                            } else {
+                                out.push('\\');
+                                out.push(e);
+                            }
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if d == q {
+                        // A single quote inside a word (it's) is an apostrophe.
+                        let word = |k: usize| chars.get(k).is_some_and(|x| x.is_alphanumeric());
+                        if q == '\'' && i > 0 && word(i - 1) && word(i + 1) {
+                            out.push('\'');
+                            i += 1;
+                            continue;
+                        }
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                    match d {
+                        '"' => out.push_str("\\\""),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => {}
+                        '\t' => out.push_str("\\t"),
+                        d => out.push(d),
+                    }
+                    i += 1;
+                }
+                out.push('"');
+                if !closed {
+                    break;
+                }
+                continue;
+            }
+            '{' | '[' => {
+                stack.push(if c == '{' { '}' } else { ']' });
+                out.push(c);
+            }
+            '}' | ']' => {
+                trim_comma(&mut out);
+                if stack.pop().is_none() {
+                    break;
+                }
+                out.push(c);
+                if stack.is_empty() {
+                    return Some(out);
+                }
+            }
+            c if c.is_alphabetic() || c == '_' => {
+                let mut word = String::new();
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    word.push(chars[i]);
+                    i += 1;
+                }
+                let mut k = i;
+                while k < chars.len() && chars[k].is_whitespace() {
+                    k += 1;
+                }
+                if chars.get(k) == Some(&':') {
+                    out.push('"');
+                    out.push_str(&word);
+                    out.push('"');
+                } else {
+                    out.push_str(match word.as_str() {
+                        "True" | "true" => "true",
+                        "False" | "false" => "false",
+                        "None" | "null" | "nil" | "undefined" => "null",
+                        w => w,
+                    });
+                }
+                continue;
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    // Cut off: drop a dangling comma or key, then close what is open.
+    trim_comma(&mut out);
+    for c in stack.iter().rev() {
+        out.push(*c);
+    }
+    Some(out)
+}
+
+fn trim_comma(out: &mut String) {
+    let t = out.trim_end().len();
+    out.truncate(t);
+    if out.ends_with(',') {
+        out.pop();
+    }
+}
+
+/// A reply cut off mid-value: drops the last unfinished member, again and
+/// again, until what is left closes into JSON (at most 64 tries).
+fn close_cut_json(fixed: &str) -> Option<Value> {
+    let mut s = fixed.to_owned();
+    for _ in 0..64 {
+        // Strip the closers added at the end, then the last member.
+        let body = s.trim_end_matches(['}', ']', ' ', '\n']);
+        let cut = body.rfind([',', '{', '['])?;
+        let keep = if body[cut..].starts_with(',') {
+            &body[..cut]
+        } else {
+            &body[..=cut]
+        };
+        let mut open: Vec<char> = Vec::new();
+        let mut in_str = false;
+        let mut esc = false;
+        for c in keep.chars() {
+            if in_str {
+                match (esc, c) {
+                    (true, _) => esc = false,
+                    (false, '\\') => esc = true,
+                    (false, '"') => in_str = false,
+                    _ => {}
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '{' => open.push('}'),
+                '[' => open.push(']'),
+                '}' | ']' => {
+                    open.pop();
+                }
+                _ => {}
+            }
+        }
+        let mut next = keep.to_owned();
+        if in_str {
+            next.push('"');
+        }
+        trim_comma(&mut next);
+        for c in open.iter().rev() {
+            next.push(*c);
+        }
+        if let Ok(v) = serde_json::from_str(&next) {
+            return Some(v);
+        }
+        if next.len() >= s.len() {
+            return None;
+        }
+        s = next;
+    }
+    None
+}
+
+fn strict_json_in(text: &str) -> Option<Value> {
     if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
         return Some(v);
     }
@@ -315,6 +530,31 @@ mod tests {
         let v = json_in("x [1, {\"b\": \"]\"}] y").unwrap();
         assert!(v.is_array());
         assert!(json_in("no json").is_none());
+    }
+
+    #[test]
+    fn small_models_near_json_is_read() {
+        // Single quotes, a trailing comma, prose after, an apostrophe.
+        let v = json_in("Here you go: {'concept': 'IP', 'nodes': [{'label': 'It's a protocol', 'level': 0},]} Hope that helps!").unwrap();
+        assert_eq!(v["concept"], "IP");
+        assert_eq!(v["nodes"][0]["label"], "It's a protocol");
+        // A fence with a tag, bare keys, Python literals, curly quotes.
+        let v = json_in("```json\n{concept: \u{201c}DNS\u{201d}, ok: True, x: None}\n```").unwrap();
+        assert_eq!(v["concept"], "DNS");
+        assert_eq!(v["ok"], true);
+        assert!(v["x"].is_null());
+        // Cut off mid-array and mid-string: the finished part is kept.
+        let v = json_in("{\"nodes\": [{\"label\": \"a\"}, {\"label\": \"b\"}, {\"label\": \"c")
+            .unwrap();
+        let n = v["nodes"].as_array().unwrap();
+        assert!(n.len() >= 2, "{v}");
+        assert_eq!(n[0]["label"], "a");
+        let v = json_in("{\"a\": 1, \"b\":").unwrap();
+        assert_eq!(v["a"], 1);
+        // A double quote inside a single-quoted string is escaped.
+        let v = json_in("{'q': 'say \"hi\"'}").unwrap();
+        assert_eq!(v["q"], "say \"hi\"");
+        assert!(json_in("{").is_some_and(|v| v.as_object().is_some_and(|o| o.is_empty())));
     }
 
     #[test]

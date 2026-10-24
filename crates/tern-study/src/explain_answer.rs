@@ -27,6 +27,12 @@ pub const LEVELS: [&str; 5] = [
     "Advanced and implications",
 ];
 
+/// The first view of an answer's map: turned so each level is a row
+/// across the screen (basics at the front, at the bottom), and tilted down
+/// a little more than the machine view so the rows stand apart.
+pub const LEVELED_YAW: f32 = -std::f32::consts::FRAC_PI_4;
+pub const LEVELED_PITCH: f32 = 0.35;
+
 /// Most nodes (main nodes and key-term sub-nodes together).
 pub const MAX_NODES: usize = 20;
 /// Fewest main nodes.
@@ -522,8 +528,8 @@ pub fn lay_out(scene: &mut Scene) {
             p.at = [c as f32 * col_w + (col_w - w) / 2., y, 0.];
             p.size = match p.shape {
                 Shape::Plate => [w, d, 0.4],
-                Shape::Cylinder => [w.min(d) * 1.1, w.min(d) * 1.1, 1.2 + *lvl as f32 * 0.2],
-                _ => [w, d, 0.9 + *lvl as f32 * 0.35],
+                Shape::Cylinder => [w.min(d) * 1.1, w.min(d) * 1.1, 0.9 + *lvl as f32 * 0.15],
+                _ => [w, d, 0.7 + *lvl as f32 * 0.2],
             };
         }
     }
@@ -554,6 +560,61 @@ pub fn lay_out(scene: &mut Scene) {
     }
     let level_of_step = |s: &Step| s.level;
     scene.steps.sort_by_key(level_of_step);
+}
+
+/// Whether a chat message asks the learner something rather than explains:
+/// a quiz question with options (`A) … B) …`), "Here's your first
+/// question", "Reply with your choice", or a short message ending in a
+/// question. Explain in 3D maps the material, not such a message.
+pub fn is_question_turn(text: &str) -> bool {
+    let words = text.split_whitespace().count();
+    if words == 0 {
+        return true;
+    }
+    let low = text.to_lowercase();
+    let phrases = [
+        "your first question",
+        "next question",
+        "question 1",
+        "question #1",
+        "reply with your choice",
+        "reply with the letter",
+        "choose the correct",
+        "choose one",
+        "pick one",
+        "select one",
+        "which of the following",
+        "true or false",
+        "what is your answer",
+        "your answer:",
+        "type your answer",
+    ];
+    let phrase = phrases.iter().any(|p| low.contains(p));
+    // Answer options: "A) …", "(b) …", "C. …" at a line start or inline.
+    let mut letters = std::collections::BTreeSet::new();
+    for (i, c) in text.char_indices() {
+        if !matches!(c, 'A'..='E' | 'a'..='e') {
+            continue;
+        }
+        let before = text[..i].chars().next_back();
+        let after: String = text[i + 1..].chars().take(2).collect();
+        let starts = before.is_none_or(|b| b.is_whitespace() || b == '(');
+        let marks = after.starts_with(") ")
+            || (after.starts_with(". ") && before.is_none_or(|b| b == '\n' || b == '('));
+        if starts && marks {
+            letters.insert(c.to_ascii_uppercase());
+        }
+    }
+    let options = letters.len() >= 2 && letters.contains(&'A') && letters.contains(&'B');
+    let asks = words <= 60 && text.trim_end().ends_with('?');
+    (options && words <= 400) || (phrase && words <= 300) || asks
+}
+
+/// Which of `answers` (oldest first) Explain in 3D should map: the newest
+/// one that explains something, skipping quiz questions and other
+/// questions to the learner. `None` when every one is a question.
+pub fn pick_explanatory(answers: &[&str]) -> Option<usize> {
+    answers.iter().rposition(|a| !is_question_turn(a))
 }
 
 /// The prompt asking a model to map an answer: (system, user).
@@ -735,11 +796,41 @@ fn prompt_for(
     (system, user)
 }
 
+/// A level written as a number or a name ("2", "Mechanism", "core idea").
+fn level_named(s: &str) -> Option<u64> {
+    let t = s.trim().to_lowercase();
+    if let Ok(n) = t.parse::<u64>() {
+        return Some(n);
+    }
+    let words = [
+        ("found", 0),
+        ("basic", 0),
+        ("core", 1),
+        ("idea", 1),
+        ("mechan", 2),
+        ("how", 2),
+        ("detail", 3),
+        ("edge", 3),
+        ("advanced", 4),
+        ("implication", 4),
+    ];
+    words
+        .iter()
+        .find(|(w, _)| t.contains(w))
+        .map(|(_, n)| *n as u64)
+}
+
 /// Reads a model's map of an answer into a scene laid out by level.
 /// `None` when fewer than [`MIN_NODES`] nodes came back.
 pub fn parse_answer_scene(text: &str, concept: &str, now: i64) -> Option<Scene> {
     let v = json_in(text)?;
-    let items = v.get("nodes").and_then(Value::as_array)?;
+    // Small models name the list differently, or send the bare list.
+    let items = match &v {
+        Value::Array(a) => a,
+        _ => ["nodes", "steps", "items", "parts", "map", "concepts"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_array))?,
+    };
     let mut parts: Vec<Part> = Vec::new();
     let mut steps: Vec<Step> = Vec::new();
     let mut links: Vec<Link> = Vec::new();
@@ -752,7 +843,12 @@ pub fn parse_answer_scene(text: &str, concept: &str, now: i64) -> Option<Scene> 
             .get("level")
             .and_then(|l| {
                 l.as_u64()
-                    .or_else(|| l.as_str().and_then(|s| s.trim().parse().ok()))
+                    .or_else(|| {
+                        l.as_f64()
+                            .filter(|f| f.is_finite() && *f >= 0.)
+                            .map(|f| f as u64)
+                    })
+                    .or_else(|| l.as_str().and_then(level_named))
             })
             .unwrap_or(1)
             .min(4) as u8;
@@ -1032,6 +1128,80 @@ mod tests {
         assert!(s.links.iter().any(|l| l.label == "builds on"));
         assert!(s.parts.iter().any(|p| p.label == "corpus"));
         assert!(parse_answer_scene(r#"{"nodes":[{"label":"a"}]}"#, "x", 0).is_none());
+    }
+
+    #[test]
+    fn levels_are_rows_on_screen_in_the_first_view() {
+        use crate::explain3d::{View, project};
+        let s = answer_scene(&long_answer(), "RAG", 0);
+        let d = project(
+            &s,
+            View {
+                yaw: LEVELED_YAW,
+                pitch: LEVELED_PITCH,
+                ..View::default()
+            },
+        );
+        // Each level's nodes sit lower on screen (larger y) than the next
+        // level's: the levels read as rows, basics at the bottom.
+        let mut rows: std::collections::BTreeMap<u8, (f32, f32)> = Default::default();
+        for l in &d.labels {
+            let p = &s.parts[l.part];
+            if p.shape == Shape::Label {
+                continue;
+            }
+            let e = rows.entry(p.level).or_insert((f32::MAX, f32::MIN));
+            e.0 = e.0.min(l.at.1);
+            e.1 = e.1.max(l.at.1);
+        }
+        let ys: Vec<(f32, f32)> = rows.values().copied().collect();
+        assert!(ys.len() >= 3, "{rows:?}");
+        for w in ys.windows(2) {
+            assert!(w[0].0 > w[1].1, "rows overlap on screen: {rows:?}");
+        }
+        // Nodes in a row are spread across it, not stacked.
+        for lvl in rows.keys() {
+            let xs: Vec<f32> = d
+                .labels
+                .iter()
+                .filter(|l| s.parts[l.part].level == *lvl && s.parts[l.part].shape != Shape::Label)
+                .map(|l| l.at.0)
+                .collect();
+            for (i, a) in xs.iter().enumerate() {
+                for b in &xs[i + 1..] {
+                    assert!((a - b).abs() > 1.0, "stacked in level {lvl}: {xs:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quiz_turns_are_not_mapped() {
+        let quiz = "Great! Here's your first question:\n\nQuestion 1: What is the main job of the Internet Protocol (IP)?\nA) To encrypt data packets B) To address and route packets C) To check for errors\n\n(Reply with your choice: A, B, or C)";
+        assert!(is_question_turn(quiz));
+        assert!(is_question_turn("Which layer does IP sit in?"));
+        assert!(is_question_turn("   "));
+        let lesson = long_answer();
+        assert!(!is_question_turn(&lesson));
+        assert!(!is_question_turn(
+            "IP routes packets between networks. Each packet carries a source and destination address, and routers forward it hop by hop."
+        ));
+        let answers = [lesson.as_str(), quiz];
+        assert_eq!(pick_explanatory(&answers), Some(0));
+        assert_eq!(pick_explanatory(&[quiz]), None);
+    }
+
+    #[test]
+    fn small_model_maps_parse() {
+        // Single quotes, a fence, levels by name, the list as "steps".
+        let text = "```json\n{'concept': 'IP', 'steps': [{'label': 'Layers', 'level': 'Foundations', 'explain': 'a'}, {'label': 'Packets', 'level': 'core idea', 'explain': 'b'}, {'label': 'Routing', 'level': 2, 'explain': 'c'}, {'label': 'Fragmentation', 'level': 'details', 'explain': 'd'},]}\n```\nLet me know!";
+        let s = parse_answer_scene(text, "IP", 0).unwrap();
+        let levels: Vec<u8> = s.parts.iter().map(|p| p.level).collect();
+        assert_eq!(levels, vec![0, 1, 2, 3]);
+        // A bare list.
+        let text = "[{\"label\":\"a\"},{\"label\":\"b\"},{\"label\":\"c\"},{\"label\":\"d\"}]";
+        assert!(parse_answer_scene(text, "x", 0).is_some());
+        assert!(parse_answer_scene("I cannot help with that.", "x", 0).is_none());
     }
 
     #[test]

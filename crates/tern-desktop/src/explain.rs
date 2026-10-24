@@ -8,14 +8,16 @@
 //! the steps (Prev, Next, Play) moves the camera level by level onto each
 //! step's nodes.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use tern_agent::explain::camera::{Camera, Drag, Key};
+use tern_agent::explain::labels::{self, LabelIn, Metrics, Placed, Rank};
 use tern_agent::explain::{
-    Drawing, Fit, LEVELS, Scene, View, citations, hit, parts_centre, project,
+    Drawing, Fit, LEVELED_PITCH, LEVELED_YAW, LEVELS, Scene, Shape, View, citations, hit,
+    parts_centre, project, sanitize,
 };
 
 use crate::motion;
@@ -26,6 +28,19 @@ pub const STEP_FADE: Duration = Duration::from_millis(400);
 pub const AUTOPLAY: Duration = Duration::from_millis(3600);
 /// Room around the drawing, in pixels.
 pub const MARGIN: f32 = 36.0;
+
+/// One frame's drawing and placed labels, kept until the camera, the
+/// stage size, the step, or the pointer's node changes: a still scene
+/// costs nothing to redraw, and labels are laid out once, not every frame.
+#[derive(Debug)]
+pub struct Frame {
+    key: u64,
+    pub drawing: Rc<Drawing>,
+    pub fit: Fit,
+    pub labels: Rc<Vec<Placed>>,
+    /// Label text size, pixels.
+    pub font: f32,
+}
 
 /// What the side caption reads: the step on screen, or the node picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +96,11 @@ pub struct ExplainState {
     /// The drawing area as last laid out: x, y, width, height in window
     /// pixels. Written while painting, read by the pointer handlers.
     pub bounds: Rc<Cell<[f32; 4]>>,
+    /// The last frame's drawing and labels ([`Frame`]).
+    frame: RefCell<Option<Rc<Frame>>>,
+    /// Set when drawing the scene failed; the tab shows an error card
+    /// instead of drawing again.
+    pub paint_failed: Rc<Cell<bool>>,
 }
 
 impl ExplainState {
@@ -103,14 +123,53 @@ impl ExplainState {
             reduced: false,
             saved: None,
             bounds: Rc::new(Cell::new([0.0; 4])),
+            frame: RefCell::new(None),
+            paint_failed: Rc::new(Cell::new(false)),
         }
+    }
+
+    /// Building again (Try again): back to the loading state.
+    pub fn rebuild(&mut self) {
+        self.building = true;
+        self.error = None;
+        self.note = None;
+        self.scene = None;
+        self.paint_failed.set(false);
+        self.frame.replace(None);
+    }
+
+    /// The first view: an answer's map is turned so its levels are rows
+    /// across the screen; a topic's machine keeps the isometric corner.
+    fn home_view(scene: &Scene) -> (f32, f32) {
+        if scene.steps.iter().any(|st| !st.passage.is_empty()) {
+            (LEVELED_YAW, LEVELED_PITCH)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// A camera framed on the figure itself (zoom to fit), not the floor.
+    fn framed(scene: &Scene) -> Camera {
+        let (yaw, pitch) = Self::home_view(scene);
+        let d = project(
+            scene,
+            View {
+                yaw,
+                pitch,
+                ..View::default()
+            },
+        );
+        Camera::framed(d.figure_bounds().unwrap_or(d.bounds), yaw, pitch)
     }
 
     pub fn ready(&mut self, r: Result<(Scene, Option<String>), String>, now: Instant) {
         self.building = false;
+        self.frame.replace(None);
+        self.paint_failed.set(false);
         match r {
-            Ok((scene, note)) => {
-                self.camera = Camera::new(project(&scene, View::default()).bounds);
+            Ok((mut scene, note)) => {
+                sanitize(&mut scene);
+                self.camera = Self::framed(&scene);
                 self.scene = Some(scene);
                 self.note = note;
                 self.error = None;
@@ -383,6 +442,114 @@ impl ExplainState {
         fading || self.camera.moving()
     }
 
+    /// The step number (from 1) each part is first lit in: the short
+    /// label it shows when its full label is not wanted.
+    fn step_numbers(&self) -> Vec<Option<usize>> {
+        let Some(s) = &self.scene else {
+            return Vec::new();
+        };
+        let mut out = vec![None; s.parts.len()];
+        for i in 0..s.steps.len() {
+            for p in s.lit(i) {
+                if let Some(slot) = out.get_mut(p)
+                    && slot.is_none()
+                {
+                    *slot = Some(i + 1);
+                }
+            }
+        }
+        out
+    }
+
+    /// How much each part's label matters now: the step's parts, the one
+    /// under the pointer and the one picked are the focus; parts linked to
+    /// them or in the step's level are near; the rest show numbers.
+    pub fn ranks(&self) -> Vec<Rank> {
+        let Some(s) = &self.scene else {
+            return Vec::new();
+        };
+        let cur = s.lit(self.step);
+        let focus = |i: usize| cur.contains(&i) || self.hover == Some(i) || self.picked == Some(i);
+        let level = s.steps.get(self.step).map(|st| st.level);
+        // A small machine shows every label in full when it fits.
+        let small = s.parts.len() <= 8;
+        (0..s.parts.len())
+            .map(|i| {
+                if focus(i) {
+                    return Rank::Focus;
+                }
+                let id = &s.parts[i].id;
+                let linked = s.links.iter().any(|l| {
+                    (l.from == *id && s.part_index(&l.to).is_some_and(focus))
+                        || (l.to == *id && s.part_index(&l.from).is_some_and(focus))
+                });
+                let same_level = self.leveled()
+                    && level == Some(s.parts[i].level)
+                    && s.parts[i].shape != Shape::Label;
+                if small || linked || same_level {
+                    Rank::Near
+                } else {
+                    Rank::Rest
+                }
+            })
+            .collect()
+    }
+
+    /// This frame's drawing and labels for a `w` × `h` stage, from the
+    /// cache when nothing that moves them changed. `None` before a scene.
+    pub fn frame(&self, w: f32, h: f32) -> Option<Rc<Frame>> {
+        let s = self.scene.as_ref()?;
+        let view = self.view();
+        let fit = self.fit(w, h);
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut k = std::collections::hash_map::DefaultHasher::new();
+            for v in [view.yaw, view.pitch, fit.scale, fit.dx, fit.dy, w, h]
+                .into_iter()
+                .chain(view.pivot.unwrap_or_default())
+            {
+                v.to_bits().hash(&mut k);
+            }
+            (view.lift, self.step, self.hover, self.picked).hash(&mut k);
+            k.finish()
+        };
+        if let Some(f) = self.frame.borrow().as_ref().filter(|f| f.key == key) {
+            return Some(f.clone());
+        }
+        let drawing = project(s, view);
+        let font = labels::label_size(self.camera.zoom());
+        let ranks = self.ranks();
+        let nums = self.step_numbers();
+        let ins: Vec<LabelIn> = drawing
+            .labels
+            .iter()
+            .map(|l| {
+                let part = &s.parts[l.part];
+                let short = match (part.shape, nums.get(l.part).copied().flatten()) {
+                    (Shape::Label, _) | (_, None) => String::new(),
+                    (_, Some(n)) => n.to_string(),
+                };
+                LabelIn {
+                    part: l.part,
+                    anchor: fit.at(l.at),
+                    full: l.text.clone(),
+                    short,
+                    rank: ranks.get(l.part).copied().unwrap_or(Rank::Rest),
+                }
+            })
+            .collect();
+        let placed = labels::place(&ins, w, h, &Metrics::for_size(font));
+        let f = Rc::new(Frame {
+            key,
+            drawing: Rc::new(drawing),
+            fit,
+            labels: Rc::new(placed),
+            font,
+        });
+        self.frame.replace(Some(f.clone()));
+        Some(f)
+    }
+
     /// What the side caption reads now.
     pub fn reading(&self) -> Option<Reading> {
         let s = self.scene.as_ref()?;
@@ -638,5 +805,88 @@ mod tests {
         assert_eq!(e.error.as_deref(), Some("no"));
         assert!(!e.building);
         assert!(e.reading().is_none());
+    }
+
+    #[test]
+    fn frames_are_cached_and_labels_never_overlap() {
+        let (mut s, t0) = ready();
+        let (w, h) = (800.0, 500.0);
+        let a = s.frame(w, h).unwrap();
+        let b = s.frame(w, h).unwrap();
+        assert!(Rc::ptr_eq(&a, &b), "a still scene is not projected again");
+        // The step's node is the focus and shows in full.
+        assert!(a.labels.iter().any(|l| l.part == 0 && l.full));
+        for (i, x) in a.labels.iter().enumerate() {
+            for y in &a.labels[i + 1..] {
+                let hit = x.x < y.x + y.w && y.x < x.x + x.w && x.y < y.y + y.h && y.y < x.y + x.h;
+                assert!(!hit, "{x:?} {y:?}");
+            }
+        }
+        // Moving on, or a new size, makes a new frame.
+        s.next(t0);
+        let c = s.frame(w, h).unwrap();
+        assert!(!Rc::ptr_eq(&a, &c));
+        assert!(!Rc::ptr_eq(&c, &s.frame(w + 10.0, h).unwrap()));
+        assert_eq!(s.ranks()[1], Rank::Focus);
+    }
+
+    #[test]
+    fn the_figure_fills_the_stage_on_load_and_reset() {
+        let (mut s, _) = ready();
+        let (w, h) = (800.0, 500.0);
+        let f = s.frame(w, h).unwrap();
+        let b = f.drawing.figure_bounds().unwrap();
+        let (x0, y0) = f.fit.at((b.0, b.1));
+        let (x1, y1) = f.fit.at((b.2, b.3));
+        // Framed with the margin: the figure spans the stage one way.
+        let span_w = (x1 - x0) / (w - 2.0 * MARGIN);
+        let span_h = (y1 - y0) / (h - 2.0 * MARGIN);
+        assert!(span_w.max(span_h) > 0.95, "{span_w} {span_h}");
+        assert!(x0 >= MARGIN - 1.0 && y0 >= MARGIN - 1.0 && x1 <= w - MARGIN + 1.0);
+        s.wheel(-400.0, 10.0, 10.0, w, h);
+        settle(&mut s);
+        s.reset_view();
+        settle(&mut s);
+        assert!(s.camera.at_home());
+        let g = s.frame(w, h).unwrap();
+        assert!((g.fit.scale - f.fit.scale).abs() < 1e-3);
+    }
+
+    #[test]
+    fn degenerate_scenes_load_without_panics() {
+        let mut bad = scene();
+        bad.parts[0].at = [f32::NAN, f32::INFINITY, 0.0];
+        bad.parts[1].size = [f32::NAN; 3];
+        bad.steps.push(Step {
+            parts: vec!["missing".into()],
+            ..Step::default()
+        });
+        let mut s = ExplainState::new("x");
+        s.ready(Ok((bad, None)), Instant::now());
+        let f = s.frame(640.0, 400.0).unwrap();
+        assert!(f.fit.scale.is_finite());
+        assert!(f.labels.iter().all(|l| l.x.is_finite() && l.y.is_finite()));
+        // An empty scene: nothing to frame, nothing breaks.
+        let mut empty = scene();
+        empty.parts.clear();
+        empty.steps.clear();
+        let mut s = ExplainState::new("x");
+        s.ready(Ok((empty, None)), Instant::now());
+        assert!(s.frame(640.0, 400.0).unwrap().labels.is_empty());
+        assert!(s.reading().is_none());
+        assert!(!s.next(Instant::now()));
+        assert_eq!(s.key("space", Instant::now()), KeyDid::Play);
+        assert!(!s.tick_autoplay(Instant::now() + AUTOPLAY));
+        // Every part on one spot, and a stage of no size.
+        let mut pile = scene();
+        for p in &mut pile.parts {
+            p.at = [3.0, 3.0, 0.0];
+        }
+        let mut s = ExplainState::new("x");
+        s.ready(Ok((pile, None)), Instant::now());
+        assert!(s.frame(0.0, 0.0).unwrap().labels.is_empty());
+        assert!(!s.point(1.0, 1.0, 0.0, 0.0, Instant::now()));
+        s.rebuild();
+        assert!(s.building && s.scene.is_none());
     }
 }
