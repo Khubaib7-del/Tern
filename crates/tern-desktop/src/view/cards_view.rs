@@ -58,12 +58,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn flip_card(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn flip_card(&mut self, cx: &mut Context<Self>) {
         self.model.study.flip(Instant::now());
         cx.notify();
     }
 
-    fn rate_card(&mut self, rating: Rating, cx: &mut Context<Self>) {
+    pub(super) fn rate_card(&mut self, rating: Rating, cx: &mut Context<Self>) {
         let now = tern_agent::study::now();
         if let Some((id, r)) = self.model.study.rate(rating, now) {
             self.bridge.cards_review(id, r, now);

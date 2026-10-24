@@ -54,6 +54,7 @@ mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
+pub(crate) mod tour;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
@@ -245,6 +246,8 @@ pub struct Workspace {
     onboarding: Option<crate::onboarding::Onboarding>,
     /// Whether the tour was considered at launch (once per run).
     onboarding_checked: bool,
+    /// The scripted UI tour, when `TERN_TOUR` is set (`view::tour`).
+    tour: Option<tour::Tour>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -500,7 +503,7 @@ impl Workspace {
             bridge.cards_load();
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
-        Self {
+        let mut this = Self {
             sidebar_slide: Slide::new(sidebar_open),
             panel_slide: Slide::new(panel_open),
             wipe: None,
@@ -595,6 +598,7 @@ impl Workspace {
             setup_inputs,
             onboarding: None,
             onboarding_checked: false,
+            tour: tour::enabled().then(tour::Tour::new),
             _subscriptions: {
                 let mut subs = vec![
                     picker_sub,
@@ -612,10 +616,17 @@ impl Workspace {
                 subs.extend(settings_subs);
                 subs
             },
+        };
+        if this.tour.is_some() {
+            this.start_tour(window, cx);
         }
+        this
     }
 
     fn on_msg(&mut self, msg: Msg, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tour_drops(&msg) {
+            return;
+        }
         match msg {
             Msg::Connected(s, recent) => {
                 self.model.connected(Connection {

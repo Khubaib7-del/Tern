@@ -162,8 +162,13 @@ fn linux_store(choice: LinuxKeyring) -> PlatformResult<KeyringStore> {
     }
 }
 
-/// The OS keychain for this platform.
+/// The OS keychain for this platform. `TERN_SECRETS=memory` swaps in an
+/// empty in-memory store instead (the desktop's UI tour sets it, so a
+/// recording never reads or writes a real key).
 pub fn default_secret_store() -> PlatformResult<Box<dyn SecretStore>> {
+    if std::env::var("TERN_SECRETS").is_ok_and(|v| v == "memory") {
+        return Ok(Box::new(MemorySecretStore::default()));
+    }
     #[cfg(windows)]
     {
         let store = windows_native_keyring_store::Store::new()

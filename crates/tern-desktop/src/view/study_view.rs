@@ -497,7 +497,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_quiz(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_quiz(&mut self, cx: &mut Context<Self>) {
         let s = &mut self.model.study;
         let spec = QuizSpec {
             topic: s.quiz_topic.as_ref().map(|t| t.id.clone()),
@@ -513,7 +513,7 @@ impl Workspace {
     }
 
     /// Submits the answer on screen: the picked choice, or the typed text.
-    fn quiz_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn quiz_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let typed = self.study_inputs.answer.read(cx).value().to_string();
         let Some(run) = &mut self.model.study.quiz else {
             return;
@@ -541,7 +541,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn quiz_next(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn quiz_next(&mut self, cx: &mut Context<Self>) {
         let Some(run) = &mut self.model.study.quiz else {
             return;
         };
