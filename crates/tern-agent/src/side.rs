@@ -14,7 +14,7 @@ use crate::engine::Model;
 use crate::providers::{self, SecretStore};
 use crate::transcript::{live_turns, trailing_context};
 
-const SYSTEM: &str = "You are answering a quick side question about the conversation above. Answer briefly and plainly. This side chat is not saved to the conversation.";
+pub(crate) const SYSTEM: &str = "You are answering a quick side question about the conversation above. Answer briefly and plainly. This side chat is not saved to the conversation.";
 
 /// One side question and its answer.
 #[derive(Clone, Debug, PartialEq, Eq)]

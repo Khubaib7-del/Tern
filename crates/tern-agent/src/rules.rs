@@ -270,7 +270,20 @@ pub fn effective(
     tools: &ToolRegistry,
     untrusted: bool,
 ) -> Effective {
-    let joined = instructions(harness, ctx, untrusted);
+    effective_with_user(harness, None, ctx, tools, untrusted)
+}
+
+/// [`effective`] with the user's own instructions (`crate::prompts`)
+/// after the harness text, listed as their own piece.
+pub fn effective_with_user(
+    harness: Option<&str>,
+    user: Option<&str>,
+    ctx: &ProjectContext,
+    tools: &ToolRegistry,
+    untrusted: bool,
+) -> Effective {
+    let composed = crate::prompts::compose(harness, user);
+    let joined = instructions(composed.as_deref(), ctx, untrusted);
     let prompt = crate::protocol::system_prompt(joined.as_deref(), tools);
     let mut pieces = vec![Piece {
         kind: PieceKind::Base,
@@ -284,6 +297,14 @@ pub fn effective(
             title: "Harness".into(),
             source: None,
             text: h.to_owned(),
+        });
+    }
+    if let Some(u) = user {
+        pieces.push(Piece {
+            kind: PieceKind::Harness,
+            title: "Your instructions".into(),
+            source: Some("Settings › Instructions".into()),
+            text: u.to_owned(),
         });
     }
     if !ctx.rules.is_empty() {

@@ -6,6 +6,7 @@
 use serde::Serialize;
 use tern_core::SecretString;
 pub use tern_platform::SecretStore;
+pub use tern_providers::custom::{self, CustomProvider, CustomWire};
 pub use tern_providers::{
     CATALOG, Capability, Category, Lifecycle, ModelInfo, ModelKind, ProbeReport, ProviderError,
     ProviderSpec,
@@ -77,6 +78,7 @@ fn spec(id: &str) -> SetupResult<&'static ProviderSpec> {
 pub fn list(secrets: Option<&dyn SecretStore>) -> Vec<ProviderRow> {
     CATALOG
         .iter()
+        .chain(tern_providers::custom::all())
         .map(|p| ProviderRow {
             id: p.id,
             name: p.name,

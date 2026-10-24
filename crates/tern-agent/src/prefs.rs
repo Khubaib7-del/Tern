@@ -103,6 +103,16 @@ pub struct Preferences {
     /// Per-tool approval in Settings › Tools: `allow`, `ask`, or `deny`,
     /// by tool name. A tool not listed follows its effect class.
     pub tool_modes: std::collections::BTreeMap<String, String>,
+    /// Providers the user added (OpenAI- or Anthropic-compatible), without
+    /// their keys (those are in the keychain under `provider.<id>`).
+    pub custom_providers: Vec<tern_providers::CustomProvider>,
+    /// The default page reader: `tern` (Tern Crawl), `firecrawl`, `jina`,
+    /// or `fetch`. `None` is Tern Crawl.
+    pub crawler: Option<String>,
+    /// Readers switched off in Settings › Search & Crawler, by id.
+    pub crawlers_off: Vec<String>,
+    /// The user's own system prompts: `global`, `research`, `study`.
+    pub system_prompts: std::collections::BTreeMap<String, String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -157,11 +167,49 @@ impl Preferences {
     }
 
     /// Reads the saved choices. Anything missing or malformed reads as none.
+    /// The process-wide parts (custom providers, the page reader, the
+    /// user's prompts) take effect at once.
     pub fn load_from(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let p: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        p.apply_runtime();
+        p
+    }
+
+    /// Puts the choices that are process-wide into effect: custom
+    /// providers become findable like built-ins, `read_url` uses the
+    /// chosen reader, and every chat gets the user's prompts. Front ends
+    /// call it after changing any of them.
+    pub fn apply_runtime(&self) {
+        tern_providers::custom::register_all(&self.custom_providers);
+        crate::prompts::set_user(&self.system_prompts);
+        let keychain = match self.crawler.as_deref().and_then(crate::crawlers::Crawler::parse) {
+            Some(c) if c.needs_key() => crate::providers::keychain().ok(),
+            _ => None,
+        };
+        let c = crate::crawlers::pick(self.crawler.as_deref(), &self.crawlers_off, |c| {
+            crate::crawlers::has_key(c, keychain.as_deref())
+        });
+        crate::crawlers::set(c);
+    }
+
+    /// Adds or replaces a custom provider (by id) and puts it into effect.
+    pub fn upsert_custom_provider(&mut self, p: tern_providers::CustomProvider) {
+        match self.custom_providers.iter_mut().find(|c| c.id == p.id) {
+            Some(c) => *c = p,
+            None => self.custom_providers.push(p),
+        }
+        tern_providers::custom::register_all(&self.custom_providers);
+    }
+
+    /// Removes a custom provider and the choices that pointed at it.
+    pub fn remove_custom_provider(&mut self, id: &str) {
+        self.custom_providers.retain(|c| c.id != id);
+        self.base_urls.remove(id);
+        self.forget_provider(id);
+        tern_providers::custom::register_all(&self.custom_providers);
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
@@ -309,6 +357,8 @@ impl Preferences {
 
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
+        tern_providers::custom::register_all(&self.custom_providers);
+        crate::prompts::set_user(&self.system_prompts);
         let base_url = self
             .provider
             .as_deref()
