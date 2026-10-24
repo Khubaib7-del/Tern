@@ -117,7 +117,10 @@ fn front_ends_use_only_agent_and_core() {
 fn the_browser_helper_holds_the_engine_alone() {
     let all = workspace_crates();
     // The helper speaks the protocol from tern-core and nothing else of Tern.
-    assert_eq!(tern_deps(&all["tern-browser"]), BTreeSet::from(["tern-core"]));
+    assert_eq!(
+        tern_deps(&all["tern-browser"]),
+        BTreeSet::from(["tern-core"])
+    );
     // The web engine never links into a front end: a page that hangs or
     // crashes takes down the helper, not Tern (ADR 0011).
     for ui in ["tern-tui", "tern-desktop"] {

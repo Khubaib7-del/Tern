@@ -464,9 +464,139 @@ pub async fn ask_with(
     run_ask(deps, question, &opts, progress).await
 }
 
+/// The system prompt for explaining one page.
+const PAGE_SYSTEM: &str = "You are Tern, a careful research assistant. Explain the web page the user opened, using only the numbered parts of it provided. \
+Start with one sentence on what the page is, then explain its main points so a newcomer understands them. \
+Put a citation like [1] or [2][3] after every sentence that states a fact, using only the part numbers given. \
+Be concise: at most about 250 words, plain prose, no headings, no list of sources at the end.";
+
+/// Splits page text into at most `max` parts of about `chars` characters,
+/// at paragraph breaks where it can, for numbered citations.
+pub fn page_parts(text: &str, chars: usize, max: usize) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for para in text.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        if !cur.is_empty() && cur.chars().count() + para.chars().count() > chars {
+            parts.push(std::mem::take(&mut cur));
+            if parts.len() == max {
+                return parts;
+            }
+        }
+        if !cur.is_empty() {
+            cur.push_str("\n\n");
+        }
+        let room = chars.saturating_sub(cur.chars().count()).max(1);
+        cur.extend(para.chars().take(room.max(chars / 4)));
+    }
+    if !cur.trim().is_empty() && parts.len() < max {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// Tern's explanation of one page, citing numbered parts of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PageExplanation {
+    pub answer: String,
+    /// `[n]` is part n of the page.
+    pub parts: usize,
+    pub cited: Vec<usize>,
+    pub invalid_citations: Vec<usize>,
+    pub provider: String,
+    pub model: String,
+}
+
+/// Explains a page already read (`title`, `url`, its text) with the saved
+/// model provider (or the one in `opts`), citing parts of the page.
+pub async fn explain_page(
+    title: &str,
+    url: &str,
+    text: &str,
+    opts: &AskOptions,
+) -> Result<PageExplanation, String> {
+    let keychain = providers::keychain();
+    let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let pid = match &opts.provider {
+        Some(p) => p.clone(),
+        None => providers::list(secrets)
+            .into_iter()
+            .find(|r| r.key_saved)
+            .map(|r| r.id.to_owned())
+            .ok_or("No model provider has a key yet, so there is no explanation. Add one with `tern provider add <id>`, or use `--provider ollama`.")?,
+    };
+    let provider = providers::connect_by_id(&pid, secrets, opts.base_url.as_deref())
+        .map_err(|e| e.to_string())?;
+    let model = match &opts.model {
+        Some(m) => m.clone(),
+        None => provider
+            .list_models()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|m| m.can_chat() && !m.is_retired())
+            .map(|m| m.id)
+            .ok_or_else(|| {
+                format!(
+                    "{} lists no chat models. Pick one with `--model`.",
+                    provider.spec().name
+                )
+            })?,
+    };
+    let parts = page_parts(text, SOURCE_CHARS, 4);
+    if parts.is_empty() {
+        return Err("The page has no text to explain.".into());
+    }
+    let mut prompt = format!("Page: {title}\n{url}\n\nParts:\n");
+    for (i, t) in parts.iter().enumerate() {
+        prompt.push_str(&format!("\n[{}]\n{}\n", i + 1, t));
+    }
+    let mut req = ChatRequest::new(&model, vec![ChatMessage::user(prompt)]);
+    req.system = Some(PAGE_SYSTEM.to_owned());
+    req.max_tokens = opts.max_output_tokens;
+    req.temperature = Some(0.2);
+    let m: &dyn Model = &provider;
+    let resp = m.complete(&req).await.map_err(|e| e.to_string())?;
+    let answer = resp.text.trim().to_owned();
+    let cited = citations(&answer);
+    let invalid = cited
+        .iter()
+        .copied()
+        .filter(|n| *n == 0 || *n > parts.len())
+        .collect();
+    Ok(PageExplanation {
+        answer,
+        parts: parts.len(),
+        cited,
+        invalid_citations: invalid,
+        provider: m.provider_id().to_owned(),
+        model,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_parts_split_at_paragraphs_and_stop_at_the_cap() {
+        let text = (0..20)
+            .map(|i| format!("Paragraph {i} {}", "x".repeat(40)))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let parts = page_parts(&text, 120, 3);
+        assert_eq!(parts.len(), 3);
+        assert!(parts[0].starts_with("Paragraph 0"));
+        assert!(parts.iter().all(|p| p.chars().count() <= 130));
+        assert!(page_parts("", 100, 4).is_empty());
+        assert_eq!(
+            page_parts("one\n\ntwo", 100, 4),
+            vec!["one\n\ntwo".to_owned()]
+        );
+    }
 
     #[test]
     fn citation_parsing() {

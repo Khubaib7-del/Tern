@@ -6,7 +6,7 @@
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
+use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_core::SessionId;
@@ -146,9 +146,6 @@ impl Workspace {
 
     /// Open tabs as quiet text tabs; those that do not fit go into "▾".
     pub(super) fn tab_strip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.tabs.list.len() < 2 {
-            return None;
-        }
         let busy = self.model.is_busy();
         let active = self.tabs.active;
         let widths: Vec<f32> = self
@@ -292,15 +289,217 @@ impl Workspace {
                 )
                 .children(more)
                 .child(
-                    div().pb(px(3.)).child(
-                        Button::new("add-tab")
-                            .icon(IconName::Plus)
-                            .ghost()
-                            .xsmall()
-                            .disabled(busy)
-                            .tooltip("New tab")
-                            .on_click(cx.listener(|this, _, window, cx| this.add_tab(window, cx))),
-                    ),
+                    div()
+                        .relative()
+                        .pb(px(3.))
+                        .child(
+                            Button::new("add-tab")
+                                .icon(IconName::Plus)
+                                .ghost()
+                                .xsmall()
+                                .disabled(busy)
+                                .selected(self.tab_picker.is_some())
+                                .tooltip("New chat or open one in a tab")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_tab_picker(window, cx)
+                                })),
+                        )
+                        .children(self.tab_picker_view(p, cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Opens or closes the + popover on the tab strip.
+    pub(super) fn toggle_tab_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab_picker.take().is_some() {
+            cx.notify();
+            return;
+        }
+        let input = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("Search this harness's chats")
+        });
+        input.update(cx, |i, cx| i.focus(window, cx));
+        let sub = cx.observe(&input, |_, _, cx| cx.notify());
+        self.tab_picker = Some((input, sub));
+        cx.notify();
+    }
+
+    /// The + popover: a new chat, one of this harness's chats (searchable;
+    /// it opens in a new tab, or focuses its tab), and the other things
+    /// that open beside the chat.
+    fn tab_picker_view(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (input, _) = self.tab_picker.as_ref()?;
+        let query = input.read(cx).value().to_string();
+        let rows = panels::pick_rows_for(&self.model.sessions, &self.tabs, &query);
+        let row = move |id: SharedString,
+                        icon: AssetIcon,
+                        label: SharedString,
+                        meta: Option<&'static str>| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .text_sm()
+                .cursor_pointer()
+                .text_color(p.text)
+                .hover(move |d| d.bg(p.hover))
+                .child(
+                    div()
+                        .text_color(p.muted)
+                        .child(gpui_kit::component::Icon::new(icon).small()),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .children(meta.map(|m| div().text_xs().text_color(p.faint).child(m)))
+        };
+        let head = move |t: &'static str| {
+            div()
+                .px_2()
+                .pt_2()
+                .pb_1()
+                .text_xs()
+                .font_family(crate::assets::MONO_FONT)
+                .text_color(p.faint)
+                .child(t)
+        };
+        let chats: Vec<AnyElement> = rows
+            .into_iter()
+            .map(|r| {
+                let id = r.id;
+                let title = r.title.clone();
+                row(
+                    SharedString::from(format!("pick-{id}")),
+                    AssetIcon::MessageCircle,
+                    SharedString::from(r.title),
+                    r.open.then_some("open"),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.tab_picker = None;
+                    this.open_in_new_tab(id, &title, window, cx);
+                }))
+                .into_any_element()
+            })
+            .collect();
+        let empty = chats.is_empty();
+        let has_report = self
+            .model
+            .entries
+            .iter()
+            .any(|e| matches!(e, crate::model::Entry::Assistant { .. }));
+        Some(
+            div()
+                .id("tab-picker")
+                .absolute()
+                .top(px(30.))
+                .right_0()
+                .w(px(320.))
+                .max_h(px(440.))
+                .p_1()
+                .flex()
+                .flex_col()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.raised)
+                .shadow_lg()
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.tab_picker = None;
+                    cx.notify();
+                }))
+                .child(
+                    row(
+                        "pick-new".into(),
+                        AssetIcon::Plus,
+                        "New chat".into(),
+                        Some("Ctrl+T"),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.tab_picker = None;
+                        this.add_tab(window, cx);
+                    })),
+                )
+                .child(head("OPEN EXISTING CHAT"))
+                .child(
+                    div()
+                        .px_1()
+                        .pb_1()
+                        .child(gpui_kit::component::input::Input::new(input).small()),
+                )
+                .child(
+                    div()
+                        .id("pick-list")
+                        .flex()
+                        .flex_col()
+                        .max_h(px(220.))
+                        .overflow_y_scrollbar()
+                        .children(chats)
+                        .when(empty, |d| {
+                            d.child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .text_sm()
+                                    .text_color(p.faint)
+                                    .child("No chats match."),
+                            )
+                        }),
+                )
+                .child(head("ALSO OPEN"))
+                .when(has_report, |d| {
+                    d.child(
+                        row(
+                            "pick-report".into(),
+                            AssetIcon::FileText,
+                            "Report of this chat".into(),
+                            None,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.tab_picker = None;
+                            if let Some(i) =
+                                this.model.entries.iter().rposition(|e| {
+                                    matches!(e, crate::model::Entry::Assistant { .. })
+                                })
+                            {
+                                this.model.show_run_of(i);
+                                this.model.run_panel.view = crate::model::RunView::Report;
+                                this.model.browser.visible = false;
+                                this.model.run_panel_open = true;
+                            }
+                            cx.notify();
+                        })),
+                    )
+                })
+                .child(
+                    row(
+                        "pick-library".into(),
+                        AssetIcon::Library,
+                        "Library item".into(),
+                        None,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tab_picker = None;
+                        this.open_library(cx);
+                    })),
+                )
+                .child(
+                    row(
+                        "pick-browser".into(),
+                        AssetIcon::Globe,
+                        "Browser".into(),
+                        None,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.tab_picker = None;
+                        if !(this.model.browser.visible && this.model.run_panel_open) {
+                            this.toggle_browser(window, cx);
+                        }
+                    })),
                 )
                 .into_any_element(),
         )

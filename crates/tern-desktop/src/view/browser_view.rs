@@ -129,7 +129,7 @@ impl Workspace {
             host.frame(show, active);
             (host.take_reports(), host.wants_ticks())
         };
-        if (ticks || show) && self.web_timer.is_none() {
+        if (ticks || show) && !self.web_ticking {
             self.watch_web(cx);
         }
         if let Some(t) = reports.title.filter(|t| !t.trim().is_empty()) {
@@ -149,6 +149,7 @@ impl Workspace {
     /// or up, so its address and title reach the pane and a start timeout
     /// shows, without redrawing every frame. Stops when it is not needed.
     pub(super) fn watch_web(&mut self, cx: &mut Context<Self>) {
+        self.web_ticking = true;
         self.web_timer = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -162,7 +163,7 @@ impl Workspace {
                     let keep = h.wants_ticks() || (open && h.is_idle());
                     drop(h);
                     if !keep {
-                        this.web_timer = None;
+                        this.web_ticking = false;
                     }
                     keep
                 });
@@ -325,13 +326,9 @@ impl Workspace {
                     .bg(p.raised)
                     .text_xs()
                     .text_color(p.muted)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .child(SharedString::from(format!(
-                                "Browser stopped ({why}). Showing the page as text."
-                            ))),
-                    )
+                    .child(div().min_w_0().child(SharedString::from(format!(
+                        "Browser stopped ({why}). Showing the page as text."
+                    ))))
                     .child(
                         Button::new("web-restart")
                             .icon(AssetIcon::RefreshCw)
@@ -355,9 +352,10 @@ impl Workspace {
             .flex_col()
             // Keeps reporting while the helper starts, so it docks the
             // moment it is ready. A stopped helper is not restarted here.
-            .when(starting || (live && detached) || stopped_is_none(&self.web), |d| {
-                d.child(place)
-            })
+            .when(
+                starting || (live && detached) || stopped_is_none(&self.web),
+                |d| d.child(place),
+            )
             .children(banner)
             .child(self.reader_body("web-page", p, cx))
             .into_any_element()

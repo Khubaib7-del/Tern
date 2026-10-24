@@ -54,21 +54,29 @@ impl Rect {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     /// Load an address.
-    Navigate { url: String },
+    Navigate {
+        url: String,
+    },
     Back,
     Forward,
     Reload,
     /// Dock the page over this rectangle on the screen (logical px).
-    Bounds { rect: Rect },
+    Bounds {
+        rect: Rect,
+    },
     /// Show the page window (docked, or attached when `detached`).
     Show,
     /// Hide it (the pane closed, a menu covers it, Tern lost focus).
     Hide,
     /// `true`: an ordinary window with a title bar beside Tern instead of
     /// docked over the pane (Wayland, or when the user pops it out).
-    Detach { detached: bool },
+    Detach {
+        detached: bool,
+    },
     /// Keep the page above other apps' windows while Tern is in front.
-    OnTop { on_top: bool },
+    OnTop {
+        on_top: bool,
+    },
     /// Close the page and exit.
     Quit,
 }
@@ -89,16 +97,26 @@ pub enum Event {
     },
     /// The page is at this address now (a link clicked inside it, a
     /// redirect, or a navigation the front end asked for).
-    Url { url: String },
-    Title { title: String },
+    Url {
+        url: String,
+    },
+    Title {
+        title: String,
+    },
     /// A page started (`true`) or finished (`false`) loading.
-    Loading { loading: bool },
+    Loading {
+        loading: bool,
+    },
     /// The page window gained or lost the keyboard focus.
-    Focus { focused: bool },
+    Focus {
+        focused: bool,
+    },
     /// The user closed the detached page window.
     Closed,
     /// Something failed; the helper keeps running when it can.
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 impl Command {

@@ -97,6 +97,7 @@ pub struct Workspace {
     web: crate::webview::Shared,
     /// Reads the browser helper while it runs (`watch_web`).
     web_timer: Option<Task<()>>,
+    web_ticking: bool,
     /// The harness switcher's popover is open, and when it opened.
     switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
@@ -189,6 +190,12 @@ pub struct Workspace {
     ctx_opened: std::rc::Rc<std::cell::Cell<Option<Instant>>>,
     /// The tab strip's "▾" menu of tabs that do not fit is open.
     tabs_menu_open: bool,
+    /// The tab strip's + popover, with its search field, while open.
+    tab_picker: Option<(Entity<InputState>, Subscription)>,
+    /// The saved chat tabs were put back after launch.
+    tabs_restored: bool,
+    /// The other harness's chat tabs while this one is in front.
+    parked_tabs: crate::layout::ParkedTabs,
     /// A model picked while the chat was busy, applied when it is free.
     pending_pick: Option<(&'static str, String)>,
     /// Streaming dictation while the mic records (and until its last
@@ -476,6 +483,7 @@ impl Workspace {
             switcher: None,
             web: crate::webview::Host::shared(),
             web_timer: None,
+            web_ticking: false,
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -519,6 +527,9 @@ impl Workspace {
             effort_drag: None,
             ctx_opened: Default::default(),
             tabs_menu_open: false,
+            tab_picker: None,
+            tabs_restored: false,
+            parked_tabs: Default::default(),
             pending_pick: None,
             dictation: None,
             dictation_model: None,
@@ -570,6 +581,7 @@ impl Workspace {
                     self.bridge.ext_load();
                 }
                 self.current = Some(s.session_id());
+                self.restore_tabs_once(s.session_id(), "New chat", s.is_draft());
                 self.tabs.set_active(s.session_id(), "New chat");
                 self.model.set_resume_offer(None, None);
                 self.model.switching_to = None;
@@ -628,8 +640,9 @@ impl Workspace {
                     .find(|r| r.id == s.session_id())
                     .map(|r| r.title.clone())
                     .unwrap_or_else(|| "Chat".into());
-                self.tabs.set_active(s.session_id(), &title);
                 self.model.set_sessions(recent);
+                self.restore_tabs_once(s.session_id(), &title, false);
+                self.tabs.set_active(s.session_id(), &title);
                 self.current = Some(s.session_id());
                 self.model.set_resume_offer(s.checkpoint().as_ref(), None);
                 self.model.cont.ids.anchor = self
@@ -1504,8 +1517,83 @@ impl Workspace {
         if self.model.is_busy() {
             return;
         }
+        self.stash_tab_place(cx);
         self.tabs.add();
         self.show_tab(self.tabs.active_tab().clone(), window, cx);
+        self.persist_tabs();
+    }
+
+    /// Opens one of this harness's chats in a new tab (the + popover), or
+    /// focuses its tab when it is open. The chat on screen keeps its draft
+    /// and scroll in its own tab.
+    fn open_in_new_tab(
+        &mut self,
+        id: SessionId,
+        title: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model.is_busy() {
+            return;
+        }
+        self.stash_tab_place(cx);
+        if self.tabs.open_new(id, title) {
+            let tab = self.tabs.active_tab().clone();
+            self.show_tab(tab, window, cx);
+        }
+        self.persist_tabs();
+        cx.notify();
+    }
+
+    /// After launch, once this harness's chats are known: put back the chat
+    /// tabs saved last time, with the chat that opened in front.
+    fn restore_tabs_once(&mut self, id: SessionId, title: &str, fresh: bool) {
+        if self.tabs_restored {
+            return;
+        }
+        self.tabs_restored = true;
+        let key = crate::harness::key(self.model.harness);
+        let Some(saved) = tern_agent::Preferences::load().open_tabs.get(key).cloned() else {
+            return;
+        };
+        self.tabs = Tabs::from_saved(&saved, &self.model.sessions);
+        if !fresh {
+            self.tabs.open(id, title);
+        } else if self.tabs.active_tab().id.is_some() {
+            // A fresh chat opened: it takes a fresh tab of its own.
+            if let Some(i) = self.tabs.list.iter().position(|t| t.id.is_none()) {
+                self.tabs.focus(i);
+            } else {
+                self.tabs.add();
+            }
+        }
+    }
+
+    /// Keeps the front tab's draft and scroll before another tab comes up.
+    fn stash_tab_place(&mut self, cx: &mut Context<Self>) {
+        if !self.tabs.active_tab().is_explain() {
+            let place = self.current_place(cx);
+            self.tabs.stash_place(place);
+        }
+    }
+
+    /// Saves both harnesses' chat tabs for the next launch.
+    fn persist_tabs(&mut self) {
+        let h = self.model.harness;
+        let here = self.tabs.to_saved();
+        let other = match h {
+            tern_agent::Harness::Research => tern_agent::Harness::Study,
+            tern_agent::Harness::Study => tern_agent::Harness::Research,
+        };
+        let there = self.parked_tabs.saved(other);
+        self.save_ui_prefs(|p| {
+            p.open_tabs
+                .insert(crate::harness::key(h).to_owned(), here.clone());
+            if let Some(t) = &there {
+                p.open_tabs
+                    .insert(crate::harness::key(other).to_owned(), t.clone());
+            }
+        });
     }
 
     fn focus_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1515,6 +1603,9 @@ impl Workspace {
         // chat on screen is always allowed.
         if self.model.is_busy() && !from_explain && !to_explain {
             return;
+        }
+        if i != self.tabs.active {
+            self.stash_tab_place(cx);
         }
         if let Some(tab) = self.tabs.focus(i).cloned() {
             if from_explain && tab.id.is_none() && !tab.is_explain() && self.current.is_none() {
@@ -1545,6 +1636,7 @@ impl Workspace {
             }
             self.show_tab(tab, window, cx);
         }
+        self.persist_tabs();
         cx.notify();
     }
 
@@ -1558,15 +1650,23 @@ impl Workspace {
             return;
         }
         match tab.id {
-            Some(id) if self.current != Some(id) => self.load_chat(id, cx),
+            Some(id) if self.current != Some(id) => {
+                // Its draft and scroll come back once it has loaded.
+                self.pending_restore = Some((self.model.harness, tab.place.clone()));
+                self.load_chat(id, cx);
+            }
             Some(_) => {}
             None => {
                 self.current = None;
                 self.session = None;
                 self.model.entries.clear();
                 self.new_chat(window, cx);
+                let draft = tab.place.draft.clone();
+                self.composer
+                    .update(cx, |c, cx| c.set_value(draft, window, cx));
             }
         }
+        self.persist_tabs();
         cx.notify();
     }
 

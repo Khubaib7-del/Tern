@@ -30,6 +30,23 @@ pub struct LastChat {
     pub browser_open: bool,
 }
 
+/// One chat tab the desktop had open.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenTab {
+    /// The chat's id; `None` for a fresh, unsaved one.
+    pub chat: Option<String>,
+    pub title: String,
+}
+
+/// A harness's chat tabs, in order, and the one in front.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenTabs {
+    pub tabs: Vec<OpenTab>,
+    pub active: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -76,6 +93,9 @@ pub struct Preferences {
     /// `study`): its last chat, draft, scroll and panels, so switching
     /// back, or reopening the app, returns to the same place.
     pub last_chats: std::collections::BTreeMap<String, LastChat>,
+    /// Each harness's open chat tabs in the desktop app (`research`,
+    /// `study`), restored on the next launch.
+    pub open_tabs: std::collections::BTreeMap<String, OpenTabs>,
     /// Context compaction: off, the percent of the window that starts it
     /// (`None` means 80), and the turns kept word for word (`None` means 4).
     pub compact_off: bool,

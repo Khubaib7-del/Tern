@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod browse;
 mod cards;
 mod continuity;
 mod decide;
@@ -45,6 +46,25 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+    },
+    /// Open a page (or search for words) the way the built-in browser
+    /// does: the page as Tern's reader shows it plus Tern's explanation
+    /// with numbered citations, or the search results for words.
+    Browse {
+        /// A web address, or words to search for.
+        #[arg(required = true, num_args = 1..)]
+        input: Vec<String>,
+        #[command(flatten)]
+        chat: ChatArgs,
+        /// Skip Tern's explanation; print the page only.
+        #[arg(long)]
+        no_explain: bool,
+        /// Also show the real page in a browser window (the tern-browser helper).
+        #[arg(long)]
+        open: bool,
+        /// Most characters of the page to print.
+        #[arg(long, default_value_t = 12_000)]
+        max_chars: usize,
     },
     /// Ask a question and get a short answer with numbered, checked citations.
     Ask {
@@ -460,6 +480,19 @@ fn real_main() -> ExitCode {
                 }
             }
         }
+        Command::Browse {
+            input,
+            chat,
+            no_explain,
+            open,
+            max_chars,
+        } => block_on(browse::run(
+            input.join(" "),
+            chat,
+            !no_explain,
+            open,
+            max_chars,
+        )),
         Command::Ask {
             question,
             chat,
