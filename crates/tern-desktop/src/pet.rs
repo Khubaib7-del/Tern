@@ -173,6 +173,17 @@ impl Strip {
         n - 1
     }
 
+    /// One pass through every frame, in ms.
+    pub fn pass_ms(&self) -> u64 {
+        (0..self.frames.max(1))
+            .map(|i| match self.durations.get(i as usize) {
+                Some(&d) => d as u64,
+                None => (1000. / self.fps).max(16.) as u64,
+            })
+            .sum::<u64>()
+            .max(1)
+    }
+
     /// The shortest frame time in ms, for scheduling redraws.
     pub fn min_frame_ms(&self) -> u64 {
         self.durations

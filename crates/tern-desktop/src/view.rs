@@ -157,6 +157,8 @@ pub struct Workspace {
     /// The empty state's mark (`crate::mark`), and when it started playing.
     mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
     mark_since: Instant,
+    /// The harness the empty-state mark last played for.
+    mark_harness: tern_agent::Harness,
     /// Wakes Settings › Scout's preview or the empty state's mark for its
     /// next strip frame.
     pet_preview_wake: Option<Task<()>>,
@@ -575,6 +577,7 @@ impl Workspace {
             pet_preview_wake: None,
             mark_anim: std::rc::Rc::new(crate::mark::MarkAnim::embedded()),
             mark_since: Instant::now(),
+            mark_harness: tern_agent::Harness::Research,
             presses: Default::default(),
             card_swipe: Default::default(),
             rail_slots: Default::default(),
@@ -3316,7 +3319,7 @@ impl Workspace {
             .items_center()
             .gap_2()
             .pt(px(110.))
-            .child(self.empty_mark(p))
+            .child(self.empty_mark(p, cx))
             .child(
                 div()
                     .pt_2()
@@ -3357,15 +3360,24 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The empty state's dithered Tern mark, animated in place (wing beat,
-    /// tail flick, body shiver) unless motion is reduced.
-    fn empty_mark(&self, p: Palette) -> AnyElement {
+    /// The empty state's dithered Tern mark: its loop (wing beat, tail
+    /// flick, body shiver) plays a few times when the empty state appears,
+    /// on a harness switch or on hover, then rests on the still; reduced
+    /// motion shows the still.
+    fn empty_mark(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let m = &self.mark_anim;
         let dark = p.canvas.l < 0.5;
         let (path, index, frames) =
             m.frame(dark, self.mark_since, Instant::now(), self.reduced_motion);
         let (w, h) = m.display_size(96.);
         div()
+            .id("empty-mark")
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if *hovered && !this.mark_anim.playing(this.mark_since, Instant::now()) {
+                    this.mark_since = Instant::now();
+                    cx.notify();
+                }
+            }))
             .w(px(w))
             .h(px(h))
             .flex_none()

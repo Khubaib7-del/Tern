@@ -23,6 +23,11 @@ use crate::pet::Strip;
 
 include!(concat!(env!("OUT_DIR"), "/mark_assets.rs"));
 
+/// How many times the loop plays when the empty state appears (or on a
+/// harness switch or a hover) before the mark rests on its still: the
+/// brand animates the mark only on real events.
+pub const PLAYS: u64 = 3;
+
 /// The asset path prefix the app's `AssetSource` serves the mark under.
 pub const ASSET_PREFIX: &str = "tern/mark/";
 
@@ -164,6 +169,14 @@ impl MarkAnim {
         self.strip.frames > 1
     }
 
+    /// Whether the mark is still playing its loops, `PLAYS` passes from
+    /// `since`; after that it rests on the still.
+    pub fn playing(&self, since: Instant, now: Instant) -> bool {
+        self.animated()
+            && (now.saturating_duration_since(since).as_millis() as u64)
+                < PLAYS * self.strip.pass_ms()
+    }
+
     /// How often to redraw while it plays, in ms.
     pub fn frame_ms(&self) -> u64 {
         self.strip.min_frame_ms().max(40)
@@ -175,7 +188,8 @@ impl MarkAnim {
     }
 
     /// The asset path, frame index and frame count to draw now. Reduced
-    /// motion draws the still (or the strip's first frame).
+    /// motion, and the rest after `PLAYS` loops, draw the still (or the
+    /// strip's first frame).
     pub fn frame(
         &self,
         dark: bool,
@@ -183,6 +197,7 @@ impl MarkAnim {
         now: Instant,
         reduced: bool,
     ) -> (String, u32, u32) {
+        let reduced = reduced || !self.playing(since, now);
         if reduced {
             let still = if dark {
                 &self.still_dark
@@ -235,6 +250,11 @@ mod tests {
         let (p, i, n) = m.frame(false, t0, t0 + Duration::from_millis(250), false);
         assert_eq!((p.as_str(), i, n), ("tern/mark/l.png", 2, 4));
         let (p, i, n) = m.frame(true, t0, t0 + Duration::from_millis(250), true);
+        assert_eq!((p.as_str(), i, n), ("tern/mark/s.png", 0, 1));
+        // Three passes (4 frames at 10 fps: 400 ms each), then the still.
+        assert!(m.playing(t0, t0 + Duration::from_millis(1100)));
+        assert!(!m.playing(t0, t0 + Duration::from_millis(1250)));
+        let (p, i, n) = m.frame(false, t0, t0 + Duration::from_millis(1300), false);
         assert_eq!((p.as_str(), i, n), ("tern/mark/s.png", 0, 1));
         let one = MarkAnim::parse(r#"{"frame": [10, 10], "file": "x.png"}"#).unwrap();
         assert_eq!(one.light, "x.png");

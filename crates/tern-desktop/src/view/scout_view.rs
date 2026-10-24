@@ -43,12 +43,14 @@ impl Workspace {
         let empty = self.model.screen == crate::model::Screen::Chat
             && self.model.entries.is_empty()
             && !self.model.is_busy();
-        if !empty {
+        // It plays its loops again on a harness switch.
+        if !empty || self.mark_harness != self.model.harness {
             self.mark_since = now;
+            self.mark_harness = self.model.harness;
         }
         let wait = if previewing {
             Some(100)
-        } else if empty && self.mark_anim.animated() {
+        } else if empty && self.mark_anim.playing(self.mark_since, now) {
             Some(self.mark_anim.frame_ms())
         } else {
             None
