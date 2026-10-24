@@ -93,6 +93,8 @@ pub struct Workspace {
     harness_memory: crate::harness::Memory,
     /// The place to put back once the harness's chat has loaded.
     pending_restore: Option<(tern_agent::Harness, tern_agent::prefs::LastChat)>,
+    /// The browser's page engine (`crate::webview`).
+    web: crate::webview::Shared,
     /// The harness switcher's popover is open, and when it opened.
     switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
@@ -470,6 +472,7 @@ impl Workspace {
                 harness_memory.get(tern_agent::Harness::Research).clone(),
             )),
             switcher: None,
+            web: crate::webview::Host::shared(),
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -4263,6 +4266,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick_scout(window, cx);
         self.tick_explain(window);
+        self.sync_web(window, cx);
         self.tick_toasts(window, cx);
         self.tick_rail_scroll(window);
         let now = Instant::now();

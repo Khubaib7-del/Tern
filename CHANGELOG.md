@@ -4,6 +4,16 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added and changed (PR #52)
+
+Study as one window, Research and Study kept apart, a real browser, and compaction for small windows.
+
+- **Built-in browser** ([ADR 0010](docs/decisions/0010-browser-engine.md)): tabs, an address bar that takes an address or words, back, forward, reload, and a **Page | Explanation | Side by side** toggle (side by side by default). The Page side is the real site in the system web view through `wry` (WebView2 on Windows, WKWebView on macOS), a native child of Tern's window kept on the pane's bounds and hidden whenever Settings, a modal, the switcher, or Explanation-only shows; links clicked inside it move the address bar, tab title and explanation along. Linux (no engine in this build) and a failed engine start show Tern's reader view instead. The Explanation side is the page as Tern Crawl reads it, or search results to open for words typed in the bar, with **Explain with citations** (or **Explain briefly** for words) asking Tern; the answer shows above the page text. Citations and source rows open in the pane.
+- **Study in one window**: a sliding tab bar (Chat | Flashcards | Quiz | Viva | Explain in 3D) at the top, the mode in the middle and the Study composer at the bottom; no separate Study chat and Study tools screens. The composer can drive a mode ("quiz me on paging", "flashcards for chapter 3", "examine me", "explain TLBs in 3D"). Modes that need materials show Add material, Upload PDF, Use the last report and Paste link. Home tiles wrap and every tile opens its mode; a status line shows what is due and recall.
+- **Research and Study kept apart**: the sidebar lists only the active harness's chats, a chat of the other harness switches harness first, and each harness reopens its last chat, draft, scroll and panels (`Preferences::last_chats`), also after a restart. The Research | Study pill moved from the title bar to a switcher at the top of the sidebar. A deleted chat is forgotten by both harnesses.
+- **Compaction on small windows**: the verbatim tail is bounded by 35 % of the model's window as well as the turn count, so a short chat on a 4k model still folds; when nothing can be freed the toast says why.
+- **Reply** shows the quoted text as a chip over the bubble; **Scout** is 64 px with its state named beside it; model lists in Settings keep a visible scrollbar and hold the wheel.
+
 ### Added and changed (PR #51)
 
 Settings review: providers, logos, custom providers, crawlers, MCP and skills, instructions, the decision model.

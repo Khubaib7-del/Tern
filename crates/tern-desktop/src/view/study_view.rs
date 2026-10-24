@@ -672,7 +672,7 @@ impl Workspace {
                     topic: topic.map(|t| t.id),
                     context: None,
                 };
-                self.study_explain(ask, &label.to_owned(), window, cx);
+                self.study_explain(ask, label, window, cx);
             }
             StudyTab::Chat => return false,
         }

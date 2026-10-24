@@ -44,6 +44,7 @@ mod theme;
 mod timeline;
 mod toast;
 mod view;
+mod webview;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};

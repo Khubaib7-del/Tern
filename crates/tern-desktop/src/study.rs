@@ -421,6 +421,13 @@ impl StudyState {
 
     /// Switches the window's mode. A tool already under way (a quiz, a
     /// viva, a review) is kept, so moving between tabs never loses it.
+    /// Shows a Study view (from the Library, a deck row, a review's
+    /// end) with its tab lit.
+    pub fn show(&mut self, view: StudyView) {
+        self.view = view;
+        self.tab = StudyTab::of(view);
+    }
+
     pub fn set_tab(&mut self, tab: StudyTab) {
         self.tab = tab;
         self.notice = None;
