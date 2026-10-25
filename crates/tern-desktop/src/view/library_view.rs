@@ -19,6 +19,7 @@ use tern_agent::PageRef;
 use tern_agent::library::{LibraryItem, LibraryKind};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::study_view::serif;
 use crate::bridge::LibraryChange;
 use crate::continuity::LibraryTab;
@@ -381,6 +382,7 @@ impl Workspace {
             )
             .child(
                 Button::new("lib-sort")
+                    .capsule()
                     .icon(AssetIcon::ArrowDownUp)
                     .label(SharedString::from(format!("Sort: {}", l.sort.label())))
                     .ghost()
@@ -393,6 +395,7 @@ impl Workspace {
             )
             .child(
                 Button::new("lib-list")
+                    .capsule()
                     .icon(AssetIcon::List)
                     .ghost()
                     .small()
@@ -405,6 +408,7 @@ impl Workspace {
             )
             .child(
                 Button::new("lib-grid")
+                    .capsule()
                     .icon(AssetIcon::LayoutGrid)
                     .ghost()
                     .small()
@@ -420,6 +424,7 @@ impl Workspace {
                     .relative()
                     .child(
                         Button::new("lib-new")
+                            .capsule()
                             .label("New")
                             .icon(AssetIcon::ChevronDown)
                             .small()
@@ -476,6 +481,7 @@ impl Workspace {
             )
             .child(
                 Button::new("lib-done")
+                    .capsule()
                     .label("Back to chat")
                     .ghost()
                     .small()
@@ -488,6 +494,7 @@ impl Workspace {
             .children(LibraryTab::SHOWN.into_iter().map(|t| {
                 let n = l.count(t);
                 Button::new(SharedString::from(format!("lib-tab-{}", t.label())))
+                    .capsule()
                     .label(SharedString::from(if n > 0 {
                         format!("{} {n}", t.label())
                     } else {
@@ -541,6 +548,7 @@ impl Workspace {
             .when(!l.selected.is_empty() && !trash, |d| {
                 d.child(
                     Button::new("lib-delete")
+                        .capsule()
                         .icon(AssetIcon::Trash)
                         .label("Move to trash")
                         .small()
@@ -554,6 +562,7 @@ impl Workspace {
             .when(!l.selected.is_empty() && trash, |d| {
                 d.child(
                     Button::new("lib-restore")
+                        .capsule()
                         .icon(AssetIcon::Undo2)
                         .label("Restore")
                         .small()
@@ -567,6 +576,7 @@ impl Workspace {
             .when(trash && l.trash > 0, |d| {
                 d.child(
                     Button::new("lib-empty")
+                        .capsule()
                         .label("Empty trash")
                         .ghost()
                         .small()
@@ -597,6 +607,7 @@ impl Workspace {
             .text_color(p.faint)
             .child(
                 Button::new("lib-prev")
+                    .capsule()
                     .icon(AssetIcon::ChevronLeft)
                     .ghost()
                     .xsmall()
@@ -616,6 +627,7 @@ impl Workspace {
             ))
             .child(
                 Button::new("lib-next")
+                    .capsule()
                     .icon(AssetIcon::ChevronRight)
                     .ghost()
                     .xsmall()

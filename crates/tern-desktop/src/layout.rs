@@ -4,15 +4,15 @@
 //! | Window width | Sidebar | Run panel |
 //! | --- | --- | --- |
 //! | 1100 px and wider | Beside the chat | Beside the chat |
-//! | 900 to 1099 px | Beside the chat | Over the chat |
-//! | Under 900 px | Over the chat, closed when the window narrows | Over the chat |
+//! | 960 to 1099 px | Beside the chat | Over the chat, closed when the window narrows |
+//! | Under 960 px | Over the chat, closed when the window narrows | Over the chat |
 
 use tern_agent::prefs::{LastChat, OpenTab, OpenTabs};
 use tern_agent::{Harness, SessionSummary};
 use tern_core::SessionId;
 
 /// Narrower than this, the sidebar floats over the chat.
-pub const SIDEBAR_MIN_W: f32 = 900.;
+pub const SIDEBAR_MIN_W: f32 = 960.;
 /// Narrower than this, the run panel floats over the chat.
 pub const PANEL_MIN_W: f32 = 1100.;
 /// Narrower than this, the title bar drops its labels.
@@ -377,6 +377,15 @@ pub fn pick_rows(
         .collect()
 }
 
+/// Below this chat-column width the composer's chip row goes compact
+/// (the mode shows its icon only, the model chip is capped) so it stays
+/// on one row.
+pub const COMPOSER_COMPACT_W: f32 = 760.;
+
+pub fn composer_compact(centre_w: f32) -> bool {
+    centre_w > 0. && centre_w < COMPOSER_COMPACT_W
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +527,8 @@ mod tests {
         assert!(wide.sidebar_beside && wide.panel_beside && !wide.compact);
         let mid = Layout::for_width(1000.);
         assert!(mid.sidebar_beside && !mid.panel_beside);
+        // At 900 px the chat list folds away so the chat keeps its room.
+        assert!(!Layout::for_width(900.).sidebar_beside);
         let small = Layout::for_width(600.);
         assert!(!small.sidebar_beside && !small.panel_beside && small.compact);
         assert!(Layout::sidebar_squeezed(Some(wide), small));

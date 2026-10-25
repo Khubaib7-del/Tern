@@ -32,6 +32,8 @@ pub enum Section {
     Search,
     /// Theme, accent, font, size, density, motion, glyphs.
     Appearance,
+    /// Scout, the floating companion: preview, look, show or hide.
+    Scout,
     /// Quiz, viva, and offline Study choices.
     Study,
     /// What leaves the machine, where data is kept, deleting it.
@@ -41,7 +43,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Providers,
         Self::Models,
         Self::Tools,
@@ -51,6 +53,7 @@ impl Section {
         Self::Instructions,
         Self::Search,
         Self::Appearance,
+        Self::Scout,
         Self::Study,
         Self::Privacy,
         Self::About,
@@ -67,6 +70,7 @@ impl Section {
             Self::Instructions => "Instructions",
             Self::Search => "Search & Crawlers",
             Self::Appearance => "Appearance",
+            Self::Scout => "Scout",
             Self::Study => "Study",
             Self::Privacy => "Privacy & data",
             Self::About => "About",
@@ -95,6 +99,9 @@ impl Section {
             }
             Self::Search => "Where web searches go, and which crawler reads the pages they find.",
             Self::Appearance => "Theme, accent, type, density, and motion.",
+            Self::Scout => {
+                "Your companion on screen: what it shows, how it looks, and where it sits."
+            }
             Self::Study => "How quizzes and vivas are made, and Study without a model.",
             Self::Privacy => {
                 "What leaves this computer, where Tern keeps your data, and deleting it."
@@ -115,6 +122,7 @@ impl Section {
             Self::Instructions => "instructions",
             Self::Search => "search",
             Self::Appearance => "appearance",
+            Self::Scout => "scout",
             Self::Study => "study",
             Self::Privacy => "privacy",
             Self::About => "about",
@@ -293,6 +301,16 @@ pub const ENTRIES: &[Entry] = &[
         Section::Privacy,
         "Delete data",
         "delete clear cache trash reset erase",
+    ),
+    e(
+        Section::Scout,
+        "Show Scout",
+        "scout pet mascot companion hide show floating character",
+    ),
+    e(
+        Section::Scout,
+        "Scout's look",
+        "scout variant trim study customize skin outfit",
     ),
     e(Section::About, "Version", "about update release"),
     e(

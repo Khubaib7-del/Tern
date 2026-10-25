@@ -16,7 +16,13 @@ use tern_agent::run::compact;
 use tern_agent::{ResearchPlan, Run, WorkerRow, WorkerStatus};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::theme::Palette;
+
+/// The plan card's height as it folds (v2's max-height 420), and the
+/// one line it folds into.
+const PLAN_CARD_H: f32 = 420.;
+const PLAN_LINE_H: f32 = 32.;
 
 impl Workspace {
     /// Hands the plan to the window: one text field per sub-question for
@@ -51,6 +57,13 @@ impl Workspace {
 
     /// Sends the user's answer to the waiting run.
     pub(super) fn answer_plan(&mut self, answer: PlanAnswer, cx: &mut Context<Self>) {
+        // The card folds into one line (v2 s04: max-height 420 → 30).
+        if let PlanAnswer::Run(plan) = &answer {
+            let mut fold =
+                crate::motion::Spring::new(PLAN_CARD_H, crate::motion::SpringSpec::PANEL);
+            fold.retarget(PLAN_LINE_H, std::time::Instant::now());
+            self.plan_folded = Some((plan.sub_questions.len(), fold));
+        }
         if let Some(r) = self.plan_reply.take() {
             let _ = r.send(answer);
         }
@@ -88,6 +101,45 @@ impl Workspace {
             out.sub_questions.push(s);
         }
         Some(out)
+    }
+
+    /// The approved plan, folded to one line, while its run goes. It
+    /// shrinks from the card's height on a spring the moment Run is hit.
+    pub(super) fn plan_folded_line(&self, p: Palette) -> Option<AnyElement> {
+        if !self.model.is_busy() || self.model.pending_plan().is_some() {
+            return None;
+        }
+        let (n, fold) = self.plan_folded.as_ref()?;
+        let mut fold = *fold;
+        let h = fold.frame(PLAN_LINE_H, std::time::Instant::now(), self.reduced_motion);
+        if fold.moving() {
+            self.anim_pending.set(true);
+        }
+        let open = ((h - PLAN_LINE_H) / (PLAN_CARD_H - PLAN_LINE_H)).clamp(0., 1.);
+        Some(
+            div()
+                .id("plan-folded")
+                .w_full()
+                .h(px(h.max(PLAN_LINE_H)))
+                .overflow_hidden()
+                .flex()
+                .items_start()
+                .gap_2()
+                .px_3()
+                .py(px(6.))
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border.opacity(0.4 + 0.6 * open))
+                .bg(p.raised.opacity(open))
+                .text_sm()
+                .text_color(p.muted)
+                .child(div().text_color(p.accent).child("✓"))
+                .child(SharedString::from(format!(
+                    "Plan approved · {n} step{}",
+                    if *n == 1 { "" } else { "s" }
+                )))
+                .into_any_element(),
+        )
     }
 
     /// The plan card in the transcript while a plan waits.
@@ -173,6 +225,7 @@ impl Workspace {
                 .when(editing, |d| {
                     d.child(
                         Button::new(SharedString::from(format!("plan-drop-{i}")))
+                            .capsule()
                             .icon(if dropped {
                                 AssetIcon::RotateCw
                             } else {
@@ -190,89 +243,114 @@ impl Workspace {
                     )
                 })
         });
-        let buttons = if editing {
-            div()
-                .flex()
-                .gap_2()
-                .child(
-                    Button::new("plan-run")
-                        .label("Run")
-                        .small()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            match this.edited_plan(cx) {
-                                Some(p) if !p.sub_questions.is_empty() => {
-                                    this.answer_plan(PlanAnswer::Run(p), cx)
-                                }
-                                // Everything dropped: one worker on the question.
-                                _ => this.answer_plan(PlanAnswer::Skip, cx),
-                            }
-                        })),
-                )
-                .child(
-                    Button::new("plan-discard")
-                        .label("Discard edits")
-                        .ghost()
-                        .small()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if let Some((plan, _)) = this.model.pending_plan() {
-                                let texts: Vec<String> = plan
-                                    .sub_questions
-                                    .iter()
-                                    .map(|s| s.question.clone())
-                                    .collect();
-                                for (input, text) in this.plan_inputs.iter().zip(texts) {
-                                    input.update(cx, |i, cx| i.set_value(text, window, cx));
-                                }
-                            }
-                            this.plan_dropped.clear();
-                            this.model.set_plan_editing(false);
-                            cx.notify();
-                        })),
-                )
-        } else {
-            div()
-                .flex()
-                .gap_2()
-                .child(
-                    Button::new("plan-approve")
-                        .label("Approve")
-                        .small()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some((plan, _)) = this.model.pending_plan() {
-                                let plan = plan.clone();
-                                this.answer_plan(PlanAnswer::Run(plan), cx);
-                            }
-                        })),
-                )
-                .child(
-                    Button::new("plan-edit")
-                        .label("Edit")
-                        .small()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.model.set_plan_editing(true);
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("plan-skip")
-                        .label("Skip plan")
-                        .ghost()
-                        .small()
-                        .tooltip("One worker on the whole question")
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.answer_plan(PlanAnswer::Skip, cx)),
+        let buttons =
+            if editing {
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        self.press(
+                            "plan-run",
+                            Button::new("plan-run")
+                                .capsule()
+                                .label("Run")
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    match this.edited_plan(cx) {
+                                        Some(p) if !p.sub_questions.is_empty() => {
+                                            this.answer_plan(PlanAnswer::Run(p), cx)
+                                        }
+                                        // Everything dropped: one worker on the question.
+                                        _ => this.answer_plan(PlanAnswer::Skip, cx),
+                                    }
+                                })),
                         ),
-                )
-                .child(
-                    Button::new("plan-cancel")
-                        .label("Cancel")
-                        .ghost()
-                        .small()
-                        .on_click(
-                            cx.listener(|this, _, _, cx| this.answer_plan(PlanAnswer::Cancel, cx)),
+                    )
+                    .child(
+                        self.press(
+                            "plan-discard",
+                            Button::new("plan-discard")
+                                .capsule()
+                                .label("Discard edits")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some((plan, _)) = this.model.pending_plan() {
+                                        let texts: Vec<String> = plan
+                                            .sub_questions
+                                            .iter()
+                                            .map(|s| s.question.clone())
+                                            .collect();
+                                        for (input, text) in this.plan_inputs.iter().zip(texts) {
+                                            input.update(cx, |i, cx| i.set_value(text, window, cx));
+                                        }
+                                    }
+                                    this.plan_dropped.clear();
+                                    this.model.set_plan_editing(false);
+                                    cx.notify();
+                                })),
                         ),
-                )
-        };
+                    )
+            } else {
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        self.press(
+                            "plan-approve",
+                            Button::new("plan-approve")
+                                .capsule()
+                                .label("Approve")
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some((plan, _)) = this.model.pending_plan() {
+                                        let plan = plan.clone();
+                                        this.answer_plan(PlanAnswer::Run(plan), cx);
+                                    }
+                                })),
+                        ),
+                    )
+                    .child(
+                        self.press(
+                            "plan-edit",
+                            Button::new("plan-edit")
+                                .capsule()
+                                .label("Edit")
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.set_plan_editing(true);
+                                    cx.notify();
+                                })),
+                        ),
+                    )
+                    .child(
+                        self.press(
+                            "plan-skip",
+                            Button::new("plan-skip")
+                                .capsule()
+                                .label("Skip plan")
+                                .ghost()
+                                .small()
+                                .tooltip("One worker on the whole question")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer_plan(PlanAnswer::Skip, cx)
+                                })),
+                        ),
+                    )
+                    .child(
+                        self.press(
+                            "plan-cancel",
+                            Button::new("plan-cancel")
+                                .capsule()
+                                .label("Cancel")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer_plan(PlanAnswer::Cancel, cx)
+                                })),
+                        ),
+                    )
+            };
         Some(
             div()
                 .flex()
@@ -436,6 +514,7 @@ impl Workspace {
                     .when(can_cancel, |d| {
                         d.child(
                             Button::new(SharedString::from(format!("worker-cancel-{n}")))
+                                .capsule()
                                 .icon(AssetIcon::X)
                                 .ghost()
                                 .xsmall()

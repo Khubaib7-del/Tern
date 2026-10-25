@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/tern-hero-dark.gif">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/tern-hero-light.gif">
-    <img alt="Tern, a diving tern drawn in moving dither beside the TERN Research wordmark" src="assets/brand/tern-hero-light.gif" width="100%">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.webp">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner.webp">
+    <img alt="Tern: the diving-tern mark in moving dither beside the TERN Research · Study wordmark" src="docs/assets/banner.gif" width="100%">
   </picture>
 </p>
 
@@ -12,9 +12,68 @@
 
 ---
 
-Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer.
+Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is being built as the research tool for its author's final-year project, on Windows, Linux and macOS.
 
-It is being built as the research tool for its author's final-year project. It is pre-alpha: the core, provider setup, cited web answers, a terminal chat, the desktop app, Tern Crawl, claim checks with run reports, deep research with parallel workers, the Study harness (tutor, quizzes, viva, flashcards with spaced repetition and Anki export, Explain in 3D), the decision model, continuity (message IDs and sub-sessions, cleaning a chat by ID range, handoff packets, the Library, highlight actions, and the side chat), and extensibility (MCP servers with their tools, prompts, and resources, Tern as an ACP agent in editors such as Zed, skills, `TERN.md` project rules, and project folders), and evaluation (a five-rung test ladder with versioned suites, three trials, 95% intervals, published failures, and run comparison, the offline suites checked in CI) work today (see below), on Windows, Linux, and macOS; study plans are still ahead.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/research-answer-and-rail.png" alt="A deep research answer with verdict marks on each cited sentence, the sources read, and the right rail on Plan › Workers"></td>
+    <td width="50%"><img src="docs/assets/screenshots/empty-state.png" alt="The empty state: the dithered Tern mark, Start a research session, and three suggestion chips; Scout at the bottom left"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/assets/screenshots/study-flashcards.png" alt="Study: the flashcard stack with the Study rail showing what is due and the decks"></td>
+    <td><img src="docs/assets/screenshots/settings-scout.png" alt="Settings › Scout: a live preview of Scout, show or hide, the trim, and every state"></td>
+  </tr>
+</table>
+
+<sub>Frames from the scripted UI tour (`TERN_TOUR=1`) recorded by CI on Linux; demo data, no model calls.</sub>
+
+## Highlights
+
+**Research**
+- **Cited answers that are checked.** Every cited sentence is checked against the text Tern read from its source: Supported, Partly supported, Not supported or No source, with the quoted passage. Each answer writes a Markdown and JSON run report.
+- **Deep research.** You approve a plan first. Parallel workers then research the sub-questions, each with its own budget, and one answer is written and checked from their notes. You can steer while it runs ("focus on 2024 sources", "drop 3"), and it resumes from checkpoints after a crash or a stop.
+- **Tern Crawl**, Tern's own crawler and reader: a network guard, robots.txt, per-site pacing, a page cache and PDFs read page by page. Firecrawl, Jina Reader or a plain fetch can be the reader instead.
+- **Right rail**: **Plan** (Summary, Workers, Detailed, Decisions), **Sources (n)** (Ledger, Raw events), **Report (n)** (claim verdicts), **Graph** (the run map and spend over time) and **Context** (what fills the context window). It opens by itself once a run has something to show.
+
+**Study**
+- Add your materials (PDFs, notes, folders, vault notes, reports, links) and Tern splits them into topics with a mastery score per topic.
+- **Tutor** (Explain, Socratic, Explain like I'm new), **quizzes** graded on one click with a progress bar, **viva practice** with a rubric report, and **flashcards** on SM-2 in a stack you swipe (right for Good, left for Again). Decks export as real Anki packages.
+- A **Study rail** with your decks, what is due and recall.
+
+**Explain in 3D**
+- Turns a concept or a whole answer into a small isometric figure in five levels, from the basics to the advanced parts. Each node has its explanation, the passage it came from and its citations. A real camera lets you orbit, zoom and pan, and Prev, Next and Play walk the levels. It is in Research and Study alike.
+
+**Workspace**
+- **Built-in browser** beside the chat. The real site runs in a separate helper process, so a page can never freeze Tern. **Explain with citations** asks Tern about the page you are on.
+- **Chat tabs** per harness, and **session restore**: the window reopens the way you left it (harness, tabs, Study tab, rail view, sidebar).
+- **Timeline rail**: one tick per question at the chat's edge. Hover a tick to read the question, click it to glide there.
+- **Live dictation**: the mic transcribes while you speak, phrase by phrase.
+- **Command palette**: Ctrl+K (Cmd+K on macOS).
+- **Continuity**: message IDs (`Q12.3`), cleaning a chat by ID range, sub-sessions, handoff packets, the Library, highlight actions and the side chat.
+- **Extensibility**: MCP servers (tools, prompts, resources) behind a trust preview, skills, `TERN.md` rules, project folders, and `tern acp` for editors such as Zed.
+- **Evaluation**: a five-rung test ladder with versioned suites, three trials, 95% intervals and published failures; CI runs the offline suites.
+
+**Feel**
+- **Scout**, a coloured clay sprite, floats over the window. Its ten states follow what Tern is doing (thinking, searching, reading, verifying, needs you, done, blocked, study, sleeping), with spring crossfades and a speech bubble. Drag it anywhere, hover it for New chat and Dictate, and hide it with Ctrl+. (Cmd+.). **Settings › Scout** previews every state and picks the trim.
+- **Spring motion** throughout: sliding panels, the rail marker, tab underlines, segmented controls and toasts all move on springs, and buttons jiggle when pressed. Reduced motion is honoured (the OS setting on Linux and macOS, or `TERN_REDUCED_MOTION=1`).
+- **Onboarding**: a first-run tour (provider, a key tested live, model, search, theme) that you can skip and rerun from Settings › About. The empty state offers three suggestions per harness.
+
+**Reliability**
+- **Explain in 3D no longer closes the app (#57).** Tern used to ask GPUI for the next frame from inside event listeners. Every frame request now goes through a safe scheduler (`view::frame::next_frame`), and a test fails if the bad pattern comes back.
+- **Crash logs on Windows**: a crash that no panic hook sees is written, with its exit code and the last action, to `%LOCALAPPDATA%\Tern\data\logs\` (`crash.log`, `tern.log`, `stderr.log`, `last-action.txt`).
+- **Demo mode**: `TERN_TOUR=1` runs a scripted tour of every screen with demo data in a throwaway folder (no keys, no model calls). The **UI tour** CI workflow records it on Linux and uploads the video.
+
+## Install and run
+
+There are no releases or installers yet. Test builds come from CI on each pull request (the Actions run's artifacts):
+
+| OS | Artifact | Run |
+| --- | --- | --- |
+| Windows 10 and 11 (x64) | `tern-windows-x64` | Unzip and run `tern-desktop.exe` for the app, or `tern.exe` in a terminal. Logs and crash reports are in `%LOCALAPPDATA%\Tern\data\logs` |
+| Linux (x64) | `tern-linux-x64` | `tar -xzf tern-linux-x64.tar.gz`, then `./tern-linux-x64/tern-desktop` or `./tern-linux-x64/tern` ([docs/linux.md](docs/linux.md)). It needs a Vulkan driver |
+| macOS (Apple silicon) | `tern-macos-arm64` | Unzip, then right-click `Tern.app` and choose Open the first time (it is unsigned). `./tern` in a terminal ([docs/macos.md](docs/macos.md)) |
+
+From source: `cargo run -p tern-desktop` for the app, or `cargo run -p tern-tui` for the terminal (see [Building from source](#building-from-source)). On first launch the tour asks for a provider and a key. Wikipedia search works with no key.
 
 ## What works today
 
@@ -59,7 +118,7 @@ It is being built as the research tool for its author's final-year project. It i
 | Browse from the terminal | `tern browse <address or words>` prints a page as Tern Crawl reads it with Tern's explanation and numbered citations, or search results for words; `--open` opens the page in the `tern-browser` window |
 | Terminal | `tern` / `tern chat`: an 80×24 ratatui chat |
 | Platforms | Windows, Linux, and macOS, each built, tested, and evaluated by CI with a test build to download (see the table below). Keys in each OS's keychain, data in each OS's folders, the OS reduced-motion setting honoured on Linux and macOS, the macOS menu bar and Cmd keys |
-| Desktop app | GPUI app for Windows (the executables carry the Tern icon; an 8 MB main-thread stack; a crash no panic hook sees, such as a stack overflow, is written with its exit code and the last action to `%LOCALAPPDATA%\Tern\data\logs\crash.log`), Linux (X11 and Wayland), and macOS: chat with streaming answers (8192 output tokens by default; an answer cut off at the length limit shows a notice with **Continue**), a labelled **Stop** and Esc while a turn runs, chats saved only once they have a first message (no empty "Chat" rows), the window reopened the way it was left (the harness, each harness's chat tabs with the one in front, the Study tab, the right panel's view, and the sidebar; a chat deleted since falls back to the last chat with messages), the last chat reopened on launch (its transcript shows at once while the model connects in the background; if the model cannot be reached the chat stays readable and you can pick another), the model changed in place without leaving the chat, chat list (reopen, rename, archive, delete, Archived chats), a **Settings** screen (Ctrl+, or the gear; sections with icons that fold to icons on narrow windows; search over every setting; Back or Esc returns: Providers with keys, server addresses, and Test; Models with the catalogue by capability and a default model per job; Tools with on/off and approvals; Decision model; Evaluation; MCP & Skills; Search & Crawler with Tern Crawl; Appearance; Study; Privacy & data; About), a first-run tour (provider, key tested live, model, search, theme; skippable, shown once, again from About), thin overlay scrollbars everywhere (a list inside a page scrolls first with the wheel or touchpad and hands on to the page at its ends), source rows with site icons, context ring, run panel (Summary, Detailed, Raw, Report, **Graph**, Ledger, Workers for deep research, and Decisions; Graph is FIG 1 · RUN MAP, the run as a hairline isometric figure lit phase by phase (search, screen, read, synthesize, write, verify) with a readout of the phase, sources, kept pages and spend, hover for a phase's numbers and click it for its steps, and a spend-over-time chart against the budget with a crosshair tooltip), chat tabs with a **+** popover (new chat, or reopen a recent one), kept per harness and restored on launch, a Decision model page (Off, Local, or Remote; Jev, SubQ Snap, and Voyage rows with their logos and keys; a Test button), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments, sources, and MCP resources, `@prompt:` / `@context:`), a `/` menu (Tern's commands, skills, and MCP prompts, every row with its logo; an inline form for a prompt's arguments; the server's text shown in the composer before anything is sent), message actions (copy, reply with a quote, branch into a new chat, `Branch ▾` for sub-sessions and background branches, ask in side chat), message IDs with multi-select and range actions (move to a sub-session or a new session, remove, confirm or undo, the chat's trash), a sidebar sub-session tree (`↳ Q12` rows, planned and running state) and a handoff action, a highlight popover on answer text, the side chat (docked or popped out with the tern mark), the Library page (Reports, Sources, Notes, Decks, Files, Explain in 3D, Sessions, All, and Trash; grid or list; `New ▾`; search, sort, bulk select, paging), project folders in the sidebar (Projects, chats, `↳` sub-sessions, the Inbox; drag to file, collapse saved), Settings › MCP & Skills (Skills, MCP servers with the trust preview and health dots, Instructions), Settings › Evaluation (runs with their subject's logo or the tern mark, per-suite scores with intervals and the change since the previous run, failures, and a button that runs the offline suites), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs, the providers' and search services' own coloured logos from Lobe Icons, and Settings › Appearance: theme, accent colour, font, text size, density, and reduce motion, saved in preferences) and Scout, a live mascot rig in the sidebar that reacts to the run, Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser beside the chat (tabs, an address bar that takes an address or words, back, forward, reload, and a **Page | Explanation | Side by side** toggle; the page is the real site in the system web view (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) running in its own helper process, `tern-browser`, docked over the pane, so a slow or crashing page can never freeze Tern: if the helper does not start within 5 s or stops, the pane says why, offers **Restart**, and shows Tern's reader view meanwhile ([ADR 0011](docs/decisions/0011-browser-helper-process.md)); the Explanation side shows the page as Tern Crawl reads it, or search results to open for words, and **Explain with citations** asks Tern about it; citations and source rows open there; [ADR 0010](docs/decisions/0010-browser-engine.md)), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch), and the Study harness (one Study window with a sliding Chat | Flashcards | Quiz | Viva | Explain in 3D tab bar, the composer able to switch and start a mode ("quiz me on paging"), empty states with Add material, Upload PDF, Use the last report and Paste link; its own Study chat separate from the Research chat, each harness reopening its last chat, draft and panels from a switcher at the top of the sidebar, a Start here card when no materials are added, a Study home with materials and their icons, topics with mastery rings, Tutor, Quiz, Viva, and Flashcards with the due count; a tutor chat with mode chips; a quiz card with instant feedback and a score summary; a viva screen with a timer and the rubric report; a flashcard review and deck screen; Study settings), and Explain in 3D tabs |
+| Desktop app | GPUI app for Windows (the executables carry the Tern icon; an 8 MB main-thread stack; a crash no panic hook sees, such as a stack overflow, is written with its exit code and the last action to `%LOCALAPPDATA%\Tern\data\logs\crash.log`), Linux (X11 and Wayland), and macOS: chat with streaming answers (8192 output tokens by default; an answer cut off at the length limit shows a notice with **Continue**), a labelled **Stop** and Esc while a turn runs, chats saved only once they have a first message (no empty "Chat" rows), the window reopened the way it was left (the harness, each harness's chat tabs with the one in front, the Study tab, the right panel's view, and the sidebar; a chat deleted since falls back to the last chat with messages), the last chat reopened on launch (its transcript shows at once while the model connects in the background; if the model cannot be reached the chat stays readable and you can pick another), the model changed in place without leaving the chat, chat list (reopen, rename, archive, delete, Archived chats), a **Settings** screen (Ctrl+, or the gear; sections with icons that fold to icons on narrow windows; search over every setting; Back or Esc returns: Providers with keys, server addresses, and Test; Models with the catalogue by capability and a default model per job; Tools with on/off and approvals; Decision model; Evaluation; MCP & Skills; Search & Crawler with Tern Crawl; Appearance; Study; Privacy & data; About), a first-run tour (provider, key tested live, model, search, theme; skippable, shown once, again from About), thin overlay scrollbars everywhere (a list inside a page scrolls first with the wheel or touchpad and hands on to the page at its ends), source rows with site icons, context ring, right rail with tabs Plan (Summary, Workers for deep research, Detailed, Decisions), Sources (Ledger, Raw), Report, **Graph** and Context; Graph is FIG 1 · RUN MAP, the run as a hairline isometric figure lit phase by phase (search, screen, read, synthesize, write, verify) with a readout of the phase, sources, kept pages and spend, hover for a phase's numbers and click it for its steps, and a spend-over-time chart against the budget with a crosshair tooltip), chat tabs with a **+** popover (new chat, or reopen a recent one), kept per harness and restored on launch, a Decision model page (Off, Local, or Remote; Jev, SubQ Snap, and Voyage rows with their logos and keys; a Test button), a plan card for deep research (Approve, Edit, Skip plan, Cancel), steering from the composer while a run goes, a Resume banner for a stopped run, a Watches list in the sidebar with a Watches screen showing what changed, verdict badges on cited claims, attachments (files, folders, nested `.zip`, long paste), `@` references (attachments, sources, and MCP resources, `@prompt:` / `@context:`), a `/` menu (Tern's commands, skills, and MCP prompts, every row with its logo; an inline form for a prompt's arguments; the server's text shown in the composer before anything is sent), message actions (copy, reply with a quote, branch into a new chat, `Branch ▾` for sub-sessions and background branches, ask in side chat), message IDs with multi-select and range actions (move to a sub-session or a new session, remove, confirm or undo, the chat's trash), a sidebar sub-session tree (`↳ Q12` rows, planned and running state) and a handoff action, a highlight popover on answer text, the side chat (docked or popped out with the tern mark), the Library page (Reports, Sources, Notes, Decks, Files, Explain in 3D, Sessions, All, and Trash; grid or list; `New ▾`; search, sort, bulk select, paging), project folders in the sidebar (Projects, chats, `↳` sub-sessions, the Inbox; drag to file, collapse saved), Settings › MCP & Skills (Skills, MCP servers with the trust preview and health dots, Instructions), Settings › Evaluation (runs with their subject's logo or the tern mark, per-suite scores with intervals and the change since the previous run, failures, and a button that runs the offline suites), session tabs, a responsive layout (panels float over the chat on narrow windows), the locked design (palette C Mono & Lichen, IBM Plex Sans and Mono, Instrument Serif wordmark, Tern glyphs, the providers' and search services' own coloured logos from Lobe Icons, and Settings › Appearance: theme, accent colour, font, text size, density, and reduce motion, saved in preferences) and Scout, a clay-sprite pet floating over the window that reacts to the run (Settings › Scout), Git for the vault (checkpoints, branches, pull/push, open a pull request on GitHub, baseline files, branch chip in the title bar), a built-in browser beside the chat (tabs, an address bar that takes an address or words, back, forward, reload, and a **Page | Explanation | Side by side** toggle; the page is the real site in the system web view (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) running in its own helper process, `tern-browser`, docked over the pane, so a slow or crashing page can never freeze Tern: if the helper does not start within 5 s or stops, the pane says why, offers **Restart**, and shows Tern's reader view meanwhile ([ADR 0011](docs/decisions/0011-browser-helper-process.md)); the Explanation side shows the page as Tern Crawl reads it, or search results to open for words, and **Explain with citations** asks Tern about it; citations and source rows open there; [ADR 0010](docs/decisions/0010-browser-engine.md)), the Editor and vault (Markdown notes, `[[links]]` and backlinks, autosave, Save to vault, agent vault tools), and the motion pass (working line with the moving tern mark and shimmer, sliding panels, the soft light/dark switch), and the Study harness (one Study window with a sliding Chat | Flashcards | Quiz | Viva | Explain in 3D tab bar, the composer able to switch and start a mode ("quiz me on paging"), empty states with Add material, Upload PDF, Use the last report and Paste link; its own Study chat separate from the Research chat, each harness reopening its last chat, draft and panels from a switcher at the top of the sidebar, a Start here card when no materials are added, a Study home with materials and their icons, topics with mastery rings, Tutor, Quiz, Viva, and Flashcards with the due count; a tutor chat with mode chips; a quiz card with instant feedback and a score summary; a viva screen with a timer and the rubric report; a flashcard review and deck screen; Study settings), and Explain in 3D tabs |
 
 ### Platforms
 
@@ -155,7 +214,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | 3 | Providers and the first cited answer in the TUI | Done |
 | 4 | Crawler and claim verification | Mostly done |
 | 5 | Deep research: plans, workers, checkpoints, steering | Mostly done |
-| 6 | Desktop app | In progress |
+| 6 | Desktop app | In progress (v2 polish in #58) |
 | 7 | Study harness | Mostly done |
 | 8 | Decision model | Mostly done |
 | 9 | Continuity and library | Mostly done |
@@ -163,17 +222,20 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 | 11 | Evaluation | Mostly done |
 | 12 | Linux and macOS | Mostly done |
 
+Next pull requests:
+
+| PR | Planned |
+| --- | --- |
+| #59 | Research flow v2: claim review, checkpoints in the flow, a budget card, report export, a launch splash, and the citation hover card |
+| #60 | Images, OCR and voice, and local models |
+| #61 | Video |
+| #62 to #64 | The review buffer |
+| #65 | Local RAG over your files |
+| #66 | Context, memory and cost |
+| #67 | Learning loops |
+| #68 | Packaging and the Microsoft Store |
+
 Phase detail and exit checks: [docs/04-roadmap.md](docs/04-roadmap.md).
-
-## Getting Tern
-
-Not yet released. There are no installers or packages; test builds come from CI on each pull request:
-
-| OS | Artifact | Run |
-| --- | --- | --- |
-| Windows | `tern-windows-x64` | `tern-desktop.exe` for the app, `tern.exe` in a terminal |
-| Linux | `tern-linux-x64` | `tar -xzf tern-linux-x64.tar.gz`, then `./tern-linux-x64/tern-desktop` or `./tern-linux-x64/tern` ([docs/linux.md](docs/linux.md)) |
-| macOS | `tern-macos-arm64` | Unzip, right-click `Tern.app` and choose Open the first time (unsigned); `./tern` in a terminal ([docs/macos.md](docs/macos.md)) |
 
 ## Repository layout
 
@@ -184,6 +246,7 @@ Not yet released. There are no installers or packages; test builds come from CI 
 │   └── brand/            mark (PNG and SVG), lockups, app icon, animated dither hero
 ├── crates/               the Rust workspace (12 crates, see Architecture)
 ├── docs/
+│   ├── assets/           README banner (animated WebP, GIF fallback, light variant) and screenshots
 │   ├── 00-vision.md
 │   ├── 01-product-spec.md
 │   ├── 02-ui-definition.md
@@ -217,6 +280,7 @@ Not yet released. There are no installers or packages; test builds come from CI 
 | `cargo build` | Builds the workspace |
 | `cargo test --workspace` | Runs the tests |
 | `cargo run -p tern-desktop` | Opens the desktop app |
+| `TERN_TOUR=1 cargo run -p tern-desktop` | Plays the scripted UI tour with demo data (no keys, nothing saved) |
 | `cargo run -p tern-tui -- doctor` | Checks paths, keychain, and store |
 | `cargo run -p tern-tui -- provider add groq` | Adds a provider key (hidden prompt, tested before saving) |
 | `cargo run -p tern-tui -- search add tavily` | Adds a web search key |

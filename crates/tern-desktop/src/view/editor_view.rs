@@ -14,6 +14,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px, relative};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::editor::Link;
 use crate::model::Screen;
 use crate::theme::Palette;
@@ -168,6 +169,7 @@ impl Workspace {
                     .child(div().text_xs().text_color(p.faint).child("Vault"))
                     .child(
                         Button::new("new-note")
+                            .capsule()
                             .icon(AssetIcon::FilePlus)
                             .ghost()
                             .xsmall()
@@ -232,6 +234,7 @@ impl Workspace {
                     .child(div().text_xs().text_color(p.faint).child(status))
                     .child(
                         Button::new("note-preview")
+                            .capsule()
                             .icon(AssetIcon::Eye)
                             .ghost()
                             .xsmall()

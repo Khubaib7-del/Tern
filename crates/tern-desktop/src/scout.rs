@@ -4,8 +4,11 @@
 //! follow the work, the scroll opens to read. Every movement comes from a
 //! real event; at rest Scout only breathes and blinks.
 //!
-//! GPUI-free so the motion is unit tested. The view samples [`Rig::pose`]
-//! each frame and draws it.
+//! GPUI-free so the motion is unit tested. Since PR #58 Scout is drawn as
+//! the sprite pet (`crate::pet`); the rig is kept as Scout's mood clock
+//! (busy → Done → idle, flashcard reactions), and its pose, which drew the
+//! retired vector figure, stays with its tests.
+#![allow(dead_code)]
 
 /// What Scout is doing, in priority order (the first that applies wins).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,9 +50,12 @@ impl Mood {
     }
 }
 
-/// Scout's size in the sidebar corner, in pixels (v2 draws it at 56;
-/// it was 40, which read as an icon rather than a companion).
-pub const CORNER: f32 = 64.;
+/// Scout's size in the sidebar corner, in pixels. Matched to v2 by the
+/// figure, not the box: v2 draws a 56 px SVG whose figure (hood tip to
+/// hem) spans 58 of its 64 units, about 51 px tall; Tern's rig spans 34
+/// of its 48 units, so a 72 px box gives the same 51 px figure (it was
+/// 64, a 45 px figure).
+pub const CORNER: f32 = 72.;
 
 /// The word beside Scout for its state, as v2's states are named
 /// (searching, reading, verifying, thinking, needs you, done, study).
@@ -73,32 +79,15 @@ pub const READY_SECS: f32 = 1.6;
 /// How long Scout reacts to a flashcard answer.
 pub const REACT_SECS: f32 = 0.9;
 
-/// A damped spring on one number.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Spring {
-    pub value: f32,
-    pub velocity: f32,
-}
+/// Scout's joints ride the shared closed-form spring
+/// ([`crate::motion::Spring`] on [`SpringSpec::SCOUT`]): exact for any
+/// frame gap, and a mood change mid-move keeps each joint's velocity, so
+/// Scout flows from one pose into the next instead of snapping.
+pub type Spring = crate::motion::Spring;
+use crate::motion::SpringSpec;
 
-impl Spring {
-    const STIFFNESS: f32 = 90.0;
-    const DAMPING: f32 = 9.0;
-
-    pub fn step(&mut self, target: f32, dt: f32) {
-        // Small fixed steps keep it stable when a frame comes late.
-        let mut left = dt.min(0.25);
-        while left > 0.0 {
-            let h = left.min(1.0 / 120.0);
-            let accel = Self::STIFFNESS * (target - self.value) - Self::DAMPING * self.velocity;
-            self.velocity += accel * h;
-            self.value += self.velocity * h;
-            left -= h;
-        }
-    }
-
-    pub fn settled(&self, target: f32) -> bool {
-        (self.value - target).abs() < 0.002 && self.velocity.abs() < 0.01
-    }
+fn joint() -> Spring {
+    Spring::new(0.0, SpringSpec::SCOUT)
 }
 
 /// Everything the drawing needs for one frame. Units: the rig is drawn in
@@ -111,6 +100,12 @@ pub struct Pose {
     pub raise: f32,
     /// Whether the lantern's flame is lit (searching, needs you).
     pub lit: bool,
+    /// How bright the flame is, 0 to 1: it fades up and down on a spring
+    /// rather than switching.
+    pub glow: f32,
+    /// How far Scout has turned to face you, 0 to 1 (needs you): the face
+    /// comes to the centre of the hood and the eyes look straight out.
+    pub front: f32,
     /// 1 eyes open, 0 shut.
     pub eyes_open: f32,
     /// Where the eyes look, each -1 to 1.
@@ -137,6 +132,13 @@ pub struct Rig {
     look_x: Spring,
     look_y: Spring,
     sit: Spring,
+    /// Lid height between moods (Blocked droops), the flame's glow, and
+    /// the turn to face you.
+    lid: Spring,
+    glow: Spring,
+    front: Spring,
+    /// Where the pointer is from Scout, in px, while it is near.
+    pointer: Option<(f32, f32)>,
     /// When the next blink starts, and the current one if any.
     next_blink: f32,
     blink_at: Option<f32>,
@@ -161,12 +163,16 @@ impl Rig {
             mood: Mood::Idle,
             now: 0.0,
             mood_since: 0.0,
-            lantern: Spring::default(),
-            raise: Spring::default(),
-            scroll: Spring::default(),
-            look_x: Spring::default(),
-            look_y: Spring::default(),
-            sit: Spring::default(),
+            lantern: joint(),
+            raise: joint(),
+            scroll: joint(),
+            look_x: joint(),
+            look_y: joint(),
+            sit: joint(),
+            lid: Spring::new(1.0, SpringSpec::SCOUT),
+            glow: joint(),
+            front: joint(),
+            pointer: None,
             next_blink: 0.0,
             blink_at: None,
             kick_at: None,
@@ -241,6 +247,29 @@ impl Rig {
         }
     }
 
+    /// (lid height, flame glow, turn to face you) for the mood.
+    fn extras(&self) -> (f32, f32, f32) {
+        match self.mood {
+            Mood::NeedsYou => (1.0, 1.0, 1.0),
+            Mood::Blocked => (0.35, 0.0, 0.0),
+            Mood::Searching => (1.0, 1.0, 0.0),
+            Mood::Ready => (1.0, 0.0, 0.5),
+            _ => (1.0, 0.0, 0.0),
+        }
+    }
+
+    /// Where the pointer is relative to Scout's face, in px; `None` when
+    /// it is outside the window.
+    pub fn set_pointer(&mut self, at: Option<(f32, f32)>) {
+        self.pointer = at;
+    }
+
+    /// Whether the pointer is near enough to move the eyes.
+    pub fn watching(&self) -> bool {
+        self.pointer
+            .is_some_and(|(dx, dy)| (dx * dx + dy * dy).sqrt() < 380.0)
+    }
+
     /// Advances the rig by `dt` seconds.
     pub fn step(&mut self, dt: f32) {
         self.now += dt;
@@ -279,15 +308,32 @@ impl Rig {
             Some((true, _)) => ly -= 0.4,
             None => self.reaction = None,
         }
+        // The eyes follow the pointer when it comes near: fully when Scout
+        // is idle or facing you, a little while it works (v2's corner).
+        if let Some((dx, dy)) = self.pointer {
+            let dist = (dx * dx + dy * dy).sqrt();
+            let near = (1.0 - (dist - 120.0) / 260.0).clamp(0.0, 1.0);
+            let w = match self.mood {
+                Mood::Idle | Mood::Ready | Mood::NeedsYou => near,
+                _ => near * 0.35,
+            };
+            let (px_, py_) = ((dx / 140.0).clamp(-1.0, 1.0), (dy / 140.0).clamp(-1.0, 1.0));
+            lx += (px_ - lx) * w;
+            ly += (py_ - ly) * w;
+        }
         // Moving the arm swings the lantern by itself.
-        let arm_before = self.raise.value;
-        self.raise.step(raise, dt);
-        self.lantern.velocity -= (self.raise.value - arm_before) * 6.0;
-        self.lantern.step(lantern, dt);
-        self.scroll.step(scroll, dt);
-        self.look_x.step(lx, dt);
-        self.look_y.step(ly, dt);
-        self.sit.step(sit, dt);
+        let arm_before = self.raise.value();
+        self.raise.advance(raise, dt);
+        self.lantern.kick(-(self.raise.value() - arm_before) * 6.0);
+        self.lantern.advance(lantern, dt);
+        self.scroll.advance(scroll, dt);
+        self.look_x.advance(lx, dt);
+        self.look_y.advance(ly, dt);
+        self.sit.advance(sit, dt);
+        let (lid, glow, front) = self.extras();
+        self.lid.advance(lid, dt);
+        self.glow.advance(glow, dt);
+        self.front.advance(front, dt);
 
         if let Some(b) = self.blink_at {
             if self.now - b > BLINK_SECS {
@@ -305,9 +351,8 @@ impl Rig {
                 let x = ((self.now - b) / BLINK_SECS).clamp(0.0, 1.0);
                 (2.0 * x - 1.0).abs()
             }
-            None if self.mood == Mood::Blocked => 0.35,
             None => 1.0,
-        };
+        } * self.lid.value().clamp(0.2, 1.0);
         let breath = (self.now * std::f32::consts::TAU / 4.0).sin() * 0.4;
         let nod = if self.mood == Mood::Ready {
             let t = (self.now - self.mood_since) / 0.5;
@@ -323,15 +368,17 @@ impl Rig {
             0.0
         };
         Pose {
-            lantern: self.lantern.value,
-            raise: self.raise.value.clamp(0.0, 1.2),
-            lit: matches!(self.mood, Mood::Searching | Mood::NeedsYou),
+            lantern: self.lantern.value(),
+            raise: self.raise.value().clamp(0.0, 1.2),
+            lit: self.glow.value() > 0.05,
+            glow: self.glow.value().clamp(0.0, 1.0),
+            front: self.front.value().clamp(0.0, 1.0),
             eyes_open,
-            look_x: self.look_x.value.clamp(-1.0, 1.0),
-            look_y: self.look_y.value.clamp(-1.0, 1.0),
-            scroll: self.scroll.value.clamp(0.0, 1.0),
+            look_x: self.look_x.value().clamp(-1.0, 1.0),
+            look_y: self.look_y.value().clamp(-1.0, 1.0),
+            scroll: self.scroll.value().clamp(0.0, 1.0),
             bob: breath + nod,
-            sit: self.sit.value.clamp(0.0, 1.0),
+            sit: self.sit.value().clamp(0.0, 1.0),
         }
     }
 
@@ -346,7 +393,11 @@ impl Rig {
     pub fn busy(&self) -> bool {
         let (lantern, raise, scroll, lx, ly, sit) = self.targets();
         let ambient = self.ambient();
+        let (lid, glow, front) = self.extras();
         self.reacting().is_some()
+            || !self.lid.settled(lid)
+            || !self.glow.settled(glow)
+            || !self.front.settled(front)
             || self.blink_at.is_some()
             || self.kick_at.is_some()
             || self.mood == Mood::Ready
@@ -384,14 +435,79 @@ mod tests {
 
     #[test]
     fn a_spring_settles_on_its_target() {
-        let mut s = Spring::default();
+        let mut s = joint();
         for _ in 0..240 {
-            s.step(1.0, 1.0 / 60.0);
+            s.advance(1.0, 1.0 / 60.0);
         }
         assert!(s.settled(1.0), "{s:?}");
         // A late frame does not blow it up.
-        s.step(-1.0, 5.0);
-        assert!(s.value.is_finite() && s.value.abs() < 2.0);
+        s.advance(-1.0, 5.0);
+        assert!(s.value().is_finite() && s.value().abs() < 2.0);
+    }
+
+    #[test]
+    fn moods_blend_with_no_snapping() {
+        // Every pair of moods: no joint jumps between two 60 fps frames.
+        let all = [
+            Mood::Idle,
+            Mood::Thinking,
+            Mood::Searching,
+            Mood::Reading,
+            Mood::Verifying,
+            Mood::NeedsYou,
+            Mood::Blocked,
+            Mood::Studying,
+        ];
+        for from in all {
+            for to in all {
+                let mut rig = Rig::new(11);
+                rig.set_mood(from);
+                run(&mut rig, 2.0);
+                let mut last = rig.pose();
+                rig.set_mood(to);
+                for _ in 0..90 {
+                    rig.step(1.0 / 60.0);
+                    let p = rig.pose();
+                    for (a, b, what) in [
+                        (last.raise, p.raise, "raise"),
+                        (last.scroll, p.scroll, "scroll"),
+                        (last.sit, p.sit, "sit"),
+                        (last.glow, p.glow, "glow"),
+                        (last.front, p.front, "front"),
+                    ] {
+                        assert!((a - b).abs() < 0.2, "{from:?}->{to:?} {what} {a}->{b}");
+                    }
+                    last = p;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn needing_you_turns_scout_to_face_you_with_the_lantern_up() {
+        let mut rig = Rig::new(4);
+        rig.set_mood(Mood::NeedsYou);
+        run(&mut rig, 2.0);
+        let p = rig.pose();
+        assert!(p.front > 0.95 && p.glow > 0.95 && p.raise > 0.9, "{p:?}");
+        assert!(
+            p.look_x.abs() < 0.1 && p.look_y.abs() < 0.1,
+            "looks straight out"
+        );
+        rig.set_mood(Mood::Reading);
+        run(&mut rig, 2.0);
+        assert!(rig.pose().front < 0.05 && rig.pose().glow < 0.05);
+    }
+
+    #[test]
+    fn idle_eyes_follow_a_near_pointer() {
+        let mut rig = Rig::new(8);
+        rig.set_pointer(Some((90.0, 0.0)));
+        run(&mut rig, 1.5);
+        assert!(rig.pose().look_x > 0.4, "{:?}", rig.pose());
+        rig.set_pointer(Some((-2000.0, 0.0)));
+        run(&mut rig, 1.5);
+        assert!(rig.pose().look_x.abs() < 0.05, "far away: back to rest");
     }
 
     #[test]
@@ -498,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_corner_is_bigger_and_names_each_state() {
-        const { assert!(CORNER >= 56.) };
+        const { assert!(CORNER >= 70. && CORNER <= 74.) };
         assert_eq!(state_line(Mood::Idle), None);
         assert_eq!(state_line(Mood::Ready), Some("done"));
         assert_eq!(state_line(Mood::NeedsYou), Some("needs you"));

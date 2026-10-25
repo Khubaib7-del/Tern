@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::segmented::{Look, OnPick, Segment};
 use crate::assets;
 use crate::model::Screen;
@@ -49,6 +50,7 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::Instructions => AssetIcon::NotebookPen,
         Section::Search => AssetIcon::Globe,
         Section::Appearance => AssetIcon::Palette,
+        Section::Scout => AssetIcon::PawPrint,
         Section::Study => AssetIcon::GraduationCap,
         Section::Privacy => AssetIcon::ShieldCheck,
         Section::About => AssetIcon::Info,
@@ -159,6 +161,9 @@ impl Workspace {
             self.model.settings_back = self.model.screen;
         }
         self.model.screen = Screen::Settings;
+        if s != Section::Scout {
+            self.pet_preview = None;
+        }
         self.model.settings.open(s);
     }
 
@@ -198,7 +203,11 @@ impl Workspace {
                 }
             }
             Section::Instructions => self.open_instructions(window, cx),
-            Section::Tools | Section::Study | Section::Privacy | Section::About => {
+            Section::Tools
+            | Section::Study
+            | Section::Privacy
+            | Section::About
+            | Section::Scout => {
                 self.show_settings(s);
             }
         }
@@ -218,7 +227,7 @@ impl Workspace {
         self.model.decision.editing = None;
         self.model.settings.confirm = None;
         self.model.settings.editing_url = None;
-        self.scout_preview = None;
+        self.pet_preview = None;
         if back == Screen::Chat {
             self.composer.update(cx, |c, cx| c.focus(window, cx));
         }
@@ -317,6 +326,7 @@ impl Workspace {
                     .justify_center()
                     .child(
                         Button::new(SharedString::from(format!("settings-nav-{}", s.id())))
+                            .capsule()
                             .icon(section_icon(s))
                             .ghost()
                             .small()
@@ -424,6 +434,7 @@ impl Workspace {
                     .gap_1()
                     .child(
                         Button::new("settings-back")
+                            .capsule()
                             .icon(AssetIcon::ArrowLeft)
                             .ghost()
                             .small()
@@ -476,6 +487,7 @@ impl Workspace {
             Section::Instructions => self.instructions_page(p, cx),
             Section::Search => self.search_page(p, cx),
             Section::Appearance => self.appearance_screen(p, cx),
+            Section::Scout => self.scout_page(p, cx),
             Section::Study => self.page(s, p, None, vec![self.study_settings(p, cx)]),
             Section::Privacy => self.privacy_page(p, cx),
             Section::About => self.about_page(p, cx),
@@ -524,6 +536,7 @@ impl Workspace {
                 .gap_1()
                 .children(hits.into_iter().take(8).enumerate().map(|(i, hit)| {
                     Button::new(("settings-hit-narrow", i))
+                        .capsule()
                         .label(SharedString::from(format!(
                             "{} · {}",
                             hit.label,
@@ -694,12 +707,14 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("base-url-save-{id}")))
+                            .capsule()
                             .label("Save")
                             .small()
                             .on_click(cx.listener(|this, _, _, cx| this.save_base_url(cx))),
                     )
                     .child(
                         Button::new(SharedString::from(format!("base-url-cancel-{id}")))
+                            .capsule()
                             .label("Cancel")
                             .ghost()
                             .small()
@@ -897,6 +912,7 @@ impl Workspace {
                 let open = st.role_open == Some(role);
                 let control: AnyElement = if role == Role::Decision {
                     Button::new("role-decision")
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -922,6 +938,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(SharedString::from(format!("role-{}", role.label())))
+                                .capsule()
                                 .label(if open { "Done" } else { "Change" })
                                 .ghost()
                                 .small()
@@ -962,6 +979,7 @@ impl Workspace {
             .gap_1()
             .child(
                 Button::new("group-all")
+                    .capsule()
                     .label("All")
                     .ghost()
                     .xsmall()
@@ -973,6 +991,7 @@ impl Workspace {
             )
             .children(present.into_iter().map(|g| {
                 Button::new(SharedString::from(format!("group-{}", g.label())))
+                    .capsule()
                     .label(g.label())
                     .ghost()
                     .xsmall()
@@ -994,6 +1013,7 @@ impl Workspace {
                 .child("No models listed yet. Add a provider's key, or list again.")
                 .child(
                     Button::new("catalog-refresh")
+                        .capsule()
                         .label("List models")
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1461,7 +1481,7 @@ impl Workspace {
                         .unwrap_or_else(|| "no cache folder".into())
                 )),
                 Some(
-                    Button::new("crawl-clear")
+                    Button::new("crawl-clear").capsule()
                         .label(if confirm { "Click again to clear" } else { "Clear" })
                         .ghost()
                         .small()
@@ -1534,6 +1554,7 @@ impl Workspace {
                     .unwrap_or_else(|| "Not set".into());
                 let control = path.map(|path| {
                     Button::new(("storage-open", i))
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -1548,6 +1569,7 @@ impl Workspace {
         let confirm = self.model.settings.confirm;
         let danger = |id: &'static str, label: &'static str, again: &'static str| {
             Button::new(id)
+                .capsule()
                 .label(if confirm == Some(id) { again } else { label })
                 .ghost()
                 .small()
@@ -1671,6 +1693,7 @@ impl Workspace {
                 "github.com/Khubaib7-del/Tern",
                 Some(
                     Button::new("about-github")
+                        .capsule()
                         .label("Open")
                         .ghost()
                         .small()
@@ -1684,6 +1707,7 @@ impl Workspace {
                 "Provider, key, model, search, and theme, one step each.",
                 Some(
                     Button::new("about-onboarding")
+                        .capsule()
                         .label("Run it again")
                         .small()
                         .on_click(
@@ -1701,6 +1725,7 @@ impl Workspace {
             ("Queue a message while a run goes", "Tab"),
             ("Stop", "Esc in the composer"),
             ("Maximise the right pane", "Ctrl+\\"),
+            ("Hide or show Scout", "Ctrl+.  (Cmd+. on macOS)"),
         ]
         .into_iter()
         .map(|(what, key)| {

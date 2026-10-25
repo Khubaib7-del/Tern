@@ -174,6 +174,13 @@ pub struct Preferences {
     pub system_prompts: std::collections::BTreeMap<String, String>,
     /// What the desktop app showed when it last closed.
     pub session: SessionState,
+    /// Scout, the desktop's floating pet: hidden by the user.
+    pub scout_hidden: bool,
+    /// Where Scout was left (window px of its top-left); `None` is the
+    /// bottom-left corner.
+    pub scout_pos: Option<(i32, i32)>,
+    /// Scout's look (`normal`, `study`); `None` follows the harness.
+    pub scout_variant: Option<String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -595,6 +602,9 @@ mod tests {
                 right_open: Some(true),
                 sidebar_open: Some(false),
             },
+            scout_hidden: true,
+            scout_pos: Some((40, 600)),
+            scout_variant: Some("study".into()),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

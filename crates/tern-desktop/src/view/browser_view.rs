@@ -17,6 +17,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, ClickEvent, Context, SharedString, Window, div};
 
 use super::Workspace;
+use super::press::Capsule as _;
 
 /// Tern's native window handle (an `HWND` on Windows), so the page window
 /// can be owned by it. `None` elsewhere: owning across processes is a
@@ -298,6 +299,7 @@ impl Workspace {
                     .when(!crate::webview::cannot_dock_here(), |d| {
                         d.child(
                             Button::new("web-dock")
+                                .capsule()
                                 .label("Dock it here")
                                 .xsmall()
                                 .ghost()
@@ -331,6 +333,7 @@ impl Workspace {
                     ))))
                     .child(
                         Button::new("web-restart")
+                            .capsule()
                             .icon(AssetIcon::RefreshCw)
                             .label("Restart")
                             .xsmall()
@@ -394,6 +397,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new("web-explain")
+                            .capsule()
                             .icon(AssetIcon::Sparkles)
                             .label(if search {
                                 "Explain briefly"
@@ -543,6 +547,7 @@ impl Workspace {
                     .when(many, |d| {
                         d.child(
                             Button::new(("web-tab-x", i))
+                                .capsule()
                                 .icon(AssetIcon::X)
                                 .ghost()
                                 .xsmall()
@@ -560,6 +565,7 @@ impl Workspace {
             }))
             .child(
                 Button::new("web-tab-new")
+                    .capsule()
                     .icon(AssetIcon::Plus)
                     .ghost()
                     .xsmall()
@@ -596,6 +602,7 @@ impl Workspace {
         let b = &self.model.browser;
         let nav = |id: &'static str, icon: AssetIcon, tip: &'static str, on: bool| {
             Button::new(id)
+                .capsule()
                 .icon(icon)
                 .ghost()
                 .xsmall()
@@ -701,6 +708,7 @@ impl Workspace {
             )
             .child(
                 Button::new("web-close")
+                    .capsule()
                     .icon(AssetIcon::X)
                     .ghost()
                     .xsmall()

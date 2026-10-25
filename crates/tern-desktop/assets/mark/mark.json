@@ -1,0 +1,9 @@
+{
+  "frame": [128, 102],
+  "frames": 72,
+  "fps": 30,
+  "loop": true,
+  "themes": { "dark": "mark_dark.png", "light": "mark_light.png" },
+  "still": { "dark": "mark_still_dark.png", "light": "mark_still_light.png" },
+  "source": "Animated dithered mark (wing beat, tail flick, body shiver), 72 frames at 30 fps, 1 px dither cells; drawn at its own 102 px height so the dither stays crisp"
+}

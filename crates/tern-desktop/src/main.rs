@@ -32,17 +32,21 @@ mod gauge;
 mod git;
 mod harness;
 mod layout;
+mod mark;
 mod model;
 mod motion;
 mod onboarding;
 mod panels;
+mod pet;
 mod providers;
 mod restore;
+mod rows;
 mod runmap;
 mod scout;
 mod scrollbar;
 mod settings;
 mod study;
+mod swipe;
 mod theme;
 mod timeline;
 mod toast;
@@ -59,6 +63,11 @@ pub(crate) const APP_ID: &str = "io.github.khubaib7_del.Tern";
 use view::Workspace;
 
 fn main() {
+    // The hidden UI tour (TERN_TOUR=1 or --tour) runs in a throwaway data
+    // folder: this process starts it as a child and waits.
+    if let Some(code) = view::tour::isolate() {
+        std::process::exit(code);
+    }
     // Every panic is written to <data>/logs/crash.log first.
     crashlog::install();
     // On Windows release builds this process only watches the app, run as
@@ -67,6 +76,8 @@ fn main() {
     if let Some(code) = crashlog::watch() {
         std::process::exit(code);
     }
+    // The tour's demo material, in its throwaway folder.
+    view::tour::seed();
     let (bridge, rx) = match Bridge::new() {
         Ok(b) => b,
         Err(e) => {
@@ -95,7 +106,13 @@ fn main() {
                 }
             })
             .detach();
-            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+            // The UI tour fills the screen it is recorded on.
+            let (w, h) = if view::tour::enabled() {
+                view::tour::window_size()
+            } else {
+                (1280., 820.)
+            };
+            let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(720.), px(480.))),
@@ -105,7 +122,11 @@ fn main() {
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| Workspace::new(bridge, rx, window, cx))
+                // Scout floats over the workspace in its own view; the
+                // workspace is drawn cached, so Scout's frames redraw only
+                // Scout (`view/pet_view.rs`).
+                let workspace = cx.new(|cx| Workspace::new(bridge, rx, window, cx));
+                cx.new(|cx| view::Shell::new(workspace, cx))
             });
             if let Err(e) = opened {
                 eprintln!("Tern could not open its window: {e}");

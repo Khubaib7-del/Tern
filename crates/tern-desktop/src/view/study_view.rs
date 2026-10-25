@@ -26,6 +26,7 @@ use tern_agent::study::{
 };
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::assets;
 use crate::bridge::StudyMsg;
 use crate::model::Screen;
@@ -497,7 +498,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn start_quiz(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_quiz(&mut self, cx: &mut Context<Self>) {
         let s = &mut self.model.study;
         let spec = QuizSpec {
             topic: s.quiz_topic.as_ref().map(|t| t.id.clone()),
@@ -513,7 +514,7 @@ impl Workspace {
     }
 
     /// Submits the answer on screen: the picked choice, or the typed text.
-    fn quiz_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn quiz_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let typed = self.study_inputs.answer.read(cx).value().to_string();
         let Some(run) = &mut self.model.study.quiz else {
             return;
@@ -541,7 +542,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn quiz_next(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn quiz_next(&mut self, cx: &mut Context<Self>) {
         let Some(run) = &mut self.model.study.quiz else {
             return;
         };
@@ -768,6 +769,7 @@ impl Workspace {
                     .when(tab == StudyTab::Chat, |d| {
                         d.child(
                             Button::new("study-materials")
+                                .capsule()
                                 .icon(AssetIcon::BookOpen)
                                 .label("Materials")
                                 .ghost()
@@ -879,6 +881,7 @@ impl Workspace {
                             .gap_2()
                             .child(
                                 Button::new("study-empty-files")
+                                    .capsule()
                                     .icon(AssetIcon::Plus)
                                     .label("Add material")
                                     .primary()
@@ -890,6 +893,7 @@ impl Workspace {
                             )
                             .child(
                                 Button::new("study-empty-pdf")
+                                    .capsule()
                                     .icon(AssetIcon::FileText)
                                     .label("Upload PDF")
                                     .small()
@@ -900,6 +904,7 @@ impl Workspace {
                             )
                             .child(
                                 Button::new("study-empty-report")
+                                    .capsule()
                                     .icon(AssetIcon::ScrollText)
                                     .label("Use the last report")
                                     .ghost()
@@ -925,6 +930,7 @@ impl Workspace {
                             )
                             .child(
                                 Button::new("study-empty-link")
+                                    .capsule()
                                     .icon(AssetIcon::Link)
                                     .label("Paste link")
                                     .small()
@@ -971,6 +977,7 @@ impl Workspace {
             .map(|(i, t)| {
                 let topic = t.clone();
                 Button::new(("explain-topic", i))
+                    .capsule()
                     .label(SharedString::from(t.title.clone()))
                     .small()
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1033,7 +1040,7 @@ impl Workspace {
                     })
                     .when_some(last_answer, |d, text| {
                         d.child(
-                            Button::new("explain-last-answer")
+                            Button::new("explain-last-answer").capsule()
                                 .icon(AssetIcon::Box)
                                 .label("Explain the last answer in 3D")
                                 .ghost()
@@ -1127,6 +1134,7 @@ impl Workspace {
                     .child(div().flex_1().min_w_0().child(n.clone()))
                     .child(
                         Button::new("study-notice-x")
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()
@@ -1223,7 +1231,7 @@ impl Workspace {
                     .flex()
                     .gap_1()
                     .child(
-                        Button::new("study-add")
+                        Button::new("study-add").capsule()
                             .icon(AssetIcon::Plus)
                             .label("Add files")
                             .small()
@@ -1231,7 +1239,7 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, _, cx| this.pick_study_files(cx))),
                     )
                     .child(
-                        Button::new("study-add-report")
+                        Button::new("study-add-report").capsule()
                             .icon(AssetIcon::ScrollText)
                             .label("Add last report")
                             .ghost()
@@ -1428,7 +1436,7 @@ impl Workspace {
                         .flex_wrap()
                         .gap_2()
                         .child(
-                            Button::new("study-start-add")
+                            Button::new("study-start-add").capsule()
                                 .icon(AssetIcon::Plus)
                                 .label("Add a PDF or notes")
                                 .primary()
@@ -1437,7 +1445,7 @@ impl Workspace {
                                 .on_click(cx.listener(|this, _, _, cx| this.pick_study_files(cx))),
                         )
                         .child(
-                            Button::new("study-start-report")
+                            Button::new("study-start-report").capsule()
                                 .icon(AssetIcon::ScrollText)
                                 .label("Use the last report")
                                 .small()
@@ -1449,7 +1457,7 @@ impl Workspace {
                                 })),
                         )
                         .child(
-                            Button::new("study-start-ask")
+                            Button::new("study-start-ask").capsule()
                                 .label("Ask without materials")
                                 .ghost()
                                 .small()
@@ -1510,6 +1518,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("study-rm-{}", m.id)))
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()
@@ -1533,6 +1542,7 @@ impl Workspace {
                 .child(self.section_label("Topics", p))
                 .child(
                     Button::new("study-rebuild")
+                        .capsule()
                         .icon(AssetIcon::RefreshCw)
                         .label("Rebuild topics")
                         .ghost()
@@ -1616,6 +1626,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("topic-tutor-{i}")))
+                            .capsule()
                             .label("Tutor")
                             .ghost()
                             .xsmall()
@@ -1625,6 +1636,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("topic-quiz-{i}")))
+                            .capsule()
                             .label("Quiz")
                             .ghost()
                             .xsmall()
@@ -1638,6 +1650,7 @@ impl Workspace {
                         let due_t = s.due(Some(&t.id), now);
                         let tid = t.id.clone();
                         Button::new(SharedString::from(format!("topic-cards-{i}")))
+                            .capsule()
                             .label(SharedString::from(if due_t > 0 {
                                 format!("Cards · {due_t}")
                             } else {
@@ -1667,6 +1680,7 @@ impl Workspace {
                     .child({
                         let x_t = t.clone();
                         Button::new(SharedString::from(format!("topic-3d-{i}")))
+                            .capsule()
                             .icon(AssetIcon::Cuboid)
                             .ghost()
                             .xsmall()
@@ -1755,6 +1769,7 @@ impl Workspace {
         };
         let counts = [5usize, 10, 15].map(|n| {
             Button::new(SharedString::from(format!("set-count-{n}")))
+                .capsule()
                 .label(SharedString::from(n.to_string()))
                 .ghost()
                 .xsmall()
@@ -1767,6 +1782,7 @@ impl Workspace {
         });
         let diffs = [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard].map(|d| {
             Button::new(SharedString::from(format!("set-diff-{}", d.label())))
+                .capsule()
                 .label(d.label())
                 .ghost()
                 .xsmall()
@@ -1779,6 +1795,7 @@ impl Workspace {
         });
         let vivas = [4usize, 6, 8].map(|n| {
             Button::new(SharedString::from(format!("set-viva-{n}")))
+                .capsule()
                 .label(SharedString::from(n.to_string()))
                 .ghost()
                 .xsmall()
@@ -1798,6 +1815,7 @@ impl Workspace {
             .child(
                 row("Use the model (off: offline study from your materials only)").child(
                     Button::new("set-offline")
+                        .capsule()
                         .label(if offline { "Off" } else { "On" })
                         .ghost()
                         .xsmall()
@@ -1830,6 +1848,7 @@ impl Workspace {
         };
         let chips = TutorMode::ALL.map(|m| {
             Button::new(SharedString::from(format!("tutor-mode-{}", m.label())))
+                .capsule()
                 .label(m.label())
                 .ghost()
                 .small()
@@ -1907,6 +1926,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("tutor-send")
+                        .capsule()
                         .icon(AssetIcon::ArrowUp)
                         .small()
                         .disabled(s.tutor_waiting)
@@ -1968,6 +1988,7 @@ impl Workspace {
             // Setup.
             let counts = [5usize, 10, 15].map(|n| {
                 Button::new(SharedString::from(format!("quiz-count-{n}")))
+                    .capsule()
                     .label(SharedString::from(format!("{n} questions")))
                     .ghost()
                     .small()
@@ -1979,6 +2000,7 @@ impl Workspace {
             });
             let diffs = [Difficulty::Easy, Difficulty::Medium, Difficulty::Hard].map(|d| {
                 Button::new(SharedString::from(format!("quiz-diff-{}", d.label())))
+                    .capsule()
                     .label(d.label())
                     .ghost()
                     .small()
@@ -1998,7 +2020,7 @@ impl Workspace {
                         .child(div().flex().gap_1().children(diffs))
                         .child(
                             div().pt_2().child(
-                                Button::new("quiz-start")
+                                Button::new("quiz-start").capsule()
                                     .icon(AssetIcon::Play)
                                     .label("Start quiz")
                                     .small()
@@ -2075,12 +2097,18 @@ impl Workspace {
                             .when(reveal && is_answer, |d| {
                                 d.child(glyph("verdict-supported", 14., p.accent))
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                // One click picks and grades (v2 s14).
+                                let mut submit = false;
                                 if let Some(run) = &mut this.model.study.quiz
                                     && run.graded().is_none()
                                     && !run.grading
                                 {
                                     run.picked = Some(value.clone());
+                                    submit = true;
+                                }
+                                if submit {
+                                    this.quiz_submit(window, cx);
                                 }
                                 cx.notify();
                             })),
@@ -2101,11 +2129,27 @@ impl Workspace {
                 }
             }
         }
+        let one_click = matches!(
+            q.kind,
+            QuestionKind::MultipleChoice | QuestionKind::TrueFalse
+        );
         match graded {
+            None if one_click => {
+                if run.grading {
+                    card = card.child(
+                        div()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child("Checking…"),
+                    );
+                }
+            }
             None => {
                 card = card.child(
                     div().pt_1().flex().items_center().gap_2().child(
                         Button::new("quiz-submit")
+                            .capsule()
                             .label(if run.grading {
                                 "Checking…"
                             } else {
@@ -2154,6 +2198,7 @@ impl Workspace {
                     .child(
                         div().pt_1().child(
                             Button::new("quiz-next")
+                                .capsule()
                                 .label(if run.is_last() {
                                     "See score"
                                 } else {
@@ -2165,8 +2210,148 @@ impl Workspace {
                     );
             }
         }
+        // The progress bar: answered questions, on a spring.
+        let answered = run.index as f32 + if graded.is_some() { 1. } else { 0. };
+        let frac = self.glide("quiz-progress", answered / run.total().max(1) as f32);
+        col = col.child(
+            div()
+                .h(px(4.))
+                .w_full()
+                .rounded_full()
+                .bg(p.hover)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .h_full()
+                        .w(gpui_kit::relative(frac.clamp(0., 1.)))
+                        .rounded_full()
+                        .bg(p.accent),
+                ),
+        );
         col = col.child(card);
         col.into_any_element()
+    }
+
+    /// The Study right rail (v2 s14): decks, what is due today, recall,
+    /// and the three ways in. Replaces the run panel while Study shows.
+    pub(super) fn study_rail(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let s = &self.model.study;
+        let now_i = tern_agent::study::now();
+        let stats = s.deck.stats(now_i, s.offset);
+        let stat = |label: &'static str, value: String| {
+            div()
+                .flex()
+                .justify_between()
+                .py_1()
+                .text_sm()
+                .child(div().text_color(p.muted).child(label))
+                .child(div().text_color(p.text).child(SharedString::from(value)))
+        };
+        let quizzes = &s.library.quizzes;
+        let recall = if quizzes.is_empty() {
+            "—".to_owned()
+        } else {
+            let pct: f32 = quizzes
+                .iter()
+                .rev()
+                .take(5)
+                .map(|q| 100. * q.score / q.total.max(1) as f32)
+                .sum::<f32>()
+                / quizzes.iter().rev().take(5).count() as f32;
+            format!("{pct:.0}%")
+        };
+        let topics: Vec<AnyElement> = s
+            .library
+            .topics
+            .iter()
+            .take(8)
+            .map(|t| {
+                let due = s.due(Some(t.id.as_str()), now_i);
+                let id = t.id.clone();
+                div()
+                    .id(SharedString::from(format!("rail-deck-{}", t.id)))
+                    .flex()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .text_sm()
+                    .child(div().truncate().text_color(p.text).child(t.title.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if due > 0 { p.accent } else { p.faint })
+                            .child(SharedString::from(format!("{due} due"))),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.start_review(Some(id.clone()), window, cx)
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .id("study-rail")
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_4()
+            .bg(p.warm.opacity(0.06))
+            .child(serif("Study", p).text_lg())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(stat("Due today", stats.due_today.to_string()))
+                    .child(stat("Reviewed today", stats.reviewed_today.to_string()))
+                    .child(stat("Cards", stats.total.to_string()))
+                    .child(stat("Recall (last quizzes)", recall)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        self.press(
+                            "rail-review",
+                            Button::new("rail-review")
+                                .capsule()
+                                .label("Review due")
+                                .small()
+                                .primary()
+                                .disabled(stats.due_today == 0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_review(None, window, cx)
+                                })),
+                        ),
+                    )
+                    .child(
+                        self.press(
+                            "rail-quiz",
+                            Button::new("rail-quiz")
+                                .capsule()
+                                .label("Quiz")
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.study.view = StudyView::Quiz;
+                                    cx.notify();
+                                })),
+                        ),
+                    ),
+            )
+            .child(div().text_xs().text_color(p.faint).child("Decks"))
+            .children(topics)
+            .children(s.busy.as_ref().map(|b| {
+                div()
+                    .text_xs()
+                    .text_color(p.muted)
+                    .child(SharedString::from(b.clone()))
+            }))
+            .into_any_element()
     }
 
     fn quiz_summary(
@@ -2252,6 +2437,7 @@ impl Workspace {
                 .gap_2()
                 .child(
                     Button::new("quiz-again")
+                        .capsule()
                         .icon(AssetIcon::RefreshCw)
                         .label("New quiz")
                         .small()
@@ -2259,6 +2445,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("quiz-home")
+                        .capsule()
                         .label("Back to Study")
                         .ghost()
                         .small()
@@ -2287,7 +2474,7 @@ impl Workspace {
                         .child(Input::new(&self.study_inputs.title).small())
                         .child(
                             div().pt_2().child(
-                                Button::new("viva-start")
+                                Button::new("viva-start").capsule()
                                     .icon(AssetIcon::Mic)
                                     .label("Start viva")
                                     .small()
@@ -2387,6 +2574,7 @@ impl Workspace {
                             .gap_2()
                             .child(
                                 Button::new("viva-send")
+                                    .capsule()
                                     .label("Answer")
                                     .small()
                                     .disabled(run.thinking)
@@ -2396,6 +2584,7 @@ impl Workspace {
                             )
                             .child(
                                 Button::new("viva-end")
+                                    .capsule()
                                     .label("End and score")
                                     .ghost()
                                     .small()
@@ -2498,6 +2687,7 @@ impl Workspace {
                 .gap_2()
                 .child(
                     Button::new("viva-again")
+                        .capsule()
                         .icon(AssetIcon::RefreshCw)
                         .label("Another viva")
                         .small()
@@ -2508,6 +2698,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("viva-home")
+                        .capsule()
                         .label("Back to Study")
                         .ghost()
                         .small()

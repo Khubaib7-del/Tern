@@ -78,7 +78,7 @@ pub fn parse_study_tab(s: &str) -> Option<StudyTab> {
     .find(|t| study_tab_key(*t) == s)
 }
 
-const RUN_VIEWS: [RunView; 8] = [
+const RUN_VIEWS: [RunView; 9] = [
     RunView::Summary,
     RunView::Detailed,
     RunView::Raw,
@@ -87,6 +87,7 @@ const RUN_VIEWS: [RunView; 8] = [
     RunView::Ledger,
     RunView::Decisions,
     RunView::Graph,
+    RunView::Context,
 ];
 
 pub fn run_view_key(v: RunView) -> &'static str {
@@ -99,6 +100,7 @@ pub fn run_view_key(v: RunView) -> &'static str {
         RunView::Ledger => "ledger",
         RunView::Decisions => "decisions",
         RunView::Graph => "graph",
+        RunView::Context => "context",
     }
 }
 

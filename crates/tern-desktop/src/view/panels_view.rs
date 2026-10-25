@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_core::SessionId;
 
+use super::press::Capsule as _;
 use super::{RAIL_W, Workspace};
 use crate::model::Screen;
 use crate::panels::{self, ArchiveTab, Edge, Focus};
@@ -128,6 +129,7 @@ impl Workspace {
         };
         Some(
             Button::new("maximise-right")
+                .capsule()
                 .icon(icon)
                 .ghost()
                 .small()
@@ -173,8 +175,10 @@ impl Workspace {
                 .pr_1()
                 .text_sm()
                 .cursor_pointer()
+                .relative()
                 .border_b_2()
-                .border_color(if on { p.accent } else { p.canvas.opacity(0.) })
+                .border_color(p.canvas.opacity(0.))
+                .child(self.measure("tabs", i))
                 .text_color(if on { p.text } else { p.muted })
                 .when(!on, |d| d.hover(move |d| d.text_color(p.text)))
                 .when(busy && !on, |d| d.opacity(0.5))
@@ -190,6 +194,7 @@ impl Workspace {
                         .group_hover("tab", |d| d.opacity(1.))
                         .child(
                             Button::new(("close-tab", i))
+                                .capsule()
                                 .icon(IconName::Close)
                                 .ghost()
                                 .xsmall()
@@ -292,12 +297,22 @@ impl Workspace {
                 .border_color(p.border)
                 .child(
                     div()
+                        .relative()
                         .flex()
                         .items_end()
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .children(shown_tabs),
+                        .child(self.measure("tabs", usize::MAX))
+                        .children(shown_tabs)
+                        // One underline that springs between tabs.
+                        .children(self.underline(
+                            "tabs",
+                            "tabs-underline-x",
+                            "tabs-underline-w",
+                            shown.contains(&active).then_some(active),
+                            p.accent,
+                        )),
                 )
                 .children(more)
                 .child(
@@ -306,6 +321,7 @@ impl Workspace {
                         .pb(px(3.))
                         .child(
                             Button::new("add-tab")
+                                .capsule()
                                 .icon(IconName::Plus)
                                 .ghost()
                                 .xsmall()
@@ -668,7 +684,7 @@ impl Workspace {
                         .justify_end()
                         .gap_1()
                         .child(
-                            Button::new(("row-del-cancel", ix))
+                            Button::new(("row-del-cancel", ix)).capsule()
                                 .label("Cancel")
                                 .ghost()
                                 .xsmall()
@@ -679,7 +695,7 @@ impl Workspace {
                                 })),
                         )
                         .child(
-                            Button::new(("row-del-ok", ix))
+                            Button::new(("row-del-ok", ix)).capsule()
                                 .label("Delete")
                                 .danger()
                                 .xsmall()
@@ -776,6 +792,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         Button::new(("row-menu", ix))
+            .capsule()
             .icon(AssetIcon::Ellipsis)
             .ghost()
             .xsmall()
@@ -842,7 +859,7 @@ impl Workspace {
                     ),
             )
             .child(
-                Button::new("archived-back")
+                Button::new("archived-back").capsule()
                     .icon(AssetIcon::ArrowLeft)
                     .label("Back to chat")
                     .ghost()
@@ -892,6 +909,7 @@ impl Workspace {
                         .child("Delete every chat in the trash for good?")
                         .child(
                             Button::new("empty-cancel")
+                                .capsule()
                                 .label("Cancel")
                                 .ghost()
                                 .xsmall()
@@ -902,6 +920,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("empty-ok")
+                                .capsule()
                                 .label("Empty trash")
                                 .danger()
                                 .xsmall()
@@ -915,6 +934,7 @@ impl Workspace {
                         .into_any_element()
                 } else {
                     Button::new("empty-trash")
+                        .capsule()
                         .icon(AssetIcon::Trash)
                         .label("Empty trash")
                         .ghost()
@@ -958,6 +978,7 @@ impl Workspace {
                         .child("Delete for good?")
                         .child(
                             Button::new(("erase-cancel", ix))
+                                .capsule()
                                 .label("Cancel")
                                 .ghost()
                                 .xsmall()
@@ -968,6 +989,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(("erase-ok", ix))
+                                .capsule()
                                 .label("Delete")
                                 .danger()
                                 .xsmall()
@@ -984,6 +1006,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new(("restore", ix))
+                                .capsule()
                                 .icon(AssetIcon::ArchiveRestore)
                                 .label("Restore")
                                 .ghost()
@@ -996,6 +1019,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(("erase", ix))
+                                .capsule()
                                 .icon(AssetIcon::Trash)
                                 .label("Delete for good")
                                 .ghost()
@@ -1012,6 +1036,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new(("unarchive", ix))
+                                .capsule()
                                 .icon(AssetIcon::ArchiveRestore)
                                 .label("Unarchive")
                                 .ghost()
@@ -1024,6 +1049,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new(("archived-delete", ix))
+                                .capsule()
                                 .icon(AssetIcon::Trash)
                                 .label("Delete")
                                 .ghost()

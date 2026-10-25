@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::assets;
 use crate::bridge::{Bridge, Msg};
+use press::Capsule as _;
 mod appearance_view;
 mod browser_view;
 mod cards_view;
@@ -44,7 +45,10 @@ mod frame;
 mod git_view;
 mod library_view;
 mod onboarding_view;
+mod palette_view;
 mod panels_view;
+mod pet_view;
+mod press;
 mod runmap_view;
 mod runs_view;
 mod scout_view;
@@ -54,16 +58,24 @@ mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
+pub(crate) mod tour;
+pub use pet_view::Shell;
 
 use crate::layout::{Layout, Tab, Tabs};
 use crate::model::{
-    Activity, Connection, Entry, Model, Phase, Pick, RunView, Screen, SiteIcon, WorkingLine,
+    Activity, Connection, Entry, Model, Phase, Pick, RailTab, RunView, Screen, SiteIcon,
+    WorkingLine,
 };
 use crate::motion::{self, Slide, ThemeWipe};
 use crate::providers::{Kind, Models, Note, ServiceRow};
 use crate::theme::Palette;
 
+/// Rail icons that can carry the active marker (Chats, Library, Editor,
+/// Browser, Git, Settings).
+const RAIL_SLOTS: usize = 6;
 pub(crate) const RAIL_W: f32 = 52.;
+/// The right rail's width while it shows the run map.
+const GRAPH_W: f32 = 440.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
 pub const NO_VOICE_MODEL: &str = "No voice model available — add Groq, OpenAI or Mistral";
@@ -125,13 +137,50 @@ pub struct Workspace {
     sidebar_slide: Slide,
     panel_slide: Slide,
     wipe: Option<ThemeWipe>,
-    /// Scout's rig, when it was last stepped, the last beat it saw, the
-    /// wake-up for its next blink, and a mood picked on Appearance.
+    /// Scout's rig (its mood clock), when it was last stepped, and the
+    /// last beat it saw.
     scout: crate::scout::Rig,
     scout_at: Option<Instant>,
     scout_beat: usize,
-    scout_wake: Option<Task<()>>,
-    scout_preview: Option<crate::scout::Mood>,
+    /// Scout's sprites (`crate::pet`), the state picked on Settings ›
+    /// Scout (or by the tour), the preview's own clock, and whether Scout
+    /// is hidden and which trim it wears (`None` follows the harness).
+    pet_manifest: std::rc::Rc<crate::pet::Manifest>,
+    pet_preview: Option<crate::pet::State>,
+    pet_preview_anim: std::cell::RefCell<crate::pet::Animator>,
+    scout_hidden: bool,
+    scout_variant: Option<String>,
+    /// The flashcard stack's swipe (`crate::swipe`).
+    card_swipe: std::cell::RefCell<crate::swipe::Swipe>,
+    /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
+    presses: press::Presses,
+    /// The empty state's mark (`crate::mark`), and when it started playing.
+    mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
+    mark_since: Instant,
+    /// The harness the empty-state mark last played for.
+    mark_harness: tern_agent::Harness,
+    /// Wakes Settings › Scout's preview or the empty state's mark for its
+    /// next strip frame.
+    pet_preview_wake: Option<Task<()>>,
+    /// The approved plan's step count and its fold spring.
+    plan_folded: Option<(usize, crate::motion::Spring)>,
+    /// Rows that have grown in already, per list (`view/segmented.rs`).
+    grown: std::cell::RefCell<segmented::Grown>,
+    /// Each toast's spring, by toast id.
+    toast_springs: std::cell::RefCell<std::collections::HashMap<u64, crate::motion::Presence>>,
+    /// The window's height this frame, for placing overlays.
+    window_h: f32,
+    /// This view's own id, for measuring canvases that ask for a frame
+    /// when what they measured moved (`view/frame.rs`).
+    view_id: gpui_kit::EntityId,
+    /// Where measured elements (tabs, rail tabs) were laid out last frame,
+    /// by (group, index), for sliding underlines (`view/segmented.rs`).
+    measured: Measured,
+    /// Where each rail icon and the rail itself were laid out last frame
+    /// (window coordinates), for the sliding active marker.
+    rail_slots: std::rc::Rc<
+        std::cell::RefCell<[Option<gpui_kit::Bounds<gpui_kit::Pixels>>; RAIL_SLOTS + 1]>,
+    >,
     reduced_motion: bool,
     /// The Appearance choices, applied and saved on each click.
     look: crate::appearance::Appearance,
@@ -229,6 +278,10 @@ pub struct Workspace {
     /// The timeline tick under the pointer, and a smooth scroll in flight
     /// (from, to, started).
     rail_hover: Option<usize>,
+    /// The rail already opened by itself for the run under way.
+    rail_auto: bool,
+    /// The Ctrl+K command palette, while open.
+    cmdk: Option<palette_view::CmdK>,
     rail_scroll: Option<(f32, f32, Instant)>,
     /// A chat that was shown but whose model could not be reached: picking
     /// a model reopens it instead of starting a new chat.
@@ -245,8 +298,17 @@ pub struct Workspace {
     onboarding: Option<crate::onboarding::Onboarding>,
     /// Whether the tour was considered at launch (once per run).
     onboarding_checked: bool,
+    /// The scripted UI tour, when `TERN_TOUR` is set (`view::tour`).
+    tour: Option<tour::Tour>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Measured bounds by (group, index), shared with paint-time canvases.
+type Measured = std::rc::Rc<
+    std::cell::RefCell<
+        std::collections::HashMap<(&'static str, usize), gpui_kit::Bounds<gpui_kit::Pixels>>,
+    >,
+>;
 
 impl std::fmt::Debug for Workspace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -500,15 +562,31 @@ impl Workspace {
             bridge.cards_load();
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
-        Self {
+        let mut this = Self {
             sidebar_slide: Slide::new(sidebar_open),
             panel_slide: Slide::new(panel_open),
             wipe: None,
             scout: crate::scout::Rig::default(),
             scout_at: None,
             scout_beat: 0,
-            scout_wake: None,
-            scout_preview: None,
+            pet_manifest: std::rc::Rc::new(crate::pet::Manifest::embedded()),
+            pet_preview: None,
+            pet_preview_anim: std::cell::RefCell::new(crate::pet::Animator::new(Instant::now())),
+            scout_hidden: tern_agent::Preferences::load().scout_hidden,
+            scout_variant: tern_agent::Preferences::load().scout_variant,
+            pet_preview_wake: None,
+            mark_anim: std::rc::Rc::new(crate::mark::MarkAnim::embedded()),
+            mark_since: Instant::now(),
+            mark_harness: tern_agent::Harness::Research,
+            presses: Default::default(),
+            card_swipe: Default::default(),
+            rail_slots: Default::default(),
+            measured: Default::default(),
+            view_id: cx.entity_id(),
+            toast_springs: Default::default(),
+            grown: Default::default(),
+            plan_folded: None,
+            window_h: 0.,
             reduced_motion: tern_agent::Preferences::load().wants_reduced_motion(),
             look,
             model,
@@ -588,6 +666,8 @@ impl Workspace {
             dictation_task: None,
             toast_wake: None,
             rail_hover: None,
+            rail_auto: false,
+            cmdk: None,
             rail_scroll: None,
             resume_retry: None,
             rail_base: Default::default(),
@@ -595,6 +675,7 @@ impl Workspace {
             setup_inputs,
             onboarding: None,
             onboarding_checked: false,
+            tour: tour::enabled().then(tour::Tour::new),
             _subscriptions: {
                 let mut subs = vec![
                     picker_sub,
@@ -612,10 +693,17 @@ impl Workspace {
                 subs.extend(settings_subs);
                 subs
             },
+        };
+        if this.tour.is_some() {
+            this.start_tour(window, cx);
         }
+        this
     }
 
     fn on_msg(&mut self, msg: Msg, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tour_drops(&msg) {
+            return;
+        }
         match msg {
             Msg::Connected(s, recent) => {
                 self.model.connected(Connection {
@@ -2255,6 +2343,7 @@ impl Workspace {
                         .child(
                             div().occlude().child(
                                 Button::new("toggle-sidebar")
+                                    .capsule()
                                     .icon(IconName::PanelLeft)
                                     .ghost()
                                     .small()
@@ -2277,6 +2366,7 @@ impl Workspace {
                         .occlude()
                         .child(
                             Button::new("toggle-theme")
+                                .capsule()
                                 .icon(if self.model.dark {
                                     IconName::Sun
                                 } else {
@@ -2293,6 +2383,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("toggle-run")
+                                .capsule()
                                 .icon(IconName::PanelRight)
                                 .ghost()
                                 .small()
@@ -2315,6 +2406,33 @@ impl Workspace {
     /// The left rail: tight groups of icons 4 px apart with a short rule
     /// between groups (chats, work surfaces, tools), settings at the foot.
     fn rail(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let slots = self.rail_slots.clone();
+        let view = self.view_id;
+        // Records where slot `i` was laid out (the rail itself is the last
+        // slot), so the marker knows where to slide next frame.
+        let measured = move |i: usize, el: AnyElement| -> AnyElement {
+            let slots = slots.clone();
+            div()
+                .relative()
+                .flex_none()
+                .child(el)
+                .child(
+                    gpui_kit::canvas(
+                        move |b, window, _| {
+                            if let Some(s) = slots.borrow_mut().get_mut(i)
+                                && s.replace(b) != Some(b)
+                            {
+                                frame::next_frame_for(window, view);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element()
+        };
+        let marker = self.rail_marker(p);
         let rule = || {
             div()
                 .w(px(18.))
@@ -2324,6 +2442,7 @@ impl Workspace {
                 .flex_none()
         };
         div()
+            .relative()
             .w(px(RAIL_W))
             .h_full()
             .flex()
@@ -2332,27 +2451,48 @@ impl Workspace {
             .gap(px(crate::layout::RAIL_GAP))
             .py_2()
             .bg(p.rail)
+            .child({
+                let slots = self.rail_slots.clone();
+                let view = self.view_id;
+                gpui_kit::canvas(
+                    move |b, window, _| {
+                        if slots.borrow_mut()[RAIL_SLOTS].replace(b) != Some(b) {
+                            frame::next_frame_for(window, view);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0()
+            })
+            .children(marker)
             .border_r_1()
             .border_color(p.border)
             .child(
                 Button::new("rail-new")
+                    .capsule()
                     .icon(IconName::Plus)
                     .ghost()
                     .tooltip("New chat")
                     .on_click(cx.listener(|this, _, window, cx| this.new_chat(window, cx))),
             )
-            .child(
+            .child(measured(
+                0,
                 Button::new("rail-chats")
+                    .capsule()
                     .icon(IconName::Inbox)
                     .ghost()
                     .tooltip("Chats")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.model.sidebar_open = !this.model.sidebar_open;
                         cx.notify();
-                    })),
-            )
-            .child(
+                    }))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                1,
                 Button::new("rail-library")
+                    .capsule()
                     .icon(AssetIcon::Library)
                     .ghost()
                     .when(self.model.screen == Screen::Library, |b| b.selected(true))
@@ -2363,11 +2503,14 @@ impl Workspace {
                         } else {
                             this.open_library(cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
             .child(rule())
-            .child(
+            .child(measured(
+                2,
                 Button::new("rail-editor")
+                    .capsule()
                     .icon(IconName::FileText)
                     .ghost()
                     .when(self.model.screen == Screen::Editor, |b| b.selected(true))
@@ -2378,10 +2521,13 @@ impl Workspace {
                         } else {
                             this.open_editor(window, cx);
                         }
-                    })),
-            )
-            .child(
+                    }))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                3,
                 Button::new("rail-browser")
+                    .capsule()
                     .icon(IconName::Globe)
                     .ghost()
                     .when(
@@ -2389,10 +2535,13 @@ impl Workspace {
                         |b| b.selected(true),
                     )
                     .tooltip("Browser")
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx))),
-            )
-            .child(
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_browser(window, cx)))
+                    .into_any_element(),
+            ))
+            .child(measured(
+                4,
                 Button::new("rail-git")
+                    .capsule()
                     .icon(AssetIcon::GitBranch)
                     .ghost()
                     .when(self.model.screen == Screen::Git, |b| b.selected(true))
@@ -2403,11 +2552,14 @@ impl Workspace {
                         } else {
                             this.open_git(window, cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
             .child(div().flex_1())
-            .child(
+            .child(measured(
+                5,
                 Button::new("rail-settings")
+                    .capsule()
                     .icon(IconName::Settings)
                     .ghost()
                     .when(self.model.screen == Screen::Settings, |b| b.selected(true))
@@ -2419,8 +2571,46 @@ impl Workspace {
                             let s = this.model.settings.section;
                             this.open_settings(s, window, cx);
                         }
-                    })),
-            )
+                    }))
+                    .into_any_element(),
+            ))
+    }
+
+    /// Which rail icon stands for the screen showing (v2's ribbon bar).
+    fn rail_active(&self) -> Option<usize> {
+        match self.model.screen {
+            Screen::Settings => Some(5),
+            Screen::Git => Some(4),
+            Screen::Editor => Some(2),
+            Screen::Library => Some(1),
+            _ if self.model.browser.visible && self.model.run_panel_open => Some(3),
+            Screen::Chat | Screen::Watches | Screen::Archived | Screen::Study => Some(0),
+        }
+    }
+
+    /// The 2 px bar on the active icon's left edge. One bar for the whole
+    /// rail: it springs from icon to icon (`motion::Glide`), even down to
+    /// Settings at the foot.
+    fn rail_marker(&self, p: Palette) -> Option<AnyElement> {
+        let i = self.rail_active()?;
+        let slots = self.rail_slots.borrow();
+        let rail = slots[RAIL_SLOTS]?;
+        let slot = slots[i]?;
+        let h = f32::from(slot.size.height) * 0.56;
+        let target =
+            f32::from(slot.origin.y - rail.origin.y) + (f32::from(slot.size.height) - h) / 2.;
+        let y = self.glide("rail-marker", target);
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(y))
+                .w(px(2.))
+                .h(px(h))
+                .rounded_r(px(1.))
+                .bg(p.accent)
+                .into_any_element(),
+        )
     }
 
     /// The lockup: the mark, TERN, and the harness in italic serif.
@@ -2460,6 +2650,8 @@ impl Workspace {
         let sub = s.parent.is_some();
         let planned = s.plan.is_some();
         let running = self.model.cont.background.contains(&id);
+        let needs_you = current && self.model.scout_mood() == crate::scout::Mood::NeedsYou;
+        let age = crate::rows::age_label(&s.created_at, crate::rows::now_secs());
         if self.renaming == Some(id) {
             return div()
                 .id(("chat", ix))
@@ -2528,9 +2720,27 @@ impl Workspace {
                     .child(SharedString::from(s.title.clone())),
             )
             .when(running, |d| d.child(Spinner::new().xsmall()))
+            // v2's one mark: ◆ when this chat is waiting on you.
+            .when(needs_you, |d| {
+                d.child(div().flex_none().text_xs().text_color(p.accent).child("◆"))
+            })
+            // The age, quiet, on the right; it gives way to the menu on
+            // hover.
+            .when(!running && !needs_you, |d| {
+                d.children(age.map(|a| {
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .font_family(crate::assets::MONO_FONT)
+                        .text_color(p.faint)
+                        .group_hover("chat-row", |d| d.opacity(0.))
+                        .child(SharedString::from(a))
+                }))
+            })
             .when(planned && !running, |d| {
                 d.child(
                     Button::new(("run-sub", ix))
+                        .capsule()
                         .icon(AssetIcon::Play)
                         .ghost()
                         .xsmall()
@@ -2552,7 +2762,8 @@ impl Workspace {
                     .child(self.row_menu_button(ix, id, cx)),
             )
             .into_any_element();
-        self.with_row_menu(row, ix, id, sub, p, cx)
+        let row = self.with_row_menu(row, ix, id, sub, p, cx);
+        self.grow_in("chat-rows", id.to_string(), row)
     }
 
     /// The harness switcher at the top of the sidebar: the harness's name
@@ -2724,7 +2935,6 @@ impl Workspace {
             )
             .children(self.watches_section(p, cx))
             .child(self.archived_link(p, cx))
-            .child(self.scout_corner(p))
     }
 
     fn entry(&self, i: usize, e: &Entry, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -2964,6 +3174,7 @@ impl Workspace {
                 )
                 .child(
                     Button::new("cancel-reply")
+                        .capsule()
                         .icon(IconName::Close)
                         .ghost()
                         .xsmall()
@@ -3012,6 +3223,7 @@ impl Workspace {
                         .gap_2()
                         .child(
                             Button::new("allow-once")
+                                .capsule()
                                 .label("Allow once")
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -3020,15 +3232,23 @@ impl Workspace {
                         )
                         .child(
                             Button::new("allow-session")
+                                .capsule()
                                 .label("Allow for this chat")
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.answer(ApprovalAnswer::AllowForSession, cx)
                                 })),
                         )
-                        .child(Button::new("deny").label("Deny").ghost().small().on_click(
-                            cx.listener(|this, _, _, cx| this.answer(ApprovalAnswer::Deny, cx)),
-                        )),
+                        .child(
+                            Button::new("deny")
+                                .capsule()
+                                .label("Deny")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.answer(ApprovalAnswer::Deny, cx)
+                                })),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -3045,27 +3265,64 @@ impl Workspace {
             ),
             Phase::Offline(reason) => ("Tern could not open a model", reason.clone()),
             _ if self.model.harness == tern_agent::Harness::Study => (
-                "What are we studying?",
-                "Ask Tern to explain, quiz, or test you. This chat is kept apart from Research."
+                "Start a study session",
+                "Learn from your notes: Tern explains, quizzes and tests you, kept apart from Research."
                     .into(),
             ),
             _ => (
-                "What are we researching?",
+                "Start a research session",
                 match self.model.connection.as_ref().and_then(|c| c.search.as_deref()) {
-                    Some(s) => format!("Ask a question. Tern searches with {s}, reads, and cites."),
+                    Some(s) => format!(
+                        "Ask a question. Tern plans, searches with {s}, reads, and cites every claim."
+                    ),
                     None => "Ask a question. Web search is off, so answers come from the model alone."
                         .into(),
                 },
             ),
+        };
+        let ready = !offline && !matches!(self.model.phase, Phase::Connecting);
+        let study = self.model.harness == tern_agent::Harness::Study;
+        let chips: Vec<AnyElement> = if ready {
+            crate::mark::suggestions(study)
+                .iter()
+                .enumerate()
+                .map(|(i, &(label, prompt))| {
+                    let id = SharedString::from(format!("suggest-{i}"));
+                    let chip = div()
+                        .id(id.clone())
+                        .px_3()
+                        .py_1()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(p.border)
+                        .text_sm()
+                        .text_color(p.muted)
+                        .cursor_pointer()
+                        .hover(|d| d.bg(p.hover).text_color(p.text))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.composer.update(cx, |c, cx| {
+                                c.set_value(prompt.to_owned(), window, cx);
+                                c.focus(window, cx);
+                            });
+                            cx.notify();
+                        }));
+                    self.press(id, chip).into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
         div()
             .flex()
             .flex_col()
             .items_center()
             .gap_2()
-            .pt(px(140.))
+            .pt(px(110.))
+            .child(self.empty_mark(p, cx))
             .child(
                 div()
+                    .pt_2()
                     .text_xl()
                     .font_weight(FontWeight::MEDIUM)
                     .child(headline),
@@ -3078,16 +3335,63 @@ impl Workspace {
                     .text_center()
                     .child(detail),
             )
+            .when(!chips.is_empty(), |d| {
+                d.child(
+                    div()
+                        .pt_3()
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap_2()
+                        .children(chips),
+                )
+            })
             .when(offline, |d| {
                 d.child(
                     div().pt_2().child(
                         Button::new("open-providers")
+                            .capsule()
                             .label("Set up a provider")
                             .small()
                             .on_click(cx.listener(|this, _, _, cx| this.open_providers(cx))),
                     ),
                 )
             })
+            .into_any_element()
+    }
+
+    /// The empty state's dithered Tern mark: its loop (wing beat, tail
+    /// flick, body shiver) plays a few times when the empty state appears,
+    /// on a harness switch or on hover, then rests on the still; reduced
+    /// motion shows the still.
+    fn empty_mark(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let m = &self.mark_anim;
+        let dark = p.canvas.l < 0.5;
+        let (path, index, frames) =
+            m.frame(dark, self.mark_since, Instant::now(), self.reduced_motion);
+        let (w, h) = m.display_size(m.frame_h);
+        div()
+            .id("empty-mark")
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if *hovered && !this.mark_anim.playing(this.mark_since, Instant::now()) {
+                    this.mark_since = Instant::now();
+                    cx.notify();
+                }
+            }))
+            .w(px(w))
+            .h(px(h))
+            .flex_none()
+            .overflow_hidden()
+            .relative()
+            .child(
+                gpui_kit::img(SharedString::from(path))
+                    .absolute()
+                    .top_0()
+                    .left(px(-(index as f32) * w))
+                    .w(px(w * frames as f32))
+                    .h(px(h))
+                    .object_fit(gpui_kit::ObjectFit::Fill),
+            )
             .into_any_element()
     }
 
@@ -3124,6 +3428,9 @@ impl Workspace {
         }
         if let Some(card) = self.plan_card(p, cx) {
             items.push(wrap(card));
+        }
+        if let Some(line) = self.plan_folded_line(p) {
+            items.push(wrap(line));
         }
         if let Some(line) = self.model.working_line() {
             items.push(wrap(
@@ -3183,6 +3490,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new("continue-dismiss")
+                                .capsule()
                                 .label("Dismiss")
                                 .ghost()
                                 .small()
@@ -3193,6 +3501,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("continue-answer")
+                                .capsule()
                                 .label("Continue")
                                 .primary()
                                 .small()
@@ -3304,7 +3613,7 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new(("attach-remove", i))
+                        Button::new(("attach-remove", i)).capsule()
                             .icon(IconName::Close)
                             .ghost()
                             .xsmall()
@@ -3350,6 +3659,7 @@ impl Workspace {
             ),
         };
         Button::new("mic")
+            .capsule()
             .icon(icon)
             .ghost()
             .small()
@@ -3541,7 +3851,7 @@ impl Workspace {
                             .flex_wrap()
                             .gap_1()
                             .child(
-                                Button::new("context-compact")
+                                Button::new("context-compact").capsule()
                                     .label(if compacting { "Compacting…" } else { "Compact now" })
                                     .ghost()
                                     .xsmall()
@@ -3552,7 +3862,7 @@ impl Workspace {
                                     }),
                             )
                             .child(
-                                Button::new("context-handoff")
+                                Button::new("context-handoff").capsule()
                                     .label("New chat with summary")
                                     .ghost()
                                     .xsmall()
@@ -3738,15 +4048,22 @@ impl Workspace {
             actions = actions.child(Spinner::new().small().color(p.muted));
         } else if r.needs_key() && !r.key_saved {
             if !editing {
-                actions = actions.child(Button::new(bid("add")).label("Add").small().on_click(
-                    cx.listener(move |this, _, window, cx| this.edit_key(kind, id, window, cx)),
-                ));
+                actions = actions.child(
+                    Button::new(bid("add"))
+                        .capsule()
+                        .label("Add")
+                        .small()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.edit_key(kind, id, window, cx)
+                        })),
+                );
             }
         } else {
             let can_choose = st.can_choose(&r);
             if !is_default {
                 actions = actions.child(
                     Button::new(bid("use"))
+                        .capsule()
                         .label("Use")
                         .small()
                         .disabled(busy_turn || !can_choose)
@@ -3763,6 +4080,7 @@ impl Workspace {
             }
             actions = actions.child(
                 Button::new(bid("test"))
+                    .capsule()
                     .label("Test")
                     .ghost()
                     .small()
@@ -3783,6 +4101,7 @@ impl Workspace {
             if kind == Kind::Model {
                 actions = actions.child(
                     Button::new(bid("address"))
+                        .capsule()
                         .label("Address")
                         .ghost()
                         .small()
@@ -3797,6 +4116,7 @@ impl Workspace {
                 let confirm = self.model.settings.confirm == Some(id);
                 actions = actions.child(
                     Button::new(bid("delete"))
+                        .capsule()
                         .label(if confirm {
                             "Click again to delete"
                         } else {
@@ -3817,6 +4137,7 @@ impl Workspace {
             } else if r.key_saved {
                 actions = actions.child(
                     Button::new(bid("remove"))
+                        .capsule()
                         .label("Remove")
                         .ghost()
                         .small()
@@ -3876,6 +4197,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(bid("save"))
+                            .capsule()
                             .label("Save")
                             .small()
                             .disabled(working)
@@ -3884,6 +4206,7 @@ impl Workspace {
                     .when(!key_url.is_empty(), |d| {
                         d.child(
                             Button::new(bid("get"))
+                                .capsule()
                                 .label("Get a key")
                                 .ghost()
                                 .small()
@@ -3892,6 +4215,7 @@ impl Workspace {
                     })
                     .child(
                         Button::new(bid("cancel"))
+                            .capsule()
                             .label("Cancel")
                             .ghost()
                             .small()
@@ -3916,19 +4240,27 @@ impl Workspace {
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
-        // The views as a sliding segmented control sized to the pane: what
-        // does not fit goes in a ⋯ menu, so nothing runs past the edge.
-        let views = RunView::for_run(run);
-        let labels: Vec<&str> = views.iter().map(|v| v.label()).collect();
-        let active = views.iter().position(|&v| v == view).unwrap_or(0);
+        // The rail's tabs (v2 s05) as a sliding segmented control sized to
+        // the pane: what does not fit goes in a ⋯ menu, so nothing runs
+        // past the edge. Plan and Sources hold several views each; a
+        // second, smaller switch picks between them.
+        let tab = RailTab::of(view);
+        let titles: Vec<String> = RailTab::ALL.iter().map(|t| t.title(run)).collect();
+        let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
+        let active = RailTab::ALL.iter().position(|&t| t == tab).unwrap_or(0);
         let (show_label, shown, hidden) =
             crate::panels::run_header_fit(&labels, self.side_w, active);
         let segs: Vec<segmented::Segment> = shown
             .iter()
-            .map(|&i| segmented::Segment::text(labels[i]))
+            .map(|&i| segmented::Segment::text(titles[i].clone()))
             .collect();
         let picked = shown.iter().position(|&i| i == active).unwrap_or(0);
-        let shown_views: Vec<RunView> = shown.iter().map(|&i| views[i]).collect();
+        let shown_tabs: Vec<RailTab> = shown.iter().map(|&i| RailTab::ALL[i]).collect();
+        let first_views: Vec<RunView> = RailTab::ALL
+            .iter()
+            .map(|t| t.views(run).first().copied().unwrap_or(RunView::Summary))
+            .collect();
+        let shown_first: Vec<RunView> = shown.iter().map(|&i| first_views[i]).collect();
         let tabs = self.segmented(
             "run-views",
             &segs,
@@ -3936,20 +4268,51 @@ impl Workspace {
             segmented::Look::default(),
             p,
             std::rc::Rc::new(move |this: &mut Self, i, _, _| {
-                if let Some(&v) = shown_views.get(i) {
-                    this.model.set_run_view(v);
+                if let (Some(&t), Some(&v)) = (shown_tabs.get(i), shown_first.get(i)) {
+                    if RailTab::of(this.model.run_panel.view) != t {
+                        this.model.set_run_view(v);
+                    }
                     this.run_more_open = false;
                 }
             }),
             cx,
         );
+        let subs = tab.views(run);
+        let sub_switch = (subs.len() > 1).then(|| {
+            let sub_segs: Vec<segmented::Segment> = subs
+                .iter()
+                .map(|v| segmented::Segment::text(v.label()))
+                .collect();
+            let sub_at = subs.iter().position(|&v| v == view).unwrap_or(0);
+            let sub_views = subs.clone();
+            self.segmented(
+                "run-subviews",
+                &sub_segs,
+                sub_at,
+                segmented::Look {
+                    small: true,
+                    ..Default::default()
+                },
+                p,
+                std::rc::Rc::new(move |this: &mut Self, i, _, _| {
+                    if let Some(&v) = sub_views.get(i) {
+                        this.model.set_run_view(v);
+                    }
+                }),
+                cx,
+            )
+        });
+        let hidden_first: Vec<(RailTab, RunView)> = hidden
+            .iter()
+            .map(|&i| (RailTab::ALL[i], first_views[i]))
+            .collect();
         let more = (!hidden.is_empty()).then(|| {
-            let hidden_views: Vec<RunView> = hidden.iter().map(|&i| views[i]).collect();
             div()
                 .relative()
                 .flex_none()
                 .child(
                     Button::new("run-views-more")
+                        .capsule()
                         .icon(IconName::Ellipsis)
                         .ghost()
                         .xsmall()
@@ -3978,11 +4341,11 @@ impl Workspace {
                                 .bg(p.canvas)
                                 .shadow_lg()
                                 .occlude()
-                                .children(hidden_views.into_iter().map(|v| {
+                                .children(hidden_first.into_iter().map(|(t, v)| {
                                     div()
                                         .id(SharedString::from(format!(
                                             "run-view-more-{}",
-                                            v.label()
+                                            t.label()
                                         )))
                                         .px_2()
                                         .py_1()
@@ -3991,7 +4354,7 @@ impl Workspace {
                                         .cursor_pointer()
                                         .text_color(p.muted)
                                         .hover(|d| d.bg(p.hover).text_color(p.text))
-                                        .child(v.label())
+                                        .child(t.label())
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.model.set_run_view(v);
                                             this.run_more_open = false;
@@ -4075,7 +4438,9 @@ impl Workspace {
                     cx.notify();
                 }))
         });
-        let body: AnyElement = if run.is_empty() {
+        let body: AnyElement = if view == RunView::Context {
+            self.run_context(p)
+        } else if run.is_empty() {
             div()
                 .text_sm()
                 .text_color(p.faint)
@@ -4091,6 +4456,7 @@ impl Workspace {
                 RunView::Ledger => self.run_ledger(run, p, cx),
                 RunView::Decisions => self.run_decisions(run, p),
                 RunView::Graph => self.run_graph(run, p, cx),
+                RunView::Context => self.run_context(p),
             }
         };
         div()
@@ -4104,6 +4470,7 @@ impl Workspace {
             .border_l_1()
             .border_color(p.border)
             .child(header)
+            .children(sub_switch)
             .children(pinned)
             .children(status)
             .child(
@@ -4120,6 +4487,58 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(self.model.context_label()),
             )
+    }
+
+    /// The Context tab: what fills the window, one bar per kind of
+    /// content, with how it was counted.
+    fn run_context(&self, p: Palette) -> AnyElement {
+        let b = self.model.context_breakdown();
+        let fill = crate::gauge::fullness(b.level, self.model.dark);
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .child(div().text_sm().text_color(p.text).child(b.header.clone()))
+                    .child(div().text_xs().text_color(p.muted).child(b.percent.clone())),
+            )
+            .children(b.rows.iter().map(|r| {
+                let free = r.label == "Free";
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .text_xs()
+                            .text_color(p.muted)
+                            .child(r.label)
+                            .child(crate::model::compact(r.tokens)),
+                    )
+                    .child(
+                        div().h(px(4.)).w_full().rounded_full().bg(p.border).child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(gpui_kit::relative(r.share.clamp(0., 1.)))
+                                .bg(if free { p.faint } else { fill }),
+                        ),
+                    )
+            }))
+            .child(
+                div()
+                    .pt_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(b.note.clone()),
+            )
+            .into_any_element()
     }
 
     /// The rollup line, the pages read, and anything that went wrong.
@@ -4325,6 +4744,7 @@ impl Workspace {
                         .gap_1()
                         .child(
                             Button::new("report-open-md")
+                                .capsule()
                                 .label("Open report")
                                 .ghost()
                                 .xsmall()
@@ -4333,6 +4753,7 @@ impl Workspace {
                         )
                         .child(
                             Button::new("report-open-json")
+                                .capsule()
                                 .label("JSON")
                                 .ghost()
                                 .xsmall()
@@ -4510,12 +4931,25 @@ impl Render for Workspace {
         {
             frame::next_frame(window, cx);
         }
+        self.window_h = f32::from(window.viewport_size().height);
         let layout = Layout::for_width(f32::from(window.viewport_size().width));
         if Layout::sidebar_squeezed(self.last_layout, layout) {
             self.model.sidebar_open = false;
         }
         if self.last_layout.is_some_and(|l| l.panel_beside) && !layout.panel_beside {
             self.model.run_panel_open = false;
+        }
+        // The rail opens by itself once a run has something to show
+        // (sources, checked claims), once per run, and only where it fits
+        // beside the chat; closing it keeps it closed for that run.
+        if !self.model.is_busy() {
+            self.rail_auto = false;
+        } else if !self.rail_auto && layout.panel_beside && self.model.screen == Screen::Chat {
+            let run = self.model.panel_run();
+            if !run.checks.is_empty() || !run.ledger().sources.is_empty() {
+                self.rail_auto = true;
+                self.model.run_panel_open = true;
+            }
         }
         self.last_layout = Some(layout);
         let reduced = self.reduced_motion;
@@ -4533,9 +4967,13 @@ impl Render for Workspace {
             now,
             reduced,
         );
-        let panel = self
-            .panel_slide
-            .frame(self.model.run_panel_open, now, reduced);
+        // Settings is a screen of its own (v2 s16): the right rail slides
+        // away too, so nothing beside it re-renders while it scrolls.
+        let panel = self.panel_slide.frame(
+            self.model.run_panel_open && self.model.screen != Screen::Settings,
+            now,
+            reduced,
+        );
         if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
             frame::next_frame(window, cx);
         }
@@ -4586,6 +5024,10 @@ impl Render for Workspace {
             browser_view::BROWSER_W.max(right_w)
         } else if side_docked {
             continuity_view::SIDE_W.max(right_w)
+        } else if self.model.run_panel.view == RunView::Graph && self.model.screen != Screen::Study
+        {
+            // The run map needs room: the rail widens for Graph (v2 s05).
+            GRAPH_W.max(right_w)
         } else {
             right_w
         };
@@ -4620,6 +5062,12 @@ impl Render for Workspace {
                 this.browser_pane(p, cx)
             } else if side_docked {
                 this.side_panel(p, cx)
+            } else if this.model.harness == tern_agent::Harness::Study
+                && this.model.screen == Screen::Study
+            {
+                // v2 s14: in Study the rail shows decks, what is due and
+                // recall, not a research run.
+                this.study_rail(p, cx)
             } else {
                 this.run_panel(p, cx).into_any_element()
             }
@@ -4653,7 +5101,10 @@ impl Render for Workspace {
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.settings_keys(e, window, cx) {
+                if !this.palette_keys(e, window, cx)
+                    && !this.settings_keys(e, window, cx)
+                    && !this.scout_keys(e, cx)
+                {
                     this.panel_keys(e, cx);
                 }
             }))
@@ -4756,6 +5207,7 @@ impl Render for Workspace {
             .children(self.undo_toast(p, cx))
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
+            .children(self.palette_overlay(p, cx))
             .children(ripple);
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {

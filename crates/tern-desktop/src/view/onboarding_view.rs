@@ -19,6 +19,7 @@ use gpui_kit::{
 };
 
 use super::Workspace;
+use super::press::Capsule as _;
 use crate::appearance::{Choice, ThemeChoice};
 use crate::assets;
 use crate::onboarding::{KeyTest, Onboarding, Outcome, Step};
@@ -291,6 +292,7 @@ impl Workspace {
             .border_color(p.border)
             .child(
                 Button::new("onboarding-skip")
+                    .capsule()
                     .label("Skip for now")
                     .ghost()
                     .small()
@@ -310,6 +312,7 @@ impl Workspace {
                     .when(!first, |d| {
                         d.child(
                             Button::new("onboarding-back")
+                                .capsule()
                                 .label("Back")
                                 .ghost()
                                 .small()
@@ -320,6 +323,7 @@ impl Workspace {
                     })
                     .child(
                         Button::new("onboarding-next")
+                            .capsule()
                             .label(o.continue_label())
                             .primary()
                             .small()
@@ -565,7 +569,7 @@ impl Workspace {
                             .gap_2()
                             .child(div().flex_1().child(Input::new(&self.key_input).mask_toggle()))
                             .child(
-                                Button::new("ob-test")
+                                Button::new("ob-test").capsule()
                                     .label("Test connection")
                                     .small()
                                     .disabled(testing)
@@ -581,7 +585,7 @@ impl Workspace {
                     .child(status)
                     .when(!key_url.is_empty(), |d| {
                         d.child(
-                            Button::new("ob-get-key")
+                            Button::new("ob-get-key").capsule()
                                 .label("Get a key")
                                 .ghost()
                                 .xsmall()
@@ -726,7 +730,7 @@ impl Workspace {
                             .flex()
                             .gap_2()
                             .children(ThemeChoice::ALL.map(|t| {
-                                Button::new(SharedString::from(format!("ob-theme-{}", t.label())))
+                                Button::new(SharedString::from(format!("ob-theme-{}", t.label()))).capsule()
                                     .label(t.label())
                                     .small()
                                     .selected(look.theme == t)

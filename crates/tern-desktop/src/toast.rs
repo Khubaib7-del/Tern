@@ -47,7 +47,9 @@ pub struct Toast {
 }
 
 impl Toast {
-    /// How far in it is (0 hidden, 1 fully shown) at `now`.
+    /// How far in it is (0 hidden, 1 fully shown) at `now`, on the
+    /// model's own clock (the view draws it on a spring instead).
+    #[cfg(test)]
     pub fn presence(&self, now: Instant, reduced: bool) -> f32 {
         if reduced {
             return if self.leaving.is_some() { 0.0 } else { 1.0 };

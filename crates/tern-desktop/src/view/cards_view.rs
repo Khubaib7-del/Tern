@@ -16,6 +16,7 @@ use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_agent::cards::{self as cards, Card, CardKind, CardSpec, Format, Rating};
 
 use super::Workspace;
+use super::press::Capsule as _;
 use super::study_view::{PILL, serif};
 use crate::bridge::CardChange;
 use crate::study::{ReviewRun, StudyView};
@@ -58,12 +59,23 @@ impl Workspace {
         cx.notify();
     }
 
-    fn flip_card(&mut self, cx: &mut Context<Self>) {
+    /// The pointer left the card: a swipe answers it (right Good, left
+    /// Again); anything shorter springs it home.
+    fn card_released(&mut self, armed: bool, cx: &mut Context<Self>) {
+        let dir = self.card_swipe.borrow_mut().release(armed, Instant::now());
+        match dir {
+            Some(crate::swipe::Dir::Right) => self.rate_card(Rating::Good, cx),
+            Some(crate::swipe::Dir::Left) => self.rate_card(Rating::Again, cx),
+            None => cx.notify(),
+        }
+    }
+
+    pub(super) fn flip_card(&mut self, cx: &mut Context<Self>) {
         self.model.study.flip(Instant::now());
         cx.notify();
     }
 
-    fn rate_card(&mut self, rating: Rating, cx: &mut Context<Self>) {
+    pub(super) fn rate_card(&mut self, rating: Rating, cx: &mut Context<Self>) {
         let now = tern_agent::study::now();
         if let Some((id, r)) = self.model.study.rate(rating, now) {
             self.bridge.cards_review(id, r, now);
@@ -219,7 +231,7 @@ impl Workspace {
                             }
                         ))),
                 )
-                .child(self.scout_figure(44., p)),
+                .child(self.pet_figure(56., p)),
         );
         let Some(card) = &run.card else {
             let stats = s.deck.stats(now_i, s.offset);
@@ -240,6 +252,7 @@ impl Workspace {
                                 .pt_2()
                                 .child(
                                     Button::new("review-home")
+                                        .capsule()
                                         .label("Back to Study")
                                         .small()
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -249,6 +262,7 @@ impl Workspace {
                                 )
                                 .child(
                                     Button::new("review-deck")
+                                        .capsule()
                                         .icon(AssetIcon::WalletCards)
                                         .label("Open the deck")
                                         .ghost()
@@ -291,8 +305,20 @@ impl Workspace {
             CardKind::Cloze => "Fill the gap",
             CardKind::Why => "Explain why",
         };
+        // The stack (v2 s14): the top card follows a drag, rubber-bands
+        // until it is turned, and swipes right for Good, left for Again.
+        let armed = back && run.flipped;
+        let (shift, moving) = {
+            let mut sw = self.card_swipe.borrow_mut();
+            (sw.offset(armed, now), sw.moving())
+        };
+        if moving {
+            self.anim_pending.set(true);
+        }
         let face = div()
             .id("flashcard")
+            .relative()
+            .left(px(shift))
             .w(px(CARD_W * width))
             .min_h(px(220.))
             .overflow_hidden()
@@ -305,7 +331,21 @@ impl Workspace {
             .border_color(if back { p.accent } else { p.border })
             .bg(p.canvas)
             .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| this.flip_card(cx)))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, e: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.card_swipe
+                        .borrow_mut()
+                        .press(f32::from(e.position.x), Instant::now());
+                    cx.notify();
+                }),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                // The click that ends a drag is not a tap.
+                if !this.card_swipe.borrow().dragged() {
+                    this.flip_card(cx);
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -316,11 +356,57 @@ impl Workspace {
                     .child(SharedString::from(due_label(card, now_i))),
             )
             .when(width > 0.3, |d| d.child(side));
-        col = col.child(div().flex().justify_center().child(face));
+        // Up to three cards peek out under the top one.
+        let peeks = left.saturating_sub(1).min(3);
+        let under = (1..=peeks).rev().map(|k| {
+            let k = k as f32;
+            div()
+                .absolute()
+                .top(px(8. * k))
+                .left(px(14. * k))
+                .right(px(14. * k))
+                .bottom(px(-8. * k))
+                .rounded(px(PILL))
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .opacity(1. - 0.22 * k)
+        });
+        let stack = div()
+            .id("card-stack")
+            .relative()
+            .w(px(CARD_W))
+            .pb(px(8. * peeks as f32))
+            .children(under)
+            .child(face)
+            .on_mouse_move(
+                cx.listener(move |this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                    let mut sw = this.card_swipe.borrow_mut();
+                    if sw.pressed() {
+                        sw.move_to(f32::from(e.position.x), Instant::now());
+                        drop(sw);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.card_released(armed, cx)
+                }),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(move |this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                    this.card_released(armed, cx)
+                }),
+            );
+        col = col.child(div().flex().justify_center().child(stack));
         if !back || !run.flipped {
             col = col.child(
                 div().flex().justify_center().child(
                     Button::new("show-answer")
+                        .capsule()
                         .label("Show answer  (Space)")
                         .small()
                         .on_click(cx.listener(|this, _, _, cx| this.flip_card(cx))),
@@ -330,6 +416,7 @@ impl Workspace {
             let hints = cards::button_hints(card, now_i);
             let buttons = Rating::ALL.into_iter().zip(hints).map(|(r, h)| {
                 Button::new(SharedString::from(format!("rate-{}", r.key())))
+                    .capsule()
                     .label(SharedString::from(format!(
                         "{}  {} · {h}",
                         r.key(),
@@ -348,7 +435,7 @@ impl Workspace {
                 .text_color(p.faint)
                 .flex()
                 .justify_center()
-                .child("Space turns the card · 1 Again · 2 Hard · 3 Good · 4 Easy"),
+                .child("Space turns the card · swipe right Good, left Again · 1 Again · 2 Hard · 3 Good · 4 Easy"),
         )
         .into_any_element()
     }
@@ -372,6 +459,7 @@ impl Workspace {
         // Filter chips: every topic with cards.
         let mut chips = vec![
             Button::new("deck-all")
+                .capsule()
                 .label("All")
                 .ghost()
                 .xsmall()
@@ -389,6 +477,7 @@ impl Workspace {
             let id = t.id.clone();
             chips.push(
                 Button::new(SharedString::from(format!("deck-topic-{i}")))
+                    .capsule()
                     .label(SharedString::from(format!(
                         "{} · {n}",
                         tern_agent::study::clip(&t.title, 24)
@@ -410,7 +499,7 @@ impl Workspace {
             .flex_wrap()
             .gap_1()
             .child(
-                Button::new("deck-review")
+                Button::new("deck-review").capsule()
                     .icon(AssetIcon::Play)
                     .label(SharedString::from(format!(
                         "Review {}",
@@ -423,7 +512,7 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("deck-gen")
+                Button::new("deck-gen").capsule()
                     .icon(AssetIcon::Plus)
                     .label("Write cards")
                     .ghost()
@@ -435,7 +524,7 @@ impl Workspace {
                     })),
             )
             .child(
-                Button::new("deck-import")
+                Button::new("deck-import").capsule()
                     .icon(AssetIcon::Import)
                     .label("Import")
                     .ghost()
@@ -451,7 +540,7 @@ impl Workspace {
                     (Format::Tsv, "TSV"),
                 ]
                 .map(|(f, label)| {
-                    Button::new(SharedString::from(format!("deck-export-{label}")))
+                    Button::new(SharedString::from(format!("deck-export-{label}"))).capsule()
                         .icon(AssetIcon::Download)
                         .label(label)
                         .ghost()
@@ -501,12 +590,14 @@ impl Workspace {
                                 .gap_1()
                                 .child(
                                     Button::new("card-save")
+                                        .capsule()
                                         .label("Save")
                                         .small()
                                         .on_click(cx.listener(|this, _, _, cx| this.save_card(cx))),
                                 )
                                 .child(
                                     Button::new("card-cancel")
+                                        .capsule()
                                         .label("Cancel")
                                         .ghost()
                                         .small()
@@ -552,6 +643,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-edit-{id}")))
+                            .capsule()
                             .icon(AssetIcon::Pencil)
                             .ghost()
                             .xsmall()
@@ -562,6 +654,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-susp-{id}")))
+                            .capsule()
                             .icon(if suspended {
                                 AssetIcon::Eye
                             } else {
@@ -581,6 +674,7 @@ impl Workspace {
                     )
                     .child(
                         Button::new(SharedString::from(format!("card-del-{id}")))
+                            .capsule()
                             .icon(AssetIcon::X)
                             .ghost()
                             .xsmall()
