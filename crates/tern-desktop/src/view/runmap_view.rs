@@ -157,7 +157,14 @@ fn paint_figure(
 ) {
     for l in &fig.lines {
         let (col, w) = match l.ink {
-            Ink::Hub => (if hover == Some(Target::Hub) { c.accent } else { c.text }, 0.9),
+            Ink::Hub => (
+                if hover == Some(Target::Hub) {
+                    c.accent
+                } else {
+                    c.text
+                },
+                0.9,
+            ),
             Ink::HubInner => (c.muted, 0.9),
             Ink::Phase(i) | Ink::Link(i) => {
                 let st = map.phases.get(i).map_or(PhaseState::Pending, |p| p.state);

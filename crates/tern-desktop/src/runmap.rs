@@ -475,15 +475,15 @@ pub fn figure(map: &RunMap, graph: &ChatGraph, w: f32, h: f32) -> Figure {
     let floor = layout(graph);
     // Squash the rings a little when the card is short.
     // The outer ring's farthest point lies 0.707 × 1.08 × its radius
-        // below the hub; keep it above the phase strip.
-        let outer = graph
-            .nodes
-            .iter()
-            .map(|n| ring_of(&n.kind))
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let reach = RINGS[outer.max(1) - 1] * 0.765 * k;
-        let fit = ((h / 2. - 34. * k) / reach).clamp(0.5, 1.);
+    // below the hub; keep it above the phase strip.
+    let outer = graph
+        .nodes
+        .iter()
+        .map(|n| ring_of(&n.kind))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let reach = RINGS[outer.max(1) - 1] * 0.765 * k;
+    let fit = ((h / 2. - 34. * k) / reach).clamp(0.5, 1.);
     let place: Vec<(f32, f32)> = floor
         .iter()
         .map(|&(x, y)| {
@@ -538,10 +538,15 @@ pub fn figure(map: &RunMap, graph: &ChatGraph, w: f32, h: f32) -> Figure {
     let mut prev: Option<(f32, f32)> = None;
     for (i, ph) in map.phases.iter().enumerate() {
         let c = (x0 + i as f32 * gap, y);
-        let hgt = if ph.state == PhaseState::Live { 5. } else { 2.5 } * k;
+        let hgt = if ph.state == PhaseState::Live {
+            5.
+        } else {
+            2.5
+        } * k;
         if let Some(p) = prev {
             let ctl = ((p.0 + c.0) / 2., (p.1 + c.1) / 2. - 3. * k);
-            let curve: Vec<(f32, f32)> = (0..=8).map(|j| bezier(p, ctl, c, j as f32 / 8.)).collect();
+            let curve: Vec<(f32, f32)> =
+                (0..=8).map(|j| bezier(p, ctl, c, j as f32 / 8.)).collect();
             lines.push(Line {
                 pts: curve,
                 ink: Ink::Link(i),
@@ -584,9 +589,7 @@ pub fn hit(fig: &Figure, x: f32, y: f32) -> Option<Target> {
 pub fn readout(map: &RunMap, graph: &ChatGraph, hover: Option<Target>) -> (String, String) {
     match hover {
         Some(Target::Phase(i)) => map.readout(Some(i)),
-        Some(Target::Node(i)) => graph
-            .readout(i)
-            .unwrap_or_else(|| map.readout(None)),
+        Some(Target::Node(i)) => graph.readout(i).unwrap_or_else(|| map.readout(None)),
         Some(Target::Hub) => (
             "question".to_owned(),
             if graph.question.is_empty() {
@@ -866,9 +869,18 @@ mod tests {
         assert_eq!(hit(&f, c.0, c.1), Some(Target::Node(1)));
         assert_eq!(hit(&f, -500., -500.), None);
         assert_eq!(hit(&f, 205., 270. / 2. - 10.), Some(Target::Hub));
-        let edges = f.lines.iter().filter(|l| matches!(l.ink, Ink::Edge(_))).count();
+        let edges = f
+            .lines
+            .iter()
+            .filter(|l| matches!(l.ink, Ink::Edge(_)))
+            .count();
         assert_eq!(edges, 3);
-        assert!(f.lines.iter().filter(|l| matches!(l.ink, Ink::Edge(_))).all(|l| l.dotted));
+        assert!(
+            f.lines
+                .iter()
+                .filter(|l| matches!(l.ink, Ink::Edge(_)))
+                .all(|l| l.dotted)
+        );
         // Bigger card, bigger figure.
         let big = figure(&m, &g, 820., 540.);
         assert!(big.targets[1].2 > f.targets[1].2);

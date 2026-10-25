@@ -315,18 +315,19 @@ impl ChatGraph {
                 clip(if title.is_empty() { site } else { title }, 44),
             ),
             NodeKind::Worker {
-                n, question, running, ..
+                n,
+                question,
+                running,
+                ..
             } => (
                 format!("worker {n}{}", if *running { " · running" } else { "" }),
                 clip(question, 44),
             ),
-            NodeKind::Claim { text, verdict } => {
-                (format!("claim · {}", verdict_label(*verdict)), clip(text, 44))
-            }
-            NodeKind::Entity { name, mentions } => (
-                format!("term · {mentions}×"),
-                clip(name, 44),
+            NodeKind::Claim { text, verdict } => (
+                format!("claim · {}", verdict_label(*verdict)),
+                clip(text, 44),
             ),
+            NodeKind::Entity { name, mentions } => (format!("term · {mentions}×"), clip(name, 44)),
         })
     }
 
@@ -420,14 +421,16 @@ pub fn entities(text: &str) -> Vec<(String, usize)> {
         let name = name
             .trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != '#')
             .trim();
-        if name.chars().count() < 2 || name.chars().count() > 40 || name.split(' ').count() > 4
-        {
+        if name.chars().count() < 2 || name.chars().count() > 40 || name.split(' ').count() > 4 {
             return;
         }
         if COMMON.contains(&name.to_lowercase().as_str()) {
             return;
         }
-        if name.chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') {
+        if name
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+        {
             return;
         }
         *pos += 1;
@@ -448,7 +451,13 @@ pub fn entities(text: &str) -> Vec<(String, usize)> {
     // Words, by sentence.
     for line in text.lines() {
         let line = line.trim_start_matches(|c: char| {
-            c == '#' || c == '-' || c == '*' || c == '>' || c.is_ascii_digit() || c == '.' || c == ' '
+            c == '#'
+                || c == '-'
+                || c == '*'
+                || c == '>'
+                || c.is_ascii_digit()
+                || c == '.'
+                || c == ' '
         });
         for sentence in line.split(['.', '!', '?', ':', ';', '(', ')', '[', ']', '|', '"']) {
             let words: Vec<&str> = sentence
@@ -555,7 +564,12 @@ mod tests {
     use std::time::Duration;
     use tern_agent::{ClaimCheck, PageRef, RunStep};
 
-    fn step(seq: u64, kind: StepKind, payload: serde_json::Value, page: Option<PageRef>) -> RunStep {
+    fn step(
+        seq: u64,
+        kind: StepKind,
+        payload: serde_json::Value,
+        page: Option<PageRef>,
+    ) -> RunStep {
         RunStep {
             seq,
             event: "tool.executed".into(),
@@ -690,7 +704,10 @@ mod tests {
         assert!(names.iter().any(|n| n == "SIMD"), "{names:?}");
         assert!(names.iter().any(|n| n == "NVLink"), "{names:?}");
         assert!(names.iter().any(|n| n == "Vertex Processing"), "{names:?}");
-        assert!(!names.iter().any(|n| n == "Then" || n == "The"), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n == "Then" || n == "The"),
+            "{names:?}"
+        );
         assert!(names.len() <= MAX_ENTITIES);
         assert!(!g.is_empty());
         // Nothing at all: empty.
@@ -722,9 +739,17 @@ mod tests {
         let r = run_with(&[("https://a.org/x", "A")], &[]);
         let k = graph_key("chat one", 4, &r, "q", "answer");
         assert_eq!(k, graph_key("chat one", 4, &r, "q", "answer"), "stable");
-        assert_ne!(k, graph_key("chat two", 4, &r, "q", "answer"), "switching chats");
+        assert_ne!(
+            k,
+            graph_key("chat two", 4, &r, "q", "answer"),
+            "switching chats"
+        );
         assert_ne!(k, graph_key("chat one", 6, &r, "q", "answer"), "a new turn");
-        assert_ne!(k, graph_key("chat one", 4, &r, "q", "answer!"), "answer streams");
+        assert_ne!(
+            k,
+            graph_key("chat one", 4, &r, "q", "answer!"),
+            "answer streams"
+        );
         let mut more = r.clone();
         more.steps.push(step(
             9,
@@ -732,10 +757,18 @@ mod tests {
             serde_json::json!({}),
             Some(page("https://a.org/x", "A")),
         ));
-        assert_ne!(k, graph_key("chat one", 4, &more, "q", "answer"), "new source");
+        assert_ne!(
+            k,
+            graph_key("chat one", 4, &more, "q", "answer"),
+            "new source"
+        );
         let mut checked = r.clone();
         checked.checks.push(claim("x", vec![], Verdict::Partly));
-        assert_ne!(k, graph_key("chat one", 4, &checked, "q", "answer"), "new check");
+        assert_ne!(
+            k,
+            graph_key("chat one", 4, &checked, "q", "answer"),
+            "new check"
+        );
     }
 
     #[test]
@@ -745,11 +778,7 @@ mod tests {
             "q1",
             "",
         );
-        let b = ChatGraph::build(
-            &run_with(&[("https://c.org/z", "C")], &[0]),
-            "q2",
-            "",
-        );
+        let b = ChatGraph::build(&run_with(&[("https://c.org/z", "C")], &[0]), "q2", "");
         assert_ne!(a, b);
         assert_ne!(a.nodes.len(), b.nodes.len());
     }
@@ -761,8 +790,14 @@ mod tests {
             .collect();
         let refs: Vec<(&str, &str)> = urls.iter().map(|(u, t)| (u.as_str(), t.as_str())).collect();
         let g = ChatGraph::build(&run_with(&refs, &[0, 5]), "q", "");
-        assert_eq!(g.count(|k| matches!(k, NodeKind::Source { .. })), MAX_SOURCES);
-        assert_eq!(g.count(|k| matches!(k, NodeKind::Source { read: true, .. })), 2);
+        assert_eq!(
+            g.count(|k| matches!(k, NodeKind::Source { .. })),
+            MAX_SOURCES
+        );
+        assert_eq!(
+            g.count(|k| matches!(k, NodeKind::Source { read: true, .. })),
+            2
+        );
     }
 
     #[test]

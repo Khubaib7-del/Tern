@@ -538,9 +538,7 @@ impl Render for Pet {
                     .child(
                         tool(
                             "pet-menu",
-                            gpui_kit::component::Icon::new(
-                                gpui_kit::component::IconName::Ellipsis,
-                            ),
+                            gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis),
                             "Scout",
                         )
                         .on_click(cx.listener(|this, _, _, cx| {

@@ -5669,8 +5669,8 @@ where
     if dx.abs() > dy.abs() {
         return false;
     }
-    let max = f32::from(handle.content_size().height)
-        - f32::from(handle.viewport_bounds().size.height);
+    let max =
+        f32::from(handle.content_size().height) - f32::from(handle.viewport_bounds().size.height);
     let offset = f32::from(handle.offset().y);
     let instant = e.delta.precise() || crate::theme::reduced_motion();
     let (moved, was_moving) = GLIDES.with(|g| {
