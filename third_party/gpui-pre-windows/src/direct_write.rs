@@ -632,6 +632,12 @@ impl DirectWriteState {
                 0.0,
             )?;
             let width = px(renderer_context.width);
+            // Tern patch: runs in screen order (DirectWrite draws them in
+            // logical order; see `DrawGlyphRun`).
+            runs.sort_by(|a, b| {
+                let x = |r: &ShapedRun| r.glyphs.first().map_or(0.0, |g| g.position.x.as_f32());
+                x(a).total_cmp(&x(b))
+            });
 
             Ok(LineLayout {
                 font_size,
@@ -1505,7 +1511,7 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
     fn DrawGlyphRun(
         &self,
         clientdrawingcontext: *const ::core::ffi::c_void,
-        _baselineoriginx: f32,
+        baselineoriginx: f32,
         _baselineoriginy: f32,
         _measuringmode: DWRITE_MEASURING_MODE,
         glyphrun: *const DWRITE_GLYPH_RUN,
@@ -1598,10 +1604,21 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
         // Hebrew) comes in logical order and is drawn from its right edge
         // leftwards; laid out left to right, its letters showed reversed,
         // with every joining stroke facing away from its neighbour.
+        //
+        // Each run is placed at the origin DirectWrite gives it (its left
+        // edge, or its right edge for a right-to-left run), not after the
+        // run drawn before it: DirectWrite draws runs in logical order, so
+        // a right-to-left word whose `:` falls back to another font came
+        // out as the word then the colon, left to right.
         let rtl = glyphrun.bidiLevel % 2 == 1;
-        let run_start = context.width;
         let run_width: f32 = glyph_advances.iter().sum();
+        let run_start = if rtl {
+            baselineoriginx - run_width
+        } else {
+            baselineoriginx
+        };
         let mut pen = run_start + run_width;
+        let mut ltr_pen = run_start;
         for (cluster_utf16_len, cluster_glyph_count) in cluster_analyzer {
             context.index_converter.advance_to_utf16_ix(utf16_idx);
             utf16_idx += cluster_utf16_len;
@@ -1619,7 +1636,9 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                     pen -= glyph_advances[this_glyph_idx];
                     pen - glyph_offsets[this_glyph_idx].advanceOffset
                 } else {
-                    context.width + glyph_offsets[this_glyph_idx].advanceOffset
+                    let x = ltr_pen + glyph_offsets[this_glyph_idx].advanceOffset;
+                    ltr_pen += glyph_advances[this_glyph_idx];
+                    x
                 };
                 glyphs.push(ShapedGlyph {
                     id,
@@ -1627,7 +1646,6 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
                     index: context.index_converter.utf8_ix,
                     is_emoji,
                 });
-                context.width += glyph_advances[this_glyph_idx];
             }
             glyph_idx += cluster_glyph_count;
         }
@@ -1635,8 +1653,8 @@ impl IDWriteTextRenderer_Impl for TextRenderer_Impl {
             // Left to right on screen, as the line's painting and hit
             // testing expect.
             glyphs.reverse();
-            context.width = run_start + run_width;
         }
+        context.width = context.width.max(run_start + run_width);
         context.runs.push(ShapedRun { font_id, glyphs });
         Ok(())
     }
