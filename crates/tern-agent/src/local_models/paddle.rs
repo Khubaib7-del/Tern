@@ -12,14 +12,16 @@ pub fn character_dict(yml: &str) -> Result<Vec<String>, String> {
         let Some(l) = lines.next() else {
             return Err("no character_dict in inference.yml".into());
         };
-        if l.trim_start() == "character_dict:" {
-            break l.len() - l.trim_start().len();
+        if l.trim_start_matches(' ').trim_end_matches(EOL) == "character_dict:" {
+            break l.len() - l.trim_start_matches(' ').len();
         }
     };
     let mut out = Vec::new();
     for l in lines {
-        let lead = l.len() - l.trim_start().len();
-        let t = l.trim_start();
+        // Only YAML's own indentation is trimmed: an entry can be a
+        // Unicode space (PP-OCRv6 lists U+3000 plain).
+        let t = l.trim_start_matches(' ').trim_end_matches(EOL);
+        let lead = l.len() - l.trim_start_matches(' ').len();
         if let Some(item) = t.strip_prefix("- ").or_else(|| (t == "-").then_some(""))
             && lead >= indent
         {
@@ -36,10 +38,12 @@ pub fn character_dict(yml: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// What ends a line besides its newline.
+const EOL: [char; 1] = ['\r'];
+
 /// One YAML scalar as PaddleOCR writes them: `'x'` (with `''` for a
 /// quote), `"x"` (with backslash escapes), or plain.
 fn scalar(s: &str) -> Result<String, String> {
-    let s = s.trim_end();
     if let Some(inner) = s.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
         return Ok(inner.replace("''", "'"));
     }
@@ -128,13 +132,13 @@ pub fn pick_lines(a: &[(String, f32)], b: &[(String, f32)]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const REC: &str = "Global:\n  model_name: x\nPostProcess:\n  name: CTCLabelDecode\n  character_dict:\n  - '!'\n  - '\"'\n  - ''''\n  - a\n  - \"\\u3000\"\n  - ب\n  - 🛅\n";
+    const REC: &str = "Global:\n  model_name: x\nPostProcess:\n  name: CTCLabelDecode\n  character_dict:\n  - '!'\n  - '\"'\n  - ''''\n  - a\n  - \"\\u3000\"\n  - ب\n  - \u{3000}\n  - 🛅\n";
 
     #[test]
     fn reads_the_dictionary_with_quotes_and_escapes() {
         assert_eq!(
             character_dict(REC).unwrap(),
-            ["!", "\"", "'", "a", "\u{3000}", "ب", "🛅"]
+            ["!", "\"", "'", "a", "\u{3000}", "ب", "\u{3000}", "🛅"]
         );
         assert!(character_dict("Global:\n  x: 1\n").is_err());
     }
