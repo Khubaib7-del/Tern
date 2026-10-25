@@ -104,9 +104,11 @@ impl Store {
     }
 
     fn init(conn: Connection) -> StoreResult<Self> {
+        // The busy timeout first, so a second connection opening the file
+        // at the same moment waits for the first instead of failing.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         schema::migrate(&conn)?;
         Ok(Self {
             conn,
@@ -897,6 +899,29 @@ mod tests {
         assert_eq!(s.empty_trash().unwrap(), [ses]);
         assert!(s.deleted_sessions(10).unwrap().is_empty());
         assert!(s.integrity_ok().unwrap());
+    }
+
+    #[test]
+    fn a_new_database_opened_from_two_threads_at_once_opens_in_both() {
+        for round in 0..8 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("race-{round}.sqlite3"));
+            let go = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    let path = path.clone();
+                    let go = go.clone();
+                    std::thread::spawn(move || {
+                        go.wait();
+                        Store::open(&path).map(|s| s.schema_version().unwrap())
+                    })
+                })
+                .collect();
+            for h in handles {
+                let v = h.join().unwrap().expect("every connection opens");
+                assert_eq!(v, schema::SCHEMA_VERSION);
+            }
+        }
     }
 
     #[test]
