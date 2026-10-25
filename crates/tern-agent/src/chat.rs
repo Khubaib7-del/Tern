@@ -146,7 +146,25 @@ pub fn last_workspace(events: &[EventEnvelope]) -> Option<String> {
 
 /// A sidebar title from the first message: one line, about 60 characters.
 pub fn title_from(text: &str) -> String {
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The title is the user's words, never the `<attachments>` block Tern
+    // adds to the message; a message of attachments alone is titled by
+    // their names.
+    let (body, block) = match text.find("<attachments>") {
+        Some(i) => (&text[..i], &text[i..]),
+        None => (text, ""),
+    };
+    let mut line = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        let names: Vec<&str> = block
+            .lines()
+            .filter_map(|l| {
+                let rest = l.trim_start().strip_prefix("<attachment name=\"")?;
+                rest.split_once('"').map(|(n, _)| n)
+            })
+            .filter(|n| !n.trim().is_empty())
+            .collect();
+        line = names.join(", ");
+    }
     if line.chars().count() <= 60 {
         return line;
     }
@@ -1893,6 +1911,22 @@ mod title_tests {
         let t = title_from(long);
         assert!(t.ends_with('…'));
         assert!(t.chars().count() <= 61);
+    }
+
+    #[test]
+    fn titles_stop_before_the_attachments() {
+        use crate::attach::{Attachment, compose};
+        let a = Attachment::paste("The meeting is on Tuesday.");
+        let msg = compose("Summarise this", std::slice::from_ref(&a));
+        assert!(msg.contains("<attachments>"));
+        assert_eq!(title_from(&msg), "Summarise this");
+        // Attachments alone: titled by their names.
+        let alone = compose("", std::slice::from_ref(&a));
+        assert_eq!(title_from(&alone), a.name);
+        let raw = "<attachments>\nAttachments from the user.\n\
+                   <attachment name=\"Q3.pdf\" role=\"context\" files=\"1\">\nx\n</attachment>\n\
+                   <attachment name=\"notes.md\" role=\"prompt\" files=\"1\">\ny\n</attachment>\n</attachments>";
+        assert_eq!(title_from(raw), "Q3.pdf, notes.md");
     }
 }
 
