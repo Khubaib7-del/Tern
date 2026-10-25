@@ -854,6 +854,10 @@ impl ChatSession {
         self.provider = provider;
         self.model = model;
         self.context_window = context_window;
+        // What the last model could see says nothing about this one; the
+        // front end tells the session again before the next message, and a
+        // model known not to see (`media::is_not_vision`) never gets one.
+        self.sees_pictures = None;
         if !self.output_set {
             self.max_output_tokens =
                 tern_providers::default_max_output(self.provider.spec().id, &self.model);
