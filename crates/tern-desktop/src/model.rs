@@ -344,6 +344,37 @@ pub struct Connection {
     pub context_window: Option<u64>,
 }
 
+/// Which chat a composer draft belongs to: its session, or `None` for a
+/// new chat that has no id yet.
+pub type DraftKey = Option<tern_core::SessionId>;
+
+/// An attached audio file being transcribed.
+#[derive(Clone, Debug)]
+pub struct PendingAudio {
+    pub id: u64,
+    pub name: String,
+    /// How long it plays, when known.
+    pub secs: Option<f64>,
+    /// The chat it was attached in; the transcript goes there.
+    pub chat: DraftKey,
+    /// Progress and cancel, shared with the work.
+    pub ctl: tern_agent::local_models::TranscribeCtl,
+}
+
+/// A chat's composer while another chat is open.
+#[derive(Clone, Debug, Default)]
+pub struct Draft {
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub audio: Vec<PendingAudio>,
+}
+
+impl Draft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty() && self.audio.is_empty()
+    }
+}
+
 /// The whole window's state.
 #[derive(Debug)]
 pub struct Model {
@@ -399,7 +430,13 @@ pub struct Model {
     /// Attached audio files being transcribed: name and how long each
     /// plays, when known. Each shows as a chip until its transcript
     /// arrives as an attachment.
-    pub audio_pending: Vec<(String, Option<f64>)>,
+    pub audio_pending: Vec<PendingAudio>,
+    /// Each other chat's composer as it was left: text, attachments, and
+    /// audio still being transcribed. Switching chats puts the open
+    /// chat's here and takes the next chat's out.
+    pub drafts: HashMap<DraftKey, Draft>,
+    /// The next [`PendingAudio::id`].
+    next_audio: u64,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
     /// The `/` menu over the composer, while a command is being typed.
@@ -593,6 +630,8 @@ impl Model {
             outgoing_images: Vec::new(),
             catalog: Default::default(),
             audio_pending: Vec::new(),
+            drafts: HashMap::new(),
+            next_audio: 0,
             mention: None,
             slash: None,
             arg_form: None,
@@ -1302,28 +1341,123 @@ impl Model {
         }
     }
 
-    /// An attached audio file went to the speech-to-text model.
-    pub fn audio_started(&mut self, name: String, secs: Option<f64>) {
-        self.audio_pending.push((name, secs));
+    /// An attached audio file went to the speech-to-text model, from the
+    /// chat `chat`: its chip shows until the transcript comes back. The
+    /// returned id and control go with the work ([`Model::audio_transcribed`],
+    /// progress, and × to cancel).
+    pub fn audio_started(
+        &mut self,
+        name: String,
+        secs: Option<f64>,
+        chat: DraftKey,
+    ) -> (u64, tern_agent::local_models::TranscribeCtl) {
+        self.next_audio += 1;
+        let ctl = tern_agent::local_models::TranscribeCtl::new();
+        self.audio_pending.push(PendingAudio {
+            id: self.next_audio,
+            name,
+            secs,
+            chat,
+            ctl: ctl.clone(),
+        });
+        (self.next_audio, ctl)
     }
 
-    /// An attached audio file's transcript came back: it rides with the
-    /// next message as an attachment named for the file.
-    pub fn audio_transcribed(
-        &mut self,
-        name: &str,
-        secs: Option<f64>,
-        result: Result<String, String>,
-    ) {
-        if let Some(i) = self.audio_pending.iter().position(|(n, _)| n == name) {
-            self.audio_pending.remove(i);
+    /// Audio `id`'s transcript came back: it rides with the next message
+    /// of the chat that started it, as an attachment named for the file.
+    /// That chat may no longer be the open one; its draft gets it. A
+    /// cancelled one (× on its chip) is dropped without a word.
+    pub fn audio_transcribed(&mut self, id: u64, result: Result<String, String>) {
+        let (job, here) = match self.audio_pending.iter().position(|a| a.id == id) {
+            Some(i) => (self.audio_pending.remove(i), true),
+            None => {
+                let Some((job, _)) = self.drafts.values_mut().find_map(|d| {
+                    let i = d.audio.iter().position(|a| a.id == id)?;
+                    Some((d.audio.remove(i), ()))
+                }) else {
+                    return;
+                };
+                (job, false)
+            }
+        };
+        if job.ctl.is_cancelled() {
+            return;
         }
+        let name = job.name.as_str();
         match result {
-            Ok(text) if !text.trim().is_empty() => self
-                .attachments
-                .push(Attachment::transcript(name, secs, &text)),
+            Ok(text) if !text.trim().is_empty() => {
+                let a = Attachment::transcript(name, job.secs, &text);
+                if here {
+                    self.attachments.push(a);
+                } else {
+                    self.drafts.entry(job.chat).or_default().attachments.push(a);
+                    self.toast_info(format!(
+                        "{name} is transcribed; it waits in the chat you attached it to."
+                    ));
+                }
+            }
             Ok(_) => self.toast_error(format!("{name} has no speech Tern could hear."), None),
+            Err(e) if e == tern_agent::local_models::CANCELLED => {}
             Err(e) => self.toast_error(format!("Tern could not transcribe {name}: {e}"), None),
+        }
+    }
+
+    /// × on a transcribing chip: stops the work and drops the chip.
+    pub fn cancel_audio(&mut self, id: u64) {
+        if let Some(i) = self.audio_pending.iter().position(|a| a.id == id) {
+            let job = self.audio_pending.remove(i);
+            job.ctl.cancel();
+        }
+    }
+
+    /// Backspace in an empty composer: the last chip goes (a transcribing
+    /// one is cancelled). Returns whether one went.
+    pub fn remove_last_chip(&mut self) -> bool {
+        if let Some(job) = self.audio_pending.pop() {
+            job.ctl.cancel();
+            return true;
+        }
+        self.attachments.pop().is_some()
+    }
+
+    /// Puts the open chat's composer away under `key` before another chat
+    /// shows: `text` (what is typed), its attachments, and audio still
+    /// being transcribed (it keeps going and lands there).
+    pub fn stash_draft(&mut self, key: DraftKey, text: String) {
+        let d = Draft {
+            text,
+            attachments: std::mem::take(&mut self.attachments),
+            audio: std::mem::take(&mut self.audio_pending),
+        };
+        if d.is_empty() {
+            self.drafts.remove(&key);
+        } else {
+            self.drafts.insert(key, d);
+        }
+    }
+
+    /// Takes chat `key`'s composer back out: its attachments and audio
+    /// show again, and the returned text goes into the field.
+    pub fn restore_draft(&mut self, key: DraftKey) -> String {
+        let d = self.drafts.remove(&key).unwrap_or_default();
+        self.attachments = d.attachments;
+        self.audio_pending = d.audio;
+        d.text
+    }
+
+    /// A new chat got its id: its draft and its audio follow it.
+    pub fn rekey_draft(&mut self, from: DraftKey, to: DraftKey) {
+        if let Some(d) = self.drafts.remove(&from) {
+            self.drafts.insert(to, d);
+        }
+        for a in self
+            .audio_pending
+            .iter_mut()
+            .chain(self.drafts.values_mut().flat_map(|d| d.audio.iter_mut()))
+        {
+            if a.chat == from {
+                a.chat = to;
+            }
         }
     }
 
@@ -1831,6 +1965,7 @@ impl Model {
         // Nothing waits to go from another chat: no attachments and no
         // pictures (a new chat starts empty; an opened chat starts clean).
         self.attachments.clear();
+        self.audio_pending.clear();
         self.outgoing_images.clear();
         self.reveal = None;
         self.thought_open.clear();
@@ -3152,11 +3287,65 @@ mod tests {
     }
 
     #[test]
+    fn each_chat_keeps_its_own_composer_and_audio_lands_where_it_started() {
+        let a = Some(tern_core::SessionId::new());
+        let b = Some(tern_core::SessionId::new());
+        let mut m = ready();
+        // Chat A: a picture and a voice memo still transcribing.
+        m.attachments.push(Attachment::paste("x".repeat(3)));
+        let (id, ctl) = m.audio_started("memo.m4a".into(), Some(12.0), a);
+        m.stash_draft(a, "half a question".into());
+        // Chat B shows its own, empty composer.
+        assert_eq!(m.restore_draft(b), "");
+        assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
+        // The transcript finishes while B is open: it goes to A, not B.
+        m.audio_transcribed(id, Ok("Buy milk.".into()));
+        assert!(m.attachments.is_empty());
+        assert!(!ctl.is_cancelled());
+        // Back to A: text, the picture, and the transcript.
+        m.stash_draft(b, String::new());
+        assert_eq!(m.restore_draft(a), "half a question");
+        assert_eq!(m.attachments.len(), 2);
+        assert_eq!(m.attachments[1].detail(), "Audio · 0:12 · transcript");
+        assert!(m.drafts.is_empty(), "an empty draft is not kept");
+    }
+
+    #[test]
+    fn chips_go_with_x_or_backspace_and_x_cancels_a_transcription() {
+        let mut m = ready();
+        m.attachments.push(Attachment::paste("x".repeat(3)));
+        let (id, ctl) = m.audio_started("memo.m4a".into(), None, None);
+        m.cancel_audio(id);
+        assert!(ctl.is_cancelled() && m.audio_pending.is_empty());
+        // Its result, arriving later, is dropped without a toast.
+        let toasts = m.toasts.shown().len();
+        m.audio_transcribed(id, Err(tern_agent::local_models::CANCELLED.into()));
+        assert_eq!(m.toasts.shown().len(), toasts);
+        assert!(m.attachments.len() == 1);
+        // Backspace: the transcribing chip first, then the attachments.
+        let (_, ctl) = m.audio_started("b.m4a".into(), None, None);
+        assert!(m.remove_last_chip() && ctl.is_cancelled());
+        assert!(m.remove_last_chip() && m.attachments.is_empty());
+        assert!(!m.remove_last_chip());
+    }
+
+    #[test]
+    fn a_new_chats_draft_follows_it_when_it_gets_an_id() {
+        let mut m = ready();
+        let (id, _) = m.audio_started("memo.m4a".into(), None, None);
+        let to = Some(tern_core::SessionId::new());
+        m.rekey_draft(None, to);
+        assert_eq!(m.audio_pending[0].chat, to);
+        m.audio_transcribed(id, Ok("hi".into()));
+        assert_eq!(m.attachments.len(), 1);
+    }
+
+    #[test]
     fn an_attached_audio_file_becomes_its_transcript() {
         let mut m = ready();
-        m.audio_started("memo.m4a".into(), Some(42.0));
+        let (id, _) = m.audio_started("memo.m4a".into(), Some(42.0), None);
         assert_eq!(m.audio_pending.len(), 1);
-        m.audio_transcribed("memo.m4a", Some(42.0), Ok("Buy milk.".into()));
+        m.audio_transcribed(id, Ok("Buy milk.".into()));
         assert!(m.audio_pending.is_empty());
         assert_eq!(m.attachments.len(), 1);
         assert_eq!(m.attachments[0].detail(), "Audio · 0:42 · transcript");
@@ -3164,8 +3353,8 @@ mod tests {
         assert!(msg.contains("Buy milk."), "{msg}");
         // A failure is a toast; nothing is attached.
         let mut m = ready();
-        m.audio_started("x.wav".into(), None);
-        m.audio_transcribed("x.wav", None, Err("no model".into()));
+        let (id, _) = m.audio_started("x.wav".into(), None, None);
+        m.audio_transcribed(id, Err("no model".into()));
         assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
         // With no model, the toast opens Settings › Local models.
         m.audio_needs_model("memo.m4a");

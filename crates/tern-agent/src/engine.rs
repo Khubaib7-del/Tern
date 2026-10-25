@@ -389,7 +389,7 @@ pub fn prefetch_calls(text: &str, tools: &ToolRegistry) -> Vec<(&'static str, Va
 pub fn web_query(text: &str) -> Option<String> {
     static ASK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(
-            r"(?i)\b(?:(?:please\s+)?(?:use|using|with)\s+(?:the\s+)?(?:web|internet|online)(?:\s+(?:search\s+)?tool|\s+search)?|search\s+(?:the\s+)?(?:web|internet|online)(?:\s+for)?|look\s+(?:it\s+|this\s+)?up\s+online|web\s+search(?:\s+for)?)\b[:,]?",
+            r"(?i)\b(?:(?:please\s+)?(?:use|using)\s+(?:the\s+)?(?:web|internet|online)(?:\s+(?:search\s+)?tool|\s+search)?|search\s+(?:the\s+)?(?:web|internet|online)(?:\s+for)?|look\s+(?:it\s+|this\s+)?up\s+online|web\s+search(?:\s+for)?)\b[:,]?",
         )
         .expect("valid pattern")
     });

@@ -44,7 +44,9 @@ pub enum Msg {
     Catalog(Box<tern_agent::media::Catalog>),
     /// An attached audio file's transcript (file name, seconds it plays
     /// when known), or why not.
-    FileTranscribed(String, Option<f64>, Result<String, String>),
+    /// Audio `id` (see `Model::audio_started`) finished: its transcript or
+    /// why not.
+    FileTranscribed(u64, Result<String, String>),
     /// One window of streaming dictation came back: its number and text.
     Dictated(u64, Result<String, String>),
     /// A past chat's turns, read before its model connects, so the
@@ -222,8 +224,8 @@ impl std::fmt::Debug for Msg {
             Self::Info(e) => write!(f, "Info({e})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
-            Self::FileTranscribed(name, _, r) => {
-                write!(f, "FileTranscribed({name}, ok: {})", r.is_ok())
+            Self::FileTranscribed(id, r) => {
+                write!(f, "FileTranscribed({id}, ok: {})", r.is_ok())
             }
             Self::Dictated(seq, r) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
             Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
@@ -609,12 +611,16 @@ impl Bridge {
         });
     }
 
-    /// Reads an audio file off the UI thread and transcribes it.
+    /// Reads an audio file off the UI thread and transcribes it (local
+    /// models on a blocking thread), reporting progress through `ctl`,
+    /// stopping when it is cancelled or runs past the time limit.
     pub fn transcribe_file(
         &self,
         via: tern_agent::media::ModelRef,
         path: std::path::PathBuf,
         secs: Option<f64>,
+        id: u64,
+        ctl: tern_agent::local_models::TranscribeCtl,
     ) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
@@ -633,13 +639,15 @@ impl Bridge {
                     let keychain = setup::keychain();
                     let secrets: Option<&dyn SecretStore> =
                         keychain.as_ref().ok().map(|b| b.as_ref());
-                    let r = tern_agent::media::transcribe(secrets, &via, &bytes, &name).await;
-                    let _ = tx.send(Msg::FileTranscribed(name, secs, r));
+                    let r = tern_agent::media::transcribe_with(
+                        secrets, &via, &bytes, &name, &ctl, secs,
+                    )
+                    .await;
+                    let _ = tx.send(Msg::FileTranscribed(id, r));
                 }
                 Err(e) => {
                     let _ = tx.send(Msg::FileTranscribed(
-                        name.clone(),
-                        secs,
+                        id,
                         Err(format!("Tern could not read {name}: {e}")),
                     ));
                 }

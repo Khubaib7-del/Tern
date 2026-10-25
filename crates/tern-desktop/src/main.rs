@@ -85,6 +85,9 @@ fn main() {
     }
     // The tour's demo material, in its throwaway folder.
     view::tour::seed();
+    // One line per chat turn and per transcription in <data>/logs/tern.log
+    // (provider, model, tools offered and called, timings), for reports.
+    tern_agent::diag::set_sink(crashlog::log_line);
     // Local model engines compiled in (OCR on ONNX Runtime).
     tern_agent::local_models::register_builtin_engines();
     let (bridge, rx) = match Bridge::new() {

@@ -725,6 +725,17 @@ impl Workspace {
             cx.notify();
             return;
         }
+        // Backspace in an empty composer takes the last chip away (a
+        // transcribing one is cancelled).
+        if key == "backspace"
+            && !e.keystroke.modifiers.secondary()
+            && self.composer.read(cx).value().is_empty()
+            && self.model.remove_last_chip()
+        {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if key == "escape" && self.cancel_recording() {
             cx.stop_propagation();
             cx.notify();
