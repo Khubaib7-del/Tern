@@ -264,36 +264,168 @@ pub async fn transcribe(
     audio: &[u8],
     file_name: &str,
 ) -> Result<String, String> {
-    if via.is_local() {
-        let (id, audio, name) = (via.model.clone(), audio.to_vec(), file_name.to_owned());
-        let text = tokio::task::spawn_blocking(move || transcribe_local(&id, &audio, &name))
-            .await
-            .map_err(|e| e.to_string())??;
-        if text.trim().is_empty() {
-            return Err(format!("{via} heard no speech in the recording."));
+    let ctl = crate::local_models::TranscribeCtl::new();
+    transcribe_with(secrets, via, audio, file_name, &ctl, None).await
+}
+
+/// How long a transcription may take before Tern stops it: a minute, or
+/// four times the audio's length when that is longer (a slow computer on
+/// a long file), at most 20 minutes.
+pub fn transcribe_timeout(audio_secs: Option<f64>) -> std::time::Duration {
+    let secs = audio_secs.unwrap_or(0.0).max(0.0) * 4.0;
+    std::time::Duration::from_secs_f64(secs.clamp(60.0, 1_200.0))
+}
+
+/// [`transcribe`] with progress and cancel through `ctl`, and a time
+/// limit ([`transcribe_timeout`] of `audio_secs`). A cancelled one ends
+/// with [`crate::local_models::CANCELLED`]. Each run leaves a line in the
+/// diagnostic log ([`crate::diag`]) with the model and its timings.
+pub async fn transcribe_with(
+    secrets: Option<&dyn SecretStore>,
+    via: &ModelRef,
+    audio: &[u8],
+    file_name: &str,
+    ctl: &crate::local_models::TranscribeCtl,
+    audio_secs: Option<f64>,
+) -> Result<String, String> {
+    use crate::local_models::CANCELLED;
+    let limit = transcribe_timeout(audio_secs);
+    let started = std::time::Instant::now();
+    // Which transcriber took the file (local models come first), so a
+    // slow or failed transcript in tern.log names its engine.
+    crate::diag::note(&format!(
+        "transcribe: start {via} ({}) file={} audio={} limit={}s",
+        if via.is_local() { "local" } else { "provider" },
+        ext_of(file_name),
+        audio_secs.map_or_else(|| "?".to_owned(), |s| format!("{s:.1}s")),
+        limit.as_secs()
+    ));
+    let r: Result<String, String> = if via.is_local() {
+        let (id, bytes, name, c) = (
+            via.model.clone(),
+            audio.to_vec(),
+            file_name.to_owned(),
+            ctl.clone(),
+        );
+        let job = tokio::task::spawn_blocking(move || transcribe_local(&id, &bytes, &name, &c));
+        match tokio::time::timeout(limit, job).await {
+            Ok(joined) => match joined.map_err(|e| e.to_string()) {
+                Ok(Ok(t)) => {
+                    crate::diag::note(&format!(
+                        "transcribe: {via} file={} audio={:.1}s decode={}ms resample={}ms model={}ms total={}ms engine={}",
+                        ext_of(file_name),
+                        t.audio_secs,
+                        t.decode_ms,
+                        t.resample_ms,
+                        t.model_ms,
+                        started.elapsed().as_millis(),
+                        t.engine
+                    ));
+                    Ok(t.text)
+                }
+                Ok(Err(e)) => {
+                    crate::diag::note(&format!(
+                        "transcribe: {via} file={} failed after {}ms: {e}",
+                        ext_of(file_name),
+                        started.elapsed().as_millis()
+                    ));
+                    Err(e)
+                }
+                Err(e) => Err(e),
+            },
+            Err(_) => {
+                // whisper.cpp checks the flag between steps and stops.
+                ctl.cancel();
+                Err(timed_out(via, limit))
+            }
         }
-        return Ok(text);
+    } else {
+        let remote = async {
+            let p = connect_by_id(&via.provider, secrets, None).map_err(|e| e.to_string())?;
+            p.transcribe(&via.model, audio, file_name, None)
+                .await
+                .map_err(|e| e.to_string())
+        };
+        let cancelled = async {
+            while !ctl.is_cancelled() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        tokio::select! {
+            r = tokio::time::timeout(limit, remote) => r.unwrap_or_else(|_| Err(timed_out(via, limit))),
+            _ = cancelled => Err(CANCELLED.into()),
+        }
+    };
+    if ctl.is_cancelled() && r.is_err() {
+        crate::diag::note(&format!(
+            "transcribe: {via} file={} stopped after {}ms",
+            ext_of(file_name),
+            started.elapsed().as_millis()
+        ));
+        return Err(r
+            .err()
+            .filter(|e| e.contains("longer than"))
+            .unwrap_or_else(|| CANCELLED.into()));
     }
-    let p = connect_by_id(&via.provider, secrets, None).map_err(|e| e.to_string())?;
-    let text = p
-        .transcribe(&via.model, audio, file_name, None)
-        .await
-        .map_err(|e| e.to_string())?;
-    if text.trim().is_empty() {
-        return Err(format!("{via} heard no speech in the recording."));
+    match r {
+        Ok(text) if text.trim().is_empty() => {
+            Err(format!("{via} heard no speech in the recording."))
+        }
+        Ok(text) => {
+            if !via.is_local() {
+                crate::diag::note(&format!(
+                    "transcribe: {via} file={} total={}ms",
+                    ext_of(file_name),
+                    started.elapsed().as_millis()
+                ));
+            }
+            Ok(text)
+        }
+        Err(e) => {
+            crate::diag::note(&format!(
+                "transcribe: {via} file={} failed after {}ms: {e}",
+                ext_of(file_name),
+                started.elapsed().as_millis()
+            ));
+            Err(e)
+        }
     }
-    Ok(text)
+}
+
+fn timed_out(via: &ModelRef, limit: std::time::Duration) -> String {
+    format!(
+        "{via} took longer than {} s, so Tern stopped it. Try a shorter clip, or another transcription model in Settings › Local models.",
+        limit.as_secs()
+    )
+}
+
+/// The file's extension only (names stay out of the log).
+fn ext_of(name: &str) -> String {
+    std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| "?".into())
 }
 
 /// Transcribes an audio file with installed local model `id`.
 #[cfg(feature = "audio")]
-fn transcribe_local(id: &str, audio: &[u8], file_name: &str) -> Result<String, String> {
+fn transcribe_local(
+    id: &str,
+    audio: &[u8],
+    file_name: &str,
+    ctl: &crate::local_models::TranscribeCtl,
+) -> Result<crate::local_models::Transcript, String> {
     let (lm, _) = crate::local_models::LocalModels::discover()?;
-    lm.transcribe_file(id, audio, file_name, None)
+    lm.transcribe_file_with(id, audio, file_name, None, ctl)
 }
 
 #[cfg(not(feature = "audio"))]
-fn transcribe_local(id: &str, _audio: &[u8], _file_name: &str) -> Result<String, String> {
+fn transcribe_local(
+    id: &str,
+    _audio: &[u8],
+    _file_name: &str,
+    _ctl: &crate::local_models::TranscribeCtl,
+) -> Result<crate::local_models::Transcript, String> {
     Err(format!("this build cannot run the local model {id}"))
 }
 
@@ -911,6 +1043,46 @@ fn job_noun(job: Job) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn transcription_time_limit_scales_with_the_audio() {
+        use std::time::Duration;
+        assert_eq!(transcribe_timeout(None), Duration::from_secs(60));
+        assert_eq!(transcribe_timeout(Some(12.0)), Duration::from_secs(60));
+        assert_eq!(transcribe_timeout(Some(60.0)), Duration::from_secs(240));
+        assert_eq!(
+            transcribe_timeout(Some(36_000.0)),
+            Duration::from_secs(1_200)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_remote_transcription_ends_at_once() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let ctl = crate::local_models::TranscribeCtl::new();
+        ctl.cancel();
+        // A provider that is not set up fails fast either way; the
+        // cancel wins or the error comes back, never a wait.
+        let t = std::time::Instant::now();
+        let via = ModelRef {
+            provider: "groq".into(),
+            model: "whisper-large-v3".into(),
+        };
+        let r = rt.block_on(transcribe_with(
+            None,
+            &via,
+            b"RIFF",
+            "a.wav",
+            &ctl,
+            Some(12.0),
+        ));
+        assert!(r.is_err());
+        assert!(t.elapsed().as_secs() < 5);
+    }
+
     use super::*;
 
     fn listed(provider: &str, ids: &[&str]) -> Vec<ModelInfo> {

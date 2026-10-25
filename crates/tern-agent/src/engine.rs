@@ -352,6 +352,98 @@ pub struct RunHooks<'a> {
     /// Receives the model's reasoning as it streams (call number, text),
     /// for a front end's Thinking section.
     pub on_reasoning: Option<OnText<'a>>,
+    /// Offer the tools natively too (the provider's function calling), on
+    /// top of the text protocol in the system prompt. A provider that
+    /// refuses them gets the turn again without, and the model is
+    /// remembered ([`mark_no_native_tools`]).
+    pub native_tools: bool,
+    /// Before the first model call, read what the message plainly asks
+    /// for: a file by its full path (`file_read`, approved like any call
+    /// outside the workspace) and a web search when it says "use the web"
+    /// (`web_search`). Works with models that never call tools.
+    pub prefetch: bool,
+}
+
+/// What a message plainly asks Tern to read before the model answers: the
+/// file at a full path it names (when that file exists), and a web search
+/// when it says to use the web. Returns `(tool, args)` pairs.
+pub fn prefetch_calls(text: &str, tools: &ToolRegistry) -> Vec<(&'static str, Value)> {
+    let mut out = Vec::new();
+    if tools.get("file_read").is_some()
+        && let Some(raw) = crate::paths::find_in_text(text)
+        && crate::paths::user_path(&raw).is_file()
+    {
+        out.push(("file_read", json!({"path": raw})));
+    }
+    if tools.get("web_search").is_some()
+        && let Some(query) = web_query(text)
+    {
+        out.push(("web_search", json!({"query": query})));
+    }
+    out
+}
+
+/// The search a message asks for with "use the web (tool)", "search the
+/// web (for)", "look it up online", or "web search": the message without
+/// that phrase. `None` when it asks for no search.
+pub fn web_query(text: &str) -> Option<String> {
+    static ASK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:(?:please\s+)?(?:use|using)\s+(?:the\s+)?(?:web|internet|online)(?:\s+(?:search\s+)?tool|\s+search)?|search\s+(?:the\s+)?(?:web|internet|online)(?:\s+for)?|look\s+(?:it\s+|this\s+)?up\s+online|web\s+search(?:\s+for)?)\b[:,]?",
+        )
+        .expect("valid pattern")
+    });
+    if !ASK.is_match(text) {
+        return None;
+    }
+    let q = ASK.replace_all(text, " ");
+    let q = q
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|c: char| c.is_whitespace() || ",.;:!?".contains(c))
+        .to_owned();
+    (q.chars().count() >= 3).then_some(q)
+}
+
+/// Models that refused native tools this session, as `provider/model`.
+static NO_NATIVE_TOOLS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether `provider`'s `model` may be offered native tools: yes unless
+/// it refused them earlier this session.
+pub fn native_tools_ok(provider: &str, model: &str) -> bool {
+    !NO_NATIVE_TOOLS
+        .lock()
+        .is_ok_and(|s| s.contains(&format!("{provider}/{model}")))
+}
+
+/// Remembers that `provider`'s `model` refuses native tools.
+pub fn mark_no_native_tools(provider: &str, model: &str) {
+    if let Ok(mut s) = NO_NATIVE_TOOLS.lock() {
+        s.insert(format!("{provider}/{model}"));
+    }
+}
+
+/// Whether a provider error says the model cannot take tools (Ollama
+/// "does not support tools", Mistral "Function calling is not enabled",
+/// OpenRouter "No endpoints found that support tool use").
+pub fn rejects_tools(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    (e.contains("tool") || e.contains("function call"))
+        && [
+            "not support",
+            "unsupported",
+            "not enabled",
+            "not available",
+            "no endpoints",
+            "not allowed",
+            "extra inputs",
+            "unrecognized",
+            "unknown",
+        ]
+        .iter()
+        .any(|w| e.contains(w))
 }
 
 impl std::fmt::Debug for RunHooks<'_> {
@@ -405,6 +497,10 @@ struct Run<'r, 'a> {
     /// Applied steers, for the checkpoint.
     steers: Vec<String>,
     guidance: Vec<String>,
+    /// Native tools still offered this turn.
+    native: bool,
+    /// The tools called, in order, for the diagnostic log.
+    called: Vec<String>,
 }
 
 /// A step failed in a way that ends the turn.
@@ -436,10 +532,31 @@ impl<'a> TurnLoop<'a> {
             ck: None,
             steers: Vec::new(),
             guidance: Vec::new(),
+            native: self.hooks.native_tools,
+            called: Vec::new(),
             cfg: self,
         };
         let result = run.drive(history, message).await;
-        run.finish(result)
+        let offered: Vec<&str> = run.cfg.tools.names().collect();
+        let line = format!(
+            "turn: provider={} model={} tools_offered=[{}] native_tools={} tool_calls=[{}] model_calls={}",
+            run.cfg.model.provider_id(),
+            run.cfg.model_name,
+            offered.join(","),
+            run.native && !offered.is_empty(),
+            run.called.join(","),
+            run.model_calls,
+        );
+        let out = run.finish(result);
+        crate::diag::note(&format!(
+            "{line} state={:?}{}",
+            out.state,
+            out.reason
+                .as_deref()
+                .map(|r| format!(" reason={}", r.chars().take(200).collect::<String>()))
+                .unwrap_or_default()
+        ));
+        out
     }
 }
 
@@ -588,6 +705,22 @@ impl Run<'_, '_> {
             }
         }
         self.save(&messages[base..], &seen);
+        if self.cfg.hooks.prefetch && resume.is_none() {
+            for (name, args) in prefetch_calls(&message_text, self.cfg.tools) {
+                self.check_cancel()?;
+                self.go(TurnState::ToolRequested)?;
+                self.called.push(name.to_owned());
+                let result = self.tool_step(name, &args).await?;
+                // As if the model had asked: its call, then the result.
+                messages.push(ChatMessage::assistant(tern_providers::tool_block(
+                    name, &args,
+                )));
+                messages.push(ChatMessage::user(format!(
+                    "{result}\n\n(Tern ran this because the message asked for it. Answer the message using it.)"
+                )));
+                self.save(&messages[base..], &seen);
+            }
+        }
         let mut empty_retried = false;
 
         loop {
@@ -601,10 +734,13 @@ impl Run<'_, '_> {
                 )));
             }
             self.go(TurnState::ModelStreaming)?;
-            let req = ChatRequest::new(self.cfg.model_name, messages.clone())
+            let mut req = ChatRequest::new(self.cfg.model_name, messages.clone())
                 .with_system(system.clone())
                 .with_max_tokens(self.cfg.max_output_tokens)
                 .with_effort(self.cfg.hooks.effort);
+            if self.native {
+                req = req.with_tools(self.cfg.tools.specs());
+            }
             self.model_calls += 1;
             let model = self.cfg.model;
             let thought = Mutex::new((
@@ -644,6 +780,27 @@ impl Run<'_, '_> {
                     model.complete_deltas(&req, &forward).await
                 }
                 None => model.complete(&req).await,
+            };
+            let reply = match reply {
+                // The model takes no native tools: ask again with the text
+                // protocol only, and remember it for later turns.
+                Err(e) if !req.tools.is_empty() && rejects_tools(&e.to_string()) => {
+                    self.native = false;
+                    self.model_calls -= 1;
+                    mark_no_native_tools(self.cfg.model.provider_id(), self.cfg.model_name);
+                    self.record(self.event(
+                        "model.no_native_tools",
+                        EffectClass::Analysis,
+                        format!(
+                            "{} does not take tools natively; Tern asks for tools in plain text",
+                            self.cfg.model_name
+                        ),
+                        json!({"error": e.to_string()}),
+                    ))?;
+                    self.go(TurnState::Verifying)?;
+                    continue;
+                }
+                r => r,
             }
             .map_err(|e| Stop {
                 state: TurnState::Failed,
@@ -749,6 +906,7 @@ impl Run<'_, '_> {
                             ),
                         });
                     }
+                    self.called.push(name.clone());
                     let result = self.tool_step(&name, &args).await?;
                     messages.push(ChatMessage::assistant(reply.text));
                     messages.push(ChatMessage::user(result));

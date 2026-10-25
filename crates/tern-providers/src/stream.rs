@@ -99,6 +99,23 @@ pub struct Piece {
     pub done: bool,
     /// The provider reported an error inside the stream.
     pub error: Option<String>,
+    /// Native tool call pieces.
+    pub tools: Vec<ToolDelta>,
+}
+
+/// A piece of a native tool call in a stream. OpenAI-style providers send
+/// the name first and the arguments in fragments, by index; Anthropic
+/// sends `input_json_delta` fragments by block index; Gemini sends each
+/// call whole.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToolDelta {
+    /// Which call; `None` starts a new one (Gemini).
+    pub index: Option<usize>,
+    pub name: Option<String>,
+    /// An arguments fragment (JSON text).
+    pub args: String,
+    /// Arguments sent whole as an object.
+    pub whole: Option<Value>,
 }
 
 /// Decodes one event for a wire format. Events that carry nothing useful
@@ -159,6 +176,34 @@ fn openai(v: &Value) -> Piece {
         model: str_at(v, &["model"]).map(str::to_owned),
         done: false,
         error: error_text(v),
+        tools: delta
+            .and_then(|d| d.get("tool_calls"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(i, c)| {
+                let f = c.get("function");
+                let (args, whole) = match f.and_then(|f| f.get("arguments")) {
+                    Some(Value::String(s)) => (s.clone(), None),
+                    Some(Value::Null) | None => (String::new(), None),
+                    Some(v) => (String::new(), Some(v.clone())),
+                };
+                ToolDelta {
+                    index: Some(
+                        c.get("index")
+                            .and_then(Value::as_u64)
+                            .map_or(i, |n| n as usize),
+                    ),
+                    name: f
+                        .and_then(|f| f.get("name"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    args,
+                    whole,
+                }
+            })
+            .collect(),
     }
 }
 
@@ -195,7 +240,23 @@ fn anthropic(event: Option<&str>, v: &Value) -> Piece {
             p.output_tokens = u64_at(v, &["message", "usage", "output_tokens"]);
             p.model = str_at(v, &["message", "model"]).map(str::to_owned);
         }
+        "content_block_start" if str_at(v, &["content_block", "type"]) == Some("tool_use") => {
+            p.tools.push(ToolDelta {
+                index: u64_at(v, &["index"]).map(|n| n as usize),
+                name: str_at(v, &["content_block", "name"]).map(str::to_owned),
+                ..ToolDelta::default()
+            });
+        }
         "content_block_delta" => match str_at(v, &["delta", "type"]) {
+            Some("input_json_delta") => {
+                p.tools.push(ToolDelta {
+                    index: u64_at(v, &["index"]).map(|n| n as usize),
+                    args: str_at(v, &["delta", "partial_json"])
+                        .unwrap_or_default()
+                        .to_owned(),
+                    ..ToolDelta::default()
+                });
+            }
             Some("text_delta") => {
                 p.text = str_at(v, &["delta", "text"]).unwrap_or_default().to_owned();
             }
@@ -247,6 +308,15 @@ fn gemini(v: &Value) -> Piece {
         model: str_at(v, &["modelVersion"]).map(str::to_owned),
         done: false,
         error: error_text(v),
+        tools: crate::wire::gemini::function_calls(parts)
+            .into_iter()
+            .map(|(name, args)| ToolDelta {
+                index: None,
+                name: Some(name),
+                args: String::new(),
+                whole: Some(args),
+            })
+            .collect(),
     }
 }
 
@@ -259,6 +329,8 @@ pub struct Assembler {
     output: Option<u64>,
     finish: Option<String>,
     model: Option<String>,
+    /// Native tool calls by index: name, argument text, whole arguments.
+    tools: std::collections::BTreeMap<usize, (String, String, Option<Value>)>,
 }
 
 impl Assembler {
@@ -278,6 +350,19 @@ impl Assembler {
         }
         if p.model.is_some() {
             self.model.clone_from(&p.model);
+        }
+        for t in &p.tools {
+            let i = t
+                .index
+                .unwrap_or_else(|| self.tools.keys().next_back().map_or(0, |k| k + 1));
+            let e = self.tools.entry(i).or_default();
+            if let Some(n) = &t.name {
+                e.0.push_str(n);
+            }
+            e.1.push_str(&t.args);
+            if t.whole.is_some() {
+                e.2.clone_from(&t.whole);
+            }
         }
     }
 
@@ -303,7 +388,14 @@ impl Assembler {
                 self.finish
             },
             model: self.model,
-            text: self.text,
+            text: crate::chat::with_tool_calls(
+                self.text,
+                &self
+                    .tools
+                    .into_values()
+                    .map(|(name, args, whole)| (name, whole.unwrap_or(Value::String(args))))
+                    .collect::<Vec<_>>(),
+            ),
         }
     }
 }

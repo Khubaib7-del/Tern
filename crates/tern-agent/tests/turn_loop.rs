@@ -684,3 +684,186 @@ async fn reasoning_streams_to_its_own_sink_and_is_logged_with_the_effort() {
     assert_eq!(run.thought().unwrap().0, "Paging splits memory into pages.");
     assert!(run.started_rfc3339().is_some());
 }
+
+async fn run_native(s: &mut Setup, model: &dyn Model, sink: &MemorySink, msg: &str) -> TurnOutcome {
+    TurnLoop {
+        session: SessionId::new(),
+        model,
+        model_name: "native-model",
+        tools: &s.tools,
+        gate: &mut s.gate,
+        approver: &Answer::new(ApprovalAnswer::AllowOnce),
+        sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: None,
+        hooks: tern_agent::engine::RunHooks {
+            native_tools: true,
+            ..Default::default()
+        },
+    }
+    .run(Vec::new(), msg)
+    .await
+}
+
+#[tokio::test]
+async fn chat_mode_offers_read_and_web_tools_natively_and_a_native_call_runs() {
+    let mut s = Setup::new();
+    s.tools.register(tern_agent::workspace::LocalFileRead);
+    s.tools.set_mode(tern_agent::TurnMode::Chat);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "The launch is on Friday.").unwrap();
+    // What a provider's native call turns into (see tern-providers
+    // `tool_block`), then the answer.
+    let call = tern_providers::tool_block("file_read", &json!({"path": file.to_string_lossy()}));
+    let model = Script::new(&[&call, "The launch is on Friday."]);
+    let sink = MemorySink::default();
+    let out = run_native(
+        &mut s,
+        &model,
+        &sink,
+        &format!("what does {} say", file.display()),
+    )
+    .await;
+    let reqs = model.requests();
+    let offered: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+    // Chat mode: reading and the web, never the side effect.
+    assert!(
+        offered.contains(&"file_read") && offered.contains(&"web_search"),
+        "{offered:?}"
+    );
+    assert!(!offered.contains(&"publish"), "{offered:?}");
+    assert!(
+        reqs[0]
+            .tools
+            .iter()
+            .all(|t| t.parameters["type"] == "object")
+    );
+    assert_eq!(out.answer.as_deref(), Some("The launch is on Friday."));
+    // The file's text went back to the model.
+    let back = &reqs[1].messages.last().unwrap().content;
+    assert!(back.contains("The launch is on Friday."), "{back}");
+}
+
+#[tokio::test]
+async fn a_model_that_refuses_native_tools_is_asked_again_with_the_text_protocol() {
+    let mut s = Setup::new();
+    let model = Script {
+        replies: Mutex::new(VecDeque::from([
+            Err(ProviderError::Http {
+                provider: "Mistral",
+                status: 400,
+                body: "Function calling is not enabled for this model".into(),
+            }),
+            Ok("Paris.".into()),
+        ])),
+        seen: Mutex::new(Vec::new()),
+    };
+    let sink = MemorySink::default();
+    let out = run_native(&mut s, &model, &sink, "capital of France?").await;
+    assert_eq!(out.answer.as_deref(), Some("Paris."));
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 2);
+    assert!(!reqs[0].tools.is_empty() && reqs[1].tools.is_empty());
+    // The text protocol is still in the system prompt for the retry.
+    assert!(reqs[1].system.as_deref().unwrap_or("").contains("```tool"));
+    assert!(kinds(&sink).contains(&"model.no_native_tools".to_owned()));
+    assert!(!tern_agent::engine::native_tools_ok(
+        "script",
+        "native-model"
+    ));
+}
+
+#[test]
+fn tool_refusals_are_told_apart_from_other_errors() {
+    use tern_agent::engine::rejects_tools;
+    assert!(rejects_tools(
+        "registry.ollama.ai/library/gemma does not support tools"
+    ));
+    assert!(rejects_tools(
+        "Function calling is not enabled for this model"
+    ));
+    assert!(rejects_tools("No endpoints found that support tool use"));
+    assert!(!rejects_tools("401 Unauthorized"));
+    assert!(!rejects_tools("rate limit exceeded"));
+}
+
+#[test]
+fn the_web_is_searched_when_the_message_says_so() {
+    use tern_agent::engine::web_query;
+    assert_eq!(
+        web_query("use the web tool: latest Rust release").as_deref(),
+        Some("latest Rust release")
+    );
+    assert_eq!(
+        web_query("Search the web for tern migration routes").as_deref(),
+        Some("tern migration routes")
+    );
+    assert_eq!(
+        web_query("who won yesterday? look it up online").as_deref(),
+        Some("who won yesterday")
+    );
+    assert_eq!(web_query("what is a web server?"), None);
+    assert_eq!(web_query("use the web"), None);
+}
+
+#[tokio::test]
+async fn a_typed_path_is_read_first_so_a_model_that_never_calls_tools_still_answers() {
+    let mut s = Setup::new();
+    s.tools.register(tern_agent::workspace::LocalFileRead);
+    s.tools.set_mode(tern_agent::TurnMode::Chat);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plan.md");
+    std::fs::write(&file, "Ship on the 3rd of November.").unwrap();
+    // The model only ever answers; it never asks for a tool.
+    let model = Script::new(&["It ships on the 3rd of November."]);
+    let sink = MemorySink::default();
+    let approver = Answer::new(ApprovalAnswer::AllowOnce);
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "no-tools-model",
+        tools: &s.tools,
+        gate: &mut s.gate,
+        approver: &approver,
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: None,
+        hooks: tern_agent::engine::RunHooks {
+            prefetch: true,
+            ..Default::default()
+        },
+    }
+    .run(
+        Vec::new(),
+        &format!("when does {} say we ship?", file.display()),
+    )
+    .await;
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("It ships on the 3rd of November.")
+    );
+    // The file outside any workspace was approved first.
+    assert_eq!(approver.1.lock().unwrap().len(), 1);
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 1);
+    let sent: String = reqs[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(sent.contains("Ship on the 3rd of November."), "{sent}");
+    assert!(
+        kinds(&sink).iter().any(|k| k.starts_with("tool.")),
+        "{:?}",
+        kinds(&sink)
+    );
+}

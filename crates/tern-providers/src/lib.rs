@@ -29,7 +29,9 @@ pub mod usage;
 mod wire;
 
 pub use catalog::{CATALOG, DEFAULT_MAX_OUTPUT, ProviderSpec, Wire, default_max_output, find};
-pub use chat::{ChatMessage, ChatRequest, ChatResponse, IMAGE_CHARS, ImageInput, Role};
+pub use chat::{
+    ChatMessage, ChatRequest, ChatResponse, IMAGE_CHARS, ImageInput, Role, ToolSpec, tool_block,
+};
 pub use client::{Delta, ProbeReport, Provider};
 pub use custom::{CustomProvider, CustomWire};
 pub use effort::{Effort, ThinkSplitter, Thinking, thinking_support};

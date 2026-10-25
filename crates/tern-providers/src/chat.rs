@@ -66,6 +66,47 @@ impl ChatMessage {
     }
 }
 
+/// A tool the model may call natively (the provider's function calling).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    /// The input as a JSON Schema object.
+    pub parameters: serde_json::Value,
+}
+
+/// A native tool call written the way Tern's text protocol asks for a tool
+/// (a fenced `tool` block), so the turn loop reads both the same way.
+pub fn tool_block(name: &str, args: &serde_json::Value) -> String {
+    let args = match args {
+        // OpenAI-style providers send the arguments as a JSON string.
+        serde_json::Value::String(s) if s.trim().is_empty() => serde_json::json!({}),
+        serde_json::Value::String(s) => {
+            serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+        }
+        serde_json::Value::Null => serde_json::json!({}),
+        v => v.clone(),
+    };
+    format!(
+        "```tool\n{}\n```",
+        serde_json::json!({"tool": name, "args": args})
+    )
+}
+
+/// Appends native tool calls to a reply's text as `tool` blocks.
+pub(crate) fn with_tool_calls(mut text: String, calls: &[(String, serde_json::Value)]) -> String {
+    for (name, args) in calls {
+        if name.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&tool_block(name, args));
+    }
+    text
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChatRequest {
     pub model: String,
@@ -76,6 +117,9 @@ pub struct ChatRequest {
     /// How hard to think, for models that can (see [`crate::effort`]).
     /// `None` leaves the provider's default.
     pub effort: Option<crate::Effort>,
+    /// Tools offered for native calling; empty sends none. A call comes
+    /// back in the reply's text as a `tool` block ([`tool_block`]).
+    pub tools: Vec<ToolSpec>,
 }
 
 impl ChatRequest {
@@ -87,7 +131,14 @@ impl ChatRequest {
             max_tokens: 1024,
             temperature: None,
             effort: None,
+            tools: Vec::new(),
         }
+    }
+
+    /// Offers `tools` for native calling.
+    pub fn with_tools(mut self, tools: Vec<ToolSpec>) -> Self {
+        self.tools = tools;
+        self
     }
 
     pub fn with_system(mut self, system: impl Into<String>) -> Self {

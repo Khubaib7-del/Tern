@@ -238,6 +238,11 @@ pub struct Workspace {
     link_input: Entity<InputState>,
     /// A message queued with Tab while a run goes; sent when it ends.
     queued: Option<String>,
+    /// Text to put in the composer at the next frame: the draft of the
+    /// chat just opened (chat switches run where no window is at hand).
+    composer_restore: Option<String>,
+    /// Redraws transcription progress (`tick_audio`).
+    audio_ticker: Option<Task<()>>,
     /// When the reveal ticker last ran.
     reveal_at: Option<Instant>,
     /// The chat column's width at the last render, for the tab strip.
@@ -378,6 +383,7 @@ impl Workspace {
                 InputEvent::Change => {
                     this.check_long_text(window, cx);
                     let text = this.composer.read(cx).value().to_string();
+                    this.model.chat_here = this.current;
                     this.model.on_composer_text(&text);
                     cx.notify();
                 }
@@ -674,6 +680,8 @@ impl Workspace {
             link_input,
             recording: None,
             queued: None,
+            composer_restore: None,
+            audio_ticker: None,
             reveal_at: None,
             centre_w: 800.,
             centre_x: 0.,
@@ -753,6 +761,11 @@ impl Workspace {
                 if !self.model.customize.loaded {
                     // Skills for the `/` menu.
                     self.bridge.ext_load();
+                }
+                if self.current.is_none() {
+                    // A new chat's draft (and audio started in it) follow
+                    // it now that it has an id.
+                    self.model.rekey_draft(None, Some(s.session_id()));
                 }
                 self.current = Some(s.session_id());
                 self.restore_tabs_once(s.session_id(), "New chat", s.is_draft());
@@ -1036,8 +1049,8 @@ impl Workspace {
                 }
                 self.model.catalog = *c;
             }
-            Msg::FileTranscribed(name, secs, result) => {
-                self.model.audio_transcribed(&name, secs, result);
+            Msg::FileTranscribed(id, result) => {
+                self.model.audio_transcribed(id, result);
             }
             Msg::Decision(m) => match *m {
                 crate::bridge::DecisionMsg::Loaded(rows, prefs, err) => {
@@ -1270,6 +1283,9 @@ impl Workspace {
                 // Chosen by the user from the menu, like the file picker.
                 self.attach_paths(vec![path], cx);
             }
+            if let Some((id, title)) = chosen.chat {
+                self.bridge.attach_chat(id, title);
+            }
             if self.model.arg_form.is_some() && self.arg_inputs.is_empty() {
                 self.open_arg_form(window, cx);
             }
@@ -1355,6 +1371,31 @@ impl Workspace {
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).small())
                             .into_any_element(),
+                        Pick::File(path) => {
+                            let image = path.extension().is_some_and(|e| {
+                                matches!(
+                                    e.to_string_lossy().to_ascii_lowercase().as_str(),
+                                    "png" | "jpg" | "jpeg" | "gif" | "webp"
+                                )
+                            });
+                            let icon = if image {
+                                AssetIcon::FileImage
+                            } else {
+                                AssetIcon::FileText
+                            };
+                            div()
+                                .text_color(p.muted)
+                                .child(gpui_kit::component::Icon::new(icon).small())
+                                .into_any_element()
+                        }
+                        Pick::Folder(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::Folder).small())
+                            .into_any_element(),
+                        Pick::Chat(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::MessageSquare).small())
+                            .into_any_element(),
                     };
                     div()
                         .id(("mention", i))
@@ -1413,11 +1454,13 @@ impl Workspace {
         }
     }
 
-    /// Opens the system picker for files and folders (zips are files).
+    /// Opens the system picker for files (zips are files). Folders are
+    /// opened in the `@` menu itself, and a picker that allows folders
+    /// lets only folders be chosen on Windows.
     fn pick_attachments(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true,
-            directories: true,
+            directories: false,
             multiple: true,
             prompt: Some("Attach".into()),
         });
@@ -1430,6 +1473,7 @@ impl Workspace {
     }
 
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.note_recent_files(&paths);
         // Audio files go to the speech-to-text model; the transcript joins
         // the composer like spoken words.
         let (audio, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| {
@@ -1449,8 +1493,9 @@ impl Workspace {
                 Some(via) => {
                     // The length is read from the file's headers only.
                     let secs = tern_agent::media::audio_duration(&a);
-                    self.model.audio_started(name, secs);
-                    self.bridge.transcribe_file(via, a, secs);
+                    let (id, ctl) = self.model.audio_started(name, secs, self.current);
+                    self.bridge.transcribe_file(via, a, secs, id, ctl);
+                    self.tick_audio(cx);
                 }
                 None => self.model.audio_needs_model(&name),
             }
@@ -1462,6 +1507,49 @@ impl Workspace {
         self.model.attaching += paths.len();
         self.bridge.attach(paths);
         cx.notify();
+    }
+
+    /// Remembers attached files for the `@` menu's Recent rows, here and
+    /// in the saved preferences.
+    fn note_recent_files(&mut self, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let mut saved = tern_agent::Preferences::load();
+        for p in paths {
+            let p = p.display().to_string();
+            self.model.providers.prefs.note_recent_file(&p);
+            saved.note_recent_file(&p);
+        }
+        self.bridge.save_prefs(saved);
+    }
+
+    /// Redraws the transcribing chips' progress a few times a second while
+    /// any audio is being transcribed, in any chat.
+    fn tick_audio(&mut self, cx: &mut Context<Self>) {
+        if self.audio_ticker.is_some() {
+            return;
+        }
+        self.audio_ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let go = this.update(cx, |this, cx| {
+                    let any = !this.model.audio_pending.is_empty()
+                        || this.model.drafts.values().any(|d| !d.audio.is_empty());
+                    if any {
+                        cx.notify();
+                    } else {
+                        this.audio_ticker = None;
+                    }
+                    any
+                });
+                if !matches!(go, Ok(true)) {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Redraws while a turn runs: every 50 ms while text is being revealed
@@ -1960,14 +2048,28 @@ impl Workspace {
 
     /// Loads a past chat into the window.
     fn load_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.switch_draft(Some(id), cx);
         self.session = None;
         self.current = Some(id);
         self.open_sources.clear();
         self.model.new_chat();
+        // `new_chat` empties the composer; this chat's own draft returns.
+        let text = self.model.restore_draft(Some(id));
+        self.composer_restore = Some(text);
         self.model.phase = Phase::Connecting;
         self.model.screen = Screen::Chat;
         self.bridge.resume(id);
         cx.notify();
+    }
+
+    /// Puts the open chat's composer (text, attachments, audio still being
+    /// transcribed) away before chat `to` shows. Each chat keeps its own.
+    fn switch_draft(&mut self, to: Option<SessionId>, cx: &mut Context<Self>) {
+        if self.current == to {
+            return;
+        }
+        let text = self.composer.read(cx).value().to_string();
+        self.model.stash_draft(self.current, text);
     }
 
     /// Turns a chat's row into a title field.
@@ -2042,18 +2144,25 @@ impl Workspace {
             return;
         }
         let had_messages = !self.model.entries.is_empty();
+        let fresh = had_messages || self.session.is_none();
+        // The old chat keeps its composer; the new one starts empty.
+        if fresh {
+            self.switch_draft(None, cx);
+        }
         self.model.projects.new_in = None;
         self.model.new_chat();
         self.open_sources.clear();
-        if had_messages || self.session.is_none() {
+        if fresh {
             // A fresh session row, so the old chat keeps its own history.
             self.tabs.reset_active();
             self.session = None;
+            self.current = None;
             self.model.phase = Phase::Connecting;
             self.bridge.connect();
         }
+        let text = self.model.restore_draft(self.current);
         self.composer.update(cx, |c, cx| {
-            c.set_value("", window, cx);
+            c.set_value(text, window, cx);
             c.focus(window, cx);
         });
         cx.notify();
@@ -2285,6 +2394,7 @@ impl Workspace {
         } else {
             format!("{} {text}", now.trim_end())
         };
+        self.model.chat_here = self.current;
         self.model.on_composer_text(&joined);
         self.composer
             .update(cx, |c, cx| c.set_value(joined, window, cx));
@@ -3597,10 +3707,17 @@ impl Workspace {
                 })
         });
         // Audio files on their way to the speech-to-text model.
-        let audio = self.model.audio_pending.iter().map(|(name, secs)| {
-            let detail = match secs {
-                Some(s) => format!("Audio · {} · transcribing…", tern_agent::media::clock(*s)),
-                None => "Audio · transcribing…".to_owned(),
+        let audio = self.model.audio_pending.iter().map(|job| {
+            let (name, id) = (&job.name, job.id);
+            let pc = job.ctl.progress();
+            let doing = if pc > 0 {
+                format!("transcribing… {pc}%")
+            } else {
+                "transcribing…".to_owned()
+            };
+            let detail = match job.secs {
+                Some(s) => format!("Audio · {} · {doing}", tern_agent::media::clock(s)),
+                None => format!("Audio · {doing}"),
             };
             div()
                 .flex()
@@ -3635,6 +3752,15 @@ impl Workspace {
                                 .child(SharedString::from(detail)),
                         ),
                 )
+                .child(chip_remove(
+                    ("audio-remove", id as usize),
+                    "Stop transcribing and remove",
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        this.model.cancel_audio(id);
+                        cx.notify();
+                    }),
+                ))
         });
         div()
             .flex()
@@ -3724,17 +3850,15 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        Button::new(("attach-remove", i)).capsule()
-                            .icon(IconName::Close)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Remove")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model.remove_attachment(i);
-                                cx.notify();
-                            })),
-                    )
+                    .child(chip_remove(
+                        ("attach-remove", i),
+                        "Remove",
+                        p,
+                        cx.listener(move |this, _, _, cx| {
+                            this.model.remove_attachment(i);
+                            cx.notify();
+                        }),
+                    ))
             }))
             .children(audio)
             .children(loading)
@@ -5130,6 +5254,10 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let build_from = Instant::now();
+        if let Some(text) = self.composer_restore.take() {
+            self.composer
+                .update(cx, |c, cx| c.set_value(text, window, cx));
+        }
         self.save_session_soon(cx);
         self.tick_scout(window, cx);
         self.tick_explain(window, cx);
@@ -6055,4 +6183,38 @@ pub(crate) fn page_latch(handle: &gpui_kit::ScrollHandle) -> impl IntoElement {
     )
     .absolute()
     .inset_0()
+}
+
+/// The × on a composer chip: always drawn (not only on hover), with a
+/// hover background so it reads as a button. Clicks never reach the chip
+/// or the composer under it.
+fn chip_remove(
+    id: impl Into<gpui_kit::ElementId>,
+    tip: &'static str,
+    p: Palette,
+    on: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.))
+        .rounded_md()
+        .cursor_pointer()
+        .text_sm()
+        .text_color(p.muted)
+        .hover(|d| d.bg(p.hover).text_color(p.text))
+        .child("×")
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+        })
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(move |e, window, cx| {
+            cx.stop_propagation();
+            on(e, window, cx)
+        })
 }

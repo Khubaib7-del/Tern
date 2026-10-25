@@ -110,20 +110,41 @@ pub(crate) fn migrate(conn: &Connection) -> StoreResult<()> {
             supported: SCHEMA_VERSION,
         });
     }
-    if found < 1 {
-        conn.execute_batch(&format!("BEGIN; {V1} PRAGMA user_version = 1; COMMIT;"))?;
+    if found == SCHEMA_VERSION {
+        return Ok(());
     }
-    if found < 2 {
-        conn.execute_batch(&format!("BEGIN; {V2} PRAGMA user_version = 2; COMMIT;"))?;
+    // Two connections can open a new database at the same moment (the
+    // desktop opens it from the window and from the bridge at launch). Both
+    // read version 0 and both ran V1, and the second failed with "table
+    // projects already exists" (seen on the Windows tour's first launch).
+    // Take the write lock first, then read the version again, so one
+    // connection runs the steps and the other finds them done.
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    match steps(conn) {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
     }
-    if found < 3 {
-        conn.execute_batch(&format!("BEGIN; {V3} PRAGMA user_version = 3; COMMIT;"))?;
+}
+
+/// The migration steps still to run, inside the caller's transaction.
+fn steps(conn: &Connection) -> StoreResult<()> {
+    let found: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if found > SCHEMA_VERSION {
+        return Err(StoreError::TooNew {
+            found,
+            supported: SCHEMA_VERSION,
+        });
     }
-    if found < 4 {
-        conn.execute_batch(&format!("BEGIN; {V4} PRAGMA user_version = 4; COMMIT;"))?;
-    }
-    if found < 5 {
-        conn.execute_batch(&format!("BEGIN; {V5} PRAGMA user_version = 5; COMMIT;"))?;
+    for (n, sql) in [(1, V1), (2, V2), (3, V3), (4, V4), (5, V5)] {
+        if found < n {
+            conn.execute_batch(&format!("{sql} PRAGMA user_version = {n};"))?;
+        }
     }
     Ok(())
 }

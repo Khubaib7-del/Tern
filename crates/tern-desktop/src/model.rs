@@ -157,6 +157,14 @@ pub enum Pick {
     Browse,
     /// A file the user typed or pasted by its full path, to attach.
     Path(std::path::PathBuf),
+    /// A file to attach: one attached lately, one in the chat's
+    /// workspace folder, or one in the folder being browsed.
+    File(std::path::PathBuf),
+    /// A folder to open in the menu (its files and folders are listed
+    /// next; the first row then attaches the folder itself).
+    Folder(std::path::PathBuf),
+    /// Another chat, attached as a summary of where it stands.
+    Chat(tern_core::SessionId),
 }
 
 /// One row of the `@` menu.
@@ -168,7 +176,7 @@ pub struct Candidate {
 }
 
 /// What choosing a row does to the composer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Chosen {
     pub text: String,
     pub browse: bool,
@@ -176,6 +184,8 @@ pub struct Chosen {
     pub fetch: Option<(String, String)>,
     /// A file typed by its full path, to attach.
     pub attach: Option<std::path::PathBuf>,
+    /// Another chat to attach as a summary: its id and title.
+    pub chat: Option<(tern_core::SessionId, String)>,
 }
 
 /// What choosing a `/` row asks the window to do.
@@ -344,6 +354,37 @@ pub struct Connection {
     pub context_window: Option<u64>,
 }
 
+/// Which chat a composer draft belongs to: its session, or `None` for a
+/// new chat that has no id yet.
+pub type DraftKey = Option<tern_core::SessionId>;
+
+/// An attached audio file being transcribed.
+#[derive(Clone, Debug)]
+pub struct PendingAudio {
+    pub id: u64,
+    pub name: String,
+    /// How long it plays, when known.
+    pub secs: Option<f64>,
+    /// The chat it was attached in; the transcript goes there.
+    pub chat: DraftKey,
+    /// Progress and cancel, shared with the work.
+    pub ctl: tern_agent::local_models::TranscribeCtl,
+}
+
+/// A chat's composer while another chat is open.
+#[derive(Clone, Debug, Default)]
+pub struct Draft {
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    pub audio: Vec<PendingAudio>,
+}
+
+impl Draft {
+    fn is_empty(&self) -> bool {
+        self.text.trim().is_empty() && self.attachments.is_empty() && self.audio.is_empty()
+    }
+}
+
 /// The whole window's state.
 #[derive(Debug)]
 pub struct Model {
@@ -399,9 +440,18 @@ pub struct Model {
     /// Attached audio files being transcribed: name and how long each
     /// plays, when known. Each shows as a chip until its transcript
     /// arrives as an attachment.
-    pub audio_pending: Vec<(String, Option<f64>)>,
+    pub audio_pending: Vec<PendingAudio>,
+    /// Each other chat's composer as it was left: text, attachments, and
+    /// audio still being transcribed. Switching chats puts the open
+    /// chat's here and takes the next chat's out.
+    pub drafts: HashMap<DraftKey, Draft>,
+    /// The next [`PendingAudio::id`].
+    next_audio: u64,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The chat the composer belongs to (`None` for a new chat), so the
+    /// `@` menu does not offer the chat to itself.
+    pub chat_here: DraftKey,
     /// The `/` menu over the composer, while a command is being typed.
     pub slash: Option<crate::commands::SlashMenu>,
     /// The form a prompt's arguments or a template's parts are typed into.
@@ -593,6 +643,8 @@ impl Model {
             outgoing_images: Vec::new(),
             catalog: Default::default(),
             audio_pending: Vec::new(),
+            drafts: HashMap::new(),
+            next_audio: 0,
             mention: None,
             slash: None,
             arg_form: None,
@@ -639,6 +691,7 @@ impl Model {
             panels: Default::default(),
             archive: Default::default(),
             workspace: None,
+            chat_here: None,
             paused: false,
             row_menu: None,
             confirm_delete: None,
@@ -1179,6 +1232,7 @@ impl Model {
                 ));
             }
         }
+        self.file_candidates(q, &mut rows);
         rows.sort_by_key(|(r, _)| *r);
         let mut out: Vec<Candidate> = rows
             .into_iter()
@@ -1187,10 +1241,103 @@ impl Model {
             .collect();
         out.push(Candidate {
             pick: Pick::Browse,
-            label: "Attach a file or folder…".into(),
-            detail: "Files, folders, and .zip".into(),
+            label: "Browse…".into(),
+            detail: "Pick files from this computer".into(),
         });
         out
+    }
+
+    /// The `@` menu's file, folder, and chat rows: the folder being
+    /// browsed when a full path is typed (`@C:\Users\me\`, `@~/docs/`),
+    /// else files attached lately and files in the chat's workspace
+    /// folder that match, then other chats whose titles match.
+    fn file_candidates(&self, q: &str, rows: &mut Vec<(u8, Candidate)>) {
+        let seen = |rows: &Vec<(u8, Candidate)>, path: &std::path::Path| {
+            rows.iter().any(|(_, c)| match &c.pick {
+                Pick::Path(p) | Pick::File(p) | Pick::Folder(p) => p == path,
+                _ => false,
+            })
+        };
+        let attached = |name: &str| self.attachments.iter().any(|a| a.name == name);
+        if let Some((dir, filter)) = mention::browsed_dir(q) {
+            for e in mention::list_dir(&dir, &filter, MENU_ROWS * 2) {
+                let pick = if e.is_dir {
+                    Pick::Folder(e.path.clone())
+                } else {
+                    Pick::File(e.path.clone())
+                };
+                let detail = if e.is_dir { "Folder" } else { "File" };
+                rows.push((
+                    1,
+                    Candidate {
+                        pick,
+                        label: e.name,
+                        detail: detail.into(),
+                    },
+                ));
+            }
+            return;
+        }
+        for raw in &self.providers.prefs.recent_files {
+            let path = std::path::PathBuf::from(raw);
+            let name = path_label(&path);
+            if mention::matches(q, &name) && !attached(&name) && !seen(rows, &path) {
+                rows.push((
+                    mention::rank(q, &name).saturating_add(1),
+                    Candidate {
+                        detail: "Recent".into(),
+                        label: name,
+                        pick: Pick::File(path),
+                    },
+                ));
+            }
+        }
+        if let Some((_, root)) = &self.workspace
+            && root.is_dir()
+        {
+            for e in mention::workspace_files(root, q, MENU_ROWS) {
+                if attached(&e.name) || seen(rows, &e.path) {
+                    continue;
+                }
+                let detail = e
+                    .path
+                    .parent()
+                    .and_then(|d| d.strip_prefix(root).ok())
+                    .map(|d| d.display().to_string())
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| "Workspace".into());
+                let pick = if e.is_dir {
+                    Pick::Folder(e.path.clone())
+                } else {
+                    Pick::File(e.path.clone())
+                };
+                rows.push((
+                    mention::rank(q, &e.name).saturating_add(2),
+                    Candidate {
+                        pick,
+                        label: e.name,
+                        detail,
+                    },
+                ));
+            }
+        }
+        if !q.is_empty() {
+            for s in &self.all_sessions {
+                if Some(s.id) == self.chat_here || s.title.trim().is_empty() {
+                    continue;
+                }
+                if mention::matches(q, &s.title) {
+                    rows.push((
+                        mention::rank(q, &s.title).saturating_add(5),
+                        Candidate {
+                            pick: Pick::Chat(s.id),
+                            label: s.title.clone(),
+                            detail: "Chat".into(),
+                        },
+                    ));
+                }
+            }
+        }
     }
 
     /// Moves the highlight up (-1) or down (+1), wrapping.
@@ -1211,21 +1358,51 @@ impl Model {
         let row = rows.get(index.unwrap_or(m.selected))?.clone();
         self.mention = None;
         let name = match row.pick {
-            Pick::Path(path) => {
+            Pick::Path(path) | Pick::File(path) => {
                 let name = path_label(&path);
                 return Some(Chosen {
                     text: mention::complete(text, &name),
-                    browse: false,
-                    fetch: None,
                     attach: Some(path),
+                    ..Chosen::default()
+                });
+            }
+            Pick::Folder(dir) => {
+                // Opens the folder in the menu: the query becomes its path.
+                let mut shown = dir.display().to_string();
+                if !shown.ends_with(['/', '\\']) {
+                    shown.push(std::path::MAIN_SEPARATOR);
+                }
+                let at = if shown.contains(' ') {
+                    format!("@\"{shown}")
+                } else {
+                    format!("@{shown}")
+                };
+                let text = format!("{}{at}", &text[..m.start.min(text.len())]);
+                self.on_composer_text(&text);
+                return Some(Chosen {
+                    text,
+                    ..Chosen::default()
+                });
+            }
+            Pick::Chat(id) => {
+                let title = self
+                    .all_sessions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| "Chat".into());
+                self.attaching += 1;
+                return Some(Chosen {
+                    text: mention::complete(text, &title),
+                    chat: Some((id, title)),
+                    ..Chosen::default()
                 });
             }
             Pick::Browse => {
                 return Some(Chosen {
                     text: mention::clear_active(text),
                     browse: true,
-                    fetch: None,
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Resource(item) if item.kind == ItemKind::Template => {
@@ -1235,18 +1412,15 @@ impl Model {
                 ));
                 return Some(Chosen {
                     text: mention::clear_active(text),
-                    browse: false,
-                    fetch: None,
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Resource(item) => {
                 self.attaching += 1;
                 return Some(Chosen {
                     text: mention::complete(text, item.label()),
-                    browse: false,
                     fetch: Some((item.server.clone(), item.uri.clone())),
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Attachment(i) => {
@@ -1268,9 +1442,7 @@ impl Model {
         };
         Some(Chosen {
             text: mention::complete(text, &name),
-            browse: false,
-            fetch: None,
-            attach: None,
+            ..Chosen::default()
         })
     }
 
@@ -1302,28 +1474,123 @@ impl Model {
         }
     }
 
-    /// An attached audio file went to the speech-to-text model.
-    pub fn audio_started(&mut self, name: String, secs: Option<f64>) {
-        self.audio_pending.push((name, secs));
+    /// An attached audio file went to the speech-to-text model, from the
+    /// chat `chat`: its chip shows until the transcript comes back. The
+    /// returned id and control go with the work ([`Model::audio_transcribed`],
+    /// progress, and × to cancel).
+    pub fn audio_started(
+        &mut self,
+        name: String,
+        secs: Option<f64>,
+        chat: DraftKey,
+    ) -> (u64, tern_agent::local_models::TranscribeCtl) {
+        self.next_audio += 1;
+        let ctl = tern_agent::local_models::TranscribeCtl::new();
+        self.audio_pending.push(PendingAudio {
+            id: self.next_audio,
+            name,
+            secs,
+            chat,
+            ctl: ctl.clone(),
+        });
+        (self.next_audio, ctl)
     }
 
-    /// An attached audio file's transcript came back: it rides with the
-    /// next message as an attachment named for the file.
-    pub fn audio_transcribed(
-        &mut self,
-        name: &str,
-        secs: Option<f64>,
-        result: Result<String, String>,
-    ) {
-        if let Some(i) = self.audio_pending.iter().position(|(n, _)| n == name) {
-            self.audio_pending.remove(i);
+    /// Audio `id`'s transcript came back: it rides with the next message
+    /// of the chat that started it, as an attachment named for the file.
+    /// That chat may no longer be the open one; its draft gets it. A
+    /// cancelled one (× on its chip) is dropped without a word.
+    pub fn audio_transcribed(&mut self, id: u64, result: Result<String, String>) {
+        let (job, here) = match self.audio_pending.iter().position(|a| a.id == id) {
+            Some(i) => (self.audio_pending.remove(i), true),
+            None => {
+                let Some((job, _)) = self.drafts.values_mut().find_map(|d| {
+                    let i = d.audio.iter().position(|a| a.id == id)?;
+                    Some((d.audio.remove(i), ()))
+                }) else {
+                    return;
+                };
+                (job, false)
+            }
+        };
+        if job.ctl.is_cancelled() {
+            return;
         }
+        let name = job.name.as_str();
         match result {
-            Ok(text) if !text.trim().is_empty() => self
-                .attachments
-                .push(Attachment::transcript(name, secs, &text)),
+            Ok(text) if !text.trim().is_empty() => {
+                let a = Attachment::transcript(name, job.secs, &text);
+                if here {
+                    self.attachments.push(a);
+                } else {
+                    self.drafts.entry(job.chat).or_default().attachments.push(a);
+                    self.toast_info(format!(
+                        "{name} is transcribed; it waits in the chat you attached it to."
+                    ));
+                }
+            }
             Ok(_) => self.toast_error(format!("{name} has no speech Tern could hear."), None),
+            Err(e) if e == tern_agent::local_models::CANCELLED => {}
             Err(e) => self.toast_error(format!("Tern could not transcribe {name}: {e}"), None),
+        }
+    }
+
+    /// × on a transcribing chip: stops the work and drops the chip.
+    pub fn cancel_audio(&mut self, id: u64) {
+        if let Some(i) = self.audio_pending.iter().position(|a| a.id == id) {
+            let job = self.audio_pending.remove(i);
+            job.ctl.cancel();
+        }
+    }
+
+    /// Backspace in an empty composer: the last chip goes (a transcribing
+    /// one is cancelled). Returns whether one went.
+    pub fn remove_last_chip(&mut self) -> bool {
+        if let Some(job) = self.audio_pending.pop() {
+            job.ctl.cancel();
+            return true;
+        }
+        self.attachments.pop().is_some()
+    }
+
+    /// Puts the open chat's composer away under `key` before another chat
+    /// shows: `text` (what is typed), its attachments, and audio still
+    /// being transcribed (it keeps going and lands there).
+    pub fn stash_draft(&mut self, key: DraftKey, text: String) {
+        let d = Draft {
+            text,
+            attachments: std::mem::take(&mut self.attachments),
+            audio: std::mem::take(&mut self.audio_pending),
+        };
+        if d.is_empty() {
+            self.drafts.remove(&key);
+        } else {
+            self.drafts.insert(key, d);
+        }
+    }
+
+    /// Takes chat `key`'s composer back out: its attachments and audio
+    /// show again, and the returned text goes into the field.
+    pub fn restore_draft(&mut self, key: DraftKey) -> String {
+        let d = self.drafts.remove(&key).unwrap_or_default();
+        self.attachments = d.attachments;
+        self.audio_pending = d.audio;
+        d.text
+    }
+
+    /// A new chat got its id: its draft and its audio follow it.
+    pub fn rekey_draft(&mut self, from: DraftKey, to: DraftKey) {
+        if let Some(d) = self.drafts.remove(&from) {
+            self.drafts.insert(to, d);
+        }
+        for a in self
+            .audio_pending
+            .iter_mut()
+            .chain(self.drafts.values_mut().flat_map(|d| d.audio.iter_mut()))
+        {
+            if a.chat == from {
+                a.chat = to;
+            }
         }
     }
 
@@ -1831,6 +2098,7 @@ impl Model {
         // Nothing waits to go from another chat: no attachments and no
         // pictures (a new chat starts empty; an opened chat starts clean).
         self.attachments.clear();
+        self.audio_pending.clear();
         self.outgoing_images.clear();
         self.reveal = None;
         self.thought_open.clear();
@@ -3152,11 +3420,65 @@ mod tests {
     }
 
     #[test]
+    fn each_chat_keeps_its_own_composer_and_audio_lands_where_it_started() {
+        let a = Some(tern_core::SessionId::new());
+        let b = Some(tern_core::SessionId::new());
+        let mut m = ready();
+        // Chat A: a picture and a voice memo still transcribing.
+        m.attachments.push(Attachment::paste(&"x".repeat(3)));
+        let (id, ctl) = m.audio_started("memo.m4a".into(), Some(12.0), a);
+        m.stash_draft(a, "half a question".into());
+        // Chat B shows its own, empty composer.
+        assert_eq!(m.restore_draft(b), "");
+        assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
+        // The transcript finishes while B is open: it goes to A, not B.
+        m.audio_transcribed(id, Ok("Buy milk.".into()));
+        assert!(m.attachments.is_empty());
+        assert!(!ctl.is_cancelled());
+        // Back to A: text, the picture, and the transcript.
+        m.stash_draft(b, String::new());
+        assert_eq!(m.restore_draft(a), "half a question");
+        assert_eq!(m.attachments.len(), 2);
+        assert_eq!(m.attachments[1].detail(), "Audio · 0:12 · transcript");
+        assert!(m.drafts.is_empty(), "an empty draft is not kept");
+    }
+
+    #[test]
+    fn chips_go_with_x_or_backspace_and_x_cancels_a_transcription() {
+        let mut m = ready();
+        m.attachments.push(Attachment::paste(&"x".repeat(3)));
+        let (id, ctl) = m.audio_started("memo.m4a".into(), None, None);
+        m.cancel_audio(id);
+        assert!(ctl.is_cancelled() && m.audio_pending.is_empty());
+        // Its result, arriving later, is dropped without a toast.
+        let toasts = m.toasts.shown().len();
+        m.audio_transcribed(id, Err(tern_agent::local_models::CANCELLED.into()));
+        assert_eq!(m.toasts.shown().len(), toasts);
+        assert!(m.attachments.len() == 1);
+        // Backspace: the transcribing chip first, then the attachments.
+        let (_, ctl) = m.audio_started("b.m4a".into(), None, None);
+        assert!(m.remove_last_chip() && ctl.is_cancelled());
+        assert!(m.remove_last_chip() && m.attachments.is_empty());
+        assert!(!m.remove_last_chip());
+    }
+
+    #[test]
+    fn a_new_chats_draft_follows_it_when_it_gets_an_id() {
+        let mut m = ready();
+        let (id, _) = m.audio_started("memo.m4a".into(), None, None);
+        let to = Some(tern_core::SessionId::new());
+        m.rekey_draft(None, to);
+        assert_eq!(m.audio_pending[0].chat, to);
+        m.audio_transcribed(id, Ok("hi".into()));
+        assert_eq!(m.attachments.len(), 1);
+    }
+
+    #[test]
     fn an_attached_audio_file_becomes_its_transcript() {
         let mut m = ready();
-        m.audio_started("memo.m4a".into(), Some(42.0));
+        let (id, _) = m.audio_started("memo.m4a".into(), Some(42.0), None);
         assert_eq!(m.audio_pending.len(), 1);
-        m.audio_transcribed("memo.m4a", Some(42.0), Ok("Buy milk.".into()));
+        m.audio_transcribed(id, Ok("Buy milk.".into()));
         assert!(m.audio_pending.is_empty());
         assert_eq!(m.attachments.len(), 1);
         assert_eq!(m.attachments[0].detail(), "Audio · 0:42 · transcript");
@@ -3164,8 +3486,8 @@ mod tests {
         assert!(msg.contains("Buy milk."), "{msg}");
         // A failure is a toast; nothing is attached.
         let mut m = ready();
-        m.audio_started("x.wav".into(), None);
-        m.audio_transcribed("x.wav", None, Err("no model".into()));
+        let (id, _) = m.audio_started("x.wav".into(), None, None);
+        m.audio_transcribed(id, Err("no model".into()));
         assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
         // With no model, the toast opens Settings › Local models.
         m.audio_needs_model("memo.m4a");
@@ -3199,6 +3521,91 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r.pick, Pick::Path(_)))
         );
+    }
+
+    #[test]
+    fn the_at_menu_lists_files_folders_recent_files_and_chats() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("notes")).unwrap();
+        std::fs::write(d.path().join("notes").join("plan.md"), "x").unwrap();
+        std::fs::write(d.path().join("readme.txt"), "x").unwrap();
+        let mut m = ready();
+        // A typed folder is browsed: the folder itself first (to attach),
+        // then its folders, then its files.
+        let root = format!("{}{}", d.path().display(), std::path::MAIN_SEPARATOR);
+        let typed = format!("see @{root}");
+        m.on_composer_text(&typed);
+        let rows = m.mention_candidates();
+        assert!(matches!(&rows[0].pick, Pick::Path(_)), "{rows:?}");
+        assert!(matches!(&rows[1].pick, Pick::Folder(p) if p.ends_with("notes")));
+        assert!(matches!(&rows[2].pick, Pick::File(p) if p.ends_with("readme.txt")));
+        assert_eq!(rows.last().unwrap().pick, Pick::Browse);
+        // Choosing a folder drills down; the menu stays open on it.
+        let chosen = m.choose_mention(&typed, Some(1)).unwrap();
+        assert!(
+            chosen
+                .text
+                .ends_with(&format!("notes{}", std::path::MAIN_SEPARATOR))
+        );
+        assert!(chosen.attach.is_none() && !chosen.browse);
+        m.on_composer_text(&chosen.text);
+        let rows = m.mention_candidates();
+        assert!(rows.iter().any(|r| r.label == "plan.md"), "{rows:?}");
+        // A file there attaches.
+        let i = rows.iter().position(|r| r.label == "plan.md").unwrap();
+        let chosen = m.choose_mention(&chosen.text, Some(i)).unwrap();
+        assert_eq!(chosen.text, "see @plan.md ");
+        assert!(chosen.attach.unwrap().ends_with("plan.md"));
+
+        // With a workspace folder open, its files match by name.
+        let mut m = ready();
+        m.workspace = Some(("ws".into(), d.path().to_path_buf()));
+        m.on_composer_text("read @pla");
+        let rows = m.mention_candidates();
+        assert!(matches!(&rows[0].pick, Pick::File(p) if p.ends_with("plan.md")));
+        assert_eq!(rows[0].detail, "notes");
+
+        // Files attached lately are offered, newest first.
+        let mut m = ready();
+        let recent = d.path().join("readme.txt").display().to_string();
+        m.providers.prefs.note_recent_file(&recent);
+        m.on_composer_text("open @");
+        let rows = m.mention_candidates();
+        assert_eq!(rows[0].label, "readme.txt");
+        assert_eq!(rows[0].detail, "Recent");
+
+        // Other chats match by title; the open chat is not offered.
+        let mut m = ready();
+        let (here, other) = (tern_core::SessionId::new(), tern_core::SessionId::new());
+        for (id, title) in [(here, "Budget draft"), (other, "Budget review")] {
+            m.all_sessions.push(SessionSummary {
+                id,
+                title: title.into(),
+                harness: Harness::Research,
+                created_at: String::new(),
+                events: 3,
+                parent: None,
+                anchor: None,
+                plan: None,
+                project: None,
+            });
+        }
+        m.chat_here = Some(here);
+        m.on_composer_text("as in @budget");
+        let rows = m.mention_candidates();
+        let chats: Vec<&Candidate> = rows
+            .iter()
+            .filter(|r| matches!(r.pick, Pick::Chat(_)))
+            .collect();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].label, "Budget review");
+        let i = rows
+            .iter()
+            .position(|r| r.pick == Pick::Chat(other))
+            .unwrap();
+        let chosen = m.choose_mention("as in @budget", Some(i)).unwrap();
+        assert_eq!(chosen.chat, Some((other, "Budget review".into())));
+        assert_eq!(m.attaching, 1);
     }
 
     #[test]

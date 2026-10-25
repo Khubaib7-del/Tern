@@ -32,7 +32,33 @@ pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
+    if !req.tools.is_empty() {
+        body["tools"] = req
+            .tools
+            .iter()
+            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}))
+            .collect();
+        body["tool_choice"] = json!("auto");
+    }
     body
+}
+
+/// The native tool calls in a reply message: name and arguments (a JSON
+/// string on OpenAI, Mistral sends a string or an object).
+pub(crate) fn tool_calls(message: Option<&Value>) -> Vec<(String, Value)> {
+    message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let f = c.get("function")?;
+            Some((
+                f.get("name")?.as_str()?.to_owned(),
+                f.get("arguments").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, String> {
@@ -48,6 +74,7 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
             .unwrap_or_default()
             .to_owned(),
     };
+    let text = crate::chat::with_tool_calls(text, &tool_calls(choice.get("message")));
     let usage = match (
         u64_at(v, &["usage", "prompt_tokens"]),
         u64_at(v, &["usage", "completion_tokens"]),

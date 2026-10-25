@@ -14,3 +14,6 @@ pub(crate) fn str_at<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
 pub(crate) fn u64_at(v: &Value, path: &[&str]) -> Option<u64> {
     path.iter().try_fold(v, |v, k| v.get(*k))?.as_u64()
 }
+
+#[cfg(test)]
+mod tools_tests;

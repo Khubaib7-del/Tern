@@ -66,6 +66,9 @@ pub struct SessionState {
     pub sidebar_open: Option<bool>,
 }
 
+/// How many recent files the `@` menu remembers.
+pub const RECENT_FILES: usize = 20;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -184,6 +187,9 @@ pub struct Preferences {
     /// Local models: which installed ones are off and the default per task
     /// (Settings › Local models, `tern models`).
     pub local_models: crate::local_models::LocalModelPrefs,
+    /// Files attached lately (full paths, newest first), offered by the
+    /// `@` menu.
+    pub recent_files: Vec<String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -282,6 +288,14 @@ impl Preferences {
         self.base_urls.remove(id);
         self.forget_provider(id);
         tern_providers::custom::register_all(&self.custom_providers);
+    }
+
+    /// Notes a file the user attached, newest first, at most
+    /// [`RECENT_FILES`] kept.
+    pub fn note_recent_file(&mut self, path: &str) {
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_owned());
+        self.recent_files.truncate(RECENT_FILES);
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
@@ -469,6 +483,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_files_are_newest_first_without_repeats() {
+        let mut p = Preferences::default();
+        p.note_recent_file("/a");
+        p.note_recent_file("/b");
+        p.note_recent_file("/a");
+        assert_eq!(p.recent_files, ["/a", "/b"]);
+        for i in 0..30 {
+            p.note_recent_file(&format!("/f{i}"));
+        }
+        assert_eq!(p.recent_files.len(), RECENT_FILES);
+        assert_eq!(p.recent_files[0], "/f29");
+    }
+
+    #[test]
     fn tools_base_urls_and_onboarding_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.json");
@@ -609,6 +637,7 @@ mod tests {
             scout_pos: Some((40, 600)),
             scout_variant: Some("study".into()),
             local_models: Default::default(),
+            recent_files: vec!["/home/me/notes.md".into()],
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

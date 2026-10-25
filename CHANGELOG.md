@@ -4,6 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #65)
+
+From the Windows test of #64.
+
+- **Each chat keeps its own composer**: text, attachments and audio still being transcribed stay with the chat they were added in, and a transcript lands in the chat that started it, not the one on screen.
+- **Chips can be removed**: every chip has a visible **×**; **×** on an audio chip cancels its transcription; Backspace in an empty composer removes the last chip. The audio chip shows its progress in %.
+- **`@` offers files, not just folders**: files attached lately, files in the chat's workspace, a typed folder (`@C:\Users\me\`, `@~/docs/`) opened in the menu to drill down, and other chats (attached as a summary); each row has its icon; **Browse…** opens the system file picker.
+- **A typed full path and "use the web" are acted on before the model answers**: a full path in the message is read first (approved like any read outside the workspace) and "use the web", "search the web for", "look it up online" run the search first, so models that never call tools still answer from them (one model call, not a refusal or "I don't know").
+- **Native tool calling** for OpenAI-compatible providers (Mistral and others), Anthropic and Gemini, offered each turn beside the text protocol; a model that refuses tools gets the turn again without them and is remembered for the session. One diagnostic line per turn in `tern.log` (tools offered and called, model calls).
+- **Local Whisper finishes on Windows.** Every run aborted at once (code -6): the abort callback was not boxed the way `whisper-rs` reads it. And whisper.cpp was built **without optimisation** on Windows: under MSVC the `cmake` crate replaces `CMAKE_<LANG>_FLAGS_RELEASE` with the cc crate's flags minus every `/O` flag, so CMake's `/O2 /Ob2 /DNDEBUG` was lost (Whisper small took 115–117 s for a 12 s clip on the Windows runner, against about 8 s on Linux). `.cargo/whisper-msvc-opt.cmake`, included after every `project()` through `CMAKE_PROJECT_INCLUDE` (`.cargo/config.toml`), puts them back under MSVC only; CI prints whisper.cpp's flags. Transcription shows progress, can be cancelled, has a time limit, and reports per-stage timings (decode, resample, load, inference); `tern.log` names the transcriber. The CI speech benchmark times Whisper small and Moonshine on a real clip on Linux and Windows.
+- **Toasts with a button stay readable**: the action (Retry, Open Local models) sits under the text, which keeps the toast's full width (it was squeezed to one word per line).
+- **Chat titles stop before the attachments**: the title is the words typed, never the `<attachments>` block; a message of attachments alone is titled by their names.
+- **First launch no longer fails with "table projects already exists".** Two connections opening a new database at once (the window and the bridge at launch) both read schema version 0 and both created the tables; the second failed and the chat showed "Tern could not open a model" (seen on the Windows tour's first launch). Migrations now take SQLite's write lock first and read the version again inside it (`schema::migrate`), and the busy timeout is set before anything else; a test opens a new database from four threads at once.
+- **UI tour**: `TERN_TOUR_ONLY=composer` runs a real chat against a mock OpenAI-compatible model on localhost (a typed path read, a transcription, answers from attachments), two stills per scene.
+
 ### Fixed (PR #64)
 
 From the Windows test of #63.

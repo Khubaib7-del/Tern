@@ -178,6 +178,115 @@ pub fn source_attachment(page: &PageRef) -> Attachment {
     }
 }
 
+/// One entry of a folder the `@` menu lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// The folder a typed `@` query browses: the query when it is a folder
+/// (`C:\Users\me\`, `~/docs/`), else the folder part of a partly typed
+/// path (`~/docs/no` browses `~/docs` for names starting `no`). Returns
+/// the folder and the name filter.
+pub fn browsed_dir(query: &str) -> Option<(std::path::PathBuf, String)> {
+    let q = query.trim().trim_matches('"');
+    if !crate::paths::looks_absolute(q) {
+        return None;
+    }
+    let full = crate::paths::user_path(q);
+    if (q.ends_with('/') || q.ends_with('\\') || q == "~") && full.is_dir() {
+        return Some((full, String::new()));
+    }
+    let cut = q.rfind(['/', '\\'])?;
+    let (dir, rest) = (&q[..=cut], &q[cut + 1..]);
+    let dir = crate::paths::user_path(dir);
+    dir.is_dir().then(|| (dir, rest.to_owned()))
+}
+
+/// A folder's entries for the `@` menu: folders first, then files, by
+/// name, hidden ones left out, those starting with `filter` (any case).
+pub fn list_dir(dir: &std::path::Path, filter: &str, limit: usize) -> Vec<DirEntry> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let f = filter.to_lowercase();
+    let mut out: Vec<DirEntry> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !name.to_lowercase().starts_with(&f) {
+                return None;
+            }
+            let is_dir = e.file_type().ok()?.is_dir();
+            Some(DirEntry {
+                path: e.path(),
+                name,
+                is_dir,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out.truncate(limit);
+    out
+}
+
+/// Files under a workspace folder whose names match `query`, best first,
+/// for the `@` menu: walks at most a few thousand entries, skipping
+/// hidden folders, `node_modules`, and `target`. Folders are offered only
+/// for a non-empty query.
+pub fn workspace_files(root: &std::path::Path, query: &str, limit: usize) -> Vec<DirEntry> {
+    let mut found: Vec<(u8, DirEntry)> = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    'walk: while let Some((dir, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > 4_000 {
+                break 'walk;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || name == "node_modules" || name == "target" {
+                continue;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                if depth < 6 {
+                    stack.push((e.path(), depth + 1));
+                }
+                if !query.is_empty() && matches(query, &name) {
+                    let entry = DirEntry {
+                        path: e.path(),
+                        name,
+                        is_dir: true,
+                    };
+                    found.push((rank(query, &entry.name).saturating_add(1), entry));
+                }
+            } else if matches(query, &name) {
+                let entry = DirEntry {
+                    path: e.path(),
+                    name,
+                    is_dir: false,
+                };
+                found.push((rank(query, &entry.name), entry));
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    found.into_iter().map(|(_, e)| e).take(limit).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +379,39 @@ mod tests {
         assert_eq!(typed_path("/"), None);
         // A closed quote earlier is not a mention being typed.
         assert!(active("see @\"/tmp/a.txt\" and more").is_none());
+    }
+}
+
+#[cfg(test)]
+mod browse_tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_folder_is_browsed_and_workspace_files_are_found() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("notes")).unwrap();
+        std::fs::write(d.path().join("notes").join("plan.md"), "x").unwrap();
+        std::fs::write(d.path().join("readme.txt"), "x").unwrap();
+        std::fs::write(d.path().join(".hidden"), "x").unwrap();
+        let root = format!("{}{}", d.path().display(), std::path::MAIN_SEPARATOR);
+        let (dir, filter) = browsed_dir(&root).unwrap();
+        assert_eq!(filter, "");
+        let names: Vec<String> = list_dir(&dir, &filter, 10)
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(
+            names,
+            ["notes", "readme.txt"],
+            "folders first, hidden left out"
+        );
+        let (dir, filter) = browsed_dir(&format!("{root}rea")).unwrap();
+        assert_eq!(list_dir(&dir, &filter, 10)[0].name, "readme.txt");
+        assert!(browsed_dir("notes/").is_none(), "only full paths browse");
+        let hits = workspace_files(d.path(), "plan", 5);
+        assert_eq!(hits[0].name, "plan.md");
+        assert!(!hits[0].is_dir);
+        // An empty query lists files only.
+        assert!(workspace_files(d.path(), "", 10).iter().all(|e| !e.is_dir));
     }
 }
