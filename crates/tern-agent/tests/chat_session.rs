@@ -157,9 +157,10 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert!(ctx.estimated, "no call yet in the reopened window");
     // 32 characters of history and the system prompt (the 97-character
     // opening line, then `file_read` for full paths, which every chat has
-    // since #64, and how to call a tool), at four characters a token.
+    // since #64, and how to call a tool, one or several at once since
+    // #66), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (170, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (171, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))
