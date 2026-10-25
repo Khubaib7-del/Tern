@@ -4,13 +4,17 @@
 //! | Tool | Effect | What it does |
 //! | --- | --- | --- |
 //! | `files_list` | Read | Lists a folder inside the workspace (hidden entries left out) |
-//! | `file_read` | Read | Reads a text file inside the workspace |
+//! | `file_read` | Read | Reads a text file inside the workspace, or by a full path the user typed (asks for a file outside it) |
 //! | `file_search` | Read | Finds lines containing words, across text files |
 //! | `file_write` | External side effect (asks) | Writes a text file inside the workspace; Act mode only |
 //!
-//! Every path is resolved against the workspace root and checked after
-//! following symlinks, so `..`, absolute paths, and links that point out
-//! are refused. A one-file workspace exposes only that file.
+//! Every relative path is resolved against the workspace root and checked
+//! after following symlinks, so `..` and links that point out are refused.
+//! A one-file workspace exposes only that file. `file_read` also takes a
+//! full path (`C:\Users\me\a.txt`, `/home/me/a.md`, `~/a.md`, quoted or
+//! not): inside the workspace it reads as usual, outside it the user
+//! approves the file first. With no workspace open, [`LocalFileRead`]
+//! reads full paths only, each approved.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -168,24 +172,30 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Reads a text file: a path relative to the workspace, or a full
+    /// path the user typed (`C:\\Users\\me\\a.txt`, `/home/me/a.md`,
+    /// `~/a.md`, quoted or not). A full path outside the workspace is read
+    /// too; the turn loop asks the user first ([`Workspace::outside`]).
     pub fn read(&self, rel: &str) -> Result<String, ToolError> {
-        let p = self.resolve(rel)?;
-        if p.is_dir() {
-            return Err(ToolError::Failed(
-                "That is a folder; list it with files_list.".into(),
-            ));
+        if crate::paths::looks_absolute(rel) {
+            return read_text_file(&crate::paths::user_path(rel));
         }
-        let meta = std::fs::metadata(&p).map_err(|e| ToolError::Failed(e.to_string()))?;
-        if meta.len() > MAX_FILE_BYTES {
-            return Err(ToolError::Failed("That file is too large to read.".into()));
+        read_text_file(&self.resolve(rel)?)
+    }
+
+    /// The full path `raw` names when it is one and lies outside the
+    /// workspace (or is not its one file), so reading it needs approval.
+    pub fn outside(&self, raw: &str) -> Option<PathBuf> {
+        if !crate::paths::looks_absolute(raw) {
+            return None;
         }
-        let bytes = std::fs::read(&p).map_err(|e| ToolError::Failed(e.to_string()))?;
-        let text = String::from_utf8(bytes)
-            .map_err(|_| ToolError::Failed("That file is not text.".into()))?;
-        Ok(match text.char_indices().nth(READ_CHARS) {
-            Some((at, _)) => format!("{}\n[cut at {READ_CHARS} characters]", &text[..at]),
-            None => text,
-        })
+        let p = crate::paths::user_path(raw);
+        let real = p.canonicalize().unwrap_or_else(|_| p.clone());
+        let inside = match &self.only {
+            Some(only) => real == *only,
+            None => real.starts_with(&self.root),
+        };
+        (!inside).then_some(p)
     }
 
     /// Lines that contain every word of `query` (case-insensitive).
@@ -252,6 +262,92 @@ impl Workspace {
             tools.unregister(n);
         }
     }
+}
+
+/// Reads a text file at a full path, with the same limits as a
+/// workspace read: not a folder, at most 2 MB, UTF-8, cut at 40,000
+/// characters.
+pub fn read_text_file(p: &Path) -> Result<String, ToolError> {
+    if p.as_os_str().is_empty() {
+        return Err(ToolError::Failed("Give the file's path.".into()));
+    }
+    if p.is_dir() {
+        return Err(ToolError::Failed(
+            "That is a folder; give a file inside it.".into(),
+        ));
+    }
+    let meta = std::fs::metadata(p).map_err(|e| {
+        ToolError::Failed(match e.kind() {
+            std::io::ErrorKind::NotFound => format!("There is no file at {}.", p.display()),
+            std::io::ErrorKind::PermissionDenied => {
+                format!("This computer does not let Tern read {}.", p.display())
+            }
+            _ => format!("Cannot read {}: {e}", p.display()),
+        })
+    })?;
+    if meta.len() > MAX_FILE_BYTES {
+        return Err(ToolError::Failed("That file is too large to read.".into()));
+    }
+    let bytes = std::fs::read(p).map_err(|e| ToolError::Failed(e.to_string()))?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| ToolError::Failed("That file is not text.".into()))?;
+    Ok(match text.char_indices().nth(READ_CHARS) {
+        Some((at, _)) => format!("{}\n[cut at {READ_CHARS} characters]", &text[..at]),
+        None => text,
+    })
+}
+
+/// `file_read` for a chat with no workspace: reads a text file by the
+/// full path the user typed. Each file is approved by the user first.
+#[derive(Debug, Clone, Default)]
+pub struct LocalFileRead;
+
+impl Tool for LocalFileRead {
+    fn name(&self) -> &'static str {
+        "file_read"
+    }
+    fn summary(&self) -> &'static str {
+        "Read a text file on this computer by the full path the user gave (C:\\Users\\..., /home/..., ~/...). The user approves each file."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Read
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["path"], "additionalProperties": false,
+               "properties": {"path": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        Some(
+            crate::paths::user_path(&path_arg(args))
+                .display()
+                .to_string(),
+        )
+    }
+    fn asks_because(&self, args: &Value) -> Option<String> {
+        Some(format!(
+            "it reads {} from this computer",
+            crate::paths::user_path(&path_arg(args)).display()
+        ))
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move {
+            let raw = path_arg(&args);
+            if !crate::paths::looks_absolute(&raw) {
+                return Err(ToolError::Failed(
+                    "Give the file's full path (C:\\Users\\..., /home/..., or ~/...); no folder is open as this chat's workspace.".into(),
+                ));
+            }
+            tokio::task::spawn_blocking(move || read_text_file(&crate::paths::user_path(&raw)))
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?
+                .map(ToolOutput::text)
+        })
+    }
+}
+
+/// Adds [`LocalFileRead`] (a chat with no workspace).
+pub fn register_local_read(tools: &mut ToolRegistry) {
+    tools.register(LocalFileRead);
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
@@ -335,15 +431,44 @@ tool!(
     }
 );
 
-tool!(
-    FileRead,
-    "file_read",
-    "Read a text file in the chat's workspace by its path (from files_list or file_search).",
-    EffectClass::Read,
-    json!({"type": "object", "required": ["path"], "additionalProperties": false,
-           "properties": {"path": {"type": "string"}}}),
-    |ws, args| ws.read(&path_arg(&args)).map(ToolOutput::text)
-);
+#[derive(Debug, Clone)]
+struct FileRead(Arc<Workspace>);
+
+impl Tool for FileRead {
+    fn name(&self) -> &'static str {
+        "file_read"
+    }
+    fn summary(&self) -> &'static str {
+        "Read a text file in the chat's workspace by its path (from files_list or file_search), or any file by the full path the user gave (the user approves files outside the workspace)."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Read
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["path"], "additionalProperties": false,
+               "properties": {"path": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        let raw = path_arg(args);
+        Some(match self.0.outside(&raw) {
+            Some(p) => p.display().to_string(),
+            None => format!("{}/{}", self.0.name(), raw),
+        })
+    }
+    fn asks_because(&self, args: &Value) -> Option<String> {
+        self.0
+            .outside(&path_arg(args))
+            .map(|p| format!("{} is outside the workspace", p.display()))
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        let ws = self.0.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || ws.read(&path_arg(&args)).map(ToolOutput::text))
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?
+        })
+    }
+}
 
 tool!(
     FileSearch,
@@ -461,6 +586,61 @@ mod tests {
             std::os::unix::fs::symlink(outside.path().join("o.txt"), d.path().join("link.txt"))
                 .unwrap();
             assert!(w.read("link.txt").is_err());
+        }
+    }
+
+    #[test]
+    fn full_paths_read_inside_and_outside_with_approval() {
+        let (d, w) = ws();
+        let inside = d.path().join("README.md");
+        let raw = inside.display().to_string();
+        assert!(w.read(&raw).unwrap().contains("Paging"));
+        assert!(w.read(&format!("\"{raw}\"")).unwrap().contains("Paging"));
+        assert_eq!(w.outside(&raw), None, "inside needs no approval");
+        assert_eq!(w.outside("README.md"), None, "relative paths stay inside");
+        let other = tempfile::tempdir().unwrap();
+        let out = other.path().join("My Notes.txt");
+        std::fs::write(&out, "outside text").unwrap();
+        let raw = out.display().to_string();
+        assert!(w.outside(&raw).is_some(), "outside asks");
+        assert_eq!(w.read(&format!("'{raw}'")).unwrap(), "outside text");
+        let tool = FileRead(Arc::new(w.clone()));
+        let args = json!({"path": raw});
+        assert!(
+            tool.asks_because(&args)
+                .unwrap()
+                .contains("outside the workspace")
+        );
+        assert!(tool.asks_because(&json!({"path": "README.md"})).is_none());
+        // Relative paths still never leave.
+        assert!(w.read("../x").is_err());
+        let missing = other.path().join("nope.txt").display().to_string();
+        let e = w.read(&missing).unwrap_err().to_string();
+        assert!(e.contains("There is no file at"), "{e}");
+    }
+
+    #[test]
+    fn local_read_takes_full_and_home_paths_only() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("x.md");
+        std::fs::write(&f, "# x").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let t = LocalFileRead;
+        let read = |p: String| rt.block_on(t.call(json!({ "path": p })));
+        assert_eq!(read(f.display().to_string()).unwrap().content, "# x");
+        assert_eq!(read(format!("\"{}\"", f.display())).unwrap().content, "# x");
+        assert!(read("x.md".into()).is_err(), "relative needs a workspace");
+        assert!(
+            t.asks_because(&json!({"path": "/x"})).is_some(),
+            "always asks"
+        );
+        if let Some(h) = crate::paths::home()
+            && let Ok(rel) = f.strip_prefix(&h)
+        {
+            let tilde = format!("~/{}", rel.display());
+            assert_eq!(read(tilde).unwrap().content, "# x");
         }
     }
 

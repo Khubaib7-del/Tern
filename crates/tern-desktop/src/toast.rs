@@ -32,6 +32,18 @@ pub enum Retry {
     Connect,
     /// Send the last message again.
     Resend,
+    /// Open Settings › Local models (no speech-to-text model yet).
+    LocalModels,
+}
+
+impl Retry {
+    /// The button's label.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::LocalModels => "Open Local models",
+            _ => "Retry",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

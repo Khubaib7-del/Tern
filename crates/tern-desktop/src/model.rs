@@ -155,6 +155,8 @@ pub enum Pick {
     Resource(Box<tern_agent::mcp::MenuItem>),
     /// Opens the file and folder picker.
     Browse,
+    /// A file the user typed or pasted by its full path, to attach.
+    Path(std::path::PathBuf),
 }
 
 /// One row of the `@` menu.
@@ -172,6 +174,8 @@ pub struct Chosen {
     pub browse: bool,
     /// An MCP resource to read and attach.
     pub fetch: Option<(String, String)>,
+    /// A file typed by its full path, to attach.
+    pub attach: Option<std::path::PathBuf>,
 }
 
 /// What choosing a `/` row asks the window to do.
@@ -392,8 +396,10 @@ pub struct Model {
     /// Every configured provider's models, for routing the mic and
     /// pictures (`tern_agent::media`).
     pub catalog: tern_agent::media::Catalog,
-    /// Speech is on its way to the speech-to-text model.
-    pub transcribing: bool,
+    /// Attached audio files being transcribed: name and how long each
+    /// plays, when known. Each shows as a chip until its transcript
+    /// arrives as an attachment.
+    pub audio_pending: Vec<(String, Option<f64>)>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
     /// The `/` menu over the composer, while a command is being typed.
@@ -586,7 +592,7 @@ impl Model {
             attachments: Vec::new(),
             outgoing_images: Vec::new(),
             catalog: Default::default(),
-            transcribing: false,
+            audio_pending: Vec::new(),
             mention: None,
             slash: None,
             arg_form: None,
@@ -1107,6 +1113,17 @@ impl Model {
         };
         let q = m.query.as_str();
         let mut rows: Vec<(u8, Candidate)> = Vec::new();
+        // A full path typed or pasted after `@` is offered first.
+        if let Some(path) = mention::typed_path(q) {
+            rows.push((
+                0,
+                Candidate {
+                    label: path_label(&path),
+                    detail: format!("Attach {}", path.display()),
+                    pick: Pick::Path(path),
+                },
+            ));
+        }
         for (i, a) in self.attachments.iter().enumerate() {
             if mention::matches(q, &a.name) {
                 rows.push((
@@ -1194,11 +1211,21 @@ impl Model {
         let row = rows.get(index.unwrap_or(m.selected))?.clone();
         self.mention = None;
         let name = match row.pick {
+            Pick::Path(path) => {
+                let name = path_label(&path);
+                return Some(Chosen {
+                    text: mention::complete(text, &name),
+                    browse: false,
+                    fetch: None,
+                    attach: Some(path),
+                });
+            }
             Pick::Browse => {
                 return Some(Chosen {
                     text: mention::clear_active(text),
                     browse: true,
                     fetch: None,
+                    attach: None,
                 });
             }
             Pick::Resource(item) if item.kind == ItemKind::Template => {
@@ -1210,6 +1237,7 @@ impl Model {
                     text: mention::clear_active(text),
                     browse: false,
                     fetch: None,
+                    attach: None,
                 });
             }
             Pick::Resource(item) => {
@@ -1218,6 +1246,7 @@ impl Model {
                     text: mention::complete(text, item.label()),
                     browse: false,
                     fetch: Some((item.server.clone(), item.uri.clone())),
+                    attach: None,
                 });
             }
             Pick::Attachment(i) => {
@@ -1241,6 +1270,7 @@ impl Model {
             text: mention::complete(text, &name),
             browse: false,
             fetch: None,
+            attach: None,
         })
     }
 
@@ -1270,6 +1300,42 @@ impl Model {
             Ok(a) => self.attachments.push(a),
             Err(e) => self.toast_error(e, None),
         }
+    }
+
+    /// An attached audio file went to the speech-to-text model.
+    pub fn audio_started(&mut self, name: String, secs: Option<f64>) {
+        self.audio_pending.push((name, secs));
+    }
+
+    /// An attached audio file's transcript came back: it rides with the
+    /// next message as an attachment named for the file.
+    pub fn audio_transcribed(
+        &mut self,
+        name: &str,
+        secs: Option<f64>,
+        result: Result<String, String>,
+    ) {
+        if let Some(i) = self.audio_pending.iter().position(|(n, _)| n == name) {
+            self.audio_pending.remove(i);
+        }
+        match result {
+            Ok(text) if !text.trim().is_empty() => self
+                .attachments
+                .push(Attachment::transcript(name, secs, &text)),
+            Ok(_) => self.toast_error(format!("{name} has no speech Tern could hear."), None),
+            Err(e) => self.toast_error(format!("Tern could not transcribe {name}: {e}"), None),
+        }
+    }
+
+    /// An audio file was attached and nothing can transcribe it: the
+    /// toast's button opens Settings › Local models.
+    pub fn audio_needs_model(&mut self, name: &str) {
+        self.toast_error(
+            format!(
+                "{name} is audio. Download a transcription model (Whisper) in Settings › Local models, or add a provider with speech-to-text (Groq or OpenAI Whisper, Mistral Voxtral)."
+            ),
+            Some(crate::toast::Retry::LocalModels),
+        );
     }
 
     pub fn remove_attachment(&mut self, i: usize) {
@@ -2329,6 +2395,17 @@ fn trim(v: f64, unit: &str) -> String {
     }
 }
 
+/// The file name of a typed path, splitting on both `/` and `\\` so a
+/// Windows path pasted on any platform still shows its file name.
+fn path_label(path: &std::path::Path) -> String {
+    let full = path.to_string_lossy().into_owned();
+    let name = full
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .map(str::to_owned);
+    name.unwrap_or(full)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3072,6 +3149,56 @@ mod tests {
         assert!(msg.contains(r#"name="week-1" role="context""#));
         assert!(msg.contains("<untrusted-data source=\"mcp:notes/notes://week-1\">"));
         assert!(m.inserted.is_none());
+    }
+
+    #[test]
+    fn an_attached_audio_file_becomes_its_transcript() {
+        let mut m = ready();
+        m.audio_started("memo.m4a".into(), Some(42.0));
+        assert_eq!(m.audio_pending.len(), 1);
+        m.audio_transcribed("memo.m4a", Some(42.0), Ok("Buy milk.".into()));
+        assert!(m.audio_pending.is_empty());
+        assert_eq!(m.attachments.len(), 1);
+        assert_eq!(m.attachments[0].detail(), "Audio · 0:42 · transcript");
+        let msg = m.start_turn("what did I say?").unwrap();
+        assert!(msg.contains("Buy milk."), "{msg}");
+        // A failure is a toast; nothing is attached.
+        let mut m = ready();
+        m.audio_started("x.wav".into(), None);
+        m.audio_transcribed("x.wav", None, Err("no model".into()));
+        assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
+        // With no model, the toast opens Settings › Local models.
+        m.audio_needs_model("memo.m4a");
+        assert!(
+            m.toasts
+                .shown()
+                .iter()
+                .any(|t| t.retry == Some(crate::toast::Retry::LocalModels))
+        );
+    }
+
+    #[test]
+    fn a_pasted_full_path_after_at_is_offered_as_a_file() {
+        let mut m = ready();
+        let typed = "summarise @\"C:\\My Files\\notes.txt\"";
+        m.on_composer_text(typed);
+        let rows = m.mention_candidates();
+        assert_eq!(rows[0].label, "notes.txt");
+        assert!(matches!(&rows[0].pick, Pick::Path(_)));
+        let chosen = m.choose_mention(typed, None).unwrap();
+        assert_eq!(chosen.text, "summarise @notes.txt ");
+        assert_eq!(
+            chosen.attach,
+            Some(std::path::PathBuf::from("C:\\My Files\\notes.txt"))
+        );
+        m.on_composer_text("read @/home/me/x.md");
+        assert!(matches!(&m.mention_candidates()[0].pick, Pick::Path(_)));
+        m.on_composer_text("read @rub");
+        assert!(
+            !m.mention_candidates()
+                .iter()
+                .any(|r| matches!(r.pick, Pick::Path(_)))
+        );
     }
 
     #[test]

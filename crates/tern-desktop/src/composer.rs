@@ -155,6 +155,7 @@ pub enum Menu {
 pub enum PlusItem {
     Files,
     Images,
+    Audio,
     Pdfs,
     Folder,
     Link,
@@ -163,9 +164,10 @@ pub enum PlusItem {
 }
 
 impl PlusItem {
-    pub const ALL: [PlusItem; 7] = [
+    pub const ALL: [PlusItem; 8] = [
         Self::Files,
         Self::Images,
+        Self::Audio,
         Self::Pdfs,
         Self::Folder,
         Self::Link,
@@ -177,6 +179,7 @@ impl PlusItem {
         match self {
             Self::Files => "Files",
             Self::Images => "Images",
+            Self::Audio => "Audio",
             Self::Pdfs => "PDFs",
             Self::Folder => "Folder or .zip",
             Self::Link => "Link (URL or DOI)",
@@ -189,6 +192,7 @@ impl PlusItem {
         match self {
             Self::Files => "Any text, code, or document",
             Self::Images => "PNG, JPEG, GIF, WebP; read by models that can see",
+            Self::Audio => "Voice notes and recordings: M4A, MP3, WAV, OGG, FLAC; transcribed",
             Self::Pdfs => "Text is pulled out page by page",
             Self::Folder => "Every readable file inside",
             Self::Link => "Read through the guarded reader",
@@ -201,6 +205,7 @@ impl PlusItem {
     pub fn extensions(self) -> &'static [&'static str] {
         match self {
             Self::Images => &["png", "jpg", "jpeg", "gif", "webp"],
+            Self::Audio => &tern_agent::media::AUDIO_EXTENSIONS,
             Self::Pdfs => &["pdf"],
             Self::Folder => &["zip"],
             _ => &[],
@@ -210,7 +215,7 @@ impl PlusItem {
     /// Opens the OS picker (and whether it picks folders too).
     pub fn picker(self) -> Option<bool> {
         match self {
-            Self::Files | Self::Images | Self::Pdfs => Some(false),
+            Self::Files | Self::Images | Self::Audio | Self::Pdfs => Some(false),
             Self::Folder => Some(true),
             _ => None,
         }
@@ -1044,7 +1049,18 @@ mod tests {
 
     #[test]
     fn plus_menu_items_filter_what_they_ask_for() {
-        assert_eq!(PlusItem::ALL.len(), 7);
+        assert_eq!(PlusItem::ALL.len(), 8);
+        let (kept, dropped) = PlusItem::Audio.keep(vec![
+            "memo.M4A".into(),
+            "a.mp3".into(),
+            "b.wav".into(),
+            "c.ogg".into(),
+            "d.flac".into(),
+            "e.opus".into(),
+            "notes.txt".into(),
+        ]);
+        assert_eq!((kept.len(), dropped), (6, 1));
+        assert_eq!(PlusItem::Audio.picker(), Some(false));
         let (kept, dropped) =
             PlusItem::Pdfs.keep(vec!["a.pdf".into(), "b.PDF".into(), "c.txt".into()]);
         assert_eq!(kept.len(), 2);

@@ -311,14 +311,53 @@ pub fn local_transcriber(
         .map(|e| ModelRef::local(&e.id))
 }
 
-/// Audio files the mic routing accepts as an attachment.
+/// Audio files the mic routing accepts as an attachment (and `.opus`,
+/// which is recognised so it gets a plain "not supported yet").
 pub fn is_audio_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     [
-        ".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac", ".mp4", ".mpga", ".mpeg",
+        ".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".webm", ".flac", ".mp4", ".mpga", ".mpeg",
     ]
     .iter()
     .any(|e| n.ends_with(e))
+}
+
+/// The extensions the + menu's Audio picker keeps (lower case).
+pub const AUDIO_EXTENSIONS: [&str; 7] = ["m4a", "mp3", "wav", "ogg", "flac", "aac", "opus"];
+
+/// Why an audio file cannot be transcribed yet, before trying: Opus
+/// (`.opus`) has no decoder in Tern yet.
+pub fn audio_not_supported(name: &str) -> Option<String> {
+    name.to_ascii_lowercase().ends_with(".opus").then(|| {
+        format!(
+            "{name} is Opus audio, which Tern cannot transcribe yet. Save or convert it as M4A, MP3, WAV, Ogg Vorbis or FLAC and attach that."
+        )
+    })
+}
+
+/// How long an audio file plays, in seconds, read from its headers (no
+/// decoding), when this build reads audio and the file says.
+pub fn audio_duration(path: &std::path::Path) -> Option<f64> {
+    #[cfg(feature = "audio")]
+    {
+        crate::local_models::audio::duration_secs(path)
+    }
+    #[cfg(not(feature = "audio"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// "0:42", "12:05", "1:02:03".
+pub fn clock(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    let (h, m, s) = (s / 3600, (s / 60) % 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// What to do with pictures attached to a message.
@@ -1239,6 +1278,20 @@ mod tests {
     #[test]
     fn audio_names() {
         assert!(is_audio_name("Memo.M4A") && is_audio_name("speech.wav"));
+        assert!(is_audio_name("a.flac") && is_audio_name("b.ogg") && is_audio_name("c.mp3"));
+        assert!(is_audio_name("voice.opus"));
         assert!(!is_audio_name("notes.pdf"));
+        for e in AUDIO_EXTENSIONS {
+            assert!(is_audio_name(&format!("x.{e}")), "{e}");
+        }
+        assert!(
+            audio_not_supported("Voice.OPUS")
+                .unwrap()
+                .contains("cannot transcribe yet")
+        );
+        assert_eq!(audio_not_supported("memo.m4a"), None);
+        assert_eq!(clock(42.4), "0:42");
+        assert_eq!(clock(725.0), "12:05");
+        assert_eq!(clock(3723.0), "1:02:03");
     }
 }

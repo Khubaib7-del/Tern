@@ -416,6 +416,7 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
     };
     let project = crate::rules::ProjectContext::load(root.as_deref());
     project.register(&mut tools);
+    crate::workspace::register_local_read(&mut tools);
     let mut gate = PolicyGate::default();
     let mut notes = Vec::new();
     let mut offers = Vec::new();
@@ -603,6 +604,9 @@ impl ChatSession {
         });
         let project = crate::rules::ProjectContext::load(root.as_deref());
         project.register(&mut tools);
+        // A file the user names by its full path can be read with no
+        // workspace open (each one approved).
+        crate::workspace::register_local_read(&mut tools);
         let mut gate = PolicyGate::default();
         for (name, mode) in &opts.tool_modes {
             gate.set_tool_mode(name, *mode);
@@ -784,12 +788,18 @@ impl ChatSession {
     /// scoped to it, and the choice is logged so a reopened chat keeps it.
     /// `None` closes it.
     pub fn set_workspace(&mut self, path: Option<&std::path::Path>) -> Result<(), String> {
+        let ws = path
+            .map(crate::workspace::Workspace::open)
+            .transpose()?
+            .map(Arc::new);
         crate::workspace::Workspace::unregister(&mut self.tools);
         self.workspace = None;
-        if let Some(p) = path {
-            let ws = Arc::new(crate::workspace::Workspace::open(p)?);
-            ws.register(&mut self.tools);
-            self.workspace = Some(ws);
+        match ws {
+            Some(ws) => {
+                ws.register(&mut self.tools);
+                self.workspace = Some(ws);
+            }
+            None => crate::workspace::register_local_read(&mut self.tools),
         }
         self.workspace_logged = false;
         if !self.is_draft() {
@@ -1228,7 +1238,11 @@ impl ChatSession {
                 .sink
                 .with_store(|s| s.rename_session(self.session, &title));
         }
-        if let Some(answer) = &out.answer {
+        // An empty answer never joins the history: providers (Mistral,
+        // Anthropic, Gemini) refuse every later request that carries an
+        // empty assistant message, so one empty reply used to fail each
+        // turn after it at the first model call.
+        if let Some(answer) = out.answer.as_ref().filter(|a| !a.trim().is_empty()) {
             // Pictures stay in the history so follow-up questions can
             // still see them.
             self.history
@@ -1788,6 +1802,32 @@ impl ContextUse {
     pub fn left(&self) -> Option<u64> {
         self.window.map(|w| w.saturating_sub(self.used()))
     }
+}
+
+/// Takes out every exchange whose assistant message is empty (with the
+/// user message it answered), as a reopened chat's history already leaves
+/// them out ([`crate::transcript::PastTurn::exchange`]). Providers refuse a
+/// request with an empty assistant message. Returns how many went.
+pub fn tidy_history(messages: &mut Vec<ChatMessage>) -> usize {
+    let before = messages.len();
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for m in messages.drain(..) {
+        let empty = m.role == tern_providers::Role::Assistant
+            && m.content.trim().is_empty()
+            && m.images.is_empty();
+        if empty {
+            if out
+                .last()
+                .is_some_and(|p| p.role == tern_providers::Role::User)
+            {
+                out.pop();
+            }
+            continue;
+        }
+        out.push(m);
+    }
+    *messages = out;
+    before - messages.len()
 }
 
 /// Takes the pictures out of `messages`, leaving "[image: name]" in each

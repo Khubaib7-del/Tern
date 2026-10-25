@@ -21,6 +21,41 @@ pub fn decode_16k_mono(bytes: &[u8], name: &str) -> Result<Vec<f32>, String> {
     Ok(resample(&mono, rate, RATE))
 }
 
+/// How long an audio file plays, in seconds, from its headers only (no
+/// decoding). `None` when the container does not say (an MP3 with no
+/// frame count) or the format is not one symphonia reads.
+pub fn duration_secs(path: &std::path::Path) -> Option<f64> {
+    let file = std::fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(&ext.to_ascii_lowercase());
+    }
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .ok()?;
+    let track = probed
+        .format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)?;
+    let p = &track.codec_params;
+    let frames = p.n_frames?;
+    match (p.time_base, p.sample_rate) {
+        (Some(tb), _) => {
+            let t = tb.calc_time(frames);
+            Some(t.seconds as f64 + t.frac)
+        }
+        (None, Some(rate)) if rate > 0 => Some(frames as f64 / rate as f64),
+        _ => None,
+    }
+}
+
 /// Decodes the first audio track to mono at its own sample rate.
 pub fn decode_mono(bytes: &[u8], name: &str) -> Result<(Vec<f32>, u32), String> {
     let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
@@ -133,6 +168,19 @@ mod tests {
         assert!((out.len() as i64 - 16_000).abs() <= 2, "{}", out.len());
         let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
         assert!((0.45..0.55).contains(&peak), "{peak}");
+    }
+
+    #[test]
+    fn duration_comes_from_the_headers() {
+        let rate = 16_000u32;
+        let samples = vec![0.1f32; (rate * 5 / 2) as usize];
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("memo.wav");
+        std::fs::write(&p, wav(&samples, rate, 1)).unwrap();
+        let d = duration_secs(&p).unwrap();
+        assert!((d - 2.5).abs() < 0.01, "{d}");
+        std::fs::write(dir.path().join("junk.mp3"), b"nope").unwrap();
+        assert_eq!(duration_secs(&dir.path().join("junk.mp3")), None);
     }
 
     #[test]

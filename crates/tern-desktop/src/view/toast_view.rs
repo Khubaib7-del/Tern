@@ -134,7 +134,7 @@ impl Workspace {
                 .children(retry.map(|r| {
                     Button::new(("toast-retry", id as usize))
                         .capsule()
-                        .label("Retry")
+                        .label(r.label())
                         .ghost()
                         .xsmall()
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -189,6 +189,9 @@ impl Workspace {
                 }
                 None => {}
             },
+            Retry::LocalModels => {
+                self.open_settings(crate::settings::Section::LocalModels, window, cx);
+            }
             Retry::Resend => {
                 if self.model.is_busy() {
                     return;

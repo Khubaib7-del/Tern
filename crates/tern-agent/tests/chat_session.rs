@@ -155,10 +155,11 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!(turns.len(), 1);
     let ctx = again.context();
     assert!(ctx.estimated, "no call yet in the reopened window");
-    // 32 characters of history and the 97-character system prompt, at
-    // four characters a token.
+    // 32 characters of history and the system prompt (the 97-character
+    // opening line, then `file_read` for full paths, which every chat has
+    // since #64, and how to call a tool), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (33, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (170, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))
@@ -583,4 +584,298 @@ fn strip_pictures_leaves_their_names() {
     assert!(msgs[0].images.is_empty());
     assert!(msgs[0].content.contains("[image: chart.png"));
     assert_eq!(tern_agent::chat::strip_pictures(&mut msgs), 0);
+}
+
+/// Replies to chat completions with each scripted text in turn.
+struct Replies(Mutex<std::collections::VecDeque<String>>);
+
+impl wiremock::Respond for Replies {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        let text = self
+            .0
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| "out of script".into());
+        ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 5}
+        }))
+    }
+}
+
+/// A mock provider plus a SearXNG-style search on the same server.
+async fn web_server(replies: &[&str]) -> MockServer {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "llama3.2"}]
+        })))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": [
+            {"title": "LangChain - Wikipedia", "url": "https://en.wikipedia.org/wiki/LangChain",
+             "content": "LangChain was launched in October 2022 by Harrison Chase."}
+        ]})))
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(Replies(Mutex::new(
+            replies.iter().map(|r| r.to_string()).collect(),
+        )))
+        .mount(&s)
+        .await;
+    s
+}
+
+async fn open_with_search(s: &MockServer) -> ChatSession {
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("searxng".into()),
+        search_url: Some(s.uri()),
+        no_mcp: true,
+        ..Default::default()
+    };
+    let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap();
+    // As the desktop does before every message in Chat mode.
+    chat.set_turn_mode(tern_agent::workspace::TurnMode::Chat);
+    chat.set_sees_pictures(Some(false));
+    chat.drop_pictures();
+    chat
+}
+
+fn web_call(query: &str) -> String {
+    format!(
+        "```tool\n{}\n```",
+        json!({"tool": "web_search", "args": {"query": query}})
+    )
+}
+
+/// Regression (#64): a Chat-mode turn that asks for a web search runs the
+/// web tool, and the answer written from its result comes back.
+#[tokio::test]
+async fn a_chat_turn_asking_for_the_web_runs_web_search_and_answers() {
+    let call = web_call("creator of LangChain");
+    let s = web_server(&[&call, "Harrison Chase created LangChain [1]."]).await;
+    let mut chat = open_with_search(&s).await;
+    let seen = Mutex::new(Vec::new());
+    let observer = |e: &tern_core::EventEnvelope| seen.lock().unwrap().push(e.kind.clone());
+    let out = chat
+        .send(
+            "who is the creator of LangChain? use the web tool",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("Harrison Chase created LangChain [1].")
+    );
+    assert_eq!(out.tool_calls, 1);
+    let kinds = seen.lock().unwrap().clone();
+    assert!(kinds.iter().any(|k| k == "tool.executed"), "{kinds:?}");
+    // The model was offered the web tool, and saw the search result.
+    let reqs = s.received_requests().await.unwrap();
+    let chats: Vec<String> = reqs
+        .iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(chats[0].contains("web_search"), "{}", chats[0]);
+    assert!(chats[1].contains("Harrison Chase"), "{}", chats[1]);
+}
+
+/// Regression (#64): consecutive turns each get their own new answer,
+/// never the one before.
+#[tokio::test]
+async fn consecutive_turns_return_new_answers() {
+    let s = web_server(&["Paris.", "Islamabad.", "Canberra."]).await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let mut answers = Vec::new();
+    for q in [
+        "capital of France?",
+        "capital of Pakistan?",
+        "capital of Australia?",
+    ] {
+        chat.set_sees_pictures(Some(false));
+        chat.drop_pictures();
+        let out = chat
+            .send(q, &DenyAll, CancelFlag::default(), &observer)
+            .await;
+        assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+        answers.push(out.answer.unwrap());
+    }
+    assert_eq!(answers, ["Paris.", "Islamabad.", "Canberra."]);
+    let body = last_body(&s).await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let msgs: Vec<_> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] != "system")
+        .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        msgs,
+        [
+            "capital of France?",
+            "Paris.",
+            "capital of Pakistan?",
+            "Islamabad.",
+            "capital of Australia?"
+        ]
+    );
+}
+
+/// Regression (#64): an empty reply is asked for once more, and an empty
+/// answer never joins the history, so the next turn is not refused for an
+/// empty assistant message (Mistral, Anthropic and Gemini refuse one).
+#[tokio::test]
+async fn an_empty_reply_never_poisons_the_next_turns() {
+    let s = web_server(&["", "Harrison Chase.", "", "", "Islamabad."]).await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    // The first empty reply is retried and the second reply answers.
+    let out = chat
+        .send(
+            "who created LangChain?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(out.answer.as_deref(), Some("Harrison Chase."));
+    assert_eq!(out.model_calls, 2);
+    // Two empty replies: the turn ends with a gap and leaves no message.
+    let out = chat
+        .send(
+            "and LlamaIndex?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::CompletedWithGaps);
+    // The next turn carries no empty assistant message and gets its answer.
+    let out = chat
+        .send(
+            "capital of Pakistan?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.answer.as_deref(), Some("Islamabad."));
+    let v: serde_json::Value = serde_json::from_str(&last_body(&s).await).unwrap();
+    let msgs: Vec<_> = v["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] != "system")
+        .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        msgs,
+        [
+            "who created LangChain?",
+            "Harrison Chase.",
+            "capital of Pakistan?"
+        ]
+    );
+}
+
+#[test]
+fn tidy_history_drops_empty_exchanges() {
+    use tern_providers::ChatMessage;
+    let mut h = vec![
+        ChatMessage::user("a"),
+        ChatMessage::assistant("A"),
+        ChatMessage::user("b"),
+        ChatMessage::assistant("  "),
+        ChatMessage::user("c"),
+    ];
+    assert_eq!(tern_agent::chat::tidy_history(&mut h), 2);
+    let c: Vec<_> = h.iter().map(|m| m.content.as_str()).collect();
+    assert_eq!(c, ["a", "A", "c"]);
+}
+
+/// Approves every request and keeps what it was asked.
+#[derive(Default)]
+struct Approves(Mutex<Vec<tern_agent::ApprovalRequest>>);
+
+impl tern_agent::Approver for Approves {
+    fn ask<'a>(
+        &'a self,
+        req: &'a tern_agent::ApprovalRequest,
+    ) -> tern_agent::tools::BoxFuture<'a, tern_agent::ApprovalAnswer> {
+        self.0.lock().unwrap().push(req.clone());
+        Box::pin(async { tern_agent::ApprovalAnswer::AllowOnce })
+    }
+}
+
+/// Regression (#64): "read <full path>" with no workspace open reads the
+/// file after the user approves it; quoted paths with spaces work.
+#[tokio::test]
+async fn a_typed_full_path_is_read_after_approval() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("My Notes.txt");
+    std::fs::write(&f, "The meeting is on Tuesday.").unwrap();
+    let quoted = format!("\"{}\"", f.display());
+    let call = format!(
+        "```tool\n{}\n```",
+        json!({"tool": "file_read", "args": {"path": quoted}})
+    );
+    let s = web_server(&[&call, "It says the meeting is on Tuesday."]).await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let approver = Approves::default();
+    let out = chat
+        .send(
+            &format!("read {quoted}"),
+            &approver,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(out.tool_calls, 1);
+    let asked = approver.0.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "a file outside any workspace is approved");
+    assert_eq!(asked[0].tool, "file_read");
+    assert!(
+        asked[0].summary.contains("My Notes.txt"),
+        "{}",
+        asked[0].summary
+    );
+    let reqs = s.received_requests().await.unwrap();
+    let chats: Vec<String> = reqs
+        .iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(chats[0].contains("file_read"), "offered with no workspace");
+    assert!(
+        chats[1].contains("The meeting is on Tuesday."),
+        "{}",
+        chats[1]
+    );
+
+    // Declined, the file is not read and the turn says so.
+    let s = web_server(&[&call]).await;
+    let mut chat = open_with_search(&s).await;
+    let out = chat
+        .send("read it", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.state, TurnState::Blocked);
 }

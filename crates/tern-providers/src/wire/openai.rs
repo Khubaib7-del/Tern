@@ -40,9 +40,14 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
         .get("choices")
         .and_then(|c| c.get(0))
         .ok_or("no choices in the reply")?;
-    let text = str_at(choice, &["message", "content"])
-        .unwrap_or_default()
-        .to_owned();
+    // Mistral's reasoning models answer with content chunks (`thinking`
+    // then `text`); read as a plain string only, they came back empty.
+    let text = match choice.pointer("/message/content") {
+        Some(Value::Array(chunks)) => crate::stream::mistral_chunks(chunks).0,
+        _ => str_at(choice, &["message", "content"])
+            .unwrap_or_default()
+            .to_owned(),
+    };
     let usage = match (
         u64_at(v, &["usage", "prompt_tokens"]),
         u64_at(v, &["usage", "completion_tokens"]),
@@ -271,5 +276,19 @@ mod tests {
     fn parses_mistral_max_context_length() {
         let v = json!({"object": "list", "data": [{"id": "ministral-8b-latest", "max_context_length": 131072}]});
         assert_eq!(parse_models(&v).unwrap()[0].context_window, Some(131_072));
+    }
+
+    #[test]
+    fn reads_mistral_content_chunks() {
+        let v = json!({"choices": [{"message": {"content": [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "Hmm."}]},
+            {"type": "text", "text": "Harrison Chase."}
+        ]}, "finish_reason": "stop"}]});
+        let r = parse_chat(
+            &v,
+            &ChatRequest::new("magistral-small", vec![ChatMessage::user("q")]),
+        )
+        .unwrap();
+        assert_eq!(r.text, "Harrison Chase.");
     }
 }

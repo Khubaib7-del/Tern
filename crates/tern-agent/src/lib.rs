@@ -48,6 +48,7 @@ pub mod local_models;
 pub mod mcp;
 pub mod media;
 pub mod mention;
+pub mod paths;
 pub mod pictures;
 pub mod policy;
 pub mod prefs;
