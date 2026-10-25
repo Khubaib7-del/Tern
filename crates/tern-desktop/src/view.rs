@@ -4723,7 +4723,7 @@ impl Workspace {
                                 .on_click(move |_, _, cx| cx.open_url(&json)),
                         ),
                 )
-                .child(export)
+                .children(export)
                 .child(
                     div()
                         .text_xs()
