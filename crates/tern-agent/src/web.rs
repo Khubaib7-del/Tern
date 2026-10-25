@@ -44,19 +44,47 @@ impl Tool for WebSearchTool {
     }
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
-            let q = args["query"].as_str().unwrap_or_default();
+            let asked = args["query"].as_str().unwrap_or_default();
             let limit = args["limit"].as_u64().unwrap_or(6).clamp(1, 10) as usize;
-            let hits = self
+            let service = self.0.spec().name;
+            // A keyword index (Wikipedia, SearXNG) finds nothing for a
+            // whole sentence with typos; shorter keyword queries are tried
+            // in turn before Tern says there was nothing.
+            let mut tried = vec![asked.to_owned()];
+            let mut hits = self
                 .0
-                .search(q, limit)
+                .search(asked, limit)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
+            let mut q = asked.to_owned();
+            if hits.is_empty() {
+                for alt in crate::webintent::fallback_queries(asked) {
+                    tried.push(alt.clone());
+                    match self.0.search(&alt, limit).await {
+                        Ok(h) if !h.is_empty() => {
+                            hits = h;
+                            q = alt;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            crate::diag::note(&format!(
+                "web_search: service={service} query={asked:?} used={q:?} tried={} results={}",
+                tried.len(),
+                hits.len()
+            ));
             if hits.is_empty() {
                 return Ok(ToolOutput {
-                    meta: json!({ "query": q, "results": 0 }),
-                    ..ToolOutput::text(format!("No results for \"{q}\"."))
+                    meta: json!({ "query": asked, "results": 0, "tried": tried, "service": service }),
+                    ..ToolOutput::text(format!(
+                        "{service} found nothing for \"{asked}\" (also tried: {}). Tell the user the search found nothing; do not claim you cannot reach the web.",
+                        tried[1..].join("; ")
+                    ))
                 });
             }
+            let q = q.as_str();
             let mut decision = None;
             let hits = match &self.1 {
                 Some(d) => {
@@ -67,7 +95,14 @@ impl Tool for WebSearchTool {
                 }
                 None => hits,
             };
-            let mut out = String::new();
+            let mut out = format!(
+                "Web search results for \"{q}\" from {service}, retrieved just now{}. These are live results from the web: answer from them and cite them as [n] with the links.\n",
+                if q == asked {
+                    String::new()
+                } else {
+                    format!(" (\"{asked}\" found nothing, so Tern searched the keywords)")
+                }
+            );
             if let Some(d) = &decision {
                 out.push_str(&format!(
                     "Ranked by the decision model ({}): most worth reading first.\n",
@@ -84,7 +119,7 @@ impl Tool for WebSearchTool {
                     h.snippet
                 ));
             }
-            let mut meta = json!({ "query": q, "results": hits.len(),
+            let mut meta = json!({ "query": q, "asked": asked, "tried": tried, "service": service, "results": hits.len(),
                 "hits": hits.iter().map(|h| json!({"url": h.url, "title": h.title, "site": h.site})).collect::<Vec<_>>() });
             if let Some(d) = &decision {
                 meta["decision"] = serde_json::to_value(d).unwrap_or_default();
