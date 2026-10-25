@@ -309,3 +309,119 @@ async fn a_failed_model_change_keeps_the_old_model() {
     assert_eq!(chat.model(), "llama3.2");
     assert_eq!(chat.provider_name(), "Ollama");
 }
+
+/// A chat model that turns out not to see: the provider's refusal reads in
+/// plain words and says so, and the pictures leave the history so the next
+/// request goes without them.
+#[tokio::test]
+async fn pictures_leave_the_history_of_a_model_that_cannot_see() {
+    use wiremock::matchers::body_string_contains;
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "llama3.2"}]
+        })))
+        .mount(&s)
+        .await;
+    // Mistral's refusal, for a request that carries a picture.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("image_url"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "object": "error",
+            "message": "Image input is not enabled for this model",
+            "type": "invalid_request_invalid_args",
+            "code": "3051"
+        })))
+        .with_priority(1)
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        })))
+        .with_priority(5)
+        .mount(&s)
+        .await;
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap();
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let picture = tern_providers::ImageInput {
+        name: "img.jpg".into(),
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    };
+    chat.attach_images(vec![picture]);
+    assert!(chat.has_attached_images());
+    let out = chat
+        .send(
+            "what does it say?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Failed);
+    let reason = out.reason.unwrap_or_default();
+    assert!(
+        tern_agent::media::rejects_images(&reason),
+        "not read as a refusal: {reason}"
+    );
+    let plain = tern_agent::media::plain_error(&reason);
+    assert!(
+        plain.contains("Image input is not enabled for this model (code 3051)"),
+        "{plain}"
+    );
+    assert!(!plain.contains("{\""), "raw JSON left: {plain}");
+    // The refused message never joined the history: nothing to drop.
+    assert_eq!(chat.drop_pictures(), 0);
+    let out = chat
+        .send(
+            "what does it say?\n\n[read text]",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+}
+
+#[tokio::test]
+async fn dropping_pictures_strips_them_from_earlier_messages() {
+    let s = server().await;
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap();
+    let observer = |_: &tern_core::EventEnvelope| {};
+    chat.attach_images(vec![tern_providers::ImageInput {
+        name: "chart.png".into(),
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    }]);
+    chat.send("look", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(chat.drop_pictures(), 1);
+    assert_eq!(chat.drop_pictures(), 0, "already gone");
+    chat.send("again", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    let reqs = s.received_requests().await.unwrap();
+    let last = String::from_utf8_lossy(&reqs.last().unwrap().body).into_owned();
+    assert!(!last.contains("image_url"), "{last}");
+    assert!(last.contains("chart.png"), "the note names the picture");
+}

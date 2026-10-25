@@ -155,14 +155,31 @@ impl Catalog {
     /// the job, else the best listed model. `near` (the chat's provider)
     /// is tried first.
     pub fn pick(&self, job: Job, saved: Option<&str>, near: Option<&str>) -> Option<ModelRef> {
+        self.pick_other(job, saved, near, None)
+    }
+
+    /// [`Catalog::pick`] leaving out `except` (provider, model): the chat
+    /// model itself, when another model is to read for it.
+    pub fn pick_other(
+        &self,
+        job: Job,
+        saved: Option<&str>,
+        near: Option<&str>,
+        except: Option<(&str, &str)>,
+    ) -> Option<ModelRef> {
+        let other = |p: &str, id: &str| except.is_none_or(|(ep, em)| !(ep == p && em == id));
         if let Some(r) = saved.and_then(ModelRef::parse)
             && let Some(m) = self.find(&r.provider, &r.model)
             && can_do(job, &r.provider, m)
+            && other(&r.provider, &m.id)
         {
             return Some(ModelRef::new(&r.provider, &m.id));
         }
         let mut best: Option<(i32, &'static str, &ModelInfo)> = None;
-        for (p, m) in self.models().filter(|(p, m)| can_do(job, p, m)) {
+        for (p, m) in self
+            .models()
+            .filter(|(p, m)| can_do(job, p, m) && other(p, &m.id))
+        {
             let score = rank(job, p, m) + if Some(p) == near { 100 } else { 0 };
             if best.as_ref().is_none_or(|(s, _, _)| score > *s) {
                 best = Some((score, p, m));
@@ -491,9 +508,12 @@ pub fn readers_for(
         }
     }
     let near = Some(provider);
-    let vision = catalog
-        .pick(Job::Describe, prefs.default_vision_model.as_deref(), near)
-        .filter(|v| !(v.provider == provider && v.model == model));
+    let vision = catalog.pick_other(
+        Job::Describe,
+        prefs.default_vision_model.as_deref(),
+        near,
+        Some((provider, model)),
+    );
     let ocr = catalog.pick(Job::Ocr, prefs.default_ocr_model.as_deref(), near);
     let saved_ocr_first = prefs.default_vision_model.is_none() && prefs.default_ocr_model.is_some();
     let mut remote = Vec::new();
