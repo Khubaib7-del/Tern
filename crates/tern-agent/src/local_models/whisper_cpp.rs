@@ -42,11 +42,12 @@ pub fn fits(entry: &ModelEntry) -> bool {
 /// The last run's load and inference times, for the timings line.
 static LAST: Mutex<String> = Mutex::new(String::new());
 
-/// Threads for whisper.cpp: `TERN_WHISPER_THREADS` when set, else the
-/// physical cores, at most six. ggml's matrix work shares a core's units
-/// between its two hyperthreads, so a thread per logical core (8 on the
-/// user's 4-core laptop) is slower than a thread per physical core, and
-/// past about six threads the gain stops while synchronising costs more.
+/// Threads for whisper.cpp: `TERN_WHISPER_THREADS` when set, else one
+/// per logical core, at most twice the physical cores and at most six.
+/// Measured on CI (#66): a 4-vCPU Linux runner took 9.7 s with 2 threads
+/// and 6.7 s with 4; 8 threads took 81 s, and the user's 4-core, 8-thread
+/// laptop needed 37.3 s for an 11.7 s clip with 8, so past about six
+/// threads synchronising costs far more than it gains.
 fn threads() -> i32 {
     if let Some(n) = std::env::var("TERN_WHISPER_THREADS")
         .ok()
@@ -59,12 +60,14 @@ fn threads() -> i32 {
 }
 
 fn pick_threads(physical: usize, logical: usize) -> i32 {
-    let n = if physical > 0 {
-        physical
-    } else {
-        logical.div_ceil(2)
-    };
-    n.clamp(1, 6) as i32
+    let cap = if physical > 0 { physical * 2 } else { logical };
+    logical.min(cap).clamp(1, 6) as i32
+}
+
+/// Flash attention: off unless `TERN_WHISPER_FLASH=1`. On the CI runners
+/// whisper small was slower with it (4 threads: 8.4 s on, 6.7 s off).
+fn flash_attn() -> bool {
+    std::env::var("TERN_WHISPER_FLASH").as_deref() == Ok("1")
 }
 
 impl WhisperCpp {
@@ -80,10 +83,8 @@ impl WhisperCpp {
         }
         // whisper.cpp logs to stderr unless hooked; this silences it.
         whisper_rs::install_logging_hooks();
-        // Flash attention: less memory traffic in the decoder's attention,
-        // a large part of a short clip's time on a laptop CPU.
         let mut params = WhisperContextParameters::default();
-        params.flash_attn(std::env::var("TERN_WHISPER_FLASH").as_deref() != Ok("0"));
+        params.flash_attn(flash_attn());
         let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| format!("cannot load the Whisper model: {e}"))?;
         let ctx = Arc::new(ctx);
@@ -216,13 +217,16 @@ mod tests {
     use crate::local_models::Manifest;
 
     #[test]
-    fn threads_follow_physical_cores_up_to_six() {
-        // The user's laptop: 4 cores, 8 threads, was given 8.
-        assert_eq!(pick_threads(4, 8), 4);
+    fn threads_follow_logical_cores_up_to_six() {
+        // The user's laptop: 4 cores, 8 threads.
+        assert_eq!(pick_threads(4, 8), 6);
+        // A 4-vCPU CI runner (2 cores, 4 threads).
+        assert_eq!(pick_threads(2, 4), 4);
         assert_eq!(pick_threads(16, 32), 6);
-        assert_eq!(pick_threads(1, 2), 1);
-        // Physical count unknown: half the logical ones.
-        assert_eq!(pick_threads(0, 8), 4);
+        assert_eq!(pick_threads(1, 2), 2);
+        assert_eq!(pick_threads(4, 4), 4);
+        // Physical count unknown: the logical ones, at most six.
+        assert_eq!(pick_threads(0, 8), 6);
         assert_eq!(pick_threads(0, 1), 1);
     }
 

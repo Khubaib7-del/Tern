@@ -5732,14 +5732,14 @@ pub(crate) fn bidi_markdown(
         .flex()
         .flex_col()
         .children(blocks.into_iter().enumerate().map(|(k, b)| {
-            let view = style(TextView::markdown(
-                SharedString::from(format!("{key}-{i}-{k}")),
-                b.text,
-            ));
             if b.rtl {
                 rtl_flow(crate::bidi::rtl_lines(&b.text, true), true)
             } else {
-                view.into_any_element()
+                style(TextView::markdown(
+                    SharedString::from(format!("{key}-{i}-{k}")),
+                    b.text,
+                ))
+                .into_any_element()
             }
         }))
         .into_any_element()
