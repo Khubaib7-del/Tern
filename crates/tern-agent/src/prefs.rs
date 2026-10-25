@@ -66,6 +66,9 @@ pub struct SessionState {
     pub sidebar_open: Option<bool>,
 }
 
+/// How many recent files the `@` menu remembers.
+pub const RECENT_FILES: usize = 20;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -184,6 +187,9 @@ pub struct Preferences {
     /// Local models: which installed ones are off and the default per task
     /// (Settings › Local models, `tern models`).
     pub local_models: crate::local_models::LocalModelPrefs,
+    /// Files attached lately (full paths, newest first), offered by the
+    /// `@` menu.
+    pub recent_files: Vec<String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -282,6 +288,14 @@ impl Preferences {
         self.base_urls.remove(id);
         self.forget_provider(id);
         tern_providers::custom::register_all(&self.custom_providers);
+    }
+
+    /// Notes a file the user attached, newest first, at most
+    /// [`RECENT_FILES`] kept.
+    pub fn note_recent_file(&mut self, path: &str) {
+        self.recent_files.retain(|p| p != path);
+        self.recent_files.insert(0, path.to_owned());
+        self.recent_files.truncate(RECENT_FILES);
     }
 
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
