@@ -23,6 +23,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 raw-window-handle = "0.6"
 # The UI tour builds its scripted events' payloads (`view::tour`).
 serde_json.workspace = true
+# Which paragraphs of a message read right to left (`bidi.rs`).
+unicode-bidi = "0.3"
 
 # The built-in browser's page engine runs in its own process, the
 # `tern-browser` helper, so no engine crate links into the app

@@ -3221,7 +3221,13 @@ impl Workspace {
                         .py_2()
                         .rounded_xl()
                         .bg(p.raised)
-                        .child(SharedString::from(text.clone())),
+                        .child({
+                            // An Urdu or Arabic message reads right to left.
+                            let (rtl, shown) = crate::bidi::plain_lines(text);
+                            div()
+                                .when(rtl, |d| d.text_right())
+                                .child(SharedString::from(shown))
+                        }),
                 )
                 .child(
                     div()
@@ -3260,12 +3266,15 @@ impl Workspace {
                                 this.answer_mouse_up(i, e, window, cx)
                             }),
                         )
-                        .child(
-                            TextView::markdown(("answer", i), with_badges(i, shown, run))
-                                .on_link_click(self.link_opener(cx))
-                                .selectable(true)
-                                .motion(stream_motion()),
-                        )
+                        .child({
+                            let open = std::sync::Arc::new(self.link_opener(cx));
+                            bidi_markdown("answer", i, with_badges(i, shown, run), move |t| {
+                                let open = open.clone();
+                                t.on_link_click(move |u, e, w, a| open(u, e, w, a))
+                                    .selectable(true)
+                                    .motion(stream_motion())
+                            })
+                        })
                         .into_any_element()
                 };
                 let fold = div()
@@ -5692,6 +5701,38 @@ pub(crate) fn mono_ink(p: Palette) -> gpui_kit::Hsla {
 }
 
 /// New words fade in as they stream, a few milliseconds apart.
+
+/// A message's Markdown as one text view; with right-to-left paragraphs
+/// (Urdu, Arabic), a column of views by direction, the right-to-left ones
+/// right-aligned (`crate::bidi`). `style` sets each view up the same way.
+pub(crate) fn bidi_markdown(
+    key: &'static str,
+    i: usize,
+    markdown: String,
+    style: impl Fn(TextView) -> TextView,
+) -> AnyElement {
+    let blocks = crate::bidi::blocks(&markdown);
+    if blocks.len() == 1 && !blocks[0].rtl {
+        return style(TextView::markdown((key, i), markdown)).into_any_element();
+    }
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .children(blocks.into_iter().enumerate().map(|(k, b)| {
+            let view = style(TextView::markdown(
+                SharedString::from(format!("{key}-{i}-{k}")),
+                b.text,
+            ));
+            if b.rtl {
+                div().w_full().text_right().child(view).into_any_element()
+            } else {
+                view.into_any_element()
+            }
+        }))
+        .into_any_element()
+}
+
 fn stream_motion() -> TextViewMotion {
     TextViewMotion::default()
         .with_stream_fade(Duration::from_millis(240))

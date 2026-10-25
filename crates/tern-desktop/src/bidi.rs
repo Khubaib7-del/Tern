@@ -192,7 +192,8 @@ mod tests {
 
     #[test]
     fn urdu_paragraphs_read_right_to_left_and_english_ones_do_not() {
-        let md = format!("{URDU}\n\nIn English: Urdu is beautiful.\n\nمختصر: سلام پاکستان، Tern 2026");
+        let md =
+            format!("{URDU}\n\nIn English: Urdu is beautiful.\n\nمختصر: سلام پاکستان، Tern 2026");
         let b = blocks(&md);
         assert_eq!(b.len(), 3);
         assert!(b[0].rtl && !b[1].rtl && b[2].rtl);

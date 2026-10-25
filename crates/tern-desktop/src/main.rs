@@ -14,6 +14,7 @@
 mod app_menu;
 mod appearance;
 mod assets;
+mod bidi;
 mod brands;
 mod bridge;
 mod browser;

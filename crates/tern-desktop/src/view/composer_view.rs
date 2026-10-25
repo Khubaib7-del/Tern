@@ -2521,9 +2521,9 @@ impl Workspace {
                 .children(thinking)
                 .children(rollup)
                 .children(draft.map(|d| {
-                    gpui_kit::component::text::TextView::markdown(("answer", i), d.to_owned())
-                        .selectable(true)
-                        .motion(super::stream_motion())
+                    super::bidi_markdown("answer", i, d.to_owned(), |t| {
+                        t.selectable(true).motion(super::stream_motion())
+                    })
                 }))
                 .when(behind, |d| d.child(show_all(p, cx)))
                 .into_any_element(),

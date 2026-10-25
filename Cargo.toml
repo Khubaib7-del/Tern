@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Patched third-party crates (see each one's TERN_PATCH.md); not members.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.0.0"
@@ -80,3 +82,8 @@ all = { level = "warn", priority = -1 }
 opt-level = 3
 debug = false
 debug-assertions = false
+
+# GPUI's Windows text drawing, with right-to-left glyph runs placed right to
+# left (third_party/gpui-pre-windows/TERN_PATCH.md).
+[patch.crates-io]
+gpui-pre-windows = { path = "third_party/gpui-pre-windows" }
