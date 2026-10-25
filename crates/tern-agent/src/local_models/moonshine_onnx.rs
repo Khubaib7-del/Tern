@@ -300,7 +300,22 @@ impl LocalEngine for MoonshineOnnx {
         dir: &Path,
         entry: &ModelEntry,
         audio: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        self.transcribe_with(dir, entry, audio, language, &super::TranscribeCtl::new())
+    }
+
+    fn build_info(&self) -> String {
+        format!("({} threads)", threads())
+    }
+
+    fn transcribe_with(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        audio: &[f32],
         _language: Option<&str>,
+        ctl: &super::TranscribeCtl,
     ) -> Result<String, String> {
         if !fits(entry) {
             return Err(format!("{} is not a Moonshine model", entry.name));
@@ -308,7 +323,12 @@ impl LocalEngine for MoonshineOnnx {
         let m = self.model(dir, entry)?;
         let mut m = m.lock().map_err(|_| "the Moonshine model is unusable")?;
         let mut parts = Vec::new();
-        for chunk in audio.chunks(CHUNK) {
+        let n = audio.len().div_ceil(CHUNK).max(1);
+        for (i, chunk) in audio.chunks(CHUNK).enumerate() {
+            if ctl.is_cancelled() {
+                return Err(super::CANCELLED.into());
+            }
+            ctl.set_progress((5 + i * 95 / n) as u8);
             if chunk.len() < 1_600 {
                 continue;
             }
@@ -318,6 +338,7 @@ impl LocalEngine for MoonshineOnnx {
                 parts.push(text);
             }
         }
+        ctl.set_progress(100);
         Ok(parts.join(" "))
     }
 }

@@ -165,6 +165,55 @@ impl Runtime {
     }
 }
 
+/// The error a cancelled transcription ends with.
+pub const CANCELLED: &str = "transcription cancelled";
+
+/// Follows one transcription: how far it got (0–100) and whether it was
+/// cancelled. Clones share the same state, so the front end keeps one to
+/// show progress and cancel while the work runs elsewhere.
+#[derive(Clone, Debug, Default)]
+pub struct TranscribeCtl {
+    progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TranscribeCtl {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Percent done, 0–100.
+    pub fn progress(&self) -> u8 {
+        self.progress.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    pub fn set_progress(&self, p: u8) {
+        self.progress
+            .store(p.min(100), std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn cancel(&self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// How long each stage of a file transcription took.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Transcript {
+    pub text: String,
+    /// The audio's length.
+    pub audio_secs: f64,
+    /// Reading the file to samples (container + codec).
+    pub decode_ms: u128,
+    /// Resampling to 16 kHz mono.
+    pub resample_ms: u128,
+    /// The model itself.
+    pub model_ms: u128,
+    /// The engine and what it was built with.
+    pub engine: String,
+}
+
 /// An engine that runs one runtime's models (or some of them). It plugs
 /// in by calling [`register_engine`] at startup; the built-in ones come
 /// from [`register_builtin_engines`].
@@ -200,6 +249,27 @@ pub trait LocalEngine: Send + Sync {
     ) -> Result<String, String> {
         let _ = (dir, audio, language);
         Err(format!("{} cannot transcribe speech", entry.name))
+    }
+    /// [`LocalEngine::transcribe`] that reports how far it got and stops
+    /// when `ctl` is cancelled. Engines that cannot report run whole.
+    fn transcribe_with(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        audio: &[f32],
+        language: Option<&str>,
+        ctl: &TranscribeCtl,
+    ) -> Result<String, String> {
+        if ctl.is_cancelled() {
+            return Err(CANCELLED.into());
+        }
+        let r = self.transcribe(dir, entry, audio, language);
+        ctl.set_progress(100);
+        r
+    }
+    /// What the engine was built with, for logs (`AVX2 = 1 | ...`).
+    fn build_info(&self) -> String {
+        String::new()
     }
     /// Describes a picture (PNG, JPEG, GIF, or WebP bytes) as asked by
     /// `prompt`, with the vision model installed in `dir`.
@@ -909,9 +979,47 @@ impl LocalModels {
         language: Option<&str>,
     ) -> Result<String, String> {
         // Fail fast on a model this build cannot run, before decoding.
-        self.engine(id)?;
-        let pcm = audio::decode_16k_mono(bytes, name)?;
-        self.transcribe(id, &pcm, language)
+        self.transcribe_file_with(id, bytes, name, language, &TranscribeCtl::new())
+            .map(|t| t.text)
+    }
+
+    /// [`LocalModels::transcribe_file`] with progress, cancel, and how
+    /// long each stage took.
+    #[cfg(feature = "audio")]
+    pub fn transcribe_file_with(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        name: &str,
+        language: Option<&str>,
+        ctl: &TranscribeCtl,
+    ) -> Result<Transcript, String> {
+        use std::time::Instant;
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        let t = Instant::now();
+        let (mono, rate) = audio::decode_mono(bytes, name)?;
+        let decode_ms = t.elapsed().as_millis();
+        if ctl.is_cancelled() {
+            return Err(CANCELLED.into());
+        }
+        ctl.set_progress(3);
+        let t = Instant::now();
+        let pcm = audio::resample(&mono, rate, audio::RATE);
+        let resample_ms = t.elapsed().as_millis();
+        ctl.set_progress(5);
+        let t = Instant::now();
+        let text = engine.transcribe_with(&self.dir(id), entry, &pcm, language, ctl)?;
+        Ok(Transcript {
+            text,
+            audio_secs: pcm.len() as f64 / f64::from(audio::RATE),
+            decode_ms,
+            resample_ms,
+            model_ms: t.elapsed().as_millis(),
+            engine: format!("{} {}", engine.name(), engine.build_info())
+                .trim()
+                .to_owned(),
+        })
     }
 
     /// Deletes the model's folder, finished or partial. The caller drops it

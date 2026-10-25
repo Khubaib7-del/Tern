@@ -298,11 +298,19 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                 std::fs::read(&file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
             let name = file.to_string_lossy().into_owned();
             let started = std::time::Instant::now();
-            let text = lm.transcribe_file(&id, &bytes, &name, language.as_deref())?;
-            println!("{}", text.trim());
+            let ctl = tern_agent::local_models::TranscribeCtl::new();
+            let t = lm.transcribe_file_with(&id, &bytes, &name, language.as_deref(), &ctl)?;
+            println!("{}", t.text.trim());
+            // Where the time went, so a slow run can be told apart: the
+            // file (decode), the resampler, or the model.
             eprintln!(
-                "({id}, {:.1} s on this computer)",
-                started.elapsed().as_secs_f32()
+                "({id}, {:.1} s on this computer for {:.1} s of audio: decode {} ms, resample {} ms, model {} ms; {})",
+                started.elapsed().as_secs_f32(),
+                t.audio_secs,
+                t.decode_ms,
+                t.resample_ms,
+                t.model_ms,
+                t.engine
             );
             Ok(())
         }

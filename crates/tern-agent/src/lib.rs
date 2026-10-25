@@ -35,6 +35,7 @@ pub mod compact;
 pub mod crawlers;
 pub mod decide;
 pub mod deep;
+pub mod diag;
 pub mod doctor;
 pub mod engine;
 pub mod eval;
