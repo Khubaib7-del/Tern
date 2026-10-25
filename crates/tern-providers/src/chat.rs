@@ -100,7 +100,7 @@ pub(crate) fn with_tool_calls(mut text: String, calls: &[(String, serde_json::Va
             continue;
         }
         if !text.is_empty() {
-            text.push_str("\n");
+            text.push('\n');
         }
         text.push_str(&tool_block(name, args));
     }
