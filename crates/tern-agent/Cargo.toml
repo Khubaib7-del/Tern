@@ -33,7 +33,7 @@ sha1_smol.workspace = true
 sha2.workspace = true
 zip.workspace = true
 oar-ocr = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+image.workspace = true
 whisper-rs = { workspace = true, optional = true }
 symphonia = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
@@ -43,7 +43,7 @@ ort = { workspace = true, optional = true }
 mic = ["tern-platform/mic"]
 # Local OCR: PaddleOCR models on ONNX Runtime (oar-ocr). The desktop app
 # and the CLI turn it on.
-ocr-onnx = ["dep:oar-ocr", "dep:image"]
+ocr-onnx = ["dep:oar-ocr"]
 # Decoding audio files (WAV, MP3, M4A/AAC, Ogg Vorbis, FLAC) to 16 kHz
 # mono for the local speech models (symphonia, pure Rust).
 audio = ["dep:symphonia"]
