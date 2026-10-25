@@ -6,7 +6,11 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ### Fixed (PR #64)
 
-From the Windows test of #63 (work in progress).
+From the Windows test of #63.
+
+- **Chat answers again after an empty reply.** A reply with no text (reasoning only, or nothing) was kept in the chat's history as an empty assistant message, and Mistral, Anthropic and Gemini refuse every later request that carries one, so every following question failed at the first model call ("Quick turn · 0 tool results", the same non-answer for "who is the creator of LangChain?" and for "use the web tool"). Now an empty reply is asked for once more; a second empty one ends the turn with a gap and is never kept; empty exchanges already in a chat are dropped before each request (`chat::tidy_history`), as a reopened chat already did. A non-streamed Mistral reply made of content chunks is read too (it came back empty). Regression tests: a Chat-mode turn that asks for a web search runs `web_search` and its answer comes back; consecutive turns each get a new answer; an empty reply never poisons the turns after it.
+- **Audio files can be attached**: **Audio** in the **+** menu (M4A, MP3, WAV, Ogg, FLAC, AAC), the file picker and drag and drop. Each shows a chip with its name and length (read from the file's headers) while it is transcribed, by a local Whisper model first, else the provider's speech-to-text model; the transcript rides with the next message as an attachment named for the file. `.opus` files get a plain "not supported yet". With no transcription model, the toast's **Open Local models** button opens Settings › Local models.
+- **Files by the path you type**: `file_read` takes full paths on Windows, macOS and Linux (`C:\Users\me\notes.txt`, `C:/x`, `\\server\share`, `/home/me/x.md`, `~/x.md`, `file://` addresses), quoted or not, with backslashes. Inside the chat's workspace it reads as before; outside it, or with no workspace open (a chat now always has `file_read`), each file is approved first (`Tool::asks_because`, `PolicyGate::check_asking`). `@` followed by a pasted full path (quoted paths may hold spaces) offers that file first in the `@` menu and attaches it.
 
 ### Added (PR #63)
 
