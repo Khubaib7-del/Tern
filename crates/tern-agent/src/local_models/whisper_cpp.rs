@@ -59,7 +59,11 @@ fn threads() -> i32 {
 }
 
 fn pick_threads(physical: usize, logical: usize) -> i32 {
-    let n = if physical > 0 { physical } else { logical.div_ceil(2) };
+    let n = if physical > 0 {
+        physical
+    } else {
+        logical.div_ceil(2)
+    };
     n.clamp(1, 6) as i32
 }
 

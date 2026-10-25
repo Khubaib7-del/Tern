@@ -3592,8 +3592,18 @@ impl Workspace {
             items.push(wrap(self.empty_state(p, cx)));
         }
         self.rail_base.set(items.len());
+        // Entries far outside the viewport are boxes of their last height
+        // (`crate::cull`): a long chat lays out only what is near the
+        // window on every frame, not every message it ever had.
+        let chat = self
+            .current
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "new".to_owned());
         for (i, e) in self.model.entries.iter().enumerate() {
-            items.push(wrap(self.entry(i, e, p, cx)));
+            let key = format!("chat-{chat}-{i}");
+            items.push(wrap(
+                self.culled(key, &self.scroll, || self.entry(i, e, p, cx)),
+            ));
         }
         // Thinking, the working rollup, and the answer so far, revealed at
         // reading pace.
@@ -5700,8 +5710,6 @@ pub(crate) fn mono_ink(p: Palette) -> gpui_kit::Hsla {
     }
 }
 
-/// New words fade in as they stream, a few milliseconds apart.
-
 /// A message's Markdown as one text view; with right-to-left paragraphs
 /// (Urdu, Arabic), a column of views by direction, the right-to-left ones
 /// right-aligned (`crate::bidi`). `style` sets each view up the same way.
@@ -5733,6 +5741,7 @@ pub(crate) fn bidi_markdown(
         .into_any_element()
 }
 
+/// New words fade in as they stream, a few milliseconds apart.
 fn stream_motion() -> TextViewMotion {
     TextViewMotion::default()
         .with_stream_fade(Duration::from_millis(240))
