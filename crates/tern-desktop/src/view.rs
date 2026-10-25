@@ -383,6 +383,7 @@ impl Workspace {
                 InputEvent::Change => {
                     this.check_long_text(window, cx);
                     let text = this.composer.read(cx).value().to_string();
+                    this.model.chat_here = this.current;
                     this.model.on_composer_text(&text);
                     cx.notify();
                 }
@@ -1282,6 +1283,9 @@ impl Workspace {
                 // Chosen by the user from the menu, like the file picker.
                 self.attach_paths(vec![path], cx);
             }
+            if let Some((id, title)) = chosen.chat {
+                self.bridge.attach_chat(id, title);
+            }
             if self.model.arg_form.is_some() && self.arg_inputs.is_empty() {
                 self.open_arg_form(window, cx);
             }
@@ -1367,6 +1371,31 @@ impl Workspace {
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).small())
                             .into_any_element(),
+                        Pick::File(path) => {
+                            let image = path.extension().is_some_and(|e| {
+                                matches!(
+                                    e.to_string_lossy().to_ascii_lowercase().as_str(),
+                                    "png" | "jpg" | "jpeg" | "gif" | "webp"
+                                )
+                            });
+                            let icon = if image {
+                                AssetIcon::FileImage
+                            } else {
+                                AssetIcon::FileText
+                            };
+                            div()
+                                .text_color(p.muted)
+                                .child(gpui_kit::component::Icon::new(icon).small())
+                                .into_any_element()
+                        }
+                        Pick::Folder(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::Folder).small())
+                            .into_any_element(),
+                        Pick::Chat(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::MessageSquare).small())
+                            .into_any_element(),
                     };
                     div()
                         .id(("mention", i))
@@ -1425,11 +1454,13 @@ impl Workspace {
         }
     }
 
-    /// Opens the system picker for files and folders (zips are files).
+    /// Opens the system picker for files (zips are files). Folders are
+    /// opened in the `@` menu itself, and a picker that allows folders
+    /// lets only folders be chosen on Windows.
     fn pick_attachments(&mut self, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true,
-            directories: true,
+            directories: false,
             multiple: true,
             prompt: Some("Attach".into()),
         });
@@ -1442,6 +1473,7 @@ impl Workspace {
     }
 
     fn attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.note_recent_files(&paths);
         // Audio files go to the speech-to-text model; the transcript joins
         // the composer like spoken words.
         let (audio, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| {
@@ -1475,6 +1507,21 @@ impl Workspace {
         self.model.attaching += paths.len();
         self.bridge.attach(paths);
         cx.notify();
+    }
+
+    /// Remembers attached files for the `@` menu's Recent rows, here and
+    /// in the saved preferences.
+    fn note_recent_files(&mut self, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let mut saved = tern_agent::Preferences::load();
+        for p in paths {
+            let p = p.display().to_string();
+            self.model.providers.prefs.note_recent_file(&p);
+            saved.note_recent_file(&p);
+        }
+        self.bridge.save_prefs(saved);
     }
 
     /// Redraws the transcribing chips' progress a few times a second while
@@ -2347,6 +2394,7 @@ impl Workspace {
         } else {
             format!("{} {text}", now.trim_end())
         };
+        self.model.chat_here = self.current;
         self.model.on_composer_text(&joined);
         self.composer
             .update(cx, |c, cx| c.set_value(joined, window, cx));

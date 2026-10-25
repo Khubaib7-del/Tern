@@ -157,6 +157,14 @@ pub enum Pick {
     Browse,
     /// A file the user typed or pasted by its full path, to attach.
     Path(std::path::PathBuf),
+    /// A file to attach: one attached lately, one in the chat's
+    /// workspace folder, or one in the folder being browsed.
+    File(std::path::PathBuf),
+    /// A folder to open in the menu (its files and folders are listed
+    /// next; the first row then attaches the folder itself).
+    Folder(std::path::PathBuf),
+    /// Another chat, attached as a summary of where it stands.
+    Chat(tern_core::SessionId),
 }
 
 /// One row of the `@` menu.
@@ -168,7 +176,7 @@ pub struct Candidate {
 }
 
 /// What choosing a row does to the composer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Chosen {
     pub text: String,
     pub browse: bool,
@@ -176,6 +184,8 @@ pub struct Chosen {
     pub fetch: Option<(String, String)>,
     /// A file typed by its full path, to attach.
     pub attach: Option<std::path::PathBuf>,
+    /// Another chat to attach as a summary: its id and title.
+    pub chat: Option<(tern_core::SessionId, String)>,
 }
 
 /// What choosing a `/` row asks the window to do.
@@ -439,6 +449,9 @@ pub struct Model {
     next_audio: u64,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
+    /// The chat the composer belongs to (`None` for a new chat), so the
+    /// `@` menu does not offer the chat to itself.
+    pub chat_here: DraftKey,
     /// The `/` menu over the composer, while a command is being typed.
     pub slash: Option<crate::commands::SlashMenu>,
     /// The form a prompt's arguments or a template's parts are typed into.
@@ -678,6 +691,7 @@ impl Model {
             panels: Default::default(),
             archive: Default::default(),
             workspace: None,
+            chat_here: None,
             paused: false,
             row_menu: None,
             confirm_delete: None,
@@ -1218,6 +1232,7 @@ impl Model {
                 ));
             }
         }
+        self.file_candidates(q, &mut rows);
         rows.sort_by_key(|(r, _)| *r);
         let mut out: Vec<Candidate> = rows
             .into_iter()
@@ -1226,10 +1241,103 @@ impl Model {
             .collect();
         out.push(Candidate {
             pick: Pick::Browse,
-            label: "Attach a file or folder…".into(),
-            detail: "Files, folders, and .zip".into(),
+            label: "Browse…".into(),
+            detail: "Pick files from this computer".into(),
         });
         out
+    }
+
+    /// The `@` menu's file, folder, and chat rows: the folder being
+    /// browsed when a full path is typed (`@C:\Users\me\`, `@~/docs/`),
+    /// else files attached lately and files in the chat's workspace
+    /// folder that match, then other chats whose titles match.
+    fn file_candidates(&self, q: &str, rows: &mut Vec<(u8, Candidate)>) {
+        let seen = |rows: &Vec<(u8, Candidate)>, path: &std::path::Path| {
+            rows.iter().any(|(_, c)| match &c.pick {
+                Pick::Path(p) | Pick::File(p) | Pick::Folder(p) => p == path,
+                _ => false,
+            })
+        };
+        let attached = |name: &str| self.attachments.iter().any(|a| a.name == name);
+        if let Some((dir, filter)) = mention::browsed_dir(q) {
+            for e in mention::list_dir(&dir, &filter, MENU_ROWS * 2) {
+                let pick = if e.is_dir {
+                    Pick::Folder(e.path.clone())
+                } else {
+                    Pick::File(e.path.clone())
+                };
+                let detail = if e.is_dir { "Folder" } else { "File" };
+                rows.push((
+                    1,
+                    Candidate {
+                        pick,
+                        label: e.name,
+                        detail: detail.into(),
+                    },
+                ));
+            }
+            return;
+        }
+        for raw in &self.providers.prefs.recent_files {
+            let path = std::path::PathBuf::from(raw);
+            let name = path_label(&path);
+            if mention::matches(q, &name) && !attached(&name) && !seen(rows, &path) {
+                rows.push((
+                    mention::rank(q, &name).saturating_add(1),
+                    Candidate {
+                        detail: "Recent".into(),
+                        label: name,
+                        pick: Pick::File(path),
+                    },
+                ));
+            }
+        }
+        if let Some((_, root)) = &self.workspace
+            && root.is_dir()
+        {
+            for e in mention::workspace_files(root, q, MENU_ROWS) {
+                if attached(&e.name) || seen(rows, &e.path) {
+                    continue;
+                }
+                let detail = e
+                    .path
+                    .parent()
+                    .and_then(|d| d.strip_prefix(root).ok())
+                    .map(|d| d.display().to_string())
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or_else(|| "Workspace".into());
+                let pick = if e.is_dir {
+                    Pick::Folder(e.path.clone())
+                } else {
+                    Pick::File(e.path.clone())
+                };
+                rows.push((
+                    mention::rank(q, &e.name).saturating_add(2),
+                    Candidate {
+                        pick,
+                        label: e.name,
+                        detail,
+                    },
+                ));
+            }
+        }
+        if !q.is_empty() {
+            for s in &self.all_sessions {
+                if Some(s.id) == self.chat_here || s.title.trim().is_empty() {
+                    continue;
+                }
+                if mention::matches(q, &s.title) {
+                    rows.push((
+                        mention::rank(q, &s.title).saturating_add(5),
+                        Candidate {
+                            pick: Pick::Chat(s.id),
+                            label: s.title.clone(),
+                            detail: "Chat".into(),
+                        },
+                    ));
+                }
+            }
+        }
     }
 
     /// Moves the highlight up (-1) or down (+1), wrapping.
@@ -1250,21 +1358,51 @@ impl Model {
         let row = rows.get(index.unwrap_or(m.selected))?.clone();
         self.mention = None;
         let name = match row.pick {
-            Pick::Path(path) => {
+            Pick::Path(path) | Pick::File(path) => {
                 let name = path_label(&path);
                 return Some(Chosen {
                     text: mention::complete(text, &name),
-                    browse: false,
-                    fetch: None,
                     attach: Some(path),
+                    ..Chosen::default()
+                });
+            }
+            Pick::Folder(dir) => {
+                // Opens the folder in the menu: the query becomes its path.
+                let mut shown = dir.display().to_string();
+                if !shown.ends_with(['/', '\\']) {
+                    shown.push(std::path::MAIN_SEPARATOR);
+                }
+                let at = if shown.contains(' ') {
+                    format!("@\"{shown}")
+                } else {
+                    format!("@{shown}")
+                };
+                let text = format!("{}{at}", &text[..m.start.min(text.len())]);
+                self.on_composer_text(&text);
+                return Some(Chosen {
+                    text,
+                    ..Chosen::default()
+                });
+            }
+            Pick::Chat(id) => {
+                let title = self
+                    .all_sessions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| "Chat".into());
+                self.attaching += 1;
+                return Some(Chosen {
+                    text: mention::complete(text, &title),
+                    chat: Some((id, title)),
+                    ..Chosen::default()
                 });
             }
             Pick::Browse => {
                 return Some(Chosen {
                     text: mention::clear_active(text),
                     browse: true,
-                    fetch: None,
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Resource(item) if item.kind == ItemKind::Template => {
@@ -1274,18 +1412,15 @@ impl Model {
                 ));
                 return Some(Chosen {
                     text: mention::clear_active(text),
-                    browse: false,
-                    fetch: None,
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Resource(item) => {
                 self.attaching += 1;
                 return Some(Chosen {
                     text: mention::complete(text, item.label()),
-                    browse: false,
                     fetch: Some((item.server.clone(), item.uri.clone())),
-                    attach: None,
+                    ..Chosen::default()
                 });
             }
             Pick::Attachment(i) => {
@@ -1307,9 +1442,7 @@ impl Model {
         };
         Some(Chosen {
             text: mention::complete(text, &name),
-            browse: false,
-            fetch: None,
-            attach: None,
+            ..Chosen::default()
         })
     }
 
@@ -3388,6 +3521,84 @@ mod tests {
                 .iter()
                 .any(|r| matches!(r.pick, Pick::Path(_)))
         );
+    }
+
+    #[test]
+    fn the_at_menu_lists_files_folders_recent_files_and_chats() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("notes")).unwrap();
+        std::fs::write(d.path().join("notes").join("plan.md"), "x").unwrap();
+        std::fs::write(d.path().join("readme.txt"), "x").unwrap();
+        let mut m = ready();
+        // A typed folder is browsed: the folder itself first (to attach),
+        // then its folders, then its files.
+        let root = format!("{}{}", d.path().display(), std::path::MAIN_SEPARATOR);
+        let typed = format!("see @{root}");
+        m.on_composer_text(&typed);
+        let rows = m.mention_candidates();
+        assert!(matches!(&rows[0].pick, Pick::Path(_)), "{rows:?}");
+        assert!(matches!(&rows[1].pick, Pick::Folder(p) if p.ends_with("notes")));
+        assert!(matches!(&rows[2].pick, Pick::File(p) if p.ends_with("readme.txt")));
+        assert_eq!(rows.last().unwrap().pick, Pick::Browse);
+        // Choosing a folder drills down; the menu stays open on it.
+        let chosen = m.choose_mention(&typed, Some(1)).unwrap();
+        assert!(chosen.text.ends_with(&format!("notes{}", std::path::MAIN_SEPARATOR)));
+        assert!(chosen.attach.is_none() && !chosen.browse);
+        m.on_composer_text(&chosen.text);
+        let rows = m.mention_candidates();
+        assert!(rows.iter().any(|r| r.label == "plan.md"), "{rows:?}");
+        // A file there attaches.
+        let i = rows.iter().position(|r| r.label == "plan.md").unwrap();
+        let chosen = m.choose_mention(&chosen.text, Some(i)).unwrap();
+        assert_eq!(chosen.text, "see @plan.md ");
+        assert!(chosen.attach.unwrap().ends_with("plan.md"));
+
+        // With a workspace folder open, its files match by name.
+        let mut m = ready();
+        m.workspace = Some(("ws".into(), d.path().to_path_buf()));
+        m.on_composer_text("read @pla");
+        let rows = m.mention_candidates();
+        assert!(matches!(&rows[0].pick, Pick::File(p) if p.ends_with("plan.md")));
+        assert_eq!(rows[0].detail, "notes");
+
+        // Files attached lately are offered, newest first.
+        let mut m = ready();
+        let recent = d.path().join("readme.txt").display().to_string();
+        m.providers.prefs.note_recent_file(&recent);
+        m.on_composer_text("open @");
+        let rows = m.mention_candidates();
+        assert_eq!(rows[0].label, "readme.txt");
+        assert_eq!(rows[0].detail, "Recent");
+
+        // Other chats match by title; the open chat is not offered.
+        let mut m = ready();
+        let (here, other) = (tern_core::SessionId::new(), tern_core::SessionId::new());
+        for (id, title) in [(here, "Budget draft"), (other, "Budget review")] {
+            m.all_sessions.push(SessionSummary {
+                id,
+                title: title.into(),
+                harness: Harness::Research,
+                created_at: String::new(),
+                events: 3,
+                parent: None,
+                anchor: None,
+                plan: None,
+                project: None,
+            });
+        }
+        m.chat_here = Some(here);
+        m.on_composer_text("as in @budget");
+        let rows = m.mention_candidates();
+        let chats: Vec<&Candidate> = rows
+            .iter()
+            .filter(|r| matches!(r.pick, Pick::Chat(_)))
+            .collect();
+        assert_eq!(chats.len(), 1);
+        assert_eq!(chats[0].label, "Budget review");
+        let i = rows.iter().position(|r| r.pick == Pick::Chat(other)).unwrap();
+        let chosen = m.choose_mention("as in @budget", Some(i)).unwrap();
+        assert_eq!(chosen.chat, Some((other, "Budget review".into())));
+        assert_eq!(m.attaching, 1);
     }
 
     #[test]

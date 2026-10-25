@@ -1197,6 +1197,7 @@ impl Workspace {
         let text = text.to_owned();
         self.composer
             .update(cx, |c, cx| c.set_value(text.clone(), window, cx));
+        self.model.chat_here = self.current;
         self.model.on_composer_text(&text);
     }
 

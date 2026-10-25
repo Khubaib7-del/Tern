@@ -267,6 +267,7 @@ impl Workspace {
             s.set_value(text.clone(), window, cx);
             s.focus(window, cx);
         });
+        self.model.chat_here = self.current;
         self.model.on_composer_text(&text);
         cx.notify();
     }

@@ -142,6 +142,24 @@ impl Attachment {
         }
     }
 
+    /// Another chat, as a summary of where it stands (a handoff
+    /// packet's Markdown), referenced with `@`. Always Context.
+    pub fn chat(title: &str, markdown: &str) -> Self {
+        let (text, cut) = cut_chars(markdown.trim(), MAX_TOTAL_CHARS);
+        Self {
+            name: title.to_owned(),
+            source: Source::Link,
+            role: Role::Context,
+            files: vec![FileText {
+                path: format!("{title} (chat)"),
+                text: format!("Another of the user's chats, summarised:\n\n{text}"),
+                cut,
+            }],
+            skipped: Vec::new(),
+            images: Vec::new(),
+        }
+    }
+
     /// An audio file's transcript, named for the file (`memo.m4a`), with
     /// how long it plays when known.
     pub fn transcript(name: &str, secs: Option<f64>, text: &str) -> Self {

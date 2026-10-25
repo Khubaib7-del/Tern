@@ -365,6 +365,18 @@ impl Bridge {
         });
     }
 
+    /// Reads another chat as a summary (its handoff packet) and attaches
+    /// it to the composer, for an `@` reference to that chat.
+    pub fn attach_chat(&self, session: SessionId, title: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let result = store()
+                .and_then(|s| handoff::for_session(&s, session, now()))
+                .map(|packet| tern_agent::Attachment::chat(&title, &handoff::to_markdown(&packet)));
+            let _ = tx.send(Msg::Attached(result));
+        });
+    }
+
     /// Opens a side chat over `session`: reads the thread once.
     pub fn side_open(&self, session: SessionId) {
         let tx = self.tx.clone();
