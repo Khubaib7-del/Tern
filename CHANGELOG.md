@@ -4,6 +4,20 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #62)
+
+Images, OCR and voice, part 1: the foundation for local models, and pictures in the composer.
+
+- **Local models, downloaded on demand** (`tern_agent::local_models`, [docs/local-models.md](docs/local-models.md)). A manifest lists the models Tern knows: task (OCR, document parsing, vision, speech to text, text to speech, embeddings), name, Hugging Face repo and pinned revision, files with sizes and SHA-256, licence, and runtime. Nothing is bundled. A download goes to `<data>/models/<id>/`, resumes an interrupted file with an HTTP `Range` request, reports progress, can be cancelled, checks every file's hash, and writes its record last. Installed models are on unless switched off, one default per task, saved in `preferences.json`. `local-models.json` in the settings folder adds or replaces entries. The built-in entries are placeholders (Whisper base.en / tiny.en ggml, RapidOCR PP-OCRv4 mobile ONNX) until the model research picks the real ones. No runtime is linked in yet: models download and verify, and an engine plugs in through `LocalEngine` / `register_engine`.
+- **Settings › Local models**: a section per task; each row has the model's logo, name, size, licence and runtime, Download/Resume with a progress bar and Cancel, an Enable switch, a Default radio, and Delete (asks twice). Rows are culled off screen and use the light `pill` buttons from #61.
+- **`tern models list|download|remove|default|enable`** in the terminal.
+- **Pictures in the composer**: paste a picture with Ctrl+V (Cmd+V on macOS) or the + menu's Paste, besides attaching and dropping files; waiting pictures show a thumbnail in their chip, with remove. A chat model that cannot see gets a provider's vision or OCR reading as before, and now falls back to an installed local OCR model (or a note saying why it cannot run yet).
+- The download byte mover lives in `tern_providers::download` so only the providers and crawl crates touch the network.
+
+### Changed (PR #62)
+
+- **Settings › Tools draws only the rows near the window**, like Providers in #61 (`cull.rs`): each tool row (icon, switch, four approval choices) far outside the viewport is a box of its last height.
+
 ### Fixed (PR #61)
 
 Window buttons on Windows, and Settings › Providers scrolling and switching theme as smoothly as the other Settings pages.
