@@ -291,6 +291,15 @@ pub async fn transcribe_with(
     use crate::local_models::CANCELLED;
     let limit = transcribe_timeout(audio_secs);
     let started = std::time::Instant::now();
+    // Which transcriber took the file (local models come first), so a
+    // slow or failed transcript in tern.log names its engine.
+    crate::diag::note(&format!(
+        "transcribe: start {via} ({}) file={} audio={} limit={}s",
+        if via.is_local() { "local" } else { "provider" },
+        ext_of(file_name),
+        audio_secs.map_or_else(|| "?".to_owned(), |s| format!("{s:.1}s")),
+        limit.as_secs()
+    ));
     let r: Result<String, String> = if via.is_local() {
         let (id, bytes, name, c) = (
             via.model.clone(),
@@ -314,7 +323,14 @@ pub async fn transcribe_with(
                     ));
                     Ok(t.text)
                 }
-                Ok(Err(e)) => Err(e),
+                Ok(Err(e)) => {
+                    crate::diag::note(&format!(
+                        "transcribe: {via} file={} failed after {}ms: {e}",
+                        ext_of(file_name),
+                        started.elapsed().as_millis()
+                    ));
+                    Err(e)
+                }
                 Err(e) => Err(e),
             },
             Err(_) => {

@@ -1009,7 +1009,17 @@ impl LocalModels {
         let resample_ms = t.elapsed().as_millis();
         ctl.set_progress(5);
         let t = Instant::now();
-        let text = engine.transcribe_with(&self.dir(id), entry, &pcm, language, ctl)?;
+        let text = engine
+            .transcribe_with(&self.dir(id), entry, &pcm, language, ctl)
+            .map_err(|e| {
+                // A failure names the engine's build (threads, CPU
+                // features) and the run's times, like a success does.
+                if e == CANCELLED {
+                    e
+                } else {
+                    format!("{e} ({} {})", engine.name(), engine.build_info())
+                }
+            })?;
         Ok(Transcript {
             text,
             audio_secs: pcm.len() as f64 / f64::from(audio::RATE),

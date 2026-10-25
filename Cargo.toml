@@ -71,3 +71,12 @@ missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# whisper.cpp (built by CMake inside whisper-rs-sys) is unusably slow
+# unoptimised, and on Windows MSVC the C flags follow this package's
+# opt-level: keep it optimised, without debug info, even in dev and test
+# builds.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+debug = false
+debug-assertions = false
