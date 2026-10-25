@@ -94,9 +94,29 @@ pub struct Store {
     redactor: Redactor,
 }
 
+/// Whether SQLite said the database is busy or locked.
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 impl Store {
     pub fn open(path: &Path) -> StoreResult<Self> {
-        Self::init(Connection::open(path)?)
+        // A database another connection is creating or migrating at this
+        // moment can answer "database is locked" without waiting (switching
+        // a new file to WAL, or SQLite's deadlock check); try again for a
+        // few seconds before giving up.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match Self::init(Connection::open(path)?) {
+                Err(StoreError::Sql(e)) if is_busy(&e) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                other => return other,
+            }
+        }
     }
 
     pub fn open_in_memory() -> StoreResult<Self> {
@@ -903,7 +923,7 @@ mod tests {
 
     #[test]
     fn a_new_database_opened_from_two_threads_at_once_opens_in_both() {
-        for round in 0..8 {
+        for round in 0..32 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(format!("race-{round}.sqlite3"));
             let go = std::sync::Arc::new(std::sync::Barrier::new(4));
