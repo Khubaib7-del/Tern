@@ -4,6 +4,10 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #59, in progress)
+
+Research flow v2: the plan, run, steer, needs-you, report and review steps of a research run, as in the v2 concept. Entries are filled in as each part lands.
+
 ### Added (PR #58)
 
 The v2 polish pass: Scout as a floating clay-sprite pet, a spring motion system, the v2 empty state, rail tabs, a Study rail with swipeable flashcards, a command palette, a new Windows icon, and a scripted UI tour that CI records.
