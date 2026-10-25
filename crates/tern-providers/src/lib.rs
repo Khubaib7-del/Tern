@@ -19,6 +19,7 @@ pub mod catalog;
 pub mod chat;
 mod client;
 pub mod custom;
+pub mod download;
 pub mod effort;
 pub mod error;
 pub mod model;
