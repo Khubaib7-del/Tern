@@ -601,6 +601,7 @@ impl Workspace {
                 .children(self.arg_form_view(p, cx))
                 .children(self.notices(p, cx))
                 .children(self.reply_bar(p, cx))
+                .children(self.steer_rows(p))
                 .children(self.steer_hint(p))
                 .when(
                     !self.model.attachments.is_empty() || self.model.attaching > 0,

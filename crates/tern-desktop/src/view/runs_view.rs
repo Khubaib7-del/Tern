@@ -90,6 +90,10 @@ impl Workspace {
         if self.model.is_busy() {
             return None;
         }
+        // Stopped at its token limit: the budget card (v2 s11).
+        if offer.budget.is_some() {
+            return self.budget_card(p, cx);
+        }
         let action = offer.action();
         let tooltip = match offer.kind {
             tern_agent::OfferKind::Resume => {

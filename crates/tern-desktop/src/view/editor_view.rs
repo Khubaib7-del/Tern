@@ -27,6 +27,7 @@ impl Workspace {
     pub(super) fn open_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.model.screen = Screen::Editor;
         self.model.editor.refresh();
+        self.model.editor.check_disk();
         if self.model.editor.open.is_none()
             && let Some(first) = self.model.editor.notes.first().map(|n| n.path.clone())
         {
@@ -54,6 +55,166 @@ impl Workspace {
             });
         }
         cx.notify();
+    }
+
+    /// Accepts or rejects the pending change to a note.
+    fn answer_proposal(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let open = self.model.editor.open.clone();
+        if accept {
+            match self.model.editor.accept() {
+                Ok(Some((path, text))) => {
+                    if open.as_deref() == Some(path.as_str()) {
+                        self.note_input
+                            .update(cx, |i, cx| i.set_value(text, window, cx));
+                    }
+                    self.model
+                        .toast_info(format!("Accepted the change to {path}"));
+                }
+                Ok(None) => {}
+                Err(e) => self
+                    .model
+                    .toast_error(format!("Could not write the note: {e}"), None),
+            }
+        } else if let Err(e) = self.model.editor.reject() {
+            self.model
+                .toast_error(format!("Could not restore the note: {e}"), None);
+        } else {
+            self.model
+                .toast_info("Rejected the change; the note is as you had it");
+        }
+        cx.notify();
+    }
+
+    /// The pending change as a line diff with Accept and Reject.
+    fn proposal_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let prop = self.model.editor.proposal.as_ref()?;
+        let lines = crate::editor::diff(&prop.before, &prop.after);
+        let added = lines
+            .iter()
+            .filter(|l| matches!(l, crate::editor::Line::Added(_)))
+            .count();
+        let removed = lines
+            .iter()
+            .filter(|l| matches!(l, crate::editor::Line::Removed(_)))
+            .count();
+        // Changed lines with one line of context each side.
+        let changed: Vec<bool> = lines
+            .iter()
+            .map(|l| !matches!(l, crate::editor::Line::Same(_)))
+            .collect();
+        let near = |k: usize| {
+            changed[k.saturating_sub(1)..(k + 2).min(changed.len())]
+                .iter()
+                .any(|c| *c)
+        };
+        let rows: Vec<AnyElement> = lines
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| near(*k))
+            .take(200)
+            .map(|(_, l)| {
+                let (mark, text, bg, color) = match l {
+                    crate::editor::Line::Same(t) => (" ", *t, None, p.muted),
+                    crate::editor::Line::Added(t) => {
+                        ("+", *t, Some(p.accent.opacity(0.12)), p.text)
+                    }
+                    crate::editor::Line::Removed(t) => ("−", *t, Some(p.hover), p.faint),
+                };
+                div()
+                    .flex()
+                    .gap_2()
+                    .px_2()
+                    .text_xs()
+                    .text_color(color)
+                    .when_some(bg, |d, bg| d.bg(bg))
+                    .child(div().w(px(10.)).flex_none().child(mark))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .when(matches!(l, crate::editor::Line::Removed(_)), |d| {
+                                d.line_through()
+                            })
+                            .child(SharedString::from(text.to_owned())),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        Some(
+            div()
+                .id("note-proposal")
+                .flex()
+                .flex_col()
+                .gap_2()
+                .mx_4()
+                .my_2()
+                .p_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.raised)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .child(div().text_color(p.accent).child("◆"))
+                        .child(SharedString::from(format!(
+                            "{} · {}",
+                            prop.source, prop.path
+                        )))
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(format!("+{added} −{removed}"))),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("note-proposal-diff")
+                        .max_h(px(260.))
+                        .overflow_y_scrollbar()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(p.border)
+                        .bg(p.canvas)
+                        .py_1()
+                        .children(rows),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("note-accept")
+                                .capsule()
+                                .label("Accept")
+                                .primary()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.answer_proposal(true, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("note-reject")
+                                .capsule()
+                                .label(if prop.on_disk {
+                                    "Reject and restore mine"
+                                } else {
+                                    "Reject"
+                                })
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.answer_proposal(false, window, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Saves the open note now, if it changed.
@@ -99,10 +260,14 @@ impl Workspace {
 
     /// Saves answer `i` as a new note in the vault.
     pub(super) fn save_answer(&mut self, i: usize, cx: &mut Context<Self>) {
-        if let Some((q, a, sources)) = self.model.answer_for_note(i)
-            && self.model.editor.save_answer(&q, &a, &sources).is_ok()
-        {
-            self.model.saved_answer = Some(i);
+        if let Some((q, a, sources)) = self.model.answer_for_note(i) {
+            match self.model.editor.save_answer(&q, &a, &sources) {
+                Ok(_) => self.model.saved_answer = Some(i),
+                Err(e) if self.model.editor.proposal.is_some() => self.model.toast_info(e),
+                Err(e) => self
+                    .model
+                    .toast_error(format!("Could not save the note: {e}"), None),
+            }
         }
         cx.notify();
     }
@@ -377,6 +542,7 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .child(header)
+                    .children(self.proposal_card(p, cx))
                     .child(body)
                     .when(has_links, |d| d.child(footer)),
             )

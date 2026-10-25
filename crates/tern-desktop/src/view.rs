@@ -41,6 +41,7 @@ mod deep_view;
 mod editor_view;
 mod eval_view;
 mod explain_view;
+mod flow_view;
 mod frame;
 mod git_view;
 mod library_view;
@@ -114,6 +115,8 @@ pub struct Workspace {
     web_ticking: bool,
     /// The run panel's Graph view: pointer and draw-in state.
     graph: runmap_view::GraphUi,
+    /// Research flow v2: claim review, citation cards, splash (`flow_view`).
+    flow: flow_view::FlowUi,
     /// The harness switcher's popover is open, and when it opened.
     switcher: Option<std::time::Instant>,
     /// The title field of the chat being renamed in the list.
@@ -606,6 +609,7 @@ impl Workspace {
             web_timer: None,
             web_ticking: false,
             graph: Default::default(),
+            flow: Default::default(),
             rename_input,
             renaming: None,
             cancel: CancelFlag::default(),
@@ -2355,7 +2359,8 @@ impl Workspace {
                             ),
                         )
                         .child(div().occlude().child(self.workspace_button(p, cx)))
-                        .children(self.git_chip(p, cx)),
+                        .children(self.git_chip(p, cx))
+                        .children(self.title_crumb(p)),
                 )
                 .child(div().flex_1())
                 .child(
@@ -2364,6 +2369,7 @@ impl Workspace {
                         .items_center()
                         .gap_1()
                         .occlude()
+                        .child(self.search_button(cx))
                         .child(
                             Button::new("toggle-theme")
                                 .capsule()
@@ -2624,7 +2630,14 @@ impl Workspace {
             .flex()
             .items_center()
             .gap_1p5()
-            .child(svg().path(assets::MARK).size(px(15.)).text_color(p.text))
+            .child(
+                svg()
+                    .path(assets::MARK)
+                    .size(px(15.))
+                    .text_color(p.text)
+                    // The launch splash flies the mark here.
+                    .when(self.mark_in_flight(), |d| d.opacity(0.)),
+            )
             .child(
                 div()
                     .text_sm()
@@ -3090,6 +3103,11 @@ impl Workspace {
                     .when(revealing && !folded, |d| {
                         d.child(composer_view::show_all(p, cx))
                     })
+                    .children(if folded {
+                        None
+                    } else {
+                        self.citations(i, run, pages, p, cx)
+                    })
                     .when(!pages.is_empty() && !folded, |d| {
                         d.child(self.sources(i, pages, p, cx))
                     })
@@ -3183,72 +3201,6 @@ impl Workspace {
                             this.model.reply_to = None;
                             cx.notify();
                         })),
-                )
-                .into_any_element(),
-        )
-    }
-
-    fn approval_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let Phase::Approval { request, .. } = &self.model.phase else {
-            return None;
-        };
-        let target = request.target.clone().unwrap_or_default();
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .rounded_xl()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .child(
-                    div()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(format!("Tern wants to use {}", request.tool)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(p.muted)
-                        .child(SharedString::from(request.summary.clone())),
-                )
-                .when(!target.is_empty(), |d| {
-                    d.child(div().text_xs().text_color(p.faint).child(target))
-                })
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            Button::new("allow-once")
-                                .capsule()
-                                .label("Allow once")
-                                .small()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.answer(ApprovalAnswer::AllowOnce, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("allow-session")
-                                .capsule()
-                                .label("Allow for this chat")
-                                .small()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.answer(ApprovalAnswer::AllowForSession, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("deny")
-                                .capsule()
-                                .label("Deny")
-                                .ghost()
-                                .small()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.answer(ApprovalAnswer::Deny, cx)
-                                })),
-                        ),
                 )
                 .into_any_element(),
         )
@@ -3423,7 +3375,7 @@ impl Workspace {
         if let Some(live) = self.live_answer(p, cx) {
             items.push(wrap(live));
         }
-        if let Some(card) = self.approval_card(p, cx) {
+        if let Some(card) = self.needs_you_card(p, cx) {
             items.push(wrap(card));
         }
         if let Some(card) = self.plan_card(p, cx) {
@@ -3455,6 +3407,7 @@ impl Workspace {
             .min_h_0()
             .child(scroller)
             .children(self.timeline_rail(p, cx))
+            .children(self.checkpoint_strip(p, cx))
             .vertical_scrollbar(&self.scroll)
     }
 
@@ -4265,7 +4218,10 @@ impl Workspace {
             "run-views",
             &segs,
             picked,
-            segmented::Look::default(),
+            segmented::Look {
+                underline: true,
+                ..Default::default()
+            },
             p,
             std::rc::Rc::new(move |this: &mut Self, i, _, _| {
                 if let (Some(&t), Some(&v)) = (shown_tabs.get(i), shown_first.get(i)) {
@@ -4624,10 +4580,14 @@ impl Workspace {
                     )))
             }),
         );
+        let review = self.review_bar(run, p, cx);
+        let export = run.report.is_some().then(|| self.export_buttons(cx));
         let pages = run.pages();
         let focus = self.model.run_panel.claim;
         let claims = run.checks.iter().map(|c| {
             let focused = focus == Some(c.claim);
+            let rejected = self.claim_rejected(run, c.claim);
+            let actions = self.claim_actions(run, c.claim, p, cx);
             let source = c.evidence.as_ref().map(|ev| {
                 let page = pages
                     .iter()
@@ -4715,10 +4675,12 @@ impl Workspace {
                 .child(
                     div()
                         .text_sm()
-                        .text_color(p.text)
+                        .text_color(if rejected { p.faint } else { p.text })
+                        .when(rejected, |d| d.line_through())
                         .child(SharedString::from(c.text.clone())),
                 )
                 .children(source)
+                .children(actions)
                 .when(!c.note.is_empty(), |d| {
                     d.child(
                         div()
@@ -4761,6 +4723,7 @@ impl Workspace {
                                 .on_click(move |_, _, cx| cx.open_url(&json)),
                         ),
                 )
+                .children(export)
                 .child(
                     div()
                         .text_xs()
@@ -4778,6 +4741,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap_2()
+            .children(review)
             .when(!run.checks.is_empty(), |d| d.child(counts))
             .when(run.checks.is_empty(), |d| {
                 d.child(
@@ -5102,6 +5066,7 @@ impl Render for Workspace {
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
                 if !this.palette_keys(e, window, cx)
+                    && !this.needs_you_keys(e, window, cx)
                     && !this.settings_keys(e, window, cx)
                     && !this.scout_keys(e, cx)
                 {
@@ -5208,7 +5173,8 @@ impl Render for Workspace {
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
             .children(self.palette_overlay(p, cx))
-            .children(ripple);
+            .children(ripple)
+            .children(self.splash(p, window));
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
             frame::next_frame(window, cx);

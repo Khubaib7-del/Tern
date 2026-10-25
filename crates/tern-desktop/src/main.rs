@@ -28,6 +28,7 @@ mod editor;
 mod evaluation;
 mod explain;
 mod extensions;
+mod flow;
 mod gauge;
 mod git;
 mod harness;

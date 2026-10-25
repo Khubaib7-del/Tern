@@ -103,6 +103,7 @@ Started early (ADR 0006): the first slice is the window shell on the phase 3 cha
 | Summary, Detailed, and Raw views of the same run | Same event stream renders all three |
 | Vault editor: Markdown, wikilinks, backlinks, outline, agent edits as diffs | Vault opens in Obsidian unchanged |
 | Scout states driven by real events | Reduced-motion still frame works |
+| Research flow v2 (PR #59): queued steer rows, needs-you card, checkpoint strip, budget card, citation hover cards, claim review, report export, vault diffs, launch splash | Each step drawn from the run's real events; the UI tour records every one |
 
 ### Phase 7 · Study harness
 

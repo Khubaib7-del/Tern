@@ -4,6 +4,24 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #59)
+
+Research flow v2: the steer, needs-you, checkpoint, budget, report and review steps of a research run as the v2 concept draws them (s04 to s11, s13, s15), and the fixed animated mark.
+
+- **Steer rows**: steering notes sent while a run goes sit over the composer as `↳` rows, "queued · next safe point", then "applied" or "not applied" once the run reaches a safe point. They grow in on a spring.
+- **Tern needs you**: an approval is one card with "◆ Tern needs you", what Tern wants and numbered answers: 1 Allow once, 2 Allow for this chat, 3 No, and tell Tern what to do (denies and puts the cursor in the composer to steer). The keys 1 to 3 answer while the composer is empty.
+- **Checkpoint strip**: ticks on the transcript's left edge, one per safe point the run passed (the approved plan and each finished worker in deep research; each tool result in a quick turn), the latest in the accent colour. Hover one for its pages, tokens and time; the latest restores (resumes) the run when it stopped short. The agent keeps one checkpoint per chat, so earlier ticks show how the run got there and cannot be restored on their own.
+- **Budget card**: a run that stops at its token limit shows "Paused at a safe point" with the tokens it used of its limit, **Raise to … and resume** (×1.5 or ×2) and **Stop**. `ChatSession::raise_budget` raises the chat's turn limits and the checkpoint's plan and per-worker budgets together, then the run resumes from the checkpoint. Tern has no price table, so the card counts tokens, not dollars.
+- **Citation hover cards**: the sources an answer cites appear under it as chips ("[2] arxiv.org"). Hover one for the quoted passage, page, claim and verdict, ‹ › through every passage quoted from that source, and **Open** in Tern's browser.
+- **Claim review**: the Report tab has **Keep all** and **Review each**. While reviewing, each claim has **Reject**/**Keep** and **Add comment**; **Done reviewing** strikes rejected claims, saves the review beside the report (`turn-N.review.json`), shows a toast ("Report updated · 1 claim removed · 1 note in the composer") and puts the notes in the composer as the next message.
+- **Report export**: **Export Markdown** (the report plus a Review section) and **Export HTML / PDF** (a printable page with no network loads; print it to PDF from the browser), written beside the report and opened.
+- **Vault diffs**: the Editor no longer overwrites a note that changed on disk under it (the agent's vault tools or another app). The change shows as a line diff (+/− counts, changed lines with context) with **Accept** or **Reject and restore mine**. Saving an answer onto a note title that already exists proposes it as an addition to that note instead.
+- **Launch splash**: the mark settles in the centre of the window and flies to its slot in the title bar while the cover fades (about 1.3 s; skipped with reduced motion). The operating system's dock bounce is not Tern's to draw.
+- **Title bar**: the chat's project and title as a crumb, and a search button that opens the command palette.
+- **Underlined rail tabs**: the right rail's Plan, Sources, Report, Graph and Context tabs are underlined, the underline sliding to the picked tab, instead of a pill.
+- **Animated mark, fixed**: the empty state's mark (and the README banner) now beat both wings, with exactly one near wing in every frame (before, the near wing was static and a duplicate wing appeared). 72 frames at 30 fps as before.
+- **UI tour**: new scenes for claim review (t17b, t17c), the budget card (t17d) and a vault diff (t53b).
+
 ### Added (PR #58)
 
 The v2 polish pass: Scout as a floating clay-sprite pet, a spring motion system, the v2 empty state, rail tabs, a Study rail with swipeable flashcards, a command palette, a new Windows icon, and a scripted UI tour that CI records.
