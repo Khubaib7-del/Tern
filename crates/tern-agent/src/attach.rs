@@ -96,6 +96,9 @@ pub enum Source {
     /// A resource an MCP server read, referenced with `@`. Its text is
     /// wrapped as untrusted data and it is always Context.
     Mcp,
+    /// An audio file, sent as its transcript; how long it plays in
+    /// seconds, when known.
+    Audio(Option<u32>),
 }
 
 /// One file read from an attachment.
@@ -131,6 +134,24 @@ impl Attachment {
             role: Role::Context,
             files: vec![FileText {
                 path: "Pasted text.txt".into(),
+                text,
+                cut,
+            }],
+            skipped: Vec::new(),
+            images: Vec::new(),
+        }
+    }
+
+    /// An audio file's transcript, named for the file (`memo.m4a`), with
+    /// how long it plays when known.
+    pub fn transcript(name: &str, secs: Option<f64>, text: &str) -> Self {
+        let (text, cut) = cut_chars(text.trim(), MAX_TOTAL_CHARS);
+        Self {
+            name: name.to_owned(),
+            source: Source::Audio(secs.map(|s| s.round().max(0.0) as u32)),
+            role: Role::Context,
+            files: vec![FileText {
+                path: format!("{name} (transcript)"),
                 text,
                 cut,
             }],
@@ -271,6 +292,13 @@ impl Attachment {
                 parts.push(format!("{} chars", compact(self.chars())));
             }
             Source::Link => parts.push("source from this chat".into()),
+            Source::Audio(secs) => {
+                parts.push("Audio".into());
+                if let Some(s) = secs {
+                    parts.push(crate::media::clock(f64::from(s)));
+                }
+                parts.push("transcript".into());
+            }
             Source::Mcp => {
                 parts.push("MCP resource".into());
                 parts.push(plural(self.lines(), "line"));
@@ -699,6 +727,22 @@ fn compact(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_audio_transcript_is_a_chip_with_its_length() {
+        let a = Attachment::transcript("memo.m4a", Some(42.4), "  Buy milk.  ");
+        assert_eq!(a.name, "memo.m4a");
+        assert_eq!(a.source, Source::Audio(Some(42)));
+        assert_eq!(a.detail(), "Audio · 0:42 · transcript");
+        assert_eq!(a.files[0].text, "Buy milk.");
+        let msg = compose("what did I say?", &[a]);
+        assert!(
+            msg.contains("memo.m4a (transcript)") && msg.contains("Buy milk."),
+            "{msg}"
+        );
+        let b = Attachment::transcript("x.wav", None, "hi");
+        assert_eq!(b.detail(), "Audio · transcript");
+    }
     use std::io::Write;
 
     fn zip_of(files: &[(&str, &[u8])]) -> Vec<u8> {
