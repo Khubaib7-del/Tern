@@ -536,7 +536,11 @@ impl Run<'_, '_> {
                 if q.messages.is_empty() {
                     messages.push(user_message);
                 } else {
-                    messages.extend(q.messages);
+                    // A checkpoint saved by an older build may still hold
+                    // pictures; they are never replayed.
+                    let mut saved = q.messages;
+                    crate::chat::strip_pictures(&mut saved);
+                    messages.extend(saved);
                 }
                 seen.extend(q.seen);
                 self.model_calls = c.model_calls;
@@ -743,8 +747,13 @@ impl Run<'_, '_> {
         let Some(ck) = self.ck.as_mut() else {
             return;
         };
+        // Pictures are not kept in a checkpoint: a resumed run (or "Retry")
+        // never replays one, so a model that cannot see is never sent one
+        // again, and the file stays small. Each leaves its name.
+        let mut messages = turn.to_vec();
+        crate::chat::strip_pictures(&mut messages);
         ck.quick = Some(QuickState {
-            messages: turn.to_vec(),
+            messages,
             seen: seen.iter().map(|(k, v)| (k.clone(), *v)).collect(),
         });
         ck.model_calls = self.model_calls;

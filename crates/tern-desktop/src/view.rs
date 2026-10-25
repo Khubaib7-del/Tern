@@ -1167,9 +1167,11 @@ impl Workspace {
             .info(&provider, &chat_model)
             .sees_images()
             && !tern_agent::media::is_not_vision(&provider, &chat_model);
+        // A model that cannot see never gets a picture, in this message or
+        // from earlier ones (a provider refuses the whole request when any
+        // message carries one).
+        session.set_sees_pictures(Some(sees));
         if !sees {
-            // A provider refuses the whole request when any message
-            // carries a picture the model cannot see.
             session.drop_pictures();
         }
         let mut pictures = None;

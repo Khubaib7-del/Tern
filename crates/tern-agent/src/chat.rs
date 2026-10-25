@@ -79,6 +79,11 @@ pub struct ChatSession {
     history: Vec<ChatMessage>,
     /// Pictures for the next message (see [`ChatSession::attach_images`]).
     next_images: Vec<tern_providers::ImageInput>,
+    /// Whether the chat model sees pictures, as the front end knows from
+    /// the provider's listing (`None`: unknown, pictures are sent). A model
+    /// the provider refused pictures for (`media::is_not_vision`) never
+    /// gets them, whatever this says.
+    sees_pictures: Option<bool>,
     /// The chat has its sidebar title (from its first message).
     titled: bool,
     search_name: Option<&'static str>,
@@ -666,6 +671,7 @@ impl ChatSession {
             tools,
             history: Vec::new(),
             next_images: Vec::new(),
+            sees_pictures: None,
             titled: resume.is_some(),
             search_name,
             search,
@@ -1055,20 +1061,23 @@ impl ChatSession {
     /// request when any message carries one. Each dropped picture leaves a
     /// short note in its message. Returns how many were dropped.
     pub fn drop_pictures(&mut self) -> usize {
-        let mut n = self.next_images.len();
+        let n = self.next_images.len();
         self.next_images.clear();
-        for m in &mut self.history {
-            if m.images.is_empty() {
-                continue;
-            }
-            n += m.images.len();
-            let names: Vec<String> = m.images.drain(..).map(|i| i.name).collect();
-            m.content.push_str(&format!(
-                "\n\n[Picture not shown to this model, which cannot see pictures: {}]",
-                names.join(", ")
-            ));
-        }
-        n
+        n + strip_pictures(&mut self.history)
+    }
+
+    /// Tells the chat whether its model sees pictures (from the provider's
+    /// listing). When it does not, earlier pictures stay out of every
+    /// request and pictures attached anyway go as notes.
+    pub fn set_sees_pictures(&mut self, sees: Option<bool>) {
+        self.sees_pictures = sees;
+    }
+
+    /// The chat model cannot take pictures: the front end says so, or the
+    /// provider refused them before.
+    pub fn is_blind(&self) -> bool {
+        self.sees_pictures == Some(false)
+            || crate::media::is_not_vision(self.provider_id(), &self.model)
     }
 
     pub async fn send_streaming(
@@ -1079,7 +1088,30 @@ impl ChatSession {
         observer: &(dyn Fn(&EventEnvelope) + Send + Sync),
         on_text: Option<crate::OnText<'_>>,
     ) -> TurnOutcome {
-        let images = std::mem::take(&mut self.next_images);
+        let mut images = std::mem::take(&mut self.next_images);
+        // A model that cannot see never gets a picture: earlier ones leave
+        // the history, and any attached anyway go as notes.
+        let with_notes;
+        let text = if self.is_blind() {
+            strip_pictures(&mut self.history);
+            let notes: Vec<String> = images
+                .drain(..)
+                .map(|i| {
+                    format!(
+                        "[image: {} (not sent: this model cannot see pictures)]",
+                        i.name
+                    )
+                })
+                .collect();
+            if notes.is_empty() {
+                text
+            } else {
+                with_notes = format!("{text}\n\n{}", notes.join("\n"));
+                with_notes.as_str()
+            }
+        } else {
+            text
+        };
         // An attached MCP resource is untrusted data: from now on the
         // prompt carries the rule for it, as it does for MCP tools.
         if text.contains(&format!("<{} source=", crate::untrusted::TAG)) {
@@ -1127,37 +1159,60 @@ impl ChatSession {
             }
         }
         let instructions = self.instructions(harness.as_deref());
-        let hooks = crate::engine::RunHooks {
-            checkpoints: self
-                .checkpoints
-                .as_ref()
-                .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
-            steering: Some(&self.steering),
-            resume: None,
-            effort: self.effort,
-            on_reasoning: self.on_reasoning.as_deref(),
+        let mut retried = false;
+        let out = loop {
+            let hooks = crate::engine::RunHooks {
+                checkpoints: self
+                    .checkpoints
+                    .as_ref()
+                    .map(|c| c as &dyn crate::checkpoint::CheckpointSink),
+                steering: Some(&self.steering),
+                resume: None,
+                effort: self.effort,
+                on_reasoning: self.on_reasoning.as_deref(),
+            };
+            let out = TurnLoop {
+                session: self.session,
+                model: &self.provider,
+                model_name: &self.model,
+                tools: &self.tools,
+                gate: &mut self.gate,
+                approver,
+                sink: &tee,
+                ledger: &self.ledger,
+                budget: self.budget,
+                cancel: cancel.clone(),
+                instructions: instructions.as_deref(),
+                max_output_tokens: self.max_output_tokens,
+                on_text,
+                hooks,
+            }
+            .run_message(
+                self.history.clone(),
+                ChatMessage::user(text).with_images(images.clone()),
+            )
+            .await;
+            // The provider refused pictures that came from earlier messages
+            // (this message has none): the model cannot see. Remember it,
+            // drop them, and run the turn once more without them.
+            if !retried
+                && images.is_empty()
+                && !cancel.is_cancelled()
+                && out.answer.is_none()
+                && out.state == tern_core::TurnState::Failed
+                && out
+                    .reason
+                    .as_deref()
+                    .is_some_and(crate::media::rejects_images)
+                && self.history.iter().any(|m| !m.images.is_empty())
+            {
+                crate::media::mark_not_vision(self.provider.spec().id, &self.model);
+                strip_pictures(&mut self.history);
+                retried = true;
+                continue;
+            }
+            break out;
         };
-        let out = TurnLoop {
-            session: self.session,
-            model: &self.provider,
-            model_name: &self.model,
-            tools: &self.tools,
-            gate: &mut self.gate,
-            approver,
-            sink: &tee,
-            ledger: &self.ledger,
-            budget: self.budget,
-            cancel,
-            instructions: instructions.as_deref(),
-            max_output_tokens: self.max_output_tokens,
-            on_text,
-            hooks,
-        }
-        .run_message(
-            self.history.clone(),
-            ChatMessage::user(text).with_images(images.clone()),
-        )
-        .await;
         if self.workspace.is_some() && !self.workspace_logged && !self.is_draft() {
             self.log_workspace();
             self.workspace_logged = true;
@@ -1729,6 +1784,25 @@ impl ContextUse {
     pub fn left(&self) -> Option<u64> {
         self.window.map(|w| w.saturating_sub(self.used()))
     }
+}
+
+/// Takes the pictures out of `messages`, leaving "[image: name]" in each
+/// message that had one. Returns how many were taken.
+pub fn strip_pictures(messages: &mut [ChatMessage]) -> usize {
+    let mut n = 0;
+    for m in messages {
+        if m.images.is_empty() {
+            continue;
+        }
+        n += m.images.len();
+        let names: Vec<String> = m.images.drain(..).map(|i| i.name).collect();
+        for name in names {
+            m.content.push_str(&format!(
+                "\n\n[image: {name} (not sent: this model cannot see pictures)]"
+            ));
+        }
+    }
+    n
 }
 
 #[cfg(test)]

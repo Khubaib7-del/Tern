@@ -670,28 +670,26 @@ impl Bridge {
             let mut out = session
                 .send_streaming(&text, &approver, cancel.clone(), &observer, Some(&on_text))
                 .await;
+            // The chat model refused the pictures sent with this message:
+            // it cannot see. The session already remembers that and drops
+            // earlier pictures on its own; here the pictures go through the
+            // readers and the turn runs again, with no failed run shown.
             let refused = out.answer.is_none()
                 && out.state == tern_core::TurnState::Failed
                 && out
                     .reason
                     .as_deref()
                     .is_some_and(tern_agent::media::rejects_images);
-            if refused && !cancel.is_cancelled() {
+            if refused
+                && !cancel.is_cancelled()
+                && let Some(p) = pictures.as_ref().filter(|p| p.sent)
+            {
                 let provider = session.provider_id().to_owned();
                 let model = session.model().to_owned();
                 tern_agent::media::mark_not_vision(&provider, &model);
-                let dropped = session.drop_pictures();
-                let text = match pictures.as_ref().filter(|p| p.sent) {
-                    Some(p) => read_pictures(&tx, p, &text).await,
-                    None => {
-                        if dropped > 0 {
-                            let _ = tx.send(Msg::Info(format!(
-                                "{model} can't see pictures, so earlier pictures in this chat are no longer sent to it."
-                            )));
-                        }
-                        text
-                    }
-                };
+                session.set_sees_pictures(Some(false));
+                session.drop_pictures();
+                let text = read_pictures(&tx, p, &text).await;
                 out = session
                     .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
                     .await;

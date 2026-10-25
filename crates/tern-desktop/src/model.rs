@@ -1762,6 +1762,10 @@ impl Model {
     /// Fills the transcript from a reopened chat's past turns.
     pub fn restore(&mut self, turns: &[PastTurn]) {
         self.entries.clear();
+        // Nothing waits to go from another chat: no attachments and no
+        // pictures (a new chat starts empty; an opened chat starts clean).
+        self.attachments.clear();
+        self.outgoing_images.clear();
         self.reveal = None;
         self.thought_open.clear();
         self.rollup_open.clear();
@@ -1897,6 +1901,10 @@ impl Model {
             return;
         }
         self.entries.clear();
+        // Nothing waits to go from another chat: no attachments and no
+        // pictures (a new chat starts empty; an opened chat starts clean).
+        self.attachments.clear();
+        self.outgoing_images.clear();
         self.reveal = None;
         self.thought_open.clear();
         self.rollup_open.clear();
@@ -3064,6 +3072,41 @@ mod tests {
         assert!(msg.contains(r#"name="week-1" role="context""#));
         assert!(msg.contains("<untrusted-data source=\"mcp:notes/notes://week-1\">"));
         assert!(m.inserted.is_none());
+    }
+
+    #[test]
+    fn a_new_chat_starts_with_no_attachments_or_pictures() {
+        let mut m = ready();
+        assert!(m.take_long_text(&"word ".repeat(1_000)));
+        m.outgoing_images.push(tern_agent::ImageInput {
+            name: "img.jpg".into(),
+            media_type: "image/jpeg".into(),
+            data: "AAAA".into(),
+        });
+        m.entries.push(Entry::Notice("x".into()));
+        m.new_chat();
+        assert!(m.attachments.is_empty());
+        assert!(m.outgoing_images.is_empty());
+        // Opening another chat starts clean too.
+        assert!(m.take_long_text(&"word ".repeat(1_000)));
+        m.restore(&[]);
+        assert!(m.attachments.is_empty());
+        // A sent picture is taken for that message only.
+        let mut m = ready();
+        m.attachments
+            .push(tern_agent::Attachment::image("img.png", &tiny_png()).expect("a picture"));
+        m.start_turn("what is this").unwrap();
+        assert_eq!(m.outgoing_images.len(), 1);
+        let taken = std::mem::take(&mut m.outgoing_images);
+        assert_eq!(taken.len(), 1);
+        assert!(m.attachments.is_empty());
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        // The PNG signature is all the attachment checks.
+        let mut b = b"\x89PNG\r\n\x1a\n".to_vec();
+        b.extend_from_slice(&[0; 16]);
+        b
     }
 
     #[test]
