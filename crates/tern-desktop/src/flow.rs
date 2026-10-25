@@ -156,7 +156,8 @@ impl ClaimReview {
         if !self.rejected.is_empty() {
             let list: Vec<String> = self.rejected.iter().map(|c| c.to_string()).collect();
             s.push_str(&format!(
-                "Leave out claims {} (rejected).\n",
+                "Leave out {} {} (rejected).\n",
+                if list.len() == 1 { "claim" } else { "claims" },
                 list.join(", ")
             ));
         }
@@ -518,7 +519,7 @@ mod tests {
         );
         let f = r.follow_up().unwrap();
         assert!(f.contains("Claim 4: Check against the appendix"));
-        assert!(f.contains("Leave out claims 3"));
+        assert!(f.contains("Leave out claim 3 (rejected)"));
         r.done = true;
         let back = ClaimReview::from_json(&r.to_json());
         assert_eq!(back.rejected, r.rejected);
