@@ -4,6 +4,19 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #66)
+
+From the Windows test of #65 (Codestral, "who is the creator of LangChain? use the web tool", then "browse about that").
+
+- **Web search answers instead of "I can't browse".** Root cause: Wikipedia (the keyless default) is a keyword index and the whole typed sentence, typos included, matched nothing, so `web_search` returned "No results" and the model said it could not reach the web; the follow-up searched nothing again and Codestral copied its previous reply from the history. Now an empty search retries with the question's keywords, then its first three, two and one keywords and its longest word ([docs/search.md](docs/search.md#keyword-fallback)); results are framed as live results retrieved just now; "browse about that", "google it", "look it up", "search online" and typos count as asking for the web, and a message that only points back searches the previous question; a reply that says it cannot browse or does not know, or repeats the previous reply word for word (40+ characters), gets one search run by Tern and the model is asked again, and a copied reply is never shown twice. `tern.log` gets a line per search and per safety-net search.
+- **Parallel tool calls run in one round**: every call in a reply goes out, and all results come back together (one extra model call, not one per call). Mistral parallel calls streamed under one index stay separate calls (told apart by id); a snapshot test pins Mistral's Quick-turn request body with the web tool. Policy events name the call's arguments.
+- **The working line and Scout say what a quick turn's tool is doing**: Searching the web…, Reading <file>…, Fetching <site>…, Transcribing….
+- **Urdu and Arabic read right to left.** On Windows GPUI drew every DirectWrite glyph run left to right, so right-to-left text showed reversed with letters that looked unjoined; `third_party/gpui-pre-windows` (0.3.9 with one patch in `DrawGlyphRun`, used through `[patch.crates-io]`, see its `TERN_PATCH.md`) places right-to-left runs from their right edge. Right-to-left paragraphs in answers, drafts and user bubbles are right-aligned with a right-to-left embedding (`bidi.rs`, `unicode-bidi`).
+- **Long chats scroll and stream smoothly**: messages far outside the window are drawn as boxes of their last height (`cull.rs`), so a frame lays out only what is near the window (a long chat measured 20–37 ms per frame, 15–28 ms of it layout, with spikes near 100 ms). Frame-time lines go to `tern.log` only with `TERN_PERF=1`.
+- **Faster local Whisper**: a thread per physical core (at most six) instead of one per logical core, flash attention, and one segment without timestamps for clips up to 30 s; `TERN_WHISPER_THREADS` and `TERN_WHISPER_FLASH=0` override. The CI speech benchmark times 4 and 8 threads with flash attention on and off on Linux and Windows.
+- **Tests**: a chat-session test for the web regressions (an empty sentence search falls back to keywords, the refusal safety net, "browse about that", the identical reply); UI tour scenes for a web search with its status line, the safety net, "browse about that" and an Urdu answer.
+- [ADR 0012](docs/decisions/0012-tool-groups-lazy-schemas.md) proposes tool groups, lazy schemas, prompt-cache-stable ordering and result trimming (#73).
+
 ### Fixed (PR #65)
 
 From the Windows test of #64.
