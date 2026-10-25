@@ -4,7 +4,35 @@
 
 use std::collections::HashMap;
 
-use tern_agent::local_models::{CancelDownload, ModelStatus, State, Task, human_size};
+use tern_agent::local_models::{
+    CancelDownload, ModelRole, ModelStatus, State, Task, human_size, runtime_available,
+};
+
+/// Each Default's Alternative and each Alternative's Default, by id.
+fn alternatives(statuses: &[ModelStatus]) -> HashMap<String, (String, String, bool)> {
+    let mut out = HashMap::new();
+    for s in statuses {
+        let want = match s.entry.role {
+            ModelRole::Default => ModelRole::Alternative,
+            ModelRole::Alternative => ModelRole::Default,
+            ModelRole::Addon => continue,
+        };
+        if let Some(a) = statuses
+            .iter()
+            .find(|o| o.entry.task == s.entry.task && o.entry.role == want)
+        {
+            out.insert(
+                s.entry.id.clone(),
+                (
+                    a.entry.id.clone(),
+                    a.entry.name.clone(),
+                    runtime_available(a.entry.runtime),
+                ),
+            );
+        }
+    }
+    out
+}
 
 /// One download in flight.
 #[derive(Clone, Debug)]
@@ -64,10 +92,14 @@ pub struct LocalModelsPage {
     pub root: Option<String>,
     /// A Delete clicked once: the next click on the same model deletes.
     pub confirm_delete: Option<String>,
+    /// Each model's backup in its task: its id, name, and whether this
+    /// build can run it (filled on load).
+    pub alternative: HashMap<String, (String, String, bool)>,
 }
 
 impl LocalModelsPage {
     pub fn loaded(&mut self, statuses: Vec<ModelStatus>, root: String, warning: Option<String>) {
+        self.alternative = alternatives(&statuses);
         self.statuses = Some(statuses);
         self.root = Some(root);
         self.warning = warning;
@@ -161,12 +193,18 @@ impl LocalModelsPage {
         )
     }
 
-    /// The Download button's label.
+    /// The Download button's label: Add for an optional part.
     pub fn download_label(s: &ModelStatus) -> &'static str {
         match s.state {
             State::Partial(_) => "Resume",
+            _ if s.entry.role == ModelRole::Addon => "Add",
             _ => "Download",
         }
+    }
+
+    /// A failure running a model (from the chat), shown on its row.
+    pub fn run_failed(&mut self, id: &str, error: String) {
+        self.errors.insert(id.to_owned(), error);
     }
 }
 
@@ -205,17 +243,21 @@ mod tests {
         let p = page();
         assert!(!p.for_task(Task::Ocr).is_empty());
         assert!(!p.for_task(Task::SpeechToText).is_empty());
-        assert!(p.for_task(Task::TextToSpeech).is_empty());
+        assert_eq!(p.for_task(Task::TextToSpeech).len(), 2);
+        assert_eq!(p.for_task(Task::DocParse).len(), 3);
     }
 
     #[test]
     fn a_download_tracks_progress_cancel_and_errors() {
         let mut p = page();
-        let id = "whisper-base-en";
+        let id = "whisper-small-q5_1";
         let cancel = p.start(id).unwrap();
         assert!(p.start(id).is_none(), "one download per model");
         let total = p.downloads[id].total;
         assert!(total > 100_000_000);
+        p.run_failed("x", "boom".into());
+        assert_eq!(p.errors["x"], "boom");
+        p.errors.clear();
         p.progress(id, total / 2, total);
         assert!((p.downloads[id].fraction() - 0.5).abs() < 0.01);
         assert!(p.downloads[id].line().starts_with("50% · "));
@@ -244,8 +286,19 @@ mod tests {
     #[test]
     fn details_and_logos() {
         let p = page();
-        let s = p.find("whisper-base-en").unwrap();
-        assert_eq!(LocalModelsPage::detail(s), "148 MB · MIT · whisper.cpp");
+        let s = p.find("whisper-small-q5_1").unwrap();
+        assert_eq!(LocalModelsPage::detail(s), "190 MB · MIT · whisper.cpp");
+        assert_eq!(
+            p.alternative["whisper-small-q5_1"].0,
+            "whisper-large-v3-turbo-q5_0"
+        );
+        assert_eq!(
+            p.alternative["whisper-large-v3-turbo-q5_0"].0,
+            "whisper-small-q5_1"
+        );
+        assert!(!p.alternative.contains_key("pp-formulanet-plus-l"));
+        let math = p.find("pp-formulanet-plus-l").unwrap();
+        assert_eq!(LocalModelsPage::download_label(math), "Add");
         assert_eq!(LocalModelsPage::download_label(s), "Download");
         assert_eq!(logo_key(s), "whisper");
         let mut s = s.clone();

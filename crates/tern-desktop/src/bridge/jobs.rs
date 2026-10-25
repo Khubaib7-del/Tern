@@ -39,6 +39,8 @@ pub enum SetupMsg {
     LocalDone(String, Result<(), String>, bool),
     /// A model's files were deleted, or why not.
     LocalRemoved(String, Result<(), String>),
+    /// A local model failed to load or run (from the chat): its id and why.
+    LocalRunFailed(String, String),
 }
 
 fn send(tx: &tokio::sync::mpsc::UnboundedSender<Msg>, m: SetupMsg) {

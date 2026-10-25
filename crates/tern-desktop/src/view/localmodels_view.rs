@@ -9,7 +9,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div, px};
-use tern_agent::local_models::{self, ModelStatus, State, Task};
+use tern_agent::local_models::{self, ModelRole, ModelStatus, State, Task};
 
 use super::{PillLook, Workspace, brand_logo, pill};
 use crate::localmodels::{LocalModelsPage, logo_key};
@@ -126,9 +126,18 @@ impl Workspace {
             .flex_1()
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(SharedString::from(s.entry.name.clone())),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(SharedString::from(s.entry.name.clone())),
+                    )
+                    .child(role_badge(s.entry.role, p)),
             )
             .child(
                 div()
@@ -155,6 +164,19 @@ impl Workspace {
                     ))),
             );
         }
+        if let Some(n) = &s.entry.licence_note {
+            info = info.child(
+                div()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(SharedString::from(n.clone())),
+            );
+        }
+        let alt = page.alternative.get(&id).cloned();
+        let offer_alt = alt.is_some()
+            && dl.is_none()
+            && (error.is_some()
+                || (s.installed() && !runnable && alt.as_ref().is_some_and(|(_, _, rt)| *rt)));
         if let Some(e) = error {
             info = info.child(
                 div()
@@ -165,6 +187,45 @@ impl Workspace {
         }
 
         let mut actions = div().flex().items_center().gap_2().flex_shrink_0();
+        if let Some(url) = s.entry.licence_url.clone() {
+            actions = actions.child(pill(
+                bid("terms"),
+                "Licence",
+                PillLook::Ghost,
+                false,
+                Some(SharedString::from("Read the licence terms")),
+                p,
+                move |_, _, cx| cx.open_url(&url),
+            ));
+        }
+        if offer_alt && let Some((alt_id, alt_name, _)) = alt {
+            let task = s.entry.task;
+            actions = actions.child(pill(
+                bid("use-alt"),
+                "Use the alternative",
+                PillLook::Solid,
+                false,
+                Some(SharedString::from(format!(
+                    "Switch this task to {alt_name} (downloads it if needed)"
+                ))),
+                p,
+                cx.listener(move |this, _, _, cx| {
+                    let pick = alt_id.clone();
+                    this.save_ui_prefs(move |p| p.local_models.set_default(task, Some(&pick)));
+                    let installed = this
+                        .model
+                        .settings
+                        .local
+                        .find(&alt_id)
+                        .is_some_and(|s| s.installed());
+                    if !installed {
+                        this.start_local_download(&alt_id);
+                    }
+                    this.reload_local_models();
+                    cx.notify();
+                }),
+            ));
+        }
         if let Some(d) = &dl {
             let cid = id.clone();
             actions = actions.child(pill(
@@ -282,8 +343,9 @@ impl Workspace {
         row.into_any_element()
     }
 
-    /// The task's default as a radio: one model per task, and a click on
-    /// the chosen one clears it.
+    /// "Use for this task" as a radio: one model per task. Picking the
+    /// manifest's Default clears the saved pick (the Default is used when
+    /// nothing is picked).
     fn default_radio(&self, s: &ModelStatus, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let id = s.entry.id.clone();
         let task = s.entry.task;
@@ -314,13 +376,18 @@ impl Workspace {
                 div()
                     .text_xs()
                     .text_color(if on { p.text } else { p.muted })
-                    .child("Default"),
+                    .child("Use for this task"),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 let id = id.clone();
+                let is_role_default = this
+                    .model
+                    .settings
+                    .local
+                    .find(&id)
+                    .is_some_and(|s| s.entry.role == ModelRole::Default);
                 this.save_ui_prefs(move |p| {
-                    let pick = (p.local_models.default_for(task) != Some(id.as_str()))
-                        .then_some(id.as_str());
+                    let pick = (!is_role_default).then_some(id.as_str());
                     p.local_models.set_default(task, pick);
                 });
                 this.reload_local_models();
@@ -335,4 +402,19 @@ impl Workspace {
             self.bridge.local_model_download(id.to_owned(), cancel);
         }
     }
+}
+
+/// The row's "Default" / "Alternative" / "Optional" badge.
+fn role_badge(role: ModelRole, p: Palette) -> AnyElement {
+    let strong = role == ModelRole::Default;
+    div()
+        .flex_none()
+        .px_1p5()
+        .rounded_sm()
+        .border_1()
+        .border_color(if strong { p.accent } else { p.border })
+        .text_xs()
+        .text_color(if strong { p.accent } else { p.muted })
+        .child(role.badge())
+        .into_any_element()
 }

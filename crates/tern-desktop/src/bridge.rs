@@ -696,6 +696,12 @@ impl Bridge {
                             format!("{text}\n\n{blocks}")
                         }
                         Err(e) => {
+                            if let ReadVia::Local { model, .. } = &r.via {
+                                let _ = tx.send(Msg::Setup(Box::new(SetupMsg::LocalRunFailed(
+                                    model.clone(),
+                                    e.clone(),
+                                ))));
+                            }
                             let _ = tx.send(Msg::Notice(format!(
                                 "{} could not read the pictures, so they were not sent: {e}",
                                 r.via.label()
