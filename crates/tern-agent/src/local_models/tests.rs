@@ -299,3 +299,70 @@ fn no_runtime_ships_yet() {
         assert!(!runtime_available(r));
     }
 }
+
+/// A stand-in engine for `Runtime::Other` that "reads" the image length.
+struct FakeOcr;
+impl LocalEngine for FakeOcr {
+    fn runtime(&self) -> Runtime {
+        Runtime::Other
+    }
+    fn ocr(&self, dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
+        assert!(dir.join(&entry.files[0].name).exists());
+        Ok(format!("{} bytes read by {}", image.len(), entry.id))
+    }
+}
+
+#[tokio::test]
+async fn a_registered_engine_reads_pictures_with_an_installed_model() {
+    let s = server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest(None);
+    m.models[0].runtime = Runtime::Other;
+    let lm = LocalModels::new(dir.path(), m).with_endpoint(&s.uri());
+    assert!(lm.ocr("tiny-ocr", b"png").unwrap_err().contains("not downloaded"));
+    lm.download("tiny-ocr", &CancelDownload::new(), &mut |_| {})
+        .await
+        .unwrap();
+    register_engine(std::sync::Arc::new(FakeOcr));
+    assert!(runtime_available(Runtime::Other));
+    assert_eq!(lm.ocr("tiny-ocr", b"png").unwrap(), "3 bytes read by tiny-ocr");
+    // The STT model's runtime has no engine.
+    assert!(!runtime_available(Runtime::WhisperCpp));
+}
+
+#[test]
+fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
+    use crate::media::{Catalog, ImagePlan, plan_images_local};
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest(None);
+    m.models[0].runtime = Runtime::Onnx;
+    let lm = LocalModels::new(dir.path(), m);
+    // Pretend tiny-ocr is installed: its files and record on disk.
+    let d = lm.dir("tiny-ocr");
+    std::fs::create_dir_all(d.join("dict")).unwrap();
+    std::fs::write(d.join("det.onnx"), A).unwrap();
+    std::fs::write(d.join("dict/keys.txt"), B).unwrap();
+    let rec = Installed {
+        id: "tiny-ocr".into(),
+        files: vec![
+            InstalledFile { name: "det.onnx".into(), size: A.len() as u64, sha256: hex(A) },
+            InstalledFile { name: "dict/keys.txt".into(), size: B.len() as u64, sha256: hex(B) },
+        ],
+        installed_at: "now".into(),
+    };
+    std::fs::write(d.join(RECORD), serde_json::to_string(&rec).unwrap()).unwrap();
+    let prefs = crate::Preferences::default();
+    let empty = Catalog::default();
+    // ONNX has no engine in this build: the reason names the model.
+    match plan_images_local(&empty, "groq", "llama-3.1-8b-instant", &prefs, Some(&lm)) {
+        ImagePlan::Missing(why) => {
+            assert!(why.contains("Tiny OCR") && why.contains("ONNX Runtime"), "{why}")
+        }
+        other => panic!("{other:?}"),
+    }
+    // Without local models the plain reason stays.
+    match plan_images_local(&empty, "groq", "llama-3.1-8b-instant", &prefs, None) {
+        ImagePlan::Missing(why) => assert!(!why.contains("Tiny OCR")),
+        other => panic!("{other:?}"),
+    }
+}

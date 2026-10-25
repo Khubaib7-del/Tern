@@ -137,18 +137,47 @@ impl Runtime {
     }
 }
 
-/// Whether this build can run `runtime`'s models. None ship yet: the
-/// download, state, and defaults work, and a runtime switches on here when
-/// its engine is linked in.
-pub fn runtime_available(runtime: Runtime) -> bool {
-    match runtime {
-        Runtime::WhisperCpp
-        | Runtime::Onnx
-        | Runtime::LlamaCpp
-        | Runtime::Candle
-        | Runtime::Piper
-        | Runtime::Other => false,
+/// An engine that runs one runtime's models. None ship yet: the download,
+/// state, and defaults work today, and an engine (whisper.cpp, ONNX
+/// Runtime, …) plugs in by calling [`register_engine`] at startup.
+pub trait LocalEngine: Send + Sync {
+    /// The runtime this engine runs.
+    fn runtime(&self) -> Runtime;
+    /// Reads the text in a picture (PNG, JPEG, GIF, or WebP bytes) with
+    /// the model installed in `dir`.
+    fn ocr(&self, dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
+        let _ = (dir, image);
+        Err(format!("{} cannot read pictures", entry.name))
     }
+}
+
+type Engines = std::sync::RwLock<Vec<std::sync::Arc<dyn LocalEngine>>>;
+
+fn engines() -> &'static Engines {
+    static ENGINES: std::sync::OnceLock<Engines> = std::sync::OnceLock::new();
+    ENGINES.get_or_init(Default::default)
+}
+
+/// Makes `engine` run its runtime's models from now on.
+pub fn register_engine(engine: std::sync::Arc<dyn LocalEngine>) {
+    if let Ok(mut list) = engines().write() {
+        list.retain(|e| e.runtime() != engine.runtime());
+        list.push(engine);
+    }
+}
+
+fn engine_for(runtime: Runtime) -> Option<std::sync::Arc<dyn LocalEngine>> {
+    engines()
+        .read()
+        .ok()?
+        .iter()
+        .find(|e| e.runtime() == runtime)
+        .cloned()
+}
+
+/// Whether this build can run `runtime`'s models (an engine is registered).
+pub fn runtime_available(runtime: Runtime) -> bool {
+    engine_for(runtime).is_some()
 }
 
 /// One file of a model.
@@ -631,6 +660,21 @@ impl LocalModels {
         let json = serde_json::to_string_pretty(&rec).map_err(|e| ModelError::Io(e.to_string()))?;
         std::fs::write(dir.join(RECORD), json)?;
         Ok(rec)
+    }
+
+    /// Reads the text in a picture with installed model `id`.
+    pub fn ocr(&self, id: &str, image: &[u8]) -> Result<String, String> {
+        let entry = self
+            .manifest
+            .find(id)
+            .ok_or_else(|| ModelError::Unknown(id.to_owned()).to_string())?;
+        if self.installed(id).is_none() {
+            return Err(format!("{} is not downloaded", entry.name));
+        }
+        let engine = engine_for(entry.runtime).ok_or_else(|| {
+            format!("this build cannot run {} models yet", entry.runtime.label())
+        })?;
+        engine.ocr(&self.dir(id), entry, image)
     }
 
     /// Deletes the model's folder, finished or partial. The caller drops it
