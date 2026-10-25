@@ -417,7 +417,7 @@ pub fn entities(text: &str) -> Vec<(String, usize)> {
     // name lowercased -> (display, score, mentions, first position)
     let mut found: HashMap<String, (String, usize, usize, usize)> = HashMap::new();
     let mut pos = 0usize;
-    let mut note = |name: &str, weight: usize, found: &mut HashMap<_, _>, pos: &mut usize| {
+    let note = |name: &str, weight: usize, found: &mut HashMap<_, _>, pos: &mut usize| {
         let name = name
             .trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != '#')
             .trim();

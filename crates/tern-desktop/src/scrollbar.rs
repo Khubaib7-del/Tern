@@ -76,20 +76,6 @@ pub fn timing(reduced_motion: bool) -> Timing {
     }
 }
 
-/// How much of a wheel turn an inner scroll area keeps: its new offset
-/// (0 at the top, `-max` at the bottom, GPUI's sign) when the turn `dy`
-/// moves it, or `None` when it is already at the end the turn pushes
-/// toward, so the turn goes on to the area around it. Horizontal turns
-/// (`|dx| > |dy|`) are never kept by a vertical list.
-pub fn wheel_take(offset: f32, dx: f32, dy: f32, max: f32) -> Option<f32> {
-    if !(offset.is_finite() && dy.is_finite() && max.is_finite()) || dx.abs() > dy.abs() {
-        return None;
-    }
-    let max = max.max(0.0);
-    let next = (offset + dy).clamp(-max, 0.0);
-    ((next - offset).abs() > 0.01).then_some(next)
-}
-
 /// How quickly a wheel notch glides to where it lands: the time constant
 /// of an exponential approach. About five of them (~0.4 s) and it is
 /// there; most of the way in the first 100 ms, so it feels immediate.
@@ -204,25 +190,6 @@ impl WheelLatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_inner_list_keeps_the_wheel_until_its_end_then_hands_it_on() {
-        // Mid-list: the list scrolls by the turn.
-        assert_eq!(wheel_take(-100.0, 0.0, -40.0, 400.0), Some(-140.0));
-        assert_eq!(wheel_take(-100.0, 0.0, 40.0, 400.0), Some(-60.0));
-        // Near an end it takes what is left.
-        assert_eq!(wheel_take(-390.0, 0.0, -40.0, 400.0), Some(-400.0));
-        assert_eq!(wheel_take(-10.0, 0.0, 40.0, 400.0), Some(0.0));
-        // At an end, pushing on: the page around it scrolls instead.
-        assert_eq!(wheel_take(-400.0, 0.0, -40.0, 400.0), None);
-        assert_eq!(wheel_take(0.0, 0.0, 40.0, 400.0), None);
-        // A list that fits, a sideways swipe, and nonsense keep nothing.
-        assert_eq!(wheel_take(0.0, 0.0, -40.0, 0.0), None);
-        assert_eq!(wheel_take(-100.0, 50.0, -10.0, 400.0), None);
-        assert_eq!(wheel_take(f32::NAN, 0.0, -40.0, 400.0), None);
-        // Precise touchpad deltas, a pixel or less, still move it.
-        assert_eq!(wheel_take(-100.0, 0.0, -0.5, 400.0), Some(-100.5));
-    }
 
     #[test]
     fn thin_at_rest_wider_under_the_pointer_and_round() {
