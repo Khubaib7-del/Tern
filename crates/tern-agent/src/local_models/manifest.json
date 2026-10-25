@@ -1,72 +1,604 @@
 {
-  "version": 1,
+  "version": 2,
   "models": [
     {
-      "id": "whisper-base-en",
-      "task": "speech_to_text",
-      "name": "Whisper base.en (placeholder)",
-      "hf_repo": "ggerganov/whisper.cpp",
-      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
-      "licence": "MIT",
-      "runtime": "whisper_cpp",
-      "logo": "whisper",
-      "placeholder": true,
-      "note": "English speech to text in whisper.cpp's ggml format. A placeholder until the model research picks Tern's speech model.",
-      "files": [
-        {
-          "name": "ggml-base.en.bin",
-          "size": 147964211,
-          "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
-        }
-      ]
-    },
-    {
-      "id": "whisper-tiny-en",
-      "task": "speech_to_text",
-      "name": "Whisper tiny.en (placeholder)",
-      "hf_repo": "ggerganov/whisper.cpp",
-      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
-      "licence": "MIT",
-      "runtime": "whisper_cpp",
-      "logo": "whisper",
-      "placeholder": true,
-      "note": "The smallest English Whisper: faster, less accurate. A placeholder.",
-      "files": [
-        {
-          "name": "ggml-tiny.en.bin",
-          "size": 77704715,
-          "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
-        }
-      ]
-    },
-    {
-      "id": "rapidocr-ppocrv4-mobile",
+      "id": "pp-ocrv6-small",
       "task": "ocr",
-      "name": "RapidOCR PP-OCRv4 mobile (placeholder)",
-      "hf_repo": "SWHL/RapidOCR",
-      "revision": "1cfba2e90fc938db55889873735088de210cc173",
+      "role": "default",
+      "name": "PP-OCRv6 small + Arabic-script recogniser",
+      "hf_repo": "PaddlePaddle/PP-OCRv6_small_det_onnx",
+      "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
       "licence": "Apache-2.0",
       "runtime": "onnx",
-      "logo": "rapidocr",
-      "placeholder": true,
-      "note": "PaddleOCR v4 mobile detection and recognition plus the angle classifier, as ONNX. A placeholder until the model research picks Tern's OCR model.",
+      "note": "PaddleOCR's small text detector and recogniser, plus the PP-OCRv5 Arabic-script recogniser for Urdu and Arabic.",
       "files": [
         {
-          "name": "PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
-          "size": 4745517,
-          "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+          "name": "inference.onnx",
+          "size": 9880512,
+          "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+          "dest": "det/inference.onnx"
         },
         {
-          "name": "PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
-          "size": 10857958,
-          "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+          "name": "inference.yml",
+          "size": 885,
+          "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516",
+          "dest": "det/inference.yml"
         },
         {
-          "name": "PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx",
-          "size": 585532,
-          "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+          "name": "inference.onnx",
+          "size": 21159378,
+          "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+          "repo": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+          "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+          "dest": "rec/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 150579,
+          "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+          "repo": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+          "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+          "dest": "rec/inference.yml"
+        },
+        {
+          "name": "inference.onnx",
+          "size": 7998947,
+          "sha256": "799113ebf267fbe742deb99eb36e8d42c9ddc5291ceacf92add41b4d52a59110",
+          "repo": "PaddlePaddle/arabic_PP-OCRv5_mobile_rec_onnx",
+          "revision": "14aaedcd75825982689ecf5cd64ab33ee083215a",
+          "dest": "rec-arabic/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 6165,
+          "sha256": "21368419e6c016c31db55d316d59e11c128e1913e6e6fe10287084710043d3a6",
+          "repo": "PaddlePaddle/arabic_PP-OCRv5_mobile_rec_onnx",
+          "revision": "14aaedcd75825982689ecf5cd64ab33ee083215a",
+          "dest": "rec-arabic/inference.yml"
         }
-      ]
+      ],
+      "logo": "paddlepaddle",
+      "licence_note": "PaddleOCR models by PaddlePaddle (Baidu), Apache-2.0."
+    },
+    {
+      "id": "tesseract-eng-urd",
+      "task": "ocr",
+      "role": "alternative",
+      "name": "Tesseract (English + Urdu)",
+      "hf_repo": "",
+      "revision": "main",
+      "licence": "Apache-2.0",
+      "runtime": "tesseract",
+      "note": "Tesseract's fast LSTM models for English and Urdu. Lighter and older; a backup when PaddleOCR will not run.",
+      "files": [
+        {
+          "name": "eng.traineddata",
+          "url": "https://github.com/tesseract-ocr/tessdata_fast/raw/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata",
+          "size": 4113088,
+          "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+        },
+        {
+          "name": "urd.traineddata",
+          "url": "https://github.com/tesseract-ocr/tessdata_fast/raw/87416418657359cb625c412a48b6e1d6d41c29bd/urd.traineddata",
+          "size": 1398718,
+          "sha256": "62e8250ce2a994106e313a82e26a516a39e2cf159d0ce3c5b5008387fd0d555f"
+        }
+      ],
+      "logo": "tesseract",
+      "licence_note": "Tesseract trained data by the Tesseract OCR project, Apache-2.0.",
+      "homepage": "https://github.com/tesseract-ocr/tessdata_fast"
+    },
+    {
+      "id": "paddle-doc-markdown",
+      "task": "doc_parse",
+      "role": "default",
+      "name": "PP-DocLayoutV3 + PP-OCRv6 + SLANet+",
+      "hf_repo": "PaddlePaddle/PP-DocLayoutV3_onnx",
+      "revision": "46bbdf188bb0a772c08aed74882ce7e51a8f1ea6",
+      "licence": "Apache-2.0",
+      "runtime": "onnx",
+      "note": "Finds the layout of each page (headings, paragraphs, tables, figures), reads the text, and rebuilds tables, to write Markdown.",
+      "files": [
+        {
+          "name": "inference.onnx",
+          "size": 130502049,
+          "sha256": "45bf71750b00739a41fc209f132eb104a4d6b5bb29483c9078164d8b87cf28ba",
+          "dest": "layout/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 1482,
+          "sha256": "506fcfac13b3b546ae40d7886b44126420f392adb694e3f8bb6a6286a1f90fdc",
+          "dest": "layout/inference.yml"
+        },
+        {
+          "name": "inference.onnx",
+          "size": 9880512,
+          "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+          "repo": "PaddlePaddle/PP-OCRv6_small_det_onnx",
+          "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
+          "dest": "det/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 885,
+          "sha256": "193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516",
+          "repo": "PaddlePaddle/PP-OCRv6_small_det_onnx",
+          "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
+          "dest": "det/inference.yml"
+        },
+        {
+          "name": "inference.onnx",
+          "size": 21159378,
+          "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+          "repo": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+          "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+          "dest": "rec/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 150579,
+          "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+          "repo": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+          "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+          "dest": "rec/inference.yml"
+        },
+        {
+          "name": "inference.onnx",
+          "size": 7782138,
+          "sha256": "7790c0c13ce064782c9d22ebeb16b4da8216f83d3ba576da962c106ef58386da",
+          "repo": "PaddlePaddle/SLANet_plus_onnx",
+          "revision": "7dbe640e127602bf506815e822c09758de73c482",
+          "dest": "table/inference.onnx"
+        },
+        {
+          "name": "inference.yml",
+          "size": 2035,
+          "sha256": "8a6372d3269a6f112fe13a2da7952a84da6e112c10a3146cbb43de5bd01d19fa",
+          "repo": "PaddlePaddle/SLANet_plus_onnx",
+          "revision": "7dbe640e127602bf506815e822c09758de73c482",
+          "dest": "table/inference.yml"
+        }
+      ],
+      "logo": "paddlepaddle",
+      "licence_note": "PaddleOCR models by PaddlePaddle (Baidu), Apache-2.0."
+    },
+    {
+      "id": "pp-formulanet-plus-l",
+      "task": "doc_parse",
+      "role": "addon",
+      "name": "Math formulas (PP-FormulaNet+ L, on demand)",
+      "hf_repo": "ningpp/PP-FormulaNet_plus-L-ONNX",
+      "revision": "c5ce7e9396d82baaee4a939900836ddf436ec109",
+      "licence": "Apache-2.0",
+      "runtime": "onnx",
+      "note": "Turns formulas into LaTeX. Large, so it is only needed for documents with maths; download it when you want it.",
+      "files": [
+        {
+          "name": "encoder.onnx",
+          "size": 383412976,
+          "sha256": "4b749a6ffe6f2053c9684d2e50120413e8023c99f21e51518e6c8d0f575ba404"
+        },
+        {
+          "name": "decoder_model_merged.onnx",
+          "size": 344762758,
+          "sha256": "32bacaf0d3d5a2de4847e20b91e67b40cccbe3d8aa19a7c9ef3e4e57d4ed201c"
+        },
+        {
+          "name": "config.json",
+          "size": 1364,
+          "sha256": "3d5c513a525ebef73ba4e319e65de793d95aacc1062e5ce2dd851c7f109c060c"
+        },
+        {
+          "name": "generation_config.json",
+          "size": 186,
+          "sha256": "e0dc49736b0b06f19cb2074201a072cee23707b7abff4a55a24da19b14abd707"
+        },
+        {
+          "name": "processor_config.json",
+          "size": 584,
+          "sha256": "f1454999fcb5930c2d93e9dcd03f1adf046245e98e96a7f601dabc6ee01c3b78"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 2140014,
+          "sha256": "2811d82701ec97c192fa256aa2b4516929373870ae660326cc5b1dc879b95ff2"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 4484,
+          "sha256": "0bf3cca5ff1a240004932dbab09373b0e8a651f5f85f2ff6f2f9dec3f0e41947"
+        }
+      ],
+      "logo": "paddlepaddle",
+      "licence_note": "PP-FormulaNet+ by PaddlePaddle (Baidu), Apache-2.0; ONNX conversion by ningpp."
+    },
+    {
+      "id": "granite-docling-258m",
+      "task": "doc_parse",
+      "role": "alternative",
+      "name": "Granite-Docling 258M (Q8)",
+      "hf_repo": "ggml-org/granite-docling-258M-GGUF",
+      "revision": "684c1800c5fbd614e29b4d1a82177e6c122af1f3",
+      "licence": "Apache-2.0",
+      "runtime": "llama_cpp",
+      "note": "One small vision-language model that reads a page image straight to DocTags/Markdown.",
+      "files": [
+        {
+          "name": "granite-docling-258M-Q8_0.gguf",
+          "size": 177918144,
+          "sha256": "b687245c212b59da938e411e2d4485596cbaeed1ae52706582ac38ed6a970f76"
+        },
+        {
+          "name": "mmproj-granite-docling-258M-Q8_0.gguf",
+          "size": 103769792,
+          "sha256": "3d440e65a91e640dc0a53897ad7897700c39324802aaff2072232b6f21d0cadb"
+        }
+      ],
+      "logo": "ibm",
+      "licence_note": "Granite-Docling by IBM, Apache-2.0."
+    },
+    {
+      "id": "smolvlm-500m",
+      "task": "vision",
+      "role": "default",
+      "name": "SmolVLM 500M Instruct (Q8)",
+      "hf_repo": "ggml-org/SmolVLM-500M-Instruct-GGUF",
+      "revision": "72e986006ef53e37cdd3f6d4241c90b0f01df376",
+      "licence": "Apache-2.0",
+      "runtime": "llama_cpp",
+      "note": "A small vision-language model that describes pictures and answers questions about them.",
+      "files": [
+        {
+          "name": "SmolVLM-500M-Instruct-Q8_0.gguf",
+          "size": 436806912,
+          "sha256": "9d4612de6a42214499e301494a3ecc2be0abdd9de44e663bda63f1152fad1bf4"
+        },
+        {
+          "name": "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf",
+          "size": 108783360,
+          "sha256": "d1eb8b6b23979205fdf63703ed10f788131a3f812c7b1f72e0119d5d81295150"
+        }
+      ],
+      "logo": "huggingface",
+      "licence_note": "SmolVLM by Hugging Face, Apache-2.0."
+    },
+    {
+      "id": "qwen3-vl-2b",
+      "task": "vision",
+      "role": "alternative",
+      "name": "Qwen3-VL 2B Instruct (Q4_K_M)",
+      "hf_repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+      "revision": "52d6c8ffea26cc873ac5ad116f8631268d7eb503",
+      "licence": "Apache-2.0",
+      "runtime": "llama_cpp",
+      "note": "Larger and more capable at reading charts and dense pictures; slower.",
+      "files": [
+        {
+          "name": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+          "size": 1107409952,
+          "sha256": "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae"
+        },
+        {
+          "name": "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+          "size": 445053216,
+          "sha256": "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82"
+        }
+      ],
+      "logo": "qwen",
+      "licence_note": "Qwen3-VL by Alibaba Cloud (Qwen team), Apache-2.0."
+    },
+    {
+      "id": "moonshine-streaming-small",
+      "task": "dictation",
+      "role": "default",
+      "name": "Moonshine Streaming Small",
+      "hf_repo": "Workmind/moonshine-streaming-small-ONNX",
+      "revision": "bfd8beba2893ce694f67ce7c7424843ba3ae91eb",
+      "licence": "MIT",
+      "runtime": "onnx",
+      "note": "Fast English speech to text that writes as you speak, for the mic.",
+      "files": [
+        {
+          "name": "onnx/encoder_model_quantized.onnx",
+          "size": 74923158,
+          "sha256": "69c786908794eb9e2e50d7137c4e755abdde7b4bdebffd68fe0c292eee5ffc55"
+        },
+        {
+          "name": "onnx/decoder_model_merged_quantized.onnx",
+          "size": 90830447,
+          "sha256": "3bd2e7a7e94c608b1988fa035be1f1b1f2acdbe059f7fe5cc70d85201c2835f5"
+        },
+        {
+          "name": "config.json",
+          "size": 1745,
+          "sha256": "849ca79b5af5603b1e7b8eeebf67265f931c70117434446fca6f35a26fc03df1"
+        },
+        {
+          "name": "generation_config.json",
+          "size": 163,
+          "sha256": "fd54ad15ad0a14f68db3c58a8d8e5e8f3791ef95e1ea92ee46cd71b4a5d7528c"
+        },
+        {
+          "name": "preprocessor_config.json",
+          "size": 284,
+          "sha256": "58d5920c0d2ada22a7254d26727dede50aad3d5692cbe755c564a639d76af70a"
+        },
+        {
+          "name": "processor_config.json",
+          "size": 340,
+          "sha256": "41db69af4b4f77d88e3d9d403d3bda2d027547b8880cda6507f2ac23dc09f1c1"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 3761754,
+          "sha256": "7b913404bdd039af4756783218af4440bc07fb7d6d8258d677e34f95b3ec416f"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 301,
+          "sha256": "d84ef83190b3821f41de5cc1ee258925aff99d705d1019708c037d15829d85dd"
+        },
+        {
+          "name": "special_tokens_map.json",
+          "size": 96,
+          "sha256": "7755e8a96f77dea5458262fb120decdd6a654be977f3540bc781a0a3443f5974"
+        }
+      ],
+      "logo": "moonshine",
+      "licence_note": "Moonshine by Moonshine AI (Useful Sensors), MIT; ONNX conversion by Workmind."
+    },
+    {
+      "id": "parakeet-tdt-0.6b-v3",
+      "task": "dictation",
+      "role": "alternative",
+      "name": "Parakeet TDT 0.6B v3 (int8)",
+      "hf_repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+      "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+      "licence": "CC-BY-4.0",
+      "runtime": "onnx",
+      "note": "NVIDIA's multilingual (25 European languages) speech model; larger and very accurate.",
+      "files": [
+        {
+          "name": "encoder-model.int8.onnx",
+          "size": 652183999,
+          "sha256": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"
+        },
+        {
+          "name": "decoder_joint-model.int8.onnx",
+          "size": 18202004,
+          "sha256": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
+        },
+        {
+          "name": "nemo128.onnx",
+          "size": 139764,
+          "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+        },
+        {
+          "name": "vocab.txt",
+          "size": 93939,
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+        },
+        {
+          "name": "config.json",
+          "size": 97,
+          "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"
+        }
+      ],
+      "logo": "nvidia",
+      "licence_note": "Attribution: Parakeet TDT 0.6B v3 by NVIDIA, licensed CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/); ONNX conversion by istupakov.",
+      "licence_url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"
+    },
+    {
+      "id": "whisper-small-q5_1",
+      "task": "speech_to_text",
+      "role": "default",
+      "name": "Whisper small (q5_1)",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "licence": "MIT",
+      "runtime": "whisper_cpp",
+      "note": "Transcribes audio files in many languages, Urdu included.",
+      "files": [
+        {
+          "name": "ggml-small-q5_1.bin",
+          "size": 190085487,
+          "sha256": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+        }
+      ],
+      "logo": "whisper",
+      "licence_note": "Whisper by OpenAI, MIT; ggml conversion by the whisper.cpp project."
+    },
+    {
+      "id": "whisper-large-v3-turbo-q5_0",
+      "task": "speech_to_text",
+      "role": "alternative",
+      "name": "Whisper large-v3 turbo (q5_0)",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "licence": "MIT",
+      "runtime": "whisper_cpp",
+      "note": "Much more accurate, especially for Urdu; about three times the size.",
+      "files": [
+        {
+          "name": "ggml-large-v3-turbo-q5_0.bin",
+          "size": 574041195,
+          "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+        }
+      ],
+      "logo": "whisper",
+      "licence_note": "Whisper by OpenAI, MIT; ggml conversion by the whisper.cpp project."
+    },
+    {
+      "id": "kokoro-82m-int8",
+      "task": "text_to_speech",
+      "role": "default",
+      "name": "Kokoro 82M (int8)",
+      "hf_repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
+      "revision": "1939ad2a8e416c0acfeecc08a694d14ef25f2231",
+      "licence": "Apache-2.0",
+      "runtime": "onnx",
+      "note": "A small, natural English voice that reads answers aloud. Four voices included.",
+      "files": [
+        {
+          "name": "onnx/model_quantized.onnx",
+          "size": 92361116,
+          "sha256": "fbae9257e1e05ffc727e951ef9b9c98418e6d79f1c9b6b13bd59f5c9028a1478"
+        },
+        {
+          "name": "voices/af_heart.bin",
+          "size": 522240,
+          "sha256": "d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b"
+        },
+        {
+          "name": "voices/am_michael.bin",
+          "size": 522240,
+          "sha256": "1d1f21dd8da39c30705cd4c75d039d265e9bc4a2a93ed09bc9e1b1225eb95ba1"
+        },
+        {
+          "name": "voices/bf_emma.bin",
+          "size": 522240,
+          "sha256": "669fe0647f9dd04fcab92f1439a40eeb4c8b4ab1f82e4996fe3d918ce4a63b73"
+        },
+        {
+          "name": "voices/bm_george.bin",
+          "size": 522240,
+          "sha256": "c4b235a4c1f2cd3b939fed08b899ce9385638b763f7b73a59616c4fc9bd6c9bc"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 3497,
+          "sha256": "77a02c8e164413299b4b4c403b14f8e0e1c1b727db4d46a09d6327b861060a34"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 113,
+          "sha256": "be1cb066d6ef6b074b3f15e6a6dd21ac88ff3cdaedf325f0aaed686c70f75d20"
+        },
+        {
+          "name": "config.json",
+          "size": 44,
+          "sha256": "df34b4f930b23447cd4dc410fabfb42eb3f24e803e6c3f97d618fb359380a36f"
+        }
+      ],
+      "logo": "kokoro",
+      "licence_note": "Kokoro by hexgrad, Apache-2.0. Tern does not link espeak-ng (GPL-3.0) for Kokoro's phonemes and does not download its data."
+    },
+    {
+      "id": "supertonic-3",
+      "task": "text_to_speech",
+      "role": "alternative",
+      "name": "Supertonic 3",
+      "hf_repo": "Supertone/supertonic-3",
+      "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323",
+      "licence": "OpenRAIL-M",
+      "runtime": "onnx",
+      "note": "A fast multilingual voice; its licence restricts some uses (read the terms before using it).",
+      "files": [
+        {
+          "name": "onnx/duration_predictor.onnx",
+          "size": 3700147,
+          "sha256": "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db"
+        },
+        {
+          "name": "onnx/text_encoder.onnx",
+          "size": 36416150,
+          "sha256": "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff"
+        },
+        {
+          "name": "onnx/vector_estimator.onnx",
+          "size": 256534781,
+          "sha256": "883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c"
+        },
+        {
+          "name": "onnx/vocoder.onnx",
+          "size": 101424195,
+          "sha256": "085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba"
+        },
+        {
+          "name": "onnx/tts.json",
+          "size": 8253,
+          "sha256": "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"
+        },
+        {
+          "name": "onnx/unicode_indexer.json",
+          "size": 277676,
+          "sha256": "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f"
+        },
+        {
+          "name": "voice_styles/F1.json",
+          "size": 292046,
+          "sha256": "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2"
+        },
+        {
+          "name": "voice_styles/M1.json",
+          "size": 291748,
+          "sha256": "e35604687f5d23694b8e91593a93eec0e4eca6c0b02bb8ed69139ab2ea6b0a5b"
+        },
+        {
+          "name": "LICENSE",
+          "size": 15007,
+          "sha256": "0d944a9110fed9a9602d60e0423a272903e7bd21ab060490774efc77c2275e9f"
+        }
+      ],
+      "logo": "supertone",
+      "licence_note": "Supertonic 3 by Supertone Inc. under the BigScience OpenRAIL-M licence: free to use, but not for the restricted uses it lists (for example deceiving people by impersonation, harassment, or unlawful uses), and those restrictions pass on to anything you share made with it. The licence is saved with the model.",
+      "licence_url": "https://huggingface.co/Supertone/supertonic-3/blob/main/LICENSE"
+    },
+    {
+      "id": "granite-embedding-97m-r2",
+      "task": "embedding",
+      "role": "default",
+      "name": "Granite Embedding 97M multilingual R2 (int8)",
+      "hf_repo": "onnx-community/granite-embedding-97m-multilingual-r2-ONNX",
+      "revision": "536a9f241cb3f02a9c5995a1e708c784bd274859",
+      "licence": "Apache-2.0",
+      "runtime": "onnx",
+      "note": "Turns passages into vectors so Tern can search your sources by meaning, in many languages.",
+      "files": [
+        {
+          "name": "onnx/model_int8.onnx",
+          "size": 97858099,
+          "sha256": "704c1ebca5fbb7cd83ced41827658ac4c9990c64f7f2874d22b78044e5022e22"
+        },
+        {
+          "name": "tokenizer.json",
+          "size": 25301671,
+          "sha256": "51947676cae1f991fa51c6b9a24e14ee5460e5f0b9f692f13bb3159829d1592a"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "size": 12860,
+          "sha256": "6ed69389e30a8ecabfce2f9ebcdf0c908b34056f24d994340f2f216521c057d5"
+        },
+        {
+          "name": "config.json",
+          "size": 1215,
+          "sha256": "ae74d55a56f779774cb9a8e63d3c2da9ae1af83c00229ffdff43d0b38407a0ee"
+        }
+      ],
+      "logo": "ibm",
+      "licence_note": "Granite Embedding by IBM, Apache-2.0; ONNX conversion by onnx-community."
+    },
+    {
+      "id": "embeddinggemma-2-q8",
+      "task": "embedding",
+      "role": "alternative",
+      "name": "EmbeddingGemma 2 (Q8)",
+      "hf_repo": "ggml-org/embeddinggemma-2-GGUF",
+      "revision": "58faf90940886df2d62be555c8765d00dac362c5",
+      "licence": "Apache-2.0",
+      "runtime": "llama_cpp",
+      "note": "Google's larger embedding model; better retrieval, about three times the size.",
+      "files": [
+        {
+          "name": "embeddinggemma-2-Q8_0.gguf",
+          "size": 309855456,
+          "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"
+        }
+      ],
+      "logo": "google",
+      "licence_note": "EmbeddingGemma 2 by Google, Apache-2.0 (as published on Hugging Face)."
     }
   ]
 }
