@@ -27,8 +27,9 @@ use sha2::{Digest, Sha256};
 
 pub use tern_providers::download::{CancelDownload, Progress};
 
-/// The built-in manifest. Its entries are placeholders until the model
-/// research picks Tern's models; replacing this file is all it takes.
+/// The built-in manifest: Tern's approved models, a Default and an
+/// Alternative per task (and optional add-ons), with pinned revisions,
+/// sizes, and SHA-256 hashes.
 const BUILTIN: &str = include_str!("manifest.json");
 
 /// The file in a model's folder written once every file is verified.

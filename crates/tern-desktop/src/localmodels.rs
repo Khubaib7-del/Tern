@@ -304,7 +304,10 @@ mod tests {
         // Every source row shows its maker's logo, never a bare initial.
         for s in p.statuses.iter().flatten() {
             assert!(
-                matches!(crate::brands::logo(&logo_key(s)), crate::brands::Logo::Mark(..)),
+                matches!(
+                    crate::brands::logo(&logo_key(s)),
+                    crate::brands::Logo::Mark(..)
+                ),
                 "{} has no logo",
                 s.entry.id
             );

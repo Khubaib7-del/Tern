@@ -90,7 +90,7 @@ impl Workspace {
                 .text_xs()
                 .text_color(p.faint)
                 .child(SharedString::from(format!(
-                    "Downloaded from Hugging Face only when you ask, checked against each file's SHA-256, and kept in {}. Entries marked placeholder are stand-ins until Tern's model picks are final; add or replace entries with {} in the settings folder.",
+                    "Downloaded from Hugging Face only when you ask, checked against each file's SHA-256, and kept in {}. Each task has a Default and an Alternative; add or replace entries with {} in the settings folder.",
                     page.root.as_deref().unwrap_or("Tern's data folder"),
                     local_models::OVERRIDES
                 )))
