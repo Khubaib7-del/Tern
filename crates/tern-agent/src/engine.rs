@@ -528,6 +528,9 @@ impl Run<'_, '_> {
         ))?;
         let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
         let mut messages = history;
+        // Exchanges an earlier turn left empty would make the provider
+        // refuse this request (see [`crate::chat::tidy_history`]).
+        crate::chat::tidy_history(&mut messages);
         let base = messages.len();
         let mut seen: HashMap<String, u32> = HashMap::new();
         match &resume {
@@ -585,6 +588,7 @@ impl Run<'_, '_> {
             }
         }
         self.save(&messages[base..], &seen);
+        let mut empty_retried = false;
 
         loop {
             self.check_cancel()?;
@@ -684,6 +688,23 @@ impl Run<'_, '_> {
             }
 
             match protocol::parse(&reply.text) {
+                // An empty reply (only reasoning, or nothing) is asked for
+                // once more as it stands; a second empty one ends the turn
+                // with a gap. It never joins the conversation: providers
+                // refuse an empty assistant message on every later request.
+                Reply::Answer(text) if text.is_empty() && !empty_retried => {
+                    empty_retried = true;
+                    self.record(self.event(
+                        "model.empty_reply",
+                        EffectClass::Analysis,
+                        format!(
+                            "{} gave an empty reply; Tern asked once more",
+                            self.cfg.model_name
+                        ),
+                        json!({"finish_reason": reply.finish_reason}),
+                    ))?;
+                    self.go(TurnState::Verifying)?;
+                }
                 Reply::Answer(text) => {
                     self.go(TurnState::Verifying)?;
                     return Ok(if text.is_empty() {

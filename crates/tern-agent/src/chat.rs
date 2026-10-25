@@ -1228,7 +1228,11 @@ impl ChatSession {
                 .sink
                 .with_store(|s| s.rename_session(self.session, &title));
         }
-        if let Some(answer) = &out.answer {
+        // An empty answer never joins the history: providers (Mistral,
+        // Anthropic, Gemini) refuse every later request that carries an
+        // empty assistant message, so one empty reply used to fail each
+        // turn after it at the first model call.
+        if let Some(answer) = out.answer.as_ref().filter(|a| !a.trim().is_empty()) {
             // Pictures stay in the history so follow-up questions can
             // still see them.
             self.history
@@ -1788,6 +1792,32 @@ impl ContextUse {
     pub fn left(&self) -> Option<u64> {
         self.window.map(|w| w.saturating_sub(self.used()))
     }
+}
+
+/// Takes out every exchange whose assistant message is empty (with the
+/// user message it answered), as a reopened chat's history already leaves
+/// them out ([`crate::transcript::PastTurn::exchange`]). Providers refuse a
+/// request with an empty assistant message. Returns how many went.
+pub fn tidy_history(messages: &mut Vec<ChatMessage>) -> usize {
+    let before = messages.len();
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    for m in messages.drain(..) {
+        let empty = m.role == tern_providers::Role::Assistant
+            && m.content.trim().is_empty()
+            && m.images.is_empty();
+        if empty {
+            if out
+                .last()
+                .is_some_and(|p| p.role == tern_providers::Role::User)
+            {
+                out.pop();
+            }
+            continue;
+        }
+        out.push(m);
+    }
+    *messages = out;
+    before - messages.len()
 }
 
 /// Takes the pictures out of `messages`, leaving "[image: name]" in each
