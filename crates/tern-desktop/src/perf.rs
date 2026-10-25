@@ -303,11 +303,11 @@ mod tests {
         assert!(m.frame_end(t0 + ms(24)).is_none());
         let s = m.flush(t0 + ms(30)).expect("two frames");
         assert_eq!(s.frames, 2);
-        assert!((s.layout_mean - 5.).abs() < 0.01, "{}", s.layout_mean);
-        assert!((s.prepaint_mean - 1.5).abs() < 0.01, "{}", s.prepaint_mean);
+        assert!((s.layout_mean - 5.5).abs() < 0.01, "{}", s.layout_mean);
+        assert!((s.prepaint_mean - 1.).abs() < 0.01, "{}", s.prepaint_mean);
         assert!((s.paint_mean - 2.).abs() < 0.01, "{}", s.paint_mean);
         assert!(
-            s.line().ends_with("layout 5.0 prepaint 1.5 paint 2.0 ms"),
+            s.line().ends_with("layout 5.5 prepaint 1.0 paint 2.0 ms"),
             "{}",
             s.line()
         );
