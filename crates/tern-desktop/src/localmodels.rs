@@ -101,6 +101,32 @@ impl LocalModelsPage {
         self.warning = warning;
     }
 
+    /// The local model that transcribes for `task` (Dictation for the
+    /// mic, SpeechToText for audio files), as the routing names it: the
+    /// one in use when it is installed, on, and runnable, else another
+    /// installed main model that is (Default first). Mirrors
+    /// `LocalModels::usable` from the last load, so drawing never touches
+    /// the disk.
+    pub fn transcriber(&self, task: Task) -> Option<tern_agent::media::ModelRef> {
+        let ok = |s: &&ModelStatus| {
+            s.entry.task == task
+                && s.entry.role != ModelRole::Addon
+                && s.installed()
+                && s.enabled
+                && can_run(&s.entry)
+        };
+        let all = self.statuses.as_deref().unwrap_or_default();
+        all.iter()
+            .filter(ok)
+            .find(|s| s.is_default)
+            .or_else(|| {
+                all.iter()
+                    .filter(ok)
+                    .min_by_key(|s| s.entry.role != ModelRole::Default)
+            })
+            .map(|s| tern_agent::media::ModelRef::local(&s.entry.id))
+    }
+
     /// The models listed for `task`, in manifest order.
     pub fn for_task(&self, task: Task) -> Vec<&ModelStatus> {
         self.statuses

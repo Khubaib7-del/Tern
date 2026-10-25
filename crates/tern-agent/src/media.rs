@@ -45,8 +45,28 @@ impl ModelRef {
     }
 }
 
+/// The provider word of a [`ModelRef`] naming a local model
+/// (`local/whisper-small-q5_1`): it runs on this computer
+/// (`crate::local_models`), not on a provider.
+pub const LOCAL: &str = "local";
+
+impl ModelRef {
+    /// A local model by id.
+    pub fn local(id: &str) -> Self {
+        Self::new(LOCAL, id)
+    }
+
+    /// Whether it is a local model.
+    pub fn is_local(&self) -> bool {
+        self.provider == LOCAL
+    }
+}
+
 impl std::fmt::Display for ModelRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_local() {
+            return write!(f, "{} (on this computer)", self.model);
+        }
         let name = tern_providers::find(&self.provider).map_or(self.provider.as_str(), |p| p.name);
         write!(f, "{} ({name})", self.model)
     }
@@ -219,12 +239,24 @@ pub async fn catalog(ids: &[&'static str], secrets: Option<&dyn SecretStore>) ->
 
 /// Transcribes recorded speech (`audio` is a file such as a WAV; its name
 /// tells the server the format).
+/// A local model (`via.is_local()`) runs on this computer, off the async
+/// threads.
 pub async fn transcribe(
     secrets: Option<&dyn SecretStore>,
     via: &ModelRef,
     audio: &[u8],
     file_name: &str,
 ) -> Result<String, String> {
+    if via.is_local() {
+        let (id, audio, name) = (via.model.clone(), audio.to_vec(), file_name.to_owned());
+        let text = tokio::task::spawn_blocking(move || transcribe_local(&id, &audio, &name))
+            .await
+            .map_err(|e| e.to_string())??;
+        if text.trim().is_empty() {
+            return Err(format!("{via} heard no speech in the recording."));
+        }
+        return Ok(text);
+    }
     let p = connect_by_id(&via.provider, secrets, None).map_err(|e| e.to_string())?;
     let text = p
         .transcribe(&via.model, audio, file_name, None)
@@ -234,6 +266,32 @@ pub async fn transcribe(
         return Err(format!("{via} heard no speech in the recording."));
     }
     Ok(text)
+}
+
+/// Transcribes an audio file with installed local model `id`.
+#[cfg(feature = "audio")]
+fn transcribe_local(id: &str, audio: &[u8], file_name: &str) -> Result<String, String> {
+    let (lm, _) = crate::local_models::LocalModels::discover()?;
+    lm.transcribe_file(id, audio, file_name, None)
+}
+
+#[cfg(not(feature = "audio"))]
+fn transcribe_local(id: &str, _audio: &[u8], _file_name: &str) -> Result<String, String> {
+    Err(format!("this build cannot run the local model {id}"))
+}
+
+/// The local model that transcribes for `task` (Dictation for the mic,
+/// SpeechToText for files): the one in use when it is installed, on, and
+/// this build can run it.
+pub fn local_transcriber(
+    local: &crate::local_models::LocalModels,
+    prefs: &crate::local_models::LocalModelPrefs,
+    task: crate::local_models::Task,
+) -> Option<ModelRef> {
+    local
+        .usable(prefs, task)
+        .filter(|e| crate::local_models::can_run(e))
+        .map(|e| ModelRef::local(&e.id))
 }
 
 /// Audio files the mic routing accepts as an attachment.
@@ -537,6 +595,15 @@ mod tests {
             why.contains("llama-3.1-8b-instant cannot see pictures"),
             "{why}"
         );
+    }
+
+    #[test]
+    fn local_refs_name_this_computer() {
+        let r = ModelRef::local("whisper-small-q5_1");
+        assert!(r.is_local());
+        assert_eq!(r.key(), "local/whisper-small-q5_1");
+        assert_eq!(r.to_string(), "whisper-small-q5_1 (on this computer)");
+        assert!(!ModelRef::new("groq", "whisper-large-v3").is_local());
     }
 
     #[test]

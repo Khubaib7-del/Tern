@@ -80,7 +80,7 @@ pub(crate) const RAIL_W: f32 = 52.;
 const GRAPH_W: f32 = 440.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
-pub const NO_VOICE_MODEL: &str = "No voice model available — add Groq, OpenAI or Mistral";
+pub const NO_VOICE_MODEL: &str = "No voice model available — download one in Settings › Local models, or add Groq, OpenAI or Mistral";
 
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
@@ -1399,14 +1399,14 @@ impl Workspace {
                 .is_some_and(|n| tern_agent::media::is_audio_name(&n.to_string_lossy()))
         });
         for a in audio {
-            match self.stt_model() {
+            match self.file_stt_model() {
                 Some(via) => {
                     self.model.transcribing = true;
                     self.bridge.transcribe_file(via, a);
                 }
                 None => self.model.toast_error(
                     format!(
-                        "{} is audio. Tern transcribes audio once a provider that lists a speech-to-text model is set up (Groq or OpenAI Whisper, Mistral Voxtral).",
+                        "{} is audio. Tern transcribes audio once a speech-to-text model is set up: download Whisper in Settings › Local models (runs on this computer), or add a provider that lists one (Groq or OpenAI Whisper, Mistral Voxtral).",
                         a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
                     ),
                     None,
@@ -2070,6 +2070,8 @@ impl Workspace {
     /// Lists every usable provider's models for the routing (the mic and
     /// pictures the chat model cannot see).
     fn refresh_catalog(&mut self) {
+        // The local models too: the mic and audio files can use them.
+        self.reload_local_models();
         let ids: Vec<&'static str> = self
             .model
             .providers
@@ -2084,9 +2086,34 @@ impl Workspace {
         self.bridge.catalog(ids);
     }
 
-    /// The speech-to-text model the mic uses: the saved choice, else the
-    /// best listed one (the chat's provider first).
+    /// The speech-to-text model the mic uses: a local live-dictation
+    /// model when one is installed and on, else the saved provider model,
+    /// else the best listed one (the chat's provider first), else a local
+    /// transcription model.
     fn stt_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        let local = &self.model.settings.local;
+        local
+            .transcriber(Task::Dictation)
+            .or_else(|| self.remote_stt_model())
+            .or_else(|| local.transcriber(Task::SpeechToText))
+    }
+
+    /// The model that transcribes attached audio files: a local
+    /// transcription model when one is installed and on (it runs on this
+    /// computer), else the provider model the mic would use.
+    fn file_stt_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        self.model
+            .settings
+            .local
+            .transcriber(Task::SpeechToText)
+            .or_else(|| self.remote_stt_model())
+    }
+
+    /// The provider speech-to-text model: the saved choice, else the best
+    /// listed one (the chat's provider first).
+    fn remote_stt_model(&self) -> Option<tern_agent::media::ModelRef> {
         let near = self.model.providers.default_id(Kind::Model);
         self.model.catalog.pick(
             tern_agent::media::Job::Transcribe,
@@ -3690,7 +3717,7 @@ impl Workspace {
             (_, false) if finishing => (AssetIcon::Mic, "Finishing the transcript…".into(), false),
             (None, false) => (
                 AssetIcon::MicOff,
-                "Voice input needs a speech-to-text model (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
+                "Voice input needs a speech-to-text model: a local one (Settings › Local models) or a provider one (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
                 true,
             ),
             (Some(v), false) if self.model.transcribing => (
