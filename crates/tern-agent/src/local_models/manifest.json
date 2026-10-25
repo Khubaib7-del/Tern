@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "whisper-base-en",
+      "task": "speech_to_text",
+      "name": "Whisper base.en (placeholder)",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "licence": "MIT",
+      "runtime": "whisper_cpp",
+      "logo": "whisper",
+      "placeholder": true,
+      "note": "English speech to text in whisper.cpp's ggml format. A placeholder until the model research picks Tern's speech model.",
+      "files": [
+        {
+          "name": "ggml-base.en.bin",
+          "size": 147964211,
+          "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+        }
+      ]
+    },
+    {
+      "id": "whisper-tiny-en",
+      "task": "speech_to_text",
+      "name": "Whisper tiny.en (placeholder)",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "licence": "MIT",
+      "runtime": "whisper_cpp",
+      "logo": "whisper",
+      "placeholder": true,
+      "note": "The smallest English Whisper: faster, less accurate. A placeholder.",
+      "files": [
+        {
+          "name": "ggml-tiny.en.bin",
+          "size": 77704715,
+          "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+        }
+      ]
+    },
+    {
+      "id": "rapidocr-ppocrv4-mobile",
+      "task": "ocr",
+      "name": "RapidOCR PP-OCRv4 mobile (placeholder)",
+      "hf_repo": "SWHL/RapidOCR",
+      "revision": "1cfba2e90fc938db55889873735088de210cc173",
+      "licence": "Apache-2.0",
+      "runtime": "onnx",
+      "logo": "rapidocr",
+      "placeholder": true,
+      "note": "PaddleOCR v4 mobile detection and recognition plus the angle classifier, as ONNX. A placeholder until the model research picks Tern's OCR model.",
+      "files": [
+        {
+          "name": "PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
+          "size": 4745517,
+          "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+        },
+        {
+          "name": "PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
+          "size": 10857958,
+          "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+        },
+        {
+          "name": "PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+          "size": 585532,
+          "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+        }
+      ]
+    }
+  ]
+}

@@ -30,6 +30,7 @@ serde_json.workspace = true
 time = { workspace = true, features = ["local-offset"] }
 tokio = { workspace = true, features = ["process", "io-util", "io-std", "sync"] }
 sha1_smol.workspace = true
+sha2.workspace = true
 zip.workspace = true
 
 [features]

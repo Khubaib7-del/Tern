@@ -44,6 +44,7 @@ pub mod handoff;
 pub mod highlight;
 pub mod ledger;
 pub mod library;
+pub mod local_models;
 pub mod mcp;
 pub mod media;
 pub mod mention;

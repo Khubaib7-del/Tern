@@ -53,6 +53,7 @@ base64 = "0.22"
 futures = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sha1_smol = "1"
+sha2 = "0.10"
 cpal = "0.18"
 
 [workspace.lints.rust]
