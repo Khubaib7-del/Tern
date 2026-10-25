@@ -421,14 +421,8 @@ async fn a_registered_engine_reads_pictures_with_an_installed_model() {
     assert!(!runtime_available(Runtime::WhisperCpp));
 }
 
-#[test]
-fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
-    use crate::media::{Catalog, ImagePlan, plan_images_local};
-    let dir = tempfile::tempdir().unwrap();
-    let mut m = manifest(None);
-    m.models[0].runtime = Runtime::Onnx;
-    let lm = LocalModels::new(dir.path(), m);
-    // Pretend tiny-ocr is installed: its files and record on disk.
+/// Puts tiny-ocr's files and record on disk, as a finished download.
+fn fake_install(lm: &LocalModels) {
     let d = lm.dir("tiny-ocr");
     std::fs::create_dir_all(d.join("dict")).unwrap();
     std::fs::write(d.join("det.onnx"), A).unwrap();
@@ -450,11 +444,21 @@ fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
         installed_at: "now".into(),
     };
     std::fs::write(d.join(RECORD), serde_json::to_string(&rec).unwrap()).unwrap();
+}
+
+#[test]
+fn a_local_model_this_build_cannot_run_is_named_in_the_reason() {
+    use crate::media::{Catalog, ImageRoute, route_images};
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest(None);
+    m.models[0].runtime = Runtime::Onnx;
+    let lm = LocalModels::new(dir.path(), m);
+    fake_install(&lm);
     let prefs = crate::Preferences::default();
     let empty = Catalog::default();
     // ONNX has no engine in this build: the reason names the model.
-    match plan_images_local(&empty, "groq", "llama-3.1-8b-instant", &prefs, Some(&lm)) {
-        ImagePlan::Missing(why) => {
+    match route_images(&empty, "groq", "llama-3.1-8b-instant", &prefs, Some(&lm)) {
+        ImageRoute::Missing(why) => {
             assert!(
                 why.contains("Tiny OCR") && why.contains("ONNX Runtime"),
                 "{why}"
@@ -463,8 +467,86 @@ fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
         other => panic!("{other:?}"),
     }
     // Without local models the plain reason stays.
-    match plan_images_local(&empty, "groq", "llama-3.1-8b-instant", &prefs, None) {
-        ImagePlan::Missing(why) => assert!(!why.contains("Tiny OCR")),
+    match route_images(&empty, "groq", "llama-3.1-8b-instant", &prefs, None) {
+        ImageRoute::Missing(why) => assert!(!why.contains("Tiny OCR")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Runs tiny-ocr only, for the routing tests.
+struct TinyOcr;
+impl LocalEngine for TinyOcr {
+    fn runtime(&self) -> Runtime {
+        Runtime::Other
+    }
+    fn name(&self) -> &'static str {
+        "tiny"
+    }
+    fn runs(&self, entry: &ModelEntry) -> bool {
+        entry.id == "tiny-ocr"
+    }
+    // Reads like FakeOcr, so either engine answers the same.
+    fn ocr(&self, _dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
+        Ok(format!("{} bytes read by {}", image.len(), entry.id))
+    }
+}
+
+#[test]
+fn local_models_go_before_borrowing_another_provider_model() {
+    use crate::media::{Catalog, ImageRoute, Job, ModelRef, Reader, route_images};
+    use tern_providers::ModelInfo;
+    register_engine(std::sync::Arc::new(TinyOcr));
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manifest(None);
+    m.models[0].runtime = Runtime::Other;
+    let lm = LocalModels::new(dir.path(), m);
+    fake_install(&lm);
+    let listed = |ids: &[&str]| -> Vec<ModelInfo> {
+        ids.iter()
+            .map(|id| {
+                let mut m = ModelInfo::new(*id);
+                m.finish("mistral");
+                m
+            })
+            .collect()
+    };
+    let c = Catalog::new(vec![(
+        "mistral",
+        Ok(listed(&[
+            "codestral-2508",
+            "pixtral-12b-2409",
+            "mistral-ocr-2512",
+        ])),
+    )]);
+    let mut prefs = crate::Preferences::default();
+    prefs.local_models.set_default(Task::Ocr, Some("tiny-ocr"));
+    // codestral cannot see: the local OCR model reads first, then the
+    // provider's vision model, then its OCR model.
+    match route_images(&c, "mistral", "codestral-2508", &prefs, Some(&lm)) {
+        ImageRoute::Read(r) => assert_eq!(
+            r,
+            vec![
+                Reader::Local {
+                    model: "tiny-ocr".into(),
+                    name: "Tiny OCR".into(),
+                    describe: false
+                },
+                Reader::Remote {
+                    via: ModelRef::new("mistral", "pixtral-12b-2409"),
+                    job: Job::Describe
+                },
+                Reader::Remote {
+                    via: ModelRef::new("mistral", "mistral-ocr-2512"),
+                    job: Job::Ocr
+                },
+            ]
+        ),
+        other => panic!("{other:?}"),
+    }
+    // Switched off, the local model is skipped.
+    prefs.local_models.set_enabled("tiny-ocr", false);
+    match route_images(&c, "mistral", "codestral-2508", &prefs, Some(&lm)) {
+        ImageRoute::Read(r) => assert!(matches!(r[0], Reader::Remote { .. })),
         other => panic!("{other:?}"),
     }
 }

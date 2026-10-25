@@ -201,6 +201,18 @@ pub trait LocalEngine: Send + Sync {
         let _ = (dir, audio, language);
         Err(format!("{} cannot transcribe speech", entry.name))
     }
+    /// Describes a picture (PNG, JPEG, GIF, or WebP bytes) as asked by
+    /// `prompt`, with the vision model installed in `dir`.
+    fn describe(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+        prompt: &str,
+    ) -> Result<String, String> {
+        let _ = (dir, image, prompt);
+        Err(format!("{} cannot describe pictures", entry.name))
+    }
 }
 
 type Engines = std::sync::RwLock<Vec<std::sync::Arc<dyn LocalEngine>>>;
@@ -864,6 +876,13 @@ impl LocalModels {
             return Err(format!("{} is not downloaded", entry.name));
         }
         engine_for(entry).ok_or_else(|| format!("this build cannot run {} yet", entry.name))
+    }
+
+    /// Describes a picture with installed vision model `id`.
+    pub fn describe(&self, id: &str, image: &[u8], prompt: &str) -> Result<String, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.describe(&self.dir(id), entry, image, prompt)
     }
 
     /// Transcribes speech (16 kHz mono samples) with installed model `id`.
