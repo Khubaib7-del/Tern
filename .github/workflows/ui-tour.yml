@@ -135,7 +135,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-release
+          key: desktop-release-msvc-o2
       - name: Build tern-desktop and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-browser
       - name: Record the tour

@@ -9,3 +9,6 @@ GGML_AVX = "ON"
 GGML_AVX2 = "ON"
 GGML_FMA = "ON"
 GGML_F16C = "ON"
+# whisper.cpp on Windows (MSVC): put back the optimisation the `cmake` crate
+# drops from CMAKE_<LANG>_FLAGS_RELEASE (see the file). Only acts under MSVC.
+CMAKE_PROJECT_INCLUDE = { value = ".cargo/whisper-msvc-opt.cmake", relative = true }

@@ -28,6 +28,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # New key when whisper.cpp's CMake flags change: its build script
+          # does not rerun for them, so a cached build keeps the old ones.
+          key: windows-msvc-o2
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -74,9 +78,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-release
+          # New key when whisper.cpp's CMake flags change (see above).
+          key: desktop-release-msvc-o2
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
+      - name: whisper.cpp's compiler flags (must hold /O2)
+        shell: bash
+        run: |
+          c=$(ls target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | head -1)
+          grep -E '^CMAKE_(C|CXX)_FLAGS(_RELEASE)?:|^CMAKE_GENERATOR(_TOOLSET)?:|^CMAKE_PROJECT_INCLUDE' "$c"
+          grep -q 'Tern: MSVC C flags' -r target/release/build/whisper-rs-sys-*/output && grep -h 'Tern: MSVC C flags' target/release/build/whisper-rs-sys-*/output || echo "::warning::the MSVC optimisation include did not run"
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
