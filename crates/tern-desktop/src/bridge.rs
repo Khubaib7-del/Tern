@@ -218,6 +218,7 @@ impl std::fmt::Debug for Msg {
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Info(e) => write!(f, "Info({e})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
             Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
