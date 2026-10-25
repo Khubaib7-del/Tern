@@ -345,6 +345,22 @@ pub fn pick_outcome(provider: &str, info: &tern_agent::providers::ModelInfo) -> 
     }
 }
 
+/// The line under waiting pictures when `model` cannot see them, or
+/// `None` when it can. Whether a provider's model or a local OCR model
+/// reads them is decided when the message is sent.
+pub fn cannot_see_note(
+    catalog: &tern_agent::media::Catalog,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    if catalog.info(provider, model).sees_images() {
+        return None;
+    }
+    Some(format!(
+        "{model} cannot see pictures: a vision or OCR model will read them first (a provider's, else a local one), or Tern will say why it cannot."
+    ))
+}
+
 /// The picker popover's width, its most height, and its provider column.
 pub const PICKER_W: f32 = 560.;
 pub const PICKER_MAX_H: f32 = 360.;

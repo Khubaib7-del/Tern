@@ -52,7 +52,11 @@ pdf-extract = "0.9"
 base64 = "0.22"
 futures = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# The local OCR engine (PaddleOCR on ONNX Runtime; tern-agent's `ocr-onnx`).
+oar-ocr = { version = "=0.10.1", default-features = false, features = ["download-binaries"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 sha1_smol = "1"
+sha2 = "0.10"
 cpal = "0.18"
 
 [workspace.lints.rust]

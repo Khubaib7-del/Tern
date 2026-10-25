@@ -4,6 +4,22 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #62)
+
+Images, OCR and voice, part 1: the foundation for local models, and pictures in the composer.
+
+- **Local models, downloaded on demand** (`tern_agent::local_models`, [docs/local-models.md](docs/local-models.md)). Tern's approved list of 15 models, a **Default** and an **Alternative** per task plus one optional add-on: OCR (PP-OCRv6 small with PaddleOCR's Arabic-script recogniser for Urdu; Tesseract English + Urdu), documents to Markdown (PP-DocLayoutV3 + PP-OCRv6 + SLANet+; Granite-Docling 258M; PP-FormulaNet+ L for maths, on demand), describe pictures (SmolVLM 500M; Qwen3-VL 2B), **live dictation**, a new task for the mic (Moonshine Streaming Small; Parakeet TDT 0.6B v3), transcribe audio files (Whisper small; Whisper large-v3 turbo), read aloud (Kokoro 82M; Supertonic 3), and embeddings (Granite Embedding 97M multilingual R2; EmbeddingGemma 2). Each entry has its Hugging Face repo and pinned revision (a model can take files from several repos), files with sizes and SHA-256, licence with attribution or terms where the licence asks for them (Parakeet's CC-BY-4.0 credit, Supertonic's OpenRAIL-M use restrictions), and runtime. Nothing is bundled. A download goes to `<data>/models/<id>/`, resumes an interrupted file with an HTTP `Range` request, reports progress, can be cancelled, checks every file's hash, and writes its record last. Installed models are on unless switched off, one in use per task, saved in `preferences.json`. `local-models.json` in the settings folder adds or replaces entries. Engines plug in through `LocalEngine` / `register_builtin_engines`, and `can_run` says which models this build runs.
+- **Local OCR runs**: the first linked runtime is PaddleOCR on ONNX Runtime through the pure-Rust `oar-ocr` crate (`ocr-onnx` feature, on in the desktop app and the CLI; ONNX Runtime linked statically). PP-OCRv6 small reads the picture's lines and the PP-OCRv5 Arabic-script recogniser reads them too, each line keeping the surer reading; Urdu lines come out in reading order. Thresholds and dictionaries come from the models' `inference.yml`. A picture pasted for a chat model that cannot see is now read on this computer when no provider can read it. `tern models read <picture>` prints what it reads. Every other local model still downloads and verifies but does not run yet.
+- **Settings › Local models**: a section per task with what it does; each row has its maker's logo, name, Default/Alternative/Optional badge, size, licence and runtime, licence notes, Download/Resume (Add for the add-on) with a progress bar and Cancel, an Enable switch, **Use for this task**, and Delete (asks twice); a failed model offers **Use the alternative**. Rows are culled off screen and use the light `pill` buttons from #61.
+- **Logos for the local model makers**: PaddlePaddle, IBM, Qwen, NVIDIA, Hugging Face, Moonshine, Kokoro, Supertone and Tesseract (Whisper rows use OpenAI's), so every source row shows a logo ([docs/assets.md](docs/assets.md)).
+- **`tern models list|download|remove|default|enable|read`** in the terminal; `list` shows each model's role and every task, Live dictation included.
+- **Pictures in the composer**: paste a picture with Ctrl+V (Cmd+V on macOS) or the + menu's Paste, besides attaching and dropping files; waiting pictures show a thumbnail in their chip, with remove. A chat model that cannot see gets a provider's vision or OCR reading as before, and now falls back to an installed local OCR model; until its runtime is linked, a note under the waiting picture says the chat model cannot see it and why it cannot be read yet.
+- The download byte mover lives in `tern_providers::download` so only the providers and crawl crates touch the network.
+
+### Changed (PR #62)
+
+- **Settings › Tools draws only the rows near the window**, like Providers in #61 (`cull.rs`): each tool row (icon, switch, four approval choices) far outside the viewport is a box of its last height.
+
 ### Fixed (PR #61)
 
 Window buttons on Windows, and Settings › Providers scrolling and switching theme as smoothly as the other Settings pages.

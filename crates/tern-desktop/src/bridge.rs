@@ -308,10 +308,30 @@ pub const MODELS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Pictures another model reads before the turn (see [`Bridge::send`]).
 #[derive(Debug)]
 pub struct ReadFirst {
-    pub via: tern_agent::media::ModelRef,
-    pub job: tern_agent::media::Job,
+    pub via: ReadVia,
     pub images: Vec<tern_agent::ImageInput>,
     pub chat_model: String,
+}
+
+/// Who reads the pictures for a chat model that cannot see.
+#[derive(Debug)]
+pub enum ReadVia {
+    /// A model on a configured provider (vision or OCR).
+    Remote {
+        via: tern_agent::media::ModelRef,
+        job: tern_agent::media::Job,
+    },
+    /// A local OCR model on this computer: its id and name.
+    Local { model: String, name: String },
+}
+
+impl ReadVia {
+    fn label(&self) -> String {
+        match self {
+            Self::Remote { via, .. } => via.to_string(),
+            Self::Local { name, .. } => name.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -642,26 +662,49 @@ impl Bridge {
             let text = match read_first {
                 None => text,
                 Some(r) => {
-                    let keychain = setup::keychain();
-                    let secrets: Option<&dyn SecretStore> =
-                        keychain.as_ref().ok().map(|b| b.as_ref());
-                    match tern_agent::media::read_images(
-                        secrets,
-                        &r.via,
-                        r.job,
-                        &r.images,
-                        &r.chat_model,
-                    )
-                    .await
-                    {
+                    let read = match &r.via {
+                        ReadVia::Remote { via, job } => {
+                            let keychain = setup::keychain();
+                            let secrets: Option<&dyn SecretStore> =
+                                keychain.as_ref().ok().map(|b| b.as_ref());
+                            tern_agent::media::read_images(
+                                secrets,
+                                via,
+                                *job,
+                                &r.images,
+                                &r.chat_model,
+                            )
+                            .await
+                        }
+                        ReadVia::Local { model, name } => {
+                            let (model, name) = (model.clone(), name.clone());
+                            let images = r.images.clone();
+                            let chat = r.chat_model.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let (lm, _) = tern_agent::local_models::LocalModels::discover()?;
+                                tern_agent::media::read_images_local(
+                                    &lm, &model, &name, &images, &chat,
+                                )
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                        }
+                    };
+                    match read {
                         Ok((blocks, notice)) => {
                             let _ = tx.send(Msg::Notice(notice));
                             format!("{text}\n\n{blocks}")
                         }
                         Err(e) => {
+                            if let ReadVia::Local { model, .. } = &r.via {
+                                let _ = tx.send(Msg::Setup(Box::new(SetupMsg::LocalRunFailed(
+                                    model.clone(),
+                                    e.clone(),
+                                ))));
+                            }
                             let _ = tx.send(Msg::Notice(format!(
                                 "{} could not read the pictures, so they were not sent: {e}",
-                                r.via
+                                r.via.label()
                             )));
                             text
                         }

@@ -43,6 +43,7 @@ fn section_icon(s: Section) -> AssetIcon {
     match s {
         Section::Providers => AssetIcon::KeyRound,
         Section::Models => AssetIcon::Cpu,
+        Section::LocalModels => AssetIcon::Download,
         Section::Tools => AssetIcon::Wrench,
         Section::Decision => AssetIcon::Signpost,
         Section::Evaluation => AssetIcon::FlaskConical,
@@ -190,6 +191,7 @@ impl Workspace {
                 }
                 self.refresh_catalog();
             }
+            Section::LocalModels => self.open_local_models(),
             Section::Decision => self.open_decision(cx),
             Section::Evaluation => self.open_eval(cx),
             Section::Extensions => self.open_customize(cx),
@@ -487,6 +489,7 @@ impl Workspace {
         let page = match s {
             Section::Providers => self.providers_page(p, cx),
             Section::Models => self.models_page(p, cx),
+            Section::LocalModels => self.local_models_page(p, cx),
             Section::Tools => self.tools_page(p, cx),
             Section::Decision => self.decision_screen(p, cx),
             Section::Evaluation => self.eval_screen(p, cx),
@@ -1314,116 +1317,123 @@ impl Workspace {
 
     fn tools_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let prefs = &self.model.providers.prefs;
+        // Rows far outside the window draw as boxes of their last height,
+        // like Providers (`crate::cull`): the page re-lays out on every
+        // wheel step, and each row holds a switch and four choices.
+        let handle = self.settings_page_scroll();
         let rows: Vec<AnyElement> = tern_agent::tools::BUILTIN_TOOLS
             .iter()
             .map(|t| {
-                let name = t.name;
-                let on = prefs.tool_on(name);
-                let mode = prefs.tool_mode(name);
-                let selected = match mode {
-                    None => 0,
-                    Some(tern_agent::Mode::Ask) => 1,
-                    Some(tern_agent::Mode::Allow) => 2,
-                    Some(tern_agent::Mode::Deny) => 3,
-                };
-                let class_default = if t.effect.asks_by_default() {
-                    "Auto (asks)"
-                } else {
-                    "Auto (runs)"
-                };
-                let options = [
-                    Segment::text(class_default),
-                    Segment::text("Ask"),
-                    Segment::text("Allow"),
-                    Segment::text("Deny"),
-                ];
-                let pick: OnPick = Rc::new(
-                    move |this: &mut Workspace,
-                          i: usize,
-                          _: &mut Window,
-                          _: &mut Context<Workspace>| {
-                        let m = match i {
-                            1 => Some(tern_agent::Mode::Ask),
-                            2 => Some(tern_agent::Mode::Allow),
-                            3 => Some(tern_agent::Mode::Deny),
-                            _ => None,
-                        };
-                        this.save_ui_prefs(|p| p.set_tool_mode(name, m));
-                    },
-                );
-                let switch = Switch::new(SharedString::from(format!("tool-on-{name}")))
-                    .checked(on)
-                    .small()
-                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                        let checked = *checked;
-                        this.save_ui_prefs(|p| p.set_tool_on(name, checked));
-                        cx.notify();
-                    }));
-                // Two lines, so the approval choices never run past the
-                // card's edge: the tool and its switch, then (when on)
-                // the choices under it, left-aligned.
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .px_3()
-                    .py_2p5()
-                    .border_b_1()
-                    .border_color(p.border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .size(px(28.))
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(p.border)
-                                    .bg(p.raised)
-                                    .child(icon(tool_icon(name), p.text)),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .child(div().text_sm().child(SharedString::from(format!(
-                                        "{} · {}",
-                                        t.label, t.name
-                                    ))))
-                                    .child(div().text_xs().text_color(p.faint).child(
-                                        SharedString::from(format!(
-                                            "{}{}",
-                                            effect_line(t.effect),
-                                            if on {
-                                                ""
-                                            } else {
-                                                " · off: the model never sees it"
-                                            }
+                let key = format!("tool-{}", t.name);
+                self.culled(key, &handle, || {
+                    let name = t.name;
+                    let on = prefs.tool_on(name);
+                    let mode = prefs.tool_mode(name);
+                    let selected = match mode {
+                        None => 0,
+                        Some(tern_agent::Mode::Ask) => 1,
+                        Some(tern_agent::Mode::Allow) => 2,
+                        Some(tern_agent::Mode::Deny) => 3,
+                    };
+                    let class_default = if t.effect.asks_by_default() {
+                        "Auto (asks)"
+                    } else {
+                        "Auto (runs)"
+                    };
+                    let options = [
+                        Segment::text(class_default),
+                        Segment::text("Ask"),
+                        Segment::text("Allow"),
+                        Segment::text("Deny"),
+                    ];
+                    let pick: OnPick = Rc::new(
+                        move |this: &mut Workspace,
+                              i: usize,
+                              _: &mut Window,
+                              _: &mut Context<Workspace>| {
+                            let m = match i {
+                                1 => Some(tern_agent::Mode::Ask),
+                                2 => Some(tern_agent::Mode::Allow),
+                                3 => Some(tern_agent::Mode::Deny),
+                                _ => None,
+                            };
+                            this.save_ui_prefs(|p| p.set_tool_mode(name, m));
+                        },
+                    );
+                    let switch = Switch::new(SharedString::from(format!("tool-on-{name}")))
+                        .checked(on)
+                        .small()
+                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                            let checked = *checked;
+                            this.save_ui_prefs(|p| p.set_tool_on(name, checked));
+                            cx.notify();
+                        }));
+                    // Two lines, so the approval choices never run past the
+                    // card's edge: the tool and its switch, then (when on)
+                    // the choices under it, left-aligned.
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .px_3()
+                        .py_2p5()
+                        .border_b_1()
+                        .border_color(p.border)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .size(px(28.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_lg()
+                                        .border_1()
+                                        .border_color(p.border)
+                                        .bg(p.raised)
+                                        .child(icon(tool_icon(name), p.text)),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(div().text_sm().child(SharedString::from(format!(
+                                            "{} · {}",
+                                            t.label, t.name
+                                        ))))
+                                        .child(div().text_xs().text_color(p.faint).child(
+                                            SharedString::from(format!(
+                                                "{}{}",
+                                                effect_line(t.effect),
+                                                if on {
+                                                    ""
+                                                } else {
+                                                    " · off: the model never sees it"
+                                                }
+                                            )),
                                         )),
-                                    )),
-                            )
-                            .child(div().flex_none().child(switch)),
-                    )
-                    .when(on, |d| {
-                        d.child(div().pl(px(40.)).flex().flex_wrap().child(self.segmented(
-                            name,
-                            &options,
-                            selected,
-                            Look::default(),
-                            p,
-                            pick,
-                            cx,
-                        )))
-                    })
-                    .into_any_element()
+                                )
+                                .child(div().flex_none().child(switch)),
+                        )
+                        .when(on, |d| {
+                            d.child(div().pl(px(40.)).flex().flex_wrap().child(self.segmented(
+                                name,
+                                &options,
+                                selected,
+                                Look::default(),
+                                p,
+                                pick,
+                                cx,
+                            )))
+                        })
+                        .into_any_element()
+                })
             })
             .collect();
         self.page(

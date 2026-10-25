@@ -253,8 +253,73 @@ pub enum ImagePlan {
     Send,
     /// Another model reads them first.
     Read { via: ModelRef, job: Job },
+    /// A local OCR model on this computer reads them first
+    /// (`crate::local_models`): its id and display name.
+    ReadLocal { model: String, name: String },
     /// Nothing can read them; the reason says what is missing.
     Missing(String),
+}
+
+/// [`plan_images`], falling back to an installed local OCR model when no
+/// provider can read the pictures. A local model whose runtime this build
+/// cannot run yet turns into a clear reason instead.
+pub fn plan_images_local(
+    catalog: &Catalog,
+    provider: &str,
+    model: &str,
+    prefs: &crate::Preferences,
+    local: Option<&crate::local_models::LocalModels>,
+) -> ImagePlan {
+    let plan = plan_images(catalog, provider, model, prefs);
+    let ImagePlan::Missing(why) = &plan else {
+        return plan;
+    };
+    let Some(e) =
+        local.and_then(|lm| lm.usable(&prefs.local_models, crate::local_models::Task::Ocr))
+    else {
+        return plan;
+    };
+    if crate::local_models::can_run(e) {
+        ImagePlan::ReadLocal {
+            model: e.id.clone(),
+            name: e.name.clone(),
+        }
+    } else {
+        ImagePlan::Missing(format!(
+            "{why} The local OCR model {} is downloaded, but this build cannot run {} models yet.",
+            e.name,
+            e.runtime.label()
+        ))
+    }
+}
+
+/// Has local model `id` read the text in `images`; the same blocks and
+/// notice as [`read_images`].
+pub fn read_images_local(
+    local: &crate::local_models::LocalModels,
+    id: &str,
+    name: &str,
+    images: &[ImageInput],
+    chat_model: &str,
+) -> Result<(String, String), String> {
+    use base64::Engine as _;
+    let mut blocks = Vec::new();
+    for img in images {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .map_err(|e| format!("{} is not readable: {e}", img.name))?;
+        let text = local.ocr(id, &bytes)?;
+        let source = format!("OCR text of {} by local model {id}", img.name);
+        blocks.push(crate::untrusted::wrap(&source, text.trim()));
+    }
+    let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
+    Ok((
+        blocks.join("\n\n"),
+        format!(
+            "{chat_model} cannot see pictures, so {name} read {} on this computer and passed the text on.",
+            names.join(", ")
+        ),
+    ))
 }
 
 /// Decides how pictures reach a chat with `model` on `provider`.

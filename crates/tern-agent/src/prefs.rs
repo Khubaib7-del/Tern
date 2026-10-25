@@ -181,6 +181,9 @@ pub struct Preferences {
     pub scout_pos: Option<(i32, i32)>,
     /// Scout's look (`normal`, `study`); `None` follows the harness.
     pub scout_variant: Option<String>,
+    /// Local models: which installed ones are off and the default per task
+    /// (Settings › Local models, `tern models`).
+    pub local_models: crate::local_models::LocalModelPrefs,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -605,6 +608,7 @@ mod tests {
             scout_hidden: true,
             scout_pos: Some((40, 600)),
             scout_variant: Some("study".into()),
+            local_models: Default::default(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

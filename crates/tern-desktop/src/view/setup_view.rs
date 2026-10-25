@@ -292,6 +292,35 @@ impl Workspace {
                     .model
                     .toast_error(format!("Could not remove “{id}”: {e}"), None),
             },
+            SetupMsg::LocalModels(statuses, root, warning) => {
+                st.local.loaded(statuses, root, warning);
+            }
+            SetupMsg::LocalProgress(id, done, total) => st.local.progress(&id, done, total),
+            SetupMsg::LocalVerifying(id, file) => st.local.verifying(&id, file),
+            SetupMsg::LocalDone(id, r, cancelled) => {
+                let ok = r.is_ok();
+                st.local.finished(&id, r, cancelled);
+                if ok {
+                    self.model.toast_info(format!("Downloaded {id}"));
+                }
+                self.reload_local_models();
+            }
+            SetupMsg::LocalRunFailed(id, e) => st.local.run_failed(
+                &id,
+                format!("Could not run this model: {e}. Try the alternative."),
+            ),
+            SetupMsg::LocalRemoved(id, r) => match r {
+                Ok(()) => {
+                    st.local.errors.remove(&id);
+                    let forget = id.clone();
+                    self.save_ui_prefs(move |p| p.local_models.forget(&forget));
+                    self.model.toast_info(format!("Deleted {id}"));
+                    self.reload_local_models();
+                }
+                Err(e) => {
+                    st.local.errors.insert(id, e);
+                }
+            },
         }
         cx.notify();
     }

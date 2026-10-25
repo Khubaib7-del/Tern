@@ -36,6 +36,7 @@ mod gauge;
 mod git;
 mod harness;
 mod layout;
+mod localmodels;
 mod mark;
 mod model;
 mod motion;
@@ -53,6 +54,7 @@ mod settings;
 mod study;
 mod swipe;
 mod theme;
+mod thumbs;
 mod timeline;
 mod toast;
 mod view;
@@ -83,6 +85,8 @@ fn main() {
     }
     // The tour's demo material, in its throwaway folder.
     view::tour::seed();
+    // Local model engines compiled in (OCR on ONNX Runtime).
+    tern_agent::local_models::register_builtin_engines();
     let (bridge, rx) = match Bridge::new() {
         Ok(b) => b,
         Err(e) => {

@@ -11,6 +11,7 @@ mod continuity;
 mod decide;
 mod eval;
 mod extend;
+mod models;
 mod research;
 mod runs;
 mod study;
@@ -308,6 +309,10 @@ enum Command {
     /// Ask the decision model a fixed-choice question, set it up (off,
     /// local, or a remote provider with your own key), or benchmark it.
     Decide(decide::DecideArgs),
+    /// Local models (OCR, speech, vision, embeddings): list, download,
+    /// remove, and pick the default per task. Nothing is bundled.
+    #[command(subcommand)]
+    Models(models::ModelsCmd),
     /// The evaluation ladder: list suites, run a rung (offline by
     /// default), read reports, compare runs, run a usability session.
     #[command(subcommand)]
@@ -454,6 +459,8 @@ fn main() -> ExitCode {
 
 fn real_main() -> ExitCode {
     let cli = Cli::parse();
+    // Local model engines compiled in (OCR on ONNX Runtime).
+    tern_agent::local_models::register_builtin_engines();
     match cli.command.unwrap_or(Command::Chat(ChatArgs::default())) {
         Command::Doctor { json } => run_doctor(json),
         Command::Chat(args) => {
@@ -568,6 +575,7 @@ fn real_main() -> ExitCode {
         } => block_on(study::viva(title, n, offline, chat)),
         Command::Cards(cmd) => block_on(cards::run(cmd)),
         Command::Decide(args) => block_on(decide::run(args)),
+        Command::Models(cmd) => block_on(models::run(cmd)),
         Command::Eval(cmd) => block_on(Box::pin(eval::run(cmd))),
         Command::Range(cmd) => sync(continuity::range_cmd(cmd)),
         Command::Sub(cmd) => block_on(continuity::sub_cmd(cmd)),
