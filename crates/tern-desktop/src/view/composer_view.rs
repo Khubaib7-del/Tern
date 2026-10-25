@@ -110,6 +110,40 @@ impl Workspace {
 
     /// Saves a preference change both to disk and to the providers state
     /// (which a model swap saves too), so neither undoes the other.
+    /// Attaches the picture on the clipboard, if there is one. Returns
+    /// whether the clipboard held a picture (attached, or refused with a
+    /// toast saying why).
+    pub(super) fn paste_image(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(item) = cx.read_from_clipboard() else {
+            return false;
+        };
+        let Some(image) = item.entries().iter().find_map(|e| match e {
+            gpui_kit::ClipboardEntry::Image(i) => Some(i.clone()),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let n = self
+            .model
+            .attachments
+            .iter()
+            .filter(|a| a.name.starts_with("pasted-image"))
+            .count()
+            + 1;
+        let ext = match image.format {
+            gpui_kit::ImageFormat::Jpeg => "jpg",
+            gpui_kit::ImageFormat::Gif => "gif",
+            gpui_kit::ImageFormat::Webp => "webp",
+            _ => "png",
+        };
+        let name = format!("pasted-image-{n}.{ext}");
+        match tern_agent::Attachment::image(&name, &image.bytes) {
+            Ok(a) => self.model.attachments.push(a),
+            Err(e) => self.model.toast_error(e, None),
+        }
+        true
+    }
+
     pub(super) fn save_ui_prefs(&mut self, f: impl Fn(&mut tern_agent::Preferences)) {
         let mut prefs = tern_agent::Preferences::load();
         f(&mut prefs);
@@ -155,7 +189,9 @@ impl Workspace {
                 self.insert_trigger('@', window, cx);
             }
             PlusItem::Paste => {
-                if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                if self.paste_image(cx) {
+                    // A picture was on the clipboard.
+                } else if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                     if !text.trim().is_empty() {
                         self.model
                             .attached(Ok(tern_agent::Attachment::paste(&text)));
@@ -675,6 +711,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let key = e.keystroke.key.as_str();
+        // A picture on the clipboard becomes an attachment; text pastes
+        // into the field as usual.
+        if key == "v"
+            && e.keystroke.modifiers.secondary()
+            && !e.keystroke.modifiers.shift
+            && self.paste_image(cx)
+        {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if key == "escape" && self.cancel_recording() {
             cx.stop_propagation();
             cx.notify();

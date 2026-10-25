@@ -319,13 +319,20 @@ async fn a_registered_engine_reads_pictures_with_an_installed_model() {
     let mut m = manifest(None);
     m.models[0].runtime = Runtime::Other;
     let lm = LocalModels::new(dir.path(), m).with_endpoint(&s.uri());
-    assert!(lm.ocr("tiny-ocr", b"png").unwrap_err().contains("not downloaded"));
+    assert!(
+        lm.ocr("tiny-ocr", b"png")
+            .unwrap_err()
+            .contains("not downloaded")
+    );
     lm.download("tiny-ocr", &CancelDownload::new(), &mut |_| {})
         .await
         .unwrap();
     register_engine(std::sync::Arc::new(FakeOcr));
     assert!(runtime_available(Runtime::Other));
-    assert_eq!(lm.ocr("tiny-ocr", b"png").unwrap(), "3 bytes read by tiny-ocr");
+    assert_eq!(
+        lm.ocr("tiny-ocr", b"png").unwrap(),
+        "3 bytes read by tiny-ocr"
+    );
     // The STT model's runtime has no engine.
     assert!(!runtime_available(Runtime::WhisperCpp));
 }
@@ -345,8 +352,16 @@ fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
     let rec = Installed {
         id: "tiny-ocr".into(),
         files: vec![
-            InstalledFile { name: "det.onnx".into(), size: A.len() as u64, sha256: hex(A) },
-            InstalledFile { name: "dict/keys.txt".into(), size: B.len() as u64, sha256: hex(B) },
+            InstalledFile {
+                name: "det.onnx".into(),
+                size: A.len() as u64,
+                sha256: hex(A),
+            },
+            InstalledFile {
+                name: "dict/keys.txt".into(),
+                size: B.len() as u64,
+                sha256: hex(B),
+            },
         ],
         installed_at: "now".into(),
     };
@@ -356,7 +371,10 @@ fn a_local_ocr_model_is_the_fallback_when_no_provider_can_read() {
     // ONNX has no engine in this build: the reason names the model.
     match plan_images_local(&empty, "groq", "llama-3.1-8b-instant", &prefs, Some(&lm)) {
         ImagePlan::Missing(why) => {
-            assert!(why.contains("Tiny OCR") && why.contains("ONNX Runtime"), "{why}")
+            assert!(
+                why.contains("Tiny OCR") && why.contains("ONNX Runtime"),
+                "{why}"
+            )
         }
         other => panic!("{other:?}"),
     }

@@ -54,6 +54,7 @@ mod settings;
 mod study;
 mod swipe;
 mod theme;
+mod thumbs;
 mod timeline;
 mod toast;
 mod view;

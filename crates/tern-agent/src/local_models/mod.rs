@@ -671,9 +671,8 @@ impl LocalModels {
         if self.installed(id).is_none() {
             return Err(format!("{} is not downloaded", entry.name));
         }
-        let engine = engine_for(entry.runtime).ok_or_else(|| {
-            format!("this build cannot run {} models yet", entry.runtime.label())
-        })?;
+        let engine = engine_for(entry.runtime)
+            .ok_or_else(|| format!("this build cannot run {} models yet", entry.runtime.label()))?;
         engine.ocr(&self.dir(id), entry, image)
     }
 

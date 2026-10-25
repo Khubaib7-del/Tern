@@ -163,6 +163,9 @@ pub struct Workspace {
     /// Where each culled row of a long Settings page last sat
     /// (`crate::cull`).
     cull_rows: std::rc::Rc<std::cell::RefCell<crate::cull::Rows>>,
+    /// Decoded thumbnails of pictures waiting in the composer, by
+    /// `crate::thumbs::key` (decoding base64 every frame would be waste).
+    thumbs: std::cell::RefCell<std::collections::HashMap<String, std::sync::Arc<gpui_kit::Image>>>,
     /// The empty state's mark (`crate::mark`), and when it started playing.
     mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
     mark_since: Instant,
@@ -602,6 +605,7 @@ impl Workspace {
             mark_harness: tern_agent::Harness::Research,
             presses: Default::default(),
             cull_rows: Default::default(),
+            thumbs: Default::default(),
             card_swipe: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
@@ -1151,17 +1155,29 @@ impl Workspace {
                 .as_ref()
                 .map(|c| c.model.clone())
                 .unwrap_or_default();
-            match tern_agent::media::plan_images(
+            // Reading the models folder is a few small file reads, once
+            // per message with pictures.
+            let local = tern_agent::local_models::LocalModels::discover()
+                .ok()
+                .map(|(lm, _)| lm);
+            match tern_agent::media::plan_images_local(
                 &self.model.catalog,
                 &provider,
                 &chat_model,
                 &self.model.providers.prefs,
+                local.as_ref(),
             ) {
                 tern_agent::media::ImagePlan::Send => session.attach_images(images),
                 tern_agent::media::ImagePlan::Read { via, job } => {
                     read_first = Some(crate::bridge::ReadFirst {
-                        via,
-                        job,
+                        via: crate::bridge::ReadVia::Remote { via, job },
+                        images,
+                        chat_model,
+                    })
+                }
+                tern_agent::media::ImagePlan::ReadLocal { model, name } => {
+                    read_first = Some(crate::bridge::ReadFirst {
+                        via: crate::bridge::ReadVia::Local { model, name },
                         images,
                         chat_model,
                     })
@@ -3526,6 +3542,22 @@ impl Workspace {
                     AttachSource::Mcp => AssetIcon::Blocks,
                 };
                 let prompt = a.role == Role::Prompt;
+                let lead = match self.thumbnail(a) {
+                    Some(image) => div()
+                        .size(px(32.))
+                        .flex_none()
+                        .rounded_md()
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(p.border)
+                        .bg(p.raised)
+                        .child(gpui_kit::img(image).size_full())
+                        .into_any_element(),
+                    None => div()
+                        .text_color(p.muted)
+                        .child(gpui_kit::component::Icon::new(icon).small())
+                        .into_any_element(),
+                };
                 div()
                     .flex()
                     .items_center()
@@ -3538,11 +3570,7 @@ impl Workspace {
                     .border_1()
                     .border_color(if prompt { p.muted } else { p.border })
                     .bg(p.canvas)
-                    .child(
-                        div()
-                            .text_color(p.muted)
-                            .child(gpui_kit::component::Icon::new(icon).small()),
-                    )
+                    .child(lead)
                     .child(
                         div()
                             .flex()
@@ -3599,6 +3627,31 @@ impl Workspace {
                     )
             }))
             .children(loading)
+    }
+
+    /// A picture attachment's thumbnail, decoded once and kept while it
+    /// waits in the composer.
+    fn thumbnail(&self, a: &tern_agent::Attachment) -> Option<std::sync::Arc<gpui_kit::Image>> {
+        let img = a.images.first()?;
+        let key = crate::thumbs::key(img);
+        if let Some(t) = self.thumbs.borrow().get(&key) {
+            return Some(t.clone());
+        }
+        let (fmt, bytes) = crate::thumbs::decode(img)?;
+        let format = match fmt {
+            crate::thumbs::Format::Png => gpui_kit::ImageFormat::Png,
+            crate::thumbs::Format::Jpeg => gpui_kit::ImageFormat::Jpeg,
+            crate::thumbs::Format::Gif => gpui_kit::ImageFormat::Gif,
+            crate::thumbs::Format::Webp => gpui_kit::ImageFormat::Webp,
+        };
+        let image = std::sync::Arc::new(gpui_kit::Image::from_bytes(format, bytes));
+        let mut cache = self.thumbs.borrow_mut();
+        // Only pictures still waiting stay cached.
+        if cache.len() > 32 {
+            cache.clear();
+        }
+        cache.insert(key, image.clone());
+        Some(image)
     }
 
     /// Voice input stays locked until a transcription model is set up.

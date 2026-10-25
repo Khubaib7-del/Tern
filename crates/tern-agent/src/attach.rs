@@ -374,6 +374,15 @@ pub fn images(attachments: &[Attachment]) -> Vec<tern_providers::ImageInput> {
         .collect()
 }
 
+/// A picture's bytes (for thumbnails), or `None` when its data is not
+/// valid base64.
+pub fn image_bytes(img: &tern_providers::ImageInput) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(&img.data)
+        .ok()
+}
+
 /// A chip shown on a sent message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chip {
