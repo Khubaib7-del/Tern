@@ -4013,110 +4013,109 @@ impl Workspace {
         }
 
         let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        let tip = |t: &'static str| Some(SharedString::from(t));
         if working {
             actions = actions.child(Spinner::new().small().color(p.muted));
         } else if r.needs_key() && !r.key_saved {
             if !editing {
-                actions = actions.child(
-                    Button::new(bid("add"))
-                        .capsule()
-                        .label("Add")
-                        .small()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.edit_key(kind, id, window, cx)
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("add"),
+                    "Add",
+                    PillLook::Solid,
+                    false,
+                    None,
+                    p,
+                    cx.listener(move |this, _, window, cx| this.edit_key(kind, id, window, cx)),
+                ));
             }
         } else {
             let can_choose = st.can_choose(&r);
             if !is_default {
-                actions = actions.child(
-                    Button::new(bid("use"))
-                        .capsule()
-                        .label("Use")
-                        .small()
-                        .disabled(busy_turn || !can_choose)
-                        .tooltip(if can_choose {
-                            "Use this one for new answers in this chat"
-                        } else {
-                            "Test the server address first"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.apply_choice(kind, id);
-                            cx.notify();
-                        })),
-                );
-            }
-            actions = actions.child(
-                Button::new(bid("test"))
-                    .capsule()
-                    .label("Test")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.model.providers.begin(kind, id, "Checking…");
-                        if kind == Kind::Search && id == "searxng" {
-                            let typed = this.searx_input.read(cx).value().to_string();
-                            let url = this.model.providers.set_search_url(&typed);
-                            this.model.providers.begin(kind, id, "Checking…");
-                            this.bridge.save_prefs(this.model.providers.prefs.clone());
-                            this.bridge.test_search_at(id, url);
-                        } else {
-                            this.bridge.test(kind, id);
-                        }
+                actions = actions.child(pill(
+                    bid("use"),
+                    "Use",
+                    PillLook::Solid,
+                    busy_turn || !can_choose,
+                    tip(if can_choose {
+                        "Use this one for new answers in this chat"
+                    } else {
+                        "Test the server address first"
+                    }),
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        this.apply_choice(kind, id);
                         cx.notify();
-                    })),
-            );
+                    }),
+                ));
+            }
+            actions = actions.child(pill(
+                bid("test"),
+                "Test",
+                PillLook::Ghost,
+                false,
+                None,
+                p,
+                cx.listener(move |this, _, _, cx| {
+                    this.model.providers.begin(kind, id, "Checking…");
+                    if kind == Kind::Search && id == "searxng" {
+                        let typed = this.searx_input.read(cx).value().to_string();
+                        let url = this.model.providers.set_search_url(&typed);
+                        this.model.providers.begin(kind, id, "Checking…");
+                        this.bridge.save_prefs(this.model.providers.prefs.clone());
+                        this.bridge.test_search_at(id, url);
+                    } else {
+                        this.bridge.test(kind, id);
+                    }
+                    cx.notify();
+                }),
+            ));
             if kind == Kind::Model {
-                actions = actions.child(
-                    Button::new(bid("address"))
-                        .capsule()
-                        .label("Address")
-                        .ghost()
-                        .small()
-                        .tooltip("The server address, for a local server elsewhere or a proxy")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.edit_base_url(id, window, cx)
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("address"),
+                    "Address",
+                    PillLook::Ghost,
+                    false,
+                    tip("The server address, for a local server elsewhere or a proxy"),
+                    p,
+                    cx.listener(move |this, _, window, cx| this.edit_base_url(id, window, cx)),
+                ));
             }
             if kind == Kind::Model && tern_agent::providers::custom::is_custom(id) {
                 // Asks twice; the armed button is this provider's own.
                 let confirm = self.model.settings.confirm == Some(id);
-                actions = actions.child(
-                    Button::new(bid("delete"))
-                        .capsule()
-                        .label(if confirm {
-                            "Click again to delete"
-                        } else {
-                            "Delete"
-                        })
-                        .ghost()
-                        .small()
-                        .disabled(busy_turn && is_default)
-                        .tooltip("Delete this custom provider and its key")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.model.settings.confirm(id) {
-                                this.model.providers.begin(kind, id, "Deleting…");
-                                this.bridge.custom_remove(id.to_owned());
-                            }
-                            cx.notify();
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("delete"),
+                    if confirm {
+                        "Click again to delete"
+                    } else {
+                        "Delete"
+                    },
+                    PillLook::Ghost,
+                    busy_turn && is_default,
+                    tip("Delete this custom provider and its key"),
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        if this.model.settings.confirm(id) {
+                            this.model.providers.begin(kind, id, "Deleting…");
+                            this.bridge.custom_remove(id.to_owned());
+                        }
+                        cx.notify();
+                    }),
+                ));
             } else if r.key_saved {
-                actions = actions.child(
-                    Button::new(bid("remove"))
-                        .capsule()
-                        .label("Remove")
-                        .ghost()
-                        .small()
-                        .disabled(busy_turn && is_default)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.providers.begin(kind, id, "Removing…");
-                            this.bridge.remove(kind, id);
-                            cx.notify();
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("remove"),
+                    "Remove",
+                    PillLook::Ghost,
+                    busy_turn && is_default,
+                    None,
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        this.model.providers.begin(kind, id, "Removing…");
+                        this.bridge.remove(kind, id);
+                        cx.notify();
+                    }),
+                ));
             }
         }
 
@@ -5209,6 +5208,64 @@ impl Render for Workspace {
         crate::perf::workspace(&self.perf_tag(), build_from.elapsed());
         root
     }
+}
+
+/// How a [`pill`] looks: filled like the kit's default button, or bare
+/// like its ghost one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PillLook {
+    Solid,
+    Ghost,
+}
+
+/// A small capsule button built from one plain div: the label, the
+/// capsule's hover and press tints, an optional tooltip (built only on
+/// hover) and `on_click` unless `disabled`. The settings rows use it in
+/// place of the kit's `Button`, which sets up a focus handle, keyed state
+/// and its own style layers per button on every render; a provider row
+/// has up to four of them and Settings › Providers redraws on every
+/// scroll and theme-wipe frame (`crate::perf`).
+pub(crate) fn pill(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    look: PillLook,
+    disabled: bool,
+    tip: Option<SharedString>,
+    p: Palette,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    let (bg, border) = match look {
+        PillLook::Solid => (p.raised, p.border),
+        PillLook::Ghost => (gpui_kit::transparent_black(), gpui_kit::transparent_black()),
+    };
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .h_6()
+        .px_2()
+        .rounded_full()
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .text_sm()
+        .line_height(gpui_kit::relative(1.25))
+        .text_color(p.text)
+        .child(label.into())
+        .when(disabled, |d| d.opacity(0.5))
+        .when(!disabled, |d| {
+            d.hover(|s| s.bg(p.hover))
+                .active(|s| s.bg(p.border))
+                .on_click(on_click)
+        })
+        .when_some(tip, |d, tip| {
+            d.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+        })
+        .into_any_element()
 }
 
 /// The logo square at the start of a provider or search row: the

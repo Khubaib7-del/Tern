@@ -3,7 +3,11 @@
 //! The window's root (`view::Shell`) marks the start of every frame it
 //! draws and a canvas at the end of its tree marks the end of paint, so a
 //! frame's time is its whole CPU side: render, layout, prepaint and paint
-//! (not the GPU). The workspace says when it rendered (a frame drawn with
+//! (not the GPU). A canvas at the start of the tree splits it into
+//! phases: its prepaint runs once every element is rendered and laid out
+//! (`layout`: views' render, request_layout and the taffy pass), its
+//! paint once everything is prepainted (`prepaint`, with the deferred
+//! popovers), and the last canvas's paint ends `paint`. The workspace says when it rendered (a frame drawn with
 //! the workspace cached is only Scout) and how long building its elements
 //! took, under a tag for the screen (`settings/providers`, `chat`).
 //!
@@ -36,6 +40,10 @@ pub struct Summary {
     pub frame_p95: f32,
     pub frame_max: f32,
     pub build_mean: f32,
+    /// Mean of each phase, ms: render + layout, prepaint, paint.
+    pub layout_mean: f32,
+    pub prepaint_mean: f32,
+    pub paint_mean: f32,
 }
 
 impl Summary {
@@ -49,7 +57,7 @@ impl Summary {
 
     pub fn line(&self) -> String {
         format!(
-            "perf {}: {} frames in {:.1} s, {} workspace renders, frame mean {:.1} ms p95 {:.1} ms max {:.1} ms, build mean {:.1} ms",
+            "perf {}: {} frames in {:.1} s, {} workspace renders, frame mean {:.1} ms p95 {:.1} ms max {:.1} ms, build mean {:.1} ms, layout {:.1} prepaint {:.1} paint {:.1} ms",
             self.tag,
             self.frames,
             self.secs,
@@ -57,7 +65,10 @@ impl Summary {
             self.frame_mean,
             self.frame_p95,
             self.frame_max,
-            self.build_mean
+            self.build_mean,
+            self.layout_mean,
+            self.prepaint_mean,
+            self.paint_mean
         )
     }
 }
@@ -68,8 +79,12 @@ pub struct Meter {
     tag: String,
     since: Option<Instant>,
     frame_start: Option<Instant>,
+    prepaint_at: Option<Instant>,
+    paint_at: Option<Instant>,
     frames: Vec<f32>,
     builds: Vec<f32>,
+    /// Per frame: render + layout, prepaint, paint (ms).
+    phases: Vec<[f32; 3]>,
 }
 
 fn mean(v: &[f32]) -> f32 {
@@ -95,6 +110,23 @@ impl Meter {
     pub fn frame_start(&mut self, now: Instant) {
         self.since.get_or_insert(now);
         self.frame_start = Some(now);
+        self.prepaint_at = None;
+        self.paint_at = None;
+    }
+
+    /// The frame's first element started prepainting at `now` (layout
+    /// done).
+    pub fn prepaint_start(&mut self, now: Instant) {
+        if self.frame_start.is_some() {
+            self.prepaint_at.get_or_insert(now);
+        }
+    }
+
+    /// The frame's first element started painting at `now`.
+    pub fn paint_start(&mut self, now: Instant) {
+        if self.frame_start.is_some() {
+            self.paint_at.get_or_insert(now);
+        }
     }
 
     /// The workspace rendered this frame, showing `tag`, in `build`.
@@ -117,8 +149,14 @@ impl Meter {
     /// summary when the window is full.
     pub fn frame_end(&mut self, now: Instant) -> Option<Summary> {
         let start = self.frame_start.take()?;
-        self.frames
-            .push(now.saturating_duration_since(start).as_secs_f32() * 1000.);
+        let ms = |a: Instant, b: Instant| b.saturating_duration_since(a).as_secs_f32() * 1000.;
+        self.frames.push(ms(start, now));
+        // A phase mark missing (a frame drawn without the first canvas)
+        // folds that phase into the one before it.
+        let pre = self.prepaint_at.take().unwrap_or(now).max(start);
+        let paint = self.paint_at.take().unwrap_or(now).max(pre);
+        self.phases
+            .push([ms(start, pre), ms(pre, paint), ms(paint, now)]);
         let since = *self.since.get_or_insert(start);
         (now.saturating_duration_since(since) >= WINDOW).then(|| self.flush(now))?
     }
@@ -128,9 +166,11 @@ impl Meter {
         let since = self.since.take()?;
         let frames = std::mem::take(&mut self.frames);
         let builds = std::mem::take(&mut self.builds);
+        let phases = std::mem::take(&mut self.phases);
         if frames.is_empty() {
             return None;
         }
+        let phase = |i: usize| mean(&phases.iter().map(|p| p[i]).collect::<Vec<_>>());
         Some(Summary {
             tag: if self.tag.is_empty() {
                 "start".to_owned()
@@ -144,6 +184,9 @@ impl Meter {
             frame_p95: p95(&frames),
             frame_max: frames.iter().copied().fold(0., f32::max),
             build_mean: mean(&builds),
+            layout_mean: phase(0),
+            prepaint_mean: phase(1),
+            paint_mean: phase(2),
         })
     }
 }
@@ -175,6 +218,16 @@ fn report(s: Option<Summary>) {
 /// A frame starts (the window's root renders).
 pub fn start() {
     METER.with(|m| m.borrow_mut().frame_start(Instant::now()));
+}
+
+/// The first element of the frame prepaints (render and layout done).
+pub fn prepaint_start() {
+    METER.with(|m| m.borrow_mut().prepaint_start(Instant::now()));
+}
+
+/// The first element of the frame paints (prepaint done).
+pub fn paint_start() {
+    METER.with(|m| m.borrow_mut().paint_start(Instant::now()));
 }
 
 /// The workspace rendered, showing `tag`, in `build`.
@@ -229,6 +282,33 @@ mod tests {
     }
 
     #[test]
+    fn each_frame_splits_into_layout_prepaint_and_paint() {
+        let t0 = Instant::now();
+        let mut m = Meter::default();
+        // Marks before a frame starts are ignored.
+        m.prepaint_start(t0);
+        m.frame_start(t0);
+        m.workspace("settings/providers", ms(2), t0);
+        m.prepaint_start(t0 + ms(6));
+        m.prepaint_start(t0 + ms(7)); // only the first counts
+        m.paint_start(t0 + ms(9));
+        assert!(m.frame_end(t0 + ms(13)).is_none());
+        // A frame with no phase marks counts as all layout.
+        m.frame_start(t0 + ms(20));
+        assert!(m.frame_end(t0 + ms(24)).is_none());
+        let s = m.flush(t0 + ms(30)).expect("two frames");
+        assert_eq!(s.frames, 2);
+        assert!((s.layout_mean - 5.).abs() < 0.01, "{}", s.layout_mean);
+        assert!((s.prepaint_mean - 1.5).abs() < 0.01, "{}", s.prepaint_mean);
+        assert!((s.paint_mean - 2.).abs() < 0.01, "{}", s.paint_mean);
+        assert!(
+            s.line().ends_with("layout 5.0 prepaint 1.5 paint 2.0 ms"),
+            "{}",
+            s.line()
+        );
+    }
+
+    #[test]
     fn a_new_screen_ends_the_window_and_an_idle_one_is_quiet() {
         let t0 = Instant::now();
         let mut m = Meter::default();
@@ -257,6 +337,9 @@ mod tests {
             frame_p95: 5.,
             frame_max: 6.,
             build_mean: 1.,
+            layout_mean: 1.,
+            prepaint_mean: 1.,
+            paint_mean: 2.,
         };
         assert!(s.notable());
         let calm = Summary {

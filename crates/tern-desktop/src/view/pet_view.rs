@@ -55,6 +55,16 @@ impl Render for Shell {
         div()
             .relative()
             .size_full()
+            // First in the tree: its prepaint marks the end of render and
+            // layout, its paint the end of prepaint (`crate::perf`).
+            .child(
+                gpui_kit::canvas(
+                    |_, _, _| crate::perf::prepaint_start(),
+                    |_, _, _, _| crate::perf::paint_start(),
+                )
+                .absolute()
+                .size_0(),
+            )
             // Under the workspace, so whatever in it occludes still cuts
             // the caption out (`crate::caption`).
             .children(caption_layer(window))
