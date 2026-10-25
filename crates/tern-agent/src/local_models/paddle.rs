@@ -112,6 +112,49 @@ pub fn det_thresholds(yml: &str) -> (Option<f32>, Option<f32>, Option<f32>, Opti
     (t, b, u, m)
 }
 
+/// The Arabic-script recogniser reads a line left to right, as it looks;
+/// this puts it in reading order, as PaddleOCR's `pred_reverse` does:
+/// the line's pieces are reversed, but a run of Latin letters, digits and
+/// `:*./%+-` (with the spaces inside it) keeps its own order.
+pub fn rtl_reading_order(visual: &str) -> String {
+    if !visual.chars().any(is_arabic_script) {
+        return visual.to_owned();
+    }
+    let keep = |c: char| c.is_ascii_alphanumeric() || " :*./%+-".contains(c);
+    // A run keeps its order, but spaces at its ends belong between the
+    // pieces around it.
+    let flush = |run: &mut String, parts: &mut Vec<String>| {
+        let core = run.trim_matches(' ');
+        if core.is_empty() {
+            parts.extend(run.chars().map(String::from));
+        } else {
+            let lead = run.len() - run.trim_start_matches(' ').len();
+            let trail = run.len() - run.trim_end_matches(' ').len();
+            parts.extend((0..lead).map(|_| " ".to_owned()));
+            parts.push(core.to_owned());
+            parts.extend((0..trail).map(|_| " ".to_owned()));
+        }
+        run.clear();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut run = String::new();
+    for c in visual.chars() {
+        if keep(c) {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut parts);
+            parts.push(c.to_string());
+        }
+    }
+    flush(&mut run, &mut parts);
+    parts.reverse();
+    parts.concat()
+}
+
+fn is_arabic_script(c: char) -> bool {
+    matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFF)
+}
+
 /// Merges two readings of the same detected lines (same detector, same
 /// picture, so the same regions in the same order): each line keeps the
 /// reading the recognisers were surer of.
@@ -156,6 +199,14 @@ mod tests {
             det_thresholds(y),
             (Some(0.2), Some(0.45), Some(1.4), Some(3000))
         );
+    }
+
+    #[test]
+    fn arabic_script_lines_are_put_in_reading_order() {
+        assert_eq!(rtl_reading_order("ناتسکاپ مالس"), "سلام پاکستان");
+        assert_eq!(rtl_reading_order("2026 مالس"), "سلام 2026");
+        assert_eq!(rtl_reading_order("Hello 42"), "Hello 42");
+        assert_eq!(rtl_reading_order("ok go مالس"), "سلام ok go");
     }
 
     #[test]

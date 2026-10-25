@@ -128,7 +128,13 @@ impl LocalEngine for OnnxOcr {
         let p = self.pipelines(dir)?;
         let main = lines(&p.main, img.clone())?;
         let picked = match &p.arabic {
-            Some(ar) => paddle::pick_lines(&main, &lines(ar, img)?),
+            Some(ar) => {
+                let urdu: Vec<(String, f32)> = lines(ar, img)?
+                    .into_iter()
+                    .map(|(t, c)| (paddle::rtl_reading_order(&t), c))
+                    .collect();
+                paddle::pick_lines(&main, &urdu)
+            }
             None => main.into_iter().map(|(t, _)| t).collect(),
         };
         Ok(picked
