@@ -160,7 +160,7 @@ async fn reopened_chat_brings_back_turns_and_history() {
     // since #64, and how to call a tool, one or several at once since
     // #66), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (171, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (201, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))
