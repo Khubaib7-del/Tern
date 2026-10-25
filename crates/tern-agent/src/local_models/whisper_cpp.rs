@@ -44,10 +44,11 @@ static LAST: Mutex<String> = Mutex::new(String::new());
 
 /// Threads for whisper.cpp: `TERN_WHISPER_THREADS` when set, else one
 /// per logical core, at most twice the physical cores and at most six.
-/// Measured on CI (#66): a 4-vCPU Linux runner took 9.7 s with 2 threads
-/// and 6.7 s with 4; 8 threads took 81 s, and the user's 4-core, 8-thread
-/// laptop needed 37.3 s for an 11.7 s clip with 8, so past about six
-/// threads synchronising costs far more than it gains.
+/// Measured on CI (#66, a 12 s clip, whisper small, 4-vCPU runners):
+/// Linux 8.3 s with 2 threads, 7.8 s with 4, 61 s with 6 and 93 s with 8;
+/// Windows 11.7 s, 9.6 s, 295 s and 575 s. The user's 4-core, 8-thread
+/// laptop needed 37.3 s for an 11.7 s clip with 8, so ggml's thread
+/// barriers cost far more than they gain once threads fill every core.
 fn threads() -> i32 {
     if let Some(n) = std::env::var("TERN_WHISPER_THREADS")
         .ok()
@@ -65,7 +66,8 @@ fn pick_threads(physical: usize, logical: usize) -> i32 {
 }
 
 /// Flash attention: off unless `TERN_WHISPER_FLASH=1`. On the CI runners
-/// whisper small was slower with it (4 threads: 8.4 s on, 6.7 s off).
+/// whisper small was slower with it (4 threads: Linux 10.1 s on, 7.8 s
+/// off; Windows 12.1 s on, 9.6 s off).
 fn flash_attn() -> bool {
     std::env::var("TERN_WHISPER_FLASH").as_deref() == Ok("1")
 }
