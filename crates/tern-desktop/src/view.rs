@@ -839,6 +839,7 @@ impl Workspace {
                 crate::bridge::ExtMsg::Prompt(r) => self.prompt_ready(*r, window, cx),
                 other => self.on_ext(other, cx),
             },
+            Msg::Info(text) => self.model.toast_info(text),
             Msg::Notice(text) => {
                 self.model.notice_line(text);
                 // A chat that would not reopen leaves no session; open a
@@ -1148,48 +1149,83 @@ impl Workspace {
         session.set_turn_mode(mode.turn_mode());
         session.set_effort(self.model.composer.effort);
         // A Study mode asks the same model to answer in its style.
-        let text = match mode.study_prefix() {
+        let mut text = match mode.study_prefix() {
             Some(prefix) => format!("{prefix}\n\n{text}"),
             None => text,
         };
         let images = std::mem::take(&mut self.model.outgoing_images);
-        let mut read_first = None;
+        let provider = self.provider_id();
+        let chat_model = self
+            .model
+            .connection
+            .as_ref()
+            .map(|c| c.model.clone())
+            .unwrap_or_default();
+        let sees = self
+            .model
+            .catalog
+            .info(&provider, &chat_model)
+            .sees_images()
+            && !tern_agent::media::is_not_vision(&provider, &chat_model);
+        if !sees {
+            // A provider refuses the whole request when any message
+            // carries a picture the model cannot see.
+            session.drop_pictures();
+        }
+        let mut pictures = None;
         if !images.is_empty() {
-            let provider = self.provider_id();
-            let chat_model = self
-                .model
-                .connection
-                .as_ref()
-                .map(|c| c.model.clone())
-                .unwrap_or_default();
             // Reading the models folder is a few small file reads, once
             // per message with pictures.
             let local = tern_agent::local_models::LocalModels::discover()
                 .ok()
                 .map(|(lm, _)| lm);
-            match tern_agent::media::plan_images_local(
+            match tern_agent::media::route_images(
                 &self.model.catalog,
                 &provider,
                 &chat_model,
                 &self.model.providers.prefs,
                 local.as_ref(),
             ) {
-                tern_agent::media::ImagePlan::Send => session.attach_images(images),
-                tern_agent::media::ImagePlan::Read { via, job } => {
-                    read_first = Some(crate::bridge::ReadFirst {
-                        via: crate::bridge::ReadVia::Remote { via, job },
+                tern_agent::media::ImageRoute::Send { fallback } => {
+                    // Normalised for the provider (PNG/JPEG, 2048 px,
+                    // 5 MB); one it cannot take goes as a note.
+                    let mut ok = Vec::new();
+                    let mut notes = Vec::new();
+                    for img in &images {
+                        match tern_agent::pictures::prepare(img) {
+                            Ok(p) => ok.push(p),
+                            Err(e) => notes.push(format!("[Tern couldn't read {}: {e}]", img.name)),
+                        }
+                    }
+                    if !notes.is_empty() {
+                        self.model.toast_info(notes.join(" "));
+                        text = format!("{text}\n\n{}", notes.join("\n"));
+                    }
+                    session.attach_images(ok.clone());
+                    pictures = Some(crate::bridge::Pictures {
+                        images: ok,
+                        readers: fallback,
+                        sent: true,
+                        chat_model,
+                    });
+                }
+                tern_agent::media::ImageRoute::Read(readers) => {
+                    pictures = Some(crate::bridge::Pictures {
                         images,
+                        readers,
+                        sent: false,
                         chat_model,
                     })
                 }
-                tern_agent::media::ImagePlan::ReadLocal { model, name } => {
-                    read_first = Some(crate::bridge::ReadFirst {
-                        via: crate::bridge::ReadVia::Local { model, name },
-                        images,
-                        chat_model,
-                    })
+                tern_agent::media::ImageRoute::Missing(why) => {
+                    // The message still goes, with a note for the model.
+                    let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
+                    text = format!(
+                        "{text}\n\n[Tern couldn't read {}: nothing on this computer or at a configured provider can read pictures]",
+                        names.join(", ")
+                    );
+                    self.model.toast_info(why);
                 }
-                tern_agent::media::ImagePlan::Missing(why) => self.model.notice_line(why),
             }
         }
         self.model.steering = Some(session.steering());
@@ -1200,7 +1236,7 @@ impl Workspace {
             self.bridge.deep(session, text, self.deep_control.clone());
         } else {
             self.bridge
-                .send(session, text, self.cancel.clone(), read_first);
+                .send(session, text, self.cancel.clone(), pictures);
         }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));

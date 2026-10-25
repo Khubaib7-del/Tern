@@ -529,7 +529,7 @@ impl ResumeOffer {
             budget,
             about_search: o.about_search(),
             question: o.question,
-            headline: o.headline,
+            headline: tern_agent::media::plain_error(&o.headline),
             progress: o.status,
             saved_at: tern_agent::checkpoint::local_label(
                 &o.saved_at,
@@ -642,6 +642,7 @@ impl Model {
     /// A note from Tern, as a toast: errors stay until dismissed, the
     /// rest leave after a few seconds. The chat itself stays clean.
     pub fn notice_line(&mut self, text: String) {
+        let text = tern_agent::media::plain_error(&text);
         if crate::toast::is_error_text(&text) {
             self.toast_error(text, None);
         } else {
@@ -1704,7 +1705,10 @@ impl Model {
                 self.entries.push(Entry::Notice(r.clone()));
             } else {
                 // A failure is a toast that stays, with Retry.
-                self.toast_error(r.clone(), Some(crate::toast::Retry::Resend));
+                self.toast_error(
+                    tern_agent::media::plain_error(r),
+                    Some(crate::toast::Retry::Resend),
+                );
             }
         }
         if self.continue_offer {

@@ -1045,6 +1045,32 @@ impl ChatSession {
         self.next_images = images;
     }
 
+    /// Whether pictures wait to go with the next message.
+    pub fn has_attached_images(&self) -> bool {
+        !self.next_images.is_empty()
+    }
+
+    /// Drops the pictures from every earlier message (and any waiting to
+    /// go), for a chat model that cannot see: a provider refuses the whole
+    /// request when any message carries one. Each dropped picture leaves a
+    /// short note in its message. Returns how many were dropped.
+    pub fn drop_pictures(&mut self) -> usize {
+        let mut n = self.next_images.len();
+        self.next_images.clear();
+        for m in &mut self.history {
+            if m.images.is_empty() {
+                continue;
+            }
+            n += m.images.len();
+            let names: Vec<String> = m.images.drain(..).map(|i| i.name).collect();
+            m.content.push_str(&format!(
+                "\n\n[Picture not shown to this model, which cannot see pictures: {}]",
+                names.join(", ")
+            ));
+        }
+        n
+    }
+
     pub async fn send_streaming(
         &mut self,
         text: &str,
