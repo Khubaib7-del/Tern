@@ -352,6 +352,51 @@ pub struct RunHooks<'a> {
     /// Receives the model's reasoning as it streams (call number, text),
     /// for a front end's Thinking section.
     pub on_reasoning: Option<OnText<'a>>,
+    /// Offer the tools natively too (the provider's function calling), on
+    /// top of the text protocol in the system prompt. A provider that
+    /// refuses them gets the turn again without, and the model is
+    /// remembered ([`mark_no_native_tools`]).
+    pub native_tools: bool,
+}
+
+/// Models that refused native tools this session, as `provider/model`.
+static NO_NATIVE_TOOLS: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether `provider`'s `model` may be offered native tools: yes unless
+/// it refused them earlier this session.
+pub fn native_tools_ok(provider: &str, model: &str) -> bool {
+    !NO_NATIVE_TOOLS
+        .lock()
+        .is_ok_and(|s| s.contains(&format!("{provider}/{model}")))
+}
+
+/// Remembers that `provider`'s `model` refuses native tools.
+pub fn mark_no_native_tools(provider: &str, model: &str) {
+    if let Ok(mut s) = NO_NATIVE_TOOLS.lock() {
+        s.insert(format!("{provider}/{model}"));
+    }
+}
+
+/// Whether a provider error says the model cannot take tools (Ollama
+/// "does not support tools", Mistral "Function calling is not enabled",
+/// OpenRouter "No endpoints found that support tool use").
+pub fn rejects_tools(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    (e.contains("tool") || e.contains("function call"))
+        && [
+            "not support",
+            "unsupported",
+            "not enabled",
+            "not available",
+            "no endpoints",
+            "not allowed",
+            "extra inputs",
+            "unrecognized",
+            "unknown",
+        ]
+        .iter()
+        .any(|w| e.contains(w))
 }
 
 impl std::fmt::Debug for RunHooks<'_> {
@@ -405,6 +450,10 @@ struct Run<'r, 'a> {
     /// Applied steers, for the checkpoint.
     steers: Vec<String>,
     guidance: Vec<String>,
+    /// Native tools still offered this turn.
+    native: bool,
+    /// The tools called, in order, for the diagnostic log.
+    called: Vec<String>,
 }
 
 /// A step failed in a way that ends the turn.
@@ -436,10 +485,31 @@ impl<'a> TurnLoop<'a> {
             ck: None,
             steers: Vec::new(),
             guidance: Vec::new(),
+            native: self.hooks.native_tools,
+            called: Vec::new(),
             cfg: self,
         };
         let result = run.drive(history, message).await;
-        run.finish(result)
+        let offered: Vec<&str> = run.cfg.tools.names().collect();
+        let line = format!(
+            "turn: provider={} model={} tools_offered=[{}] native_tools={} tool_calls=[{}] model_calls={}",
+            run.cfg.model.provider_id(),
+            run.cfg.model_name,
+            offered.join(","),
+            run.native && !offered.is_empty(),
+            run.called.join(","),
+            run.model_calls,
+        );
+        let out = run.finish(result);
+        crate::diag::note(&format!(
+            "{line} state={:?}{}",
+            out.state,
+            out.reason
+                .as_deref()
+                .map(|r| format!(" reason={}", r.chars().take(200).collect::<String>()))
+                .unwrap_or_default()
+        ));
+        out
     }
 }
 
@@ -601,10 +671,13 @@ impl Run<'_, '_> {
                 )));
             }
             self.go(TurnState::ModelStreaming)?;
-            let req = ChatRequest::new(self.cfg.model_name, messages.clone())
+            let mut req = ChatRequest::new(self.cfg.model_name, messages.clone())
                 .with_system(system.clone())
                 .with_max_tokens(self.cfg.max_output_tokens)
                 .with_effort(self.cfg.hooks.effort);
+            if self.native {
+                req = req.with_tools(self.cfg.tools.specs());
+            }
             self.model_calls += 1;
             let model = self.cfg.model;
             let thought = Mutex::new((
@@ -644,6 +717,27 @@ impl Run<'_, '_> {
                     model.complete_deltas(&req, &forward).await
                 }
                 None => model.complete(&req).await,
+            };
+            let reply = match reply {
+                // The model takes no native tools: ask again with the text
+                // protocol only, and remember it for later turns.
+                Err(e) if !req.tools.is_empty() && rejects_tools(&e.to_string()) => {
+                    self.native = false;
+                    self.model_calls -= 1;
+                    mark_no_native_tools(self.cfg.model.provider_id(), self.cfg.model_name);
+                    self.record(self.event(
+                        "model.no_native_tools",
+                        EffectClass::Analysis,
+                        format!(
+                            "{} does not take tools natively; Tern asks for tools in plain text",
+                            self.cfg.model_name
+                        ),
+                        json!({"error": e.to_string()}),
+                    ))?;
+                    self.go(TurnState::Verifying)?;
+                    continue;
+                }
+                r => r,
             }
             .map_err(|e| Stop {
                 state: TurnState::Failed,
@@ -749,6 +843,7 @@ impl Run<'_, '_> {
                             ),
                         });
                     }
+                    self.called.push(name.clone());
                     let result = self.tool_step(&name, &args).await?;
                     messages.push(ChatMessage::assistant(reply.text));
                     messages.push(ChatMessage::user(result));

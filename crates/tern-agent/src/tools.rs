@@ -222,6 +222,21 @@ impl ToolRegistry {
             .map(|(n, _)| *n)
     }
 
+    /// The offered tools for native function calling (the provider's own
+    /// tool format), in the same order as [`ToolRegistry::describe`].
+    pub fn specs(&self) -> Vec<tern_providers::ToolSpec> {
+        let (mcp, own): (Vec<&str>, Vec<&str>) = self.names().partition(|n| n.starts_with("mcp__"));
+        own.into_iter()
+            .chain(mcp)
+            .filter_map(|n| self.get(n))
+            .map(|t| tern_providers::ToolSpec {
+                name: t.name().to_owned(),
+                description: t.summary().to_owned(),
+                parameters: t.input_schema(),
+            })
+            .collect()
+    }
+
     /// The tool list as the model sees it in the system prompt: Tern's
     /// own tools, then MCP tools.
     pub fn describe(&self) -> String {
