@@ -4,7 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #61)
+
+Window buttons on Windows, and Settings › Providers scrolling and switching theme as smoothly as the other Settings pages.
+
+- **Minimize, maximize and close work again on Windows.** Since #58 the workspace is drawn as a cached view so Scout's frames redraw only Scout. GPUI carries a cached view's hitboxes, listeners and scene into the next frame but not its window-control areas, which Windows' hit test (`WM_NCHITTEST`) reads for the caption and the three buttons, so on every frame only Scout redrew the buttons did nothing. The window's root (`view::Shell`) now marks the caption and buttons itself on every frame, in a layer under the workspace so whatever occludes in the workspace still cuts them out (`caption.rs`, unit tested). `dependency_rules` fails if a view is drawn cached without that layer under it.
+- **Settings scrolls like the chat.** #60's wheel glide on Settings is superseded: the page and the lists in it scroll at once by the whole wheel turn, as GPUI's own scroll areas do, and a gesture stays with the area it started in until the wheel rests for 260 ms (`scrollbar::WheelLatch`), so a list sliding under a still pointer never takes the rest of the spin.
+- **The theme wipe no longer redraws the page.** The new theme is drawn once, whole, and the old theme's canvas parts from the centre over it; the two covers are now drawn by the window's root over the cached workspace, so the wipe's frames redraw only them. A wipe frame on Settings › Providers went from about 47–51 ms to 1–4 ms on the Windows tour runner (16–18 ms to about 1 ms on Linux).
+- **Settings › Providers draws only the rows near the window.** GPUI renders and lays out a scroll area's whole content on every wheel step, and a cached view cannot help (its cache is keyed by its bounds on screen, which move as the page scrolls). Provider and search rows far outside the viewport (more than 320 px) are now drawn as empty boxes of their last height (`cull.rs`, unit tested), so the page keeps its length and the scrollbar does not jump. A wheel-spin frame on Providers went from about 46–53 ms (Tools 17–24 ms) to 8–13 ms (Tools 17 ms) on the Windows tour runner, and from 23 ms (Tools 14 ms) to 8 ms on Linux: Providers now costs less than Tools.
+- **Lighter row buttons.** The provider and search rows' Add, Use, Test, Address, Remove and Delete are plain capsule divs (`view::pill`) instead of the kit's `Button`, which sets up a focus handle, keyed state and style layers per button on every render. Same labels, tooltips (built on hover) and disabled states, with the capsule hover and press tints.
+- **Selection bar** (highlight popover): sized to its actions and kept inside the window; a note wraps under the actions instead of widening it.
+- **Frame meter** (`perf.rs`): with `TERN_PERF=1` (and always in the UI tour) every two seconds of frames are summed up per screen: frames, workspace renders, frame mean / p95 / max, the workspace's build time, and each frame split into layout (render, request_layout and the taffy pass), prepaint and paint. Slow windows go to `tern.log`. The UI tour's `only=perf` input runs just the frame-cost scenes (Settings › Providers vs Tools: idle, two theme wipes, a wheel spin, then Providers with logos, the model list and the row buttons left out in turn).
+
 ### Fixed (PR #60)
+
+_The Settings wheel glide below is superseded by #61: Settings scrolls at once by the whole wheel turn, like the chat._
 
 Three bugs found testing the #59 build on Windows.
 

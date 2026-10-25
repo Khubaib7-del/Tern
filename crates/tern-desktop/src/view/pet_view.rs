@@ -17,7 +17,8 @@ use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, Point, SharedString, StyleRefinement, Task, WeakEntity, Window, div, img, px,
+    ObjectFit, Point, SharedString, StyleRefinement, Task, WeakEntity, Window, WindowControlArea,
+    div, img, px,
 };
 
 use super::Workspace;
@@ -43,16 +44,109 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every frame drawn starts here (the root re-renders whenever any
+        // view in the window changed); the canvas at the end marks the end
+        // of paint (`crate::perf`).
+        crate::perf::start();
         let mut full = StyleRefinement::default();
         full.size.width = Some(gpui_kit::relative(1.).into());
         full.size.height = Some(gpui_kit::relative(1.).into());
+        let covers = self.theme_wipe(window, cx);
         div()
             .relative()
             .size_full()
+            // First in the tree: its prepaint marks the end of render and
+            // layout, its paint the end of prepaint (`crate::perf`).
+            .child(
+                gpui_kit::canvas(
+                    |_, _, _| crate::perf::prepaint_start(),
+                    |_, _, _, _| crate::perf::paint_start(),
+                )
+                .absolute()
+                .size_0(),
+            )
+            // Under the workspace, so whatever in it occludes still cuts
+            // the caption out (`crate::caption`).
+            .children(caption_layer(window))
             .child(self.workspace.clone().cached(full))
+            .children(covers)
             .child(self.pet.clone())
+            .child(
+                gpui_kit::canvas(|_, _, _| (), |_, _, _, _| crate::perf::end())
+                    .absolute()
+                    .size_0(),
+            )
     }
+}
+
+impl Shell {
+    /// The light/dark switch (v2 s17): the workspace draws once in the new
+    /// theme, whole, and the old theme's canvas parts from the centre out
+    /// over it. The covers are drawn here, over the cached workspace, so
+    /// the wipe's frames redraw only them, never the workspace (Settings
+    /// › Providers cost a full workspace frame per wipe frame before).
+    fn theme_wipe(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let now = Instant::now();
+        let w = self.workspace.read(cx).wipe.filter(|w| !w.done(now))?;
+        super::frame::next_frame(window, cx);
+        let cover = f32::from(window.viewport_size().width) * w.inset(now);
+        let old = w.old_canvas();
+        let side = || div().absolute().top_0().bottom_0().w(px(cover)).bg(old);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(side().left_0())
+                .child(side().right_0())
+                .into_any_element(),
+        )
+    }
+}
+
+/// The title bar's caption and window buttons, marked for the OS hit test
+/// on every frame. GPUI does not carry a cached view's window-control
+/// areas into the next frame, so with the workspace cached they were gone
+/// whenever only Scout redrew, and minimize, maximize and close did
+/// nothing on Windows (`crate::caption`). Only Windows asks GPUI for these
+/// areas; elsewhere this draws nothing.
+pub(crate) fn caption_layer(window: &Window) -> Option<AnyElement> {
+    if !cfg!(target_os = "windows") || window.is_fullscreen() {
+        return None;
+    }
+    let supported = window.window_controls();
+    let width = f32::from(window.viewport_size().width);
+    let buttons = crate::caption::Buttons {
+        minimize: supported.minimize,
+        maximize: supported.maximize,
+    };
+    let parts = crate::caption::areas(width, buttons)
+        .into_iter()
+        .map(|(area, r)| {
+            let (id, area) = match area {
+                crate::caption::Area::Drag => ("caption-drag", WindowControlArea::Drag),
+                crate::caption::Area::Min => ("caption-min", WindowControlArea::Min),
+                crate::caption::Area::Max => ("caption-max", WindowControlArea::Max),
+                crate::caption::Area::Close => ("caption-close", WindowControlArea::Close),
+            };
+            div()
+                .id(id)
+                .absolute()
+                .left(px(r.x))
+                .top(px(r.y))
+                .w(px(r.w))
+                .h(px(r.h))
+                .window_control_area(area)
+        });
+    Some(
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .children(parts)
+            .into_any_element(),
+    )
 }
 
 /// What the workspace tells Scout each time it draws.

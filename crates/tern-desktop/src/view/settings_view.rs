@@ -588,9 +588,10 @@ impl Workspace {
                     .child(div().text_sm().text_color(p.muted).child(s.blurb())),
             )
             .children(extra);
-        // The page scrolls in its own div with its own handle, so the
-        // wheel glides (`super::smooth_page`) instead of jumping a notch
-        // at a time, and the lists inside hand on to it at their ends.
+        // The page scrolls in its own plain GPUI scroll div with its own
+        // handle, exactly like the chat; the lists inside take the wheel
+        // over them and keep a gesture to themselves (`super::wheel_first`,
+        // `super::page_latch`).
         let at = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);
         let handle = self.settings_inputs.page_scroll[at].clone();
         div()
@@ -619,12 +620,19 @@ impl Workspace {
                             .children(body),
                     ),
             )
-            .child(super::smooth_page(s.id(), &handle, self.view_id))
+            .child(super::page_latch(&handle))
             .child(super::page_bar(
                 SharedString::from(format!("settings-bar-{}", s.id())),
                 &handle,
             ))
             .into_any_element()
+    }
+
+    /// The scroll handle of the Settings page showing now.
+    pub(super) fn settings_page_scroll(&self) -> gpui_kit::ScrollHandle {
+        let s = self.model.settings.section;
+        let at = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);
+        self.settings_inputs.page_scroll[at].clone()
     }
 
     /// A titled group of rows on a card.
@@ -826,6 +834,7 @@ impl Workspace {
                     .child(super::wheel_first(
                         "provider-models",
                         &self.settings_inputs.provider_models_scroll,
+                        Some(&self.settings_page_scroll()),
                         cx.entity_id(),
                     ))
                     .child(
@@ -1064,6 +1073,7 @@ impl Workspace {
                 .child(super::wheel_first(
                     "models-catalogue",
                     &self.settings_inputs.catalog_scroll,
+                    Some(&self.settings_page_scroll()),
                     cx.entity_id(),
                 ))
                 .child(
@@ -1150,6 +1160,7 @@ impl Workspace {
             .child(super::wheel_first(
                 "role-choices",
                 &self.settings_inputs.role_scroll,
+                Some(&self.settings_page_scroll()),
                 cx.entity_id(),
             ))
             .child(

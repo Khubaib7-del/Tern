@@ -353,3 +353,34 @@ fn no_frame_request_reads_gpuis_rendered_view_outside_a_render() {
         offenders.join("\n")
     );
 }
+
+#[test]
+fn a_cached_view_never_takes_the_window_buttons_with_it() {
+    // GPUI copies a cached view's hitboxes, listeners and scene into the
+    // next frame but not its window-control areas, which Windows' hit
+    // test reads for the caption and the minimize, maximize and close
+    // buttons (`WM_NCHITTEST` → `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE`).
+    // With the workspace drawn cached, every frame only Scout redrew had
+    // none and the three buttons did nothing (PR #61). Whoever draws a
+    // view cached also draws `caption_layer` outside it, under it.
+    let mut cached = Vec::new();
+    for (name, src) in crate_sources() {
+        let code = code_only(&src);
+        // A view drawn cached: `entity.clone().cached(style)` (not the
+        // providers' listing cache, `providers.cached(id)`).
+        if !name.starts_with("tern-desktop/src/") || !code.contains("clone().cached(") {
+            continue;
+        }
+        cached.push(name.clone());
+        let layer = code.find(".children(caption_layer(window))");
+        let view = code.find("clone().cached(");
+        assert!(
+            matches!((layer, view), (Some(l), Some(v)) if l < v),
+            "{name} draws a view cached without caption_layer under it"
+        );
+    }
+    assert!(
+        cached.iter().any(|n| n.ends_with("view/pet_view.rs")),
+        "the scan finds the workspace's Shell: {cached:?}"
+    );
+}

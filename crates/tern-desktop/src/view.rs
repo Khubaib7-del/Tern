@@ -159,6 +159,9 @@ pub struct Workspace {
     card_swipe: std::cell::RefCell<crate::swipe::Swipe>,
     /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
     presses: press::Presses,
+    /// Where each culled row of a long Settings page last sat
+    /// (`crate::cull`).
+    cull_rows: std::rc::Rc<std::cell::RefCell<crate::cull::Rows>>,
     /// The empty state's mark (`crate::mark`), and when it started playing.
     mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
     mark_since: Instant,
@@ -242,6 +245,10 @@ pub struct Workspace {
     /// Sliding highlights and knobs, by control, and whether one moved
     /// this frame (so the frame after is drawn too).
     glides: std::cell::RefCell<std::collections::HashMap<&'static str, crate::motion::Glide>>,
+    /// Profiling only (the UI tour's `perf` run): parts of Settings ›
+    /// Providers left out, to measure what each costs per frame.
+    /// 1 logos, 2 the model list, 4 the row buttons. Always 0 otherwise.
+    pub(super) perf_strip: u8,
     anim_pending: std::cell::Cell<bool>,
     /// The effort slider's track: its left edge in the window at the last
     /// paint, and whether the knob is being dragged.
@@ -324,6 +331,14 @@ impl std::fmt::Debug for Workspace {
 }
 
 impl Workspace {
+    /// What is on screen, for the frame meter (`crate::perf`).
+    fn perf_tag(&self) -> String {
+        match self.model.screen {
+            Screen::Settings => format!("settings/{}", self.model.settings.section.id()),
+            s => format!("{s:?}").to_ascii_lowercase(),
+        }
+    }
+
     pub fn new(
         bridge: Bridge,
         mut rx: mpsc::UnboundedReceiver<Msg>,
@@ -585,6 +600,7 @@ impl Workspace {
             mark_since: Instant::now(),
             mark_harness: tern_agent::Harness::Research,
             presses: Default::default(),
+            cull_rows: Default::default(),
             card_swipe: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
@@ -653,6 +669,7 @@ impl Workspace {
             side_w: crate::panels::RIGHT_DEFAULT,
             run_more_open: false,
             glides: Default::default(),
+            perf_strip: 0,
             anim_pending: Default::default(),
             effort_track: Default::default(),
             effort_drag: None,
@@ -3927,7 +3944,11 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|r| self.service_row(r, p, cx))
+            .map(|r| {
+                let key = format!("{:?}-{}", r.kind, r.id);
+                let handle = self.settings_page_scroll();
+                self.culled(key, &handle, || self.service_row(r, p, cx))
+            })
             .collect();
         div()
             .flex()
@@ -3943,6 +3964,54 @@ impl Workspace {
                     .border_color(p.border)
                     .children(rows),
             )
+    }
+
+    /// A row of a long scrolling page: built by `build` when it is near
+    /// the viewport of `handle`'s scroll area, else an empty box of its
+    /// last height (`crate::cull`). Either way it records where it sits.
+    pub(super) fn culled(
+        &self,
+        key: String,
+        handle: &ScrollHandle,
+        build: impl FnOnce() -> AnyElement,
+    ) -> AnyElement {
+        let view = handle.bounds();
+        let off = f32::from(handle.offset().y);
+        let boxed = self.cull_rows.borrow().hidden(
+            &key,
+            off,
+            f32::from(view.origin.y),
+            f32::from(view.size.height),
+        );
+        let inner = match boxed {
+            Some(h) => div().w_full().h(px(h)).into_any_element(),
+            None => build(),
+        };
+        let rows = self.cull_rows.clone();
+        let handle = handle.clone();
+        div()
+            .relative()
+            .w_full()
+            .child(inner)
+            .child(
+                gpui_kit::canvas(
+                    move |b, _, _| {
+                        let off = f32::from(handle.offset().y);
+                        rows.borrow_mut().set(
+                            &key,
+                            crate::cull::Spot::at(
+                                f32::from(b.origin.y),
+                                f32::from(b.size.height),
+                                off,
+                            ),
+                        );
+                    },
+                    |_, _, _, _| (),
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .into_any_element()
     }
 
     fn service_row(&self, r: ServiceRow, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -4000,113 +4069,115 @@ impl Workspace {
         }
 
         let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        let tip = |t: &'static str| Some(SharedString::from(t));
         if working {
             actions = actions.child(Spinner::new().small().color(p.muted));
         } else if r.needs_key() && !r.key_saved {
             if !editing {
-                actions = actions.child(
-                    Button::new(bid("add"))
-                        .capsule()
-                        .label("Add")
-                        .small()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.edit_key(kind, id, window, cx)
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("add"),
+                    "Add",
+                    PillLook::Solid,
+                    false,
+                    None,
+                    p,
+                    cx.listener(move |this, _, window, cx| this.edit_key(kind, id, window, cx)),
+                ));
             }
         } else {
             let can_choose = st.can_choose(&r);
             if !is_default {
-                actions = actions.child(
-                    Button::new(bid("use"))
-                        .capsule()
-                        .label("Use")
-                        .small()
-                        .disabled(busy_turn || !can_choose)
-                        .tooltip(if can_choose {
-                            "Use this one for new answers in this chat"
-                        } else {
-                            "Test the server address first"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.apply_choice(kind, id);
-                            cx.notify();
-                        })),
-                );
-            }
-            actions = actions.child(
-                Button::new(bid("test"))
-                    .capsule()
-                    .label("Test")
-                    .ghost()
-                    .small()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.model.providers.begin(kind, id, "Checking…");
-                        if kind == Kind::Search && id == "searxng" {
-                            let typed = this.searx_input.read(cx).value().to_string();
-                            let url = this.model.providers.set_search_url(&typed);
-                            this.model.providers.begin(kind, id, "Checking…");
-                            this.bridge.save_prefs(this.model.providers.prefs.clone());
-                            this.bridge.test_search_at(id, url);
-                        } else {
-                            this.bridge.test(kind, id);
-                        }
+                actions = actions.child(pill(
+                    bid("use"),
+                    "Use",
+                    PillLook::Solid,
+                    busy_turn || !can_choose,
+                    tip(if can_choose {
+                        "Use this one for new answers in this chat"
+                    } else {
+                        "Test the server address first"
+                    }),
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        this.apply_choice(kind, id);
                         cx.notify();
-                    })),
-            );
+                    }),
+                ));
+            }
+            actions = actions.child(pill(
+                bid("test"),
+                "Test",
+                PillLook::Ghost,
+                false,
+                None,
+                p,
+                cx.listener(move |this, _, _, cx| {
+                    this.model.providers.begin(kind, id, "Checking…");
+                    if kind == Kind::Search && id == "searxng" {
+                        let typed = this.searx_input.read(cx).value().to_string();
+                        let url = this.model.providers.set_search_url(&typed);
+                        this.model.providers.begin(kind, id, "Checking…");
+                        this.bridge.save_prefs(this.model.providers.prefs.clone());
+                        this.bridge.test_search_at(id, url);
+                    } else {
+                        this.bridge.test(kind, id);
+                    }
+                    cx.notify();
+                }),
+            ));
             if kind == Kind::Model {
-                actions = actions.child(
-                    Button::new(bid("address"))
-                        .capsule()
-                        .label("Address")
-                        .ghost()
-                        .small()
-                        .tooltip("The server address, for a local server elsewhere or a proxy")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.edit_base_url(id, window, cx)
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("address"),
+                    "Address",
+                    PillLook::Ghost,
+                    false,
+                    tip("The server address, for a local server elsewhere or a proxy"),
+                    p,
+                    cx.listener(move |this, _, window, cx| this.edit_base_url(id, window, cx)),
+                ));
             }
             if kind == Kind::Model && tern_agent::providers::custom::is_custom(id) {
                 // Asks twice; the armed button is this provider's own.
                 let confirm = self.model.settings.confirm == Some(id);
-                actions = actions.child(
-                    Button::new(bid("delete"))
-                        .capsule()
-                        .label(if confirm {
-                            "Click again to delete"
-                        } else {
-                            "Delete"
-                        })
-                        .ghost()
-                        .small()
-                        .disabled(busy_turn && is_default)
-                        .tooltip("Delete this custom provider and its key")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.model.settings.confirm(id) {
-                                this.model.providers.begin(kind, id, "Deleting…");
-                                this.bridge.custom_remove(id.to_owned());
-                            }
-                            cx.notify();
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("delete"),
+                    if confirm {
+                        "Click again to delete"
+                    } else {
+                        "Delete"
+                    },
+                    PillLook::Ghost,
+                    busy_turn && is_default,
+                    tip("Delete this custom provider and its key"),
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        if this.model.settings.confirm(id) {
+                            this.model.providers.begin(kind, id, "Deleting…");
+                            this.bridge.custom_remove(id.to_owned());
+                        }
+                        cx.notify();
+                    }),
+                ));
             } else if r.key_saved {
-                actions = actions.child(
-                    Button::new(bid("remove"))
-                        .capsule()
-                        .label("Remove")
-                        .ghost()
-                        .small()
-                        .disabled(busy_turn && is_default)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.providers.begin(kind, id, "Removing…");
-                            this.bridge.remove(kind, id);
-                            cx.notify();
-                        })),
-                );
+                actions = actions.child(pill(
+                    bid("remove"),
+                    "Remove",
+                    PillLook::Ghost,
+                    busy_turn && is_default,
+                    None,
+                    p,
+                    cx.listener(move |this, _, _, cx| {
+                        this.model.providers.begin(kind, id, "Removing…");
+                        this.bridge.remove(kind, id);
+                        cx.notify();
+                    }),
+                ));
             }
         }
 
+        if self.perf_strip & 4 != 0 {
+            actions = div();
+        }
         let mut row = div()
             .flex()
             .flex_col()
@@ -4120,7 +4191,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(logo_tile(&r, p))
+                    .when(self.perf_strip & 1 == 0, |d| d.child(logo_tile(&r, p)))
                     .child(info)
                     .child(actions),
             );
@@ -4186,7 +4257,7 @@ impl Workspace {
         if kind == Kind::Model && self.model.settings.editing_url == Some(id) {
             row = row.child(self.base_url_row(id, p, cx));
         }
-        if kind == Kind::Model && is_default {
+        if kind == Kind::Model && is_default && self.perf_strip & 2 == 0 {
             row = row.child(self.provider_model_list(p, cx));
         }
         row.into_any_element()
@@ -4874,6 +4945,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let build_from = Instant::now();
         self.save_session_soon(cx);
         self.tick_scout(window, cx);
         self.tick_explain(window, cx);
@@ -4948,38 +5020,12 @@ impl Render for Workspace {
             now,
             reduced,
         );
-        if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
+        // The theme wipe's covers are drawn by the window's root over the
+        // cached workspace (`Shell`), so the wipe's frames never redraw
+        // the workspace: it draws once in the new theme.
+        if self.sidebar_slide.moving() || self.panel_slide.moving() {
             frame::next_frame(window, cx);
         }
-        // The theme change: the new theme is drawn whole and the old one's
-        // canvas parts from the centre out (v2 s17), no ripple.
-        let ripple = self.wipe.map(|w| {
-            let inset = w.inset(now);
-            let width = f32::from(window.viewport_size().width);
-            let cover = width * inset;
-            let old = w.old_canvas();
-            div()
-                .absolute()
-                .inset_0()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(px(cover))
-                        .bg(old),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right_0()
-                        .w(px(cover))
-                        .bg(old),
-                )
-        });
         // The right pane: the browser when it is showing, else the docked
         // side chat, else the run panel.
         let side_docked = self.model.cont.side.open && !self.model.cont.side.popped;
@@ -5064,6 +5110,13 @@ impl Render for Workspace {
             .flex_col()
             .bg(p.canvas)
             .text_color(p.text)
+            // First in the tree: prepaints once the workspace is laid out
+            // (`crate::perf`'s layout phase ends here).
+            .child(
+                gpui_kit::canvas(|_, _, _| crate::perf::prepaint_start(), |_, _, _, _| ())
+                    .absolute()
+                    .size_0(),
+            )
             .when(panels.dragging().is_some(), |d| d.cursor_col_resize())
             .on_mouse_move(
                 cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {
@@ -5183,14 +5236,72 @@ impl Render for Workspace {
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
             .children(self.palette_overlay(p, cx))
-            .children(ripple)
             .children(self.splash(p, window));
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
             frame::next_frame(window, cx);
         }
+        crate::perf::workspace(&self.perf_tag(), build_from.elapsed());
         root
     }
+}
+
+/// How a [`pill`] looks: filled like the kit's default button, or bare
+/// like its ghost one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PillLook {
+    Solid,
+    Ghost,
+}
+
+/// A small capsule button built from one plain div: the label, the
+/// capsule's hover and press tints, an optional tooltip (built only on
+/// hover) and `on_click` unless `disabled`. The settings rows use it in
+/// place of the kit's `Button`, which sets up a focus handle, keyed state
+/// and its own style layers per button on every render; a provider row
+/// has up to four of them and Settings › Providers redraws on every
+/// scroll and theme-wipe frame (`crate::perf`).
+pub(crate) fn pill(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    look: PillLook,
+    disabled: bool,
+    tip: Option<SharedString>,
+    p: Palette,
+    on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    let (bg, border) = match look {
+        PillLook::Solid => (p.raised, p.border),
+        PillLook::Ghost => (gpui_kit::transparent_black(), gpui_kit::transparent_black()),
+    };
+    div()
+        .id(id)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .h_6()
+        .px_2()
+        .rounded_full()
+        .border_1()
+        .border_color(border)
+        .bg(bg)
+        .text_sm()
+        .line_height(gpui_kit::relative(1.25))
+        .text_color(p.text)
+        .child(label.into())
+        .when(disabled, |d| d.opacity(0.5))
+        .when(!disabled, |d| {
+            d.hover(|s| s.bg(p.hover))
+                .active(|s| s.bg(p.border))
+                .on_click(on_click)
+        })
+        .when_some(tip, |d, tip| {
+            d.tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+        })
+        .into_any_element()
 }
 
 /// The logo square at the start of a provider or search row: the
@@ -5620,88 +5731,48 @@ pub(crate) fn inner_list_bar(
 }
 
 thread_local! {
-    /// Each smooth scroll area's glide, by its id (`scrollbar::Glide`).
-    static GLIDES: std::cell::RefCell<std::collections::HashMap<&'static str, crate::scrollbar::Glide>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
     /// The one wheel gesture going on, and which area has it.
     static LATCH: std::cell::Cell<crate::scrollbar::WheelLatch> =
         std::cell::Cell::new(crate::scrollbar::WheelLatch::default());
 }
 
-/// Moves the area `id` one frame along its glide, and asks for the next
-/// frame while it still moves. Runs from `on_next_frame`, never reads
-/// GPUI's rendered-view stack (`view/frame.rs`).
-fn glide_frame<H>(id: &'static str, handle: H, view: gpui_kit::EntityId, window: &mut Window)
-where
-    H: gpui_kit::base::ScrollbarHandle + Clone,
-{
-    window.on_next_frame(move |window, cx| {
-        let (y, moving) = GLIDES.with(|g| {
-            let mut g = g.borrow_mut();
-            let gl = g.entry(id).or_default();
-            let y = gl.tick(Instant::now());
-            (y, gl.moving())
-        });
-        let at = handle.offset();
-        handle.set_offset(gpui_kit::point(at.x, px(y)));
-        cx.notify(view);
-        if moving {
-            glide_frame(id, handle, view, window);
-        }
-    });
-}
-
-/// One wheel turn for the area `id`: glides it (or lands at once for a
-/// touchpad's pixels or under reduced motion). Returns false when the
-/// area is at the end the turn pushes toward.
-fn glide_turn<H>(
-    id: &'static str,
-    handle: &H,
-    e: &gpui_kit::ScrollWheelEvent,
-    view: gpui_kit::EntityId,
-    window: &mut Window,
-) -> bool
-where
-    H: gpui_kit::base::ScrollbarHandle + Clone,
-{
-    let d = e.delta.pixel_delta(window.line_height());
-    let (dx, dy) = (f32::from(d.x), f32::from(d.y));
-    if dx.abs() > dy.abs() {
-        return false;
-    }
+/// Where an area is and how far it can go: `(offset, max)` in GPUI's sign
+/// (0 at the top, `-max` at the bottom).
+fn scroll_span<H: gpui_kit::base::ScrollbarHandle>(handle: &H) -> (f32, f32) {
     let max =
         f32::from(handle.content_size().height) - f32::from(handle.viewport_bounds().size.height);
-    let offset = f32::from(handle.offset().y);
-    let instant = e.delta.precise() || crate::theme::reduced_motion();
-    let (moved, was_moving) = GLIDES.with(|g| {
-        let mut g = g.borrow_mut();
-        let gl = g.entry(id).or_default();
-        let was = gl.moving();
-        (gl.push(offset, dy, max, instant, Instant::now()), was)
-    });
-    if !moved {
-        return false;
+    (f32::from(handle.offset().y), max)
+}
+
+/// Moves `handle` by `dy` at once, as GPUI's own scroll areas do (the chat
+/// scrolls this way). Returns whether it moved.
+fn scroll_by<H: gpui_kit::base::ScrollbarHandle>(handle: &H, dy: f32) -> bool {
+    let (offset, max) = scroll_span(handle);
+    match crate::scrollbar::step(offset, dy, max) {
+        Some(y) => {
+            handle.set_offset(gpui_kit::point(handle.offset().x, px(y)));
+            true
+        }
+        None => false,
     }
-    if instant {
-        let y = GLIDES.with(|g| g.borrow().get(id).map_or(offset, |gl| gl.current));
-        handle.set_offset(gpui_kit::point(handle.offset().x, px(y)));
-    } else if !was_moving {
-        glide_frame(id, handle.clone(), view, window);
-    }
-    true
 }
 
 /// Gives an inner scroll area (a bounded list inside a page that scrolls)
-/// the wheel first: put it inside the area, as an absolute child, with
-/// the area's scroll handle and an id of its own. The kit's scroll areas
-/// take the wheel before anything inside them sees it (in the capture
-/// phase), so a plain GPUI list inside one never scrolled with the wheel;
-/// this takes the turn first, glides the list by it
-/// (`scrollbar::Glide`: a notch glides, a touchpad's pixels land at
-/// once), and keeps it from the page. At the list's ends the turn goes on
-/// to the page, and a gesture that started on the page stays there
-/// (`scrollbar::WheelLatch`), so the page never stops dead when a list
-/// slides under the pointer. Only the view is notified.
+/// the wheel: put it inside the area, before the list, as an absolute
+/// child, with the list's scroll handle and an id of its own, and the
+/// page's handle when the page is a plain GPUI scroll div (Settings).
+///
+/// A wheel turn over the list scrolls the list, at once, like the chat
+/// and every GPUI scroll area; the page around it stays still. A gesture
+/// stays with the area it started in until the wheel rests
+/// (`scrollbar::WheelLatch`): a page scrolling under a still pointer does
+/// not hand the rest of the spin to a list it slides under the pointer,
+/// and a list spun to its end does not jerk the page; the next gesture at
+/// the list's end scrolls the page. While the page owns a gesture over a
+/// list, this moves the page itself, so the list's own GPUI scrolling
+/// never runs with it (both would move at once). Without a page handle
+/// (an area inside the kit's own scroll area, which takes the wheel
+/// first), the turn is left to it.
 ///
 /// `view` is the view to notify (`cx.entity_id()` in its render); it is
 /// passed in rather than read from GPUI's rendered-view stack
@@ -5709,12 +5780,14 @@ where
 pub(crate) fn wheel_first<H>(
     id: &'static str,
     handle: &H,
+    page: Option<&gpui_kit::ScrollHandle>,
     view: gpui_kit::EntityId,
 ) -> impl IntoElement
 where
     H: gpui_kit::base::ScrollbarHandle + Clone,
 {
     let handle = handle.clone();
+    let page = page.cloned();
     gpui_kit::canvas(
         |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
         move |_, hitbox, window, _| {
@@ -5723,19 +5796,39 @@ where
                 {
                     return;
                 }
-                let now = Instant::now();
-                if LATCH.with(|l| l.get().page_owns(now)) {
+                let d = e.delta.pixel_delta(window.line_height());
+                let (dx, dy) = (f32::from(d.x), f32::from(d.y));
+                if dx.abs() > dy.abs() {
                     return;
                 }
-                if glide_turn(id, &handle, e, view, window) {
-                    LATCH.with(|l| {
-                        let mut v = l.get();
-                        v.took(crate::scrollbar::Owner::List, now);
-                        l.set(v);
-                    });
-                    cx.stop_propagation();
-                    cx.notify(view);
+                let now = Instant::now();
+                let (offset, max) = scroll_span(&handle);
+                let can = crate::scrollbar::step(offset, dy, max).is_some();
+                let route = LATCH.with(|l| {
+                    let mut v = l.get();
+                    let r = v.over_list(id, can, now);
+                    l.set(v);
+                    r
+                });
+                match route {
+                    crate::scrollbar::Route::List => {
+                        scroll_by(&handle, dy);
+                    }
+                    crate::scrollbar::Route::Hold => {}
+                    crate::scrollbar::Route::Page => match &page {
+                        Some(page) => {
+                            scroll_by(page, dy);
+                            LATCH.with(|l| {
+                                let mut v = l.get();
+                                v.page_took(now);
+                                l.set(v);
+                            });
+                        }
+                        None => return,
+                    },
                 }
+                cx.stop_propagation();
+                cx.notify(view);
             });
         },
     )
@@ -5743,41 +5836,34 @@ where
     .inset_0()
 }
 
-/// The smooth wheel for a page (Settings): put it after the page's
+/// The page's part of the wheel latch (Settings): put it after the page's
 /// scrolling div, as an absolute child of the box around it, with the
-/// page's scroll handle. Lists inside the page (`wheel_first`) see the
-/// turn first; whatever they leave, the page glides by, and the gesture
-/// is the page's until the wheel rests.
-pub(crate) fn smooth_page<H>(
-    id: &'static str,
-    handle: &H,
-    view: gpui_kit::EntityId,
-) -> impl IntoElement
-where
-    H: gpui_kit::base::ScrollbarHandle + Clone,
-{
+/// page's scroll handle. It scrolls nothing; GPUI's own scrolling moves
+/// the page, exactly as it moves the chat. It only notes that the page
+/// took the turn, so a list the page slides under the pointer waits for
+/// the next gesture (`wheel_first`).
+pub(crate) fn page_latch(handle: &gpui_kit::ScrollHandle) -> impl IntoElement {
     let handle = handle.clone();
     gpui_kit::canvas(
         |bounds, window, _| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal),
         move |_, hitbox, window, _| {
-            window.on_mouse_event(move |e: &gpui_kit::ScrollWheelEvent, phase, window, cx| {
-                if phase != gpui_kit::DispatchPhase::Capture || !hitbox.should_handle_scroll(window)
+            window.on_mouse_event(move |e: &gpui_kit::ScrollWheelEvent, phase, window, _| {
+                if phase != gpui_kit::DispatchPhase::Bubble || !hitbox.should_handle_scroll(window)
                 {
                     return;
                 }
-                let now = Instant::now();
-                // At the page's own ends the turn is still the page's: it
-                // just does not move, and nothing behind it scrolls.
-                let moved = glide_turn(id, &handle, e, view, window);
+                let d = e.delta.pixel_delta(window.line_height());
+                let (offset, max) = scroll_span(&handle);
+                if f32::from(d.x).abs() > f32::from(d.y).abs()
+                    || crate::scrollbar::step(offset, f32::from(d.y), max).is_none()
+                {
+                    return;
+                }
                 LATCH.with(|l| {
                     let mut v = l.get();
-                    v.took(crate::scrollbar::Owner::Page, now);
+                    v.page_took(Instant::now());
                     l.set(v);
                 });
-                cx.stop_propagation();
-                if moved {
-                    cx.notify(view);
-                }
             });
         },
     )
