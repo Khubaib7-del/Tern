@@ -162,7 +162,7 @@ fn openai(v: &Value) -> Piece {
     }
 }
 
-fn mistral_chunks(chunks: &[Value]) -> (String, String) {
+pub(crate) fn mistral_chunks(chunks: &[Value]) -> (String, String) {
     let mut text = String::new();
     let mut reasoning = String::new();
     for c in chunks {
