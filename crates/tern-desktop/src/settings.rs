@@ -18,6 +18,9 @@ pub enum Section {
     Providers,
     /// Every listed model by capability, and the default model per role.
     Models,
+    /// Models that run on this computer: download, switch on, default per
+    /// task (`crate::localmodels`).
+    LocalModels,
     /// Tern's own tools: on or off, and when each asks first.
     Tools,
     /// The decision model: off, local, Jev, SubQ Snap, Voyage.
@@ -43,9 +46,10 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Providers,
         Self::Models,
+        Self::LocalModels,
         Self::Tools,
         Self::Decision,
         Self::Evaluation,
@@ -63,6 +67,7 @@ impl Section {
         match self {
             Self::Providers => "Providers",
             Self::Models => "Models",
+            Self::LocalModels => "Local models",
             Self::Tools => "Tools",
             Self::Decision => "Decision model",
             Self::Evaluation => "Evaluation",
@@ -85,6 +90,9 @@ impl Section {
             }
             Self::Models => {
                 "Every model your providers list, by what it can do, and which one Tern uses for each job."
+            }
+            Self::LocalModels => {
+                "OCR, speech, and vision models that run on this computer. Nothing is bundled: download only what you want."
             }
             Self::Tools => "Tern's own tools: turn one off, or choose whether it asks you first.",
             Self::Decision => {
@@ -115,6 +123,7 @@ impl Section {
         match self {
             Self::Providers => "providers",
             Self::Models => "models",
+            Self::LocalModels => "local-models",
             Self::Tools => "tools",
             Self::Decision => "decision",
             Self::Evaluation => "evaluation",
@@ -203,6 +212,16 @@ pub const ENTRIES: &[Entry] = &[
         Section::Models,
         "Max answer length",
         "output tokens limit length",
+    ),
+    e(
+        Section::LocalModels,
+        "Local models",
+        "offline on-device download hugging face ocr whisper speech transcribe vision embeddings onnx",
+    ),
+    e(
+        Section::LocalModels,
+        "Default local model",
+        "default per task ocr speech vision enable disable delete",
     ),
     e(
         Section::Tools,
@@ -418,6 +437,8 @@ pub struct SettingsState {
     pub query: String,
     /// A second click deletes (Privacy's delete buttons ask twice).
     pub confirm: Option<&'static str>,
+    /// Settings › Local models.
+    pub local: crate::localmodels::LocalModelsPage,
     /// Models › catalogue: only this capability group, or every group.
     pub group: Option<Group>,
     /// Models › catalogue: what the filter box holds.

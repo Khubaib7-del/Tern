@@ -608,6 +608,7 @@ mod tests {
             scout_hidden: true,
             scout_pos: Some((40, 600)),
             scout_variant: Some("study".into()),
+            local_models: Default::default(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

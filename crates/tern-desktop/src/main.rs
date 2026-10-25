@@ -36,6 +36,7 @@ mod gauge;
 mod git;
 mod harness;
 mod layout;
+mod localmodels;
 mod mark;
 mod model;
 mod motion;
