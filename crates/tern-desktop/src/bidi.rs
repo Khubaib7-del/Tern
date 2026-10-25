@@ -22,6 +22,8 @@ use unicode_bidi::Direction;
 /// Right-to-left embedding and its end (invisible).
 const RLE: char = '\u{202B}';
 const PDF: char = '\u{202C}';
+/// Right-to-left mark.
+const RLM: char = '\u{200F}';
 
 /// Whether `text` has any right-to-left letter at all.
 pub fn has_rtl(text: &str) -> bool {
@@ -233,6 +235,20 @@ fn strip_inline(s: &str) -> String {
     out.replace("**", "").replace("__", "").replace('`', "")
 }
 
+/// A word of a right-to-left line as drawn: a word with a right-to-left
+/// letter is put between right-to-left marks (U+200F), so punctuation at
+/// its ends (`،`, `:`, `(`) takes the word's direction and sits on its
+/// left or right as an Urdu reader expects. Without them a lone word is
+/// shaped in a left-to-right line on Windows, and `ہے،` showed its comma
+/// on the right of the word, between it and the word before (#66 tour).
+pub fn rtl_word(word: &str) -> String {
+    if has_rtl(word) {
+        format!("{RLM}{word}{RLM}")
+    } else {
+        word.to_owned()
+    }
+}
+
 /// Words split at spaces; consecutive words without a right-to-left
 /// letter are kept together as one left-to-right item.
 fn group_words(s: &str) -> Vec<String> {
@@ -318,5 +334,8 @@ mod tests {
         // A user's message is plain text: marks are kept.
         let plain = rtl_lines("**سلام** - ok", false);
         assert_eq!(plain[0].words, vec!["**سلام**", "-", "ok"]);
+        // Drawn words: right-to-left ones between marks, others as they are.
+        assert_eq!(rtl_word("ہے،"), "\u{200F}ہے،\u{200F}");
+        assert_eq!(rtl_word("Tern 2026"), "Tern 2026");
     }
 }

@@ -5771,11 +5771,11 @@ pub(crate) fn rtl_flow(lines: Vec<crate::bidi::RtlLine>, fill: bool) -> AnyEleme
                     l.marker
                         .map(|m| div().flex_none().child(SharedString::from(m))),
                 )
-                .children(
-                    l.words
-                        .into_iter()
-                        .map(|w| div().flex_none().child(SharedString::from(w))),
-                )
+                .children(l.words.into_iter().map(|w| {
+                    div()
+                        .flex_none()
+                        .child(SharedString::from(crate::bidi::rtl_word(&w)))
+                }))
         }))
         .into_any_element()
 }
