@@ -406,10 +406,21 @@ impl PolicyGate {
 
     /// Decides one call. Pure apart from dropping expired grants.
     pub fn check(&mut self, call: &CallView<'_>) -> Decision {
+        self.check_asking(call, false)
+    }
+
+    /// [`Self::check`] for a call the tool itself says needs approval
+    /// (`ask`, see [`crate::tools::Tool::asks_because`]): an allowed effect
+    /// becomes Ask, an earlier approval of the same call or target still
+    /// counts, and a refusal in the user's settings still refuses.
+    pub fn check_asking(&mut self, call: &CallView<'_>, ask: bool) -> Decision {
         let now = (self.clock)();
         self.grants.retain(|g| g.expires.is_none_or(|t| t > now));
         let own = self.config.tool_modes.contains_key(call.tool);
         let mut mode = self.config.mode_for(call.tool, call.effect);
+        if ask && mode == Mode::Allow {
+            mode = Mode::Ask;
+        }
         if mode != Mode::Deny {
             match self.url_risk(call) {
                 Some(Err(reason)) => return Decision::Deny { reason },

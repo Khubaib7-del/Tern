@@ -155,10 +155,11 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!(turns.len(), 1);
     let ctx = again.context();
     assert!(ctx.estimated, "no call yet in the reopened window");
-    // 32 characters of history and the 97-character system prompt, at
-    // four characters a token.
+    // 32 characters of history and the system prompt (the 97-character
+    // opening line, then `file_read` for full paths, which every chat has
+    // since #64, and how to call a tool), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (33, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (170, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))
@@ -807,4 +808,74 @@ fn tidy_history_drops_empty_exchanges() {
     assert_eq!(tern_agent::chat::tidy_history(&mut h), 2);
     let c: Vec<_> = h.iter().map(|m| m.content.as_str()).collect();
     assert_eq!(c, ["a", "A", "c"]);
+}
+
+/// Approves every request and keeps what it was asked.
+#[derive(Default)]
+struct Approves(Mutex<Vec<tern_agent::ApprovalRequest>>);
+
+impl tern_agent::Approver for Approves {
+    fn ask<'a>(
+        &'a self,
+        req: &'a tern_agent::ApprovalRequest,
+    ) -> tern_agent::tools::BoxFuture<'a, tern_agent::ApprovalAnswer> {
+        self.0.lock().unwrap().push(req.clone());
+        Box::pin(async { tern_agent::ApprovalAnswer::AllowOnce })
+    }
+}
+
+/// Regression (#64): "read <full path>" with no workspace open reads the
+/// file after the user approves it; quoted paths with spaces work.
+#[tokio::test]
+async fn a_typed_full_path_is_read_after_approval() {
+    let d = tempfile::tempdir().unwrap();
+    let f = d.path().join("My Notes.txt");
+    std::fs::write(&f, "The meeting is on Tuesday.").unwrap();
+    let quoted = format!("\"{}\"", f.display());
+    let call = format!(
+        "```tool\n{}\n```",
+        json!({"tool": "file_read", "args": {"path": quoted}})
+    );
+    let s = web_server(&[&call, "It says the meeting is on Tuesday."]).await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let approver = Approves::default();
+    let out = chat
+        .send(
+            &format!("read {quoted}"),
+            &approver,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(out.tool_calls, 1);
+    let asked = approver.0.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "a file outside any workspace is approved");
+    assert_eq!(asked[0].tool, "file_read");
+    assert!(
+        asked[0].summary.contains("My Notes.txt"),
+        "{}",
+        asked[0].summary
+    );
+    let reqs = s.received_requests().await.unwrap();
+    let chats: Vec<String> = reqs
+        .iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect();
+    assert!(chats[0].contains("file_read"), "offered with no workspace");
+    assert!(
+        chats[1].contains("The meeting is on Tuesday."),
+        "{}",
+        chats[1]
+    );
+
+    // Declined, the file is not read and the turn says so.
+    let s = web_server(&[&call]).await;
+    let mut chat = open_with_search(&s).await;
+    let out = chat
+        .send("read it", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.state, TurnState::Blocked);
 }

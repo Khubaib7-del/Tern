@@ -913,10 +913,11 @@ impl Run<'_, '_> {
         };
         self.go(TurnState::PolicyCheck)?;
         let risk = self.cfg.gate.url_risk(&view);
-        let decision = self.cfg.gate.check(&view);
+        let asks = tool.asks_because(args);
+        let decision = self.cfg.gate.check_asking(&view, asks.is_some());
         let why = match &risk {
             Some(Ok(why)) => Some(why.clone()),
-            _ => None,
+            _ => asks,
         };
         self.record(self.event(
             "policy.decided",

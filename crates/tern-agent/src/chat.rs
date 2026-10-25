@@ -416,6 +416,7 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
     };
     let project = crate::rules::ProjectContext::load(root.as_deref());
     project.register(&mut tools);
+    crate::workspace::register_local_read(&mut tools);
     let mut gate = PolicyGate::default();
     let mut notes = Vec::new();
     let mut offers = Vec::new();
@@ -603,6 +604,9 @@ impl ChatSession {
         });
         let project = crate::rules::ProjectContext::load(root.as_deref());
         project.register(&mut tools);
+        // A file the user names by its full path can be read with no
+        // workspace open (each one approved).
+        crate::workspace::register_local_read(&mut tools);
         let mut gate = PolicyGate::default();
         for (name, mode) in &opts.tool_modes {
             gate.set_tool_mode(name, *mode);
@@ -784,12 +788,18 @@ impl ChatSession {
     /// scoped to it, and the choice is logged so a reopened chat keeps it.
     /// `None` closes it.
     pub fn set_workspace(&mut self, path: Option<&std::path::Path>) -> Result<(), String> {
+        let ws = path
+            .map(crate::workspace::Workspace::open)
+            .transpose()?
+            .map(Arc::new);
         crate::workspace::Workspace::unregister(&mut self.tools);
         self.workspace = None;
-        if let Some(p) = path {
-            let ws = Arc::new(crate::workspace::Workspace::open(p)?);
-            ws.register(&mut self.tools);
-            self.workspace = Some(ws);
+        match ws {
+            Some(ws) => {
+                ws.register(&mut self.tools);
+                self.workspace = Some(ws);
+            }
+            None => crate::workspace::register_local_read(&mut self.tools),
         }
         self.workspace_logged = false;
         if !self.is_draft() {

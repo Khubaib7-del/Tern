@@ -75,6 +75,11 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     fn target(&self, _args: &Value) -> Option<String> {
         None
     }
+    /// Why this call needs the user's approval even where the tool's
+    /// effect is allowed (a file outside the workspace), or `None`.
+    fn asks_because(&self, _args: &Value) -> Option<String> {
+        None
+    }
     fn timeout(&self) -> Duration {
         Duration::from_secs(30)
     }
