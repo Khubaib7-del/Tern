@@ -12,6 +12,9 @@
 //! are switched off and which is the default per task live in
 //! [`Preferences::local_models`](crate::Preferences).
 //!
+//! Each task has a Default and an Alternative (the backup); the user can
+//! switch with "Use for this task".
+//!
 //! The runtimes themselves (whisper.cpp, ONNX Runtime, …) plug in later:
 //! [`runtime_available`] says which ones this build can run.
 
@@ -44,6 +47,9 @@ pub enum Task {
     Ocr,
     DocParse,
     Vision,
+    /// Live dictation from the mic, as you speak.
+    Dictation,
+    /// Transcribing audio files (Urdu too).
     SpeechToText,
     TextToSpeech,
     Embedding,
@@ -51,10 +57,11 @@ pub enum Task {
 
 impl Task {
     /// In Settings order.
-    pub const ALL: [Task; 6] = [
+    pub const ALL: [Task; 7] = [
         Task::Ocr,
         Task::DocParse,
         Task::Vision,
+        Task::Dictation,
         Task::SpeechToText,
         Task::TextToSpeech,
         Task::Embedding,
@@ -66,6 +73,7 @@ impl Task {
             Self::Ocr => "ocr",
             Self::DocParse => "doc_parse",
             Self::Vision => "vision",
+            Self::Dictation => "dictation",
             Self::SpeechToText => "speech_to_text",
             Self::TextToSpeech => "text_to_speech",
             Self::Embedding => "embedding",
@@ -79,7 +87,10 @@ impl Task {
             "ocr" => Self::Ocr,
             "doc_parse" | "docparse" | "documents" => Self::DocParse,
             "vision" => Self::Vision,
-            "speech_to_text" | "stt" | "speech" | "transcribe" => Self::SpeechToText,
+            "dictation" | "live" | "mic" => Self::Dictation,
+            "speech_to_text" | "stt" | "speech" | "transcribe" | "transcription" => {
+                Self::SpeechToText
+            }
             "text_to_speech" | "tts" | "voice" => Self::TextToSpeech,
             "embedding" | "embeddings" => Self::Embedding,
             _ => return None,
@@ -89,24 +100,34 @@ impl Task {
     /// The section heading.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Ocr => "OCR",
-            Self::DocParse => "Document parsing",
-            Self::Vision => "Vision",
-            Self::SpeechToText => "Speech to text",
-            Self::TextToSpeech => "Text to speech",
-            Self::Embedding => "Embeddings",
+            Self::Ocr => "Text in pictures (OCR)",
+            Self::DocParse => "Documents to Markdown",
+            Self::Vision => "Describe pictures",
+            Self::Dictation => "Live dictation",
+            Self::SpeechToText => "Transcribe audio files",
+            Self::TextToSpeech => "Read aloud",
+            Self::Embedding => "Search by meaning (embeddings)",
         }
     }
 
     /// One line under the heading.
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::Ocr => "Reads the text in pictures for chat models that cannot see.",
-            Self::DocParse => "Turns PDFs and scans into structured text and tables.",
-            Self::Vision => "Describes pictures on your machine.",
-            Self::SpeechToText => "Turns the mic into text without sending audio anywhere.",
-            Self::TextToSpeech => "Reads answers aloud.",
-            Self::Embedding => "Turns text into vectors for search over your sources.",
+            Self::Ocr => {
+                "Reads the words in screenshots and photos, English and Urdu, so any chat model can use them."
+            }
+            Self::DocParse => {
+                "Turns PDFs and scanned pages into clean Markdown, with headings and tables kept."
+            }
+            Self::Vision => {
+                "Looks at a picture and says what is in it, for chat models that cannot see."
+            }
+            Self::Dictation => "Types what you say into the composer while you speak.",
+            Self::SpeechToText => "Turns recordings and voice notes into text, Urdu included.",
+            Self::TextToSpeech => "Reads Tern's answers out loud.",
+            Self::Embedding => {
+                "Lets Tern find passages in your sources by meaning, not just matching words."
+            }
         }
     }
 }
@@ -120,6 +141,7 @@ pub enum Runtime {
     LlamaCpp,
     Candle,
     Piper,
+    Tesseract,
     #[serde(other)]
     Other,
 }
@@ -132,6 +154,7 @@ impl Runtime {
             Self::LlamaCpp => "llama.cpp",
             Self::Candle => "Candle",
             Self::Piper => "Piper",
+            Self::Tesseract => "Tesseract",
             Self::Other => "another runtime",
         }
     }
@@ -183,8 +206,17 @@ pub fn runtime_available(runtime: Runtime) -> bool {
 /// One file of a model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelFile {
-    /// Its path in the repo, and under the model's folder.
+    /// Its path in the repo (and under the model's folder, unless `dest`).
     pub name: String,
+    /// Another Hugging Face repo than the entry's (a model made of parts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// That repo's pinned revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// Where it goes under the model's folder, when not `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dest: Option<String>,
     /// A full URL; `None` means the repo's `resolve/<revision>/<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -195,14 +227,49 @@ pub struct ModelFile {
     pub sha256: Option<String>,
 }
 
+impl ModelFile {
+    /// Its path under the model's folder.
+    pub fn local(&self) -> &str {
+        self.dest.as_deref().unwrap_or(&self.name)
+    }
+}
+
+/// A model's place in its task.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRole {
+    /// What Tern uses for the task unless you pick another.
+    #[default]
+    Default,
+    /// The backup: pick it yourself, or when the default will not run.
+    Alternative,
+    /// An optional part downloaded only when wanted (the maths model).
+    Addon,
+}
+
+impl ModelRole {
+    /// The row's badge.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Alternative => "Alternative",
+            Self::Addon => "Optional",
+        }
+    }
+}
+
 /// A model Tern can download.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
     pub id: String,
     pub task: Task,
+    /// Default, Alternative, or an optional add-on.
+    #[serde(default)]
+    pub role: ModelRole,
     /// Display name.
     pub name: String,
-    /// `owner/repo` on Hugging Face.
+    /// `owner/repo` on Hugging Face; empty when every file has a `url`.
+    #[serde(default)]
     pub hf_repo: String,
     /// A commit or branch; pinned commits keep hashes stable.
     #[serde(default = "main_branch")]
@@ -213,12 +280,21 @@ pub struct ModelEntry {
     /// A brand key for the row's logo; `None` uses the task's icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
-    /// A stand-in until the model research picks the real model.
+    /// A stand-in, not one of Tern's picks (user entries may say so).
     #[serde(default)]
     pub placeholder: bool,
     /// One line about it.
     #[serde(default)]
     pub note: String,
+    /// Attribution or terms that must be shown with the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_note: Option<String>,
+    /// The licence's full text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence_url: Option<String>,
+    /// The model's page when it is not on Hugging Face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
     pub files: Vec<ModelFile>,
 }
 
@@ -238,16 +314,18 @@ impl ModelEntry {
             format!(
                 "{}/{}/resolve/{}/{}",
                 endpoint.trim_end_matches('/'),
-                self.hf_repo,
-                self.revision,
+                file.repo.as_deref().unwrap_or(&self.hf_repo),
+                file.revision.as_deref().unwrap_or(&self.revision),
                 file.name
             )
         })
     }
 
-    /// The model's page on Hugging Face.
+    /// The model's page (Hugging Face unless it has its own).
     pub fn page(&self) -> String {
-        format!("{HF_ENDPOINT}/{}", self.hf_repo)
+        self.homepage
+            .clone()
+            .unwrap_or_else(|| format!("{HF_ENDPOINT}/{}", self.hf_repo))
     }
 }
 
@@ -279,9 +357,20 @@ impl Manifest {
             if e.files.is_empty() {
                 return Err(format!("`{}` lists no files", e.id));
             }
+            let mut locals = BTreeSet::new();
             for f in &e.files {
-                if !safe_path(&f.name) || f.name == RECORD {
-                    return Err(format!("`{}` has an unsafe file path `{}`", e.id, f.name));
+                if !safe_path(&f.name) || !safe_path(f.local()) || f.local() == RECORD {
+                    return Err(format!(
+                        "`{}` has an unsafe file path `{}`",
+                        e.id,
+                        f.local()
+                    ));
+                }
+                if !locals.insert(f.local()) {
+                    return Err(format!("`{}` lists `{}` twice", e.id, f.local()));
+                }
+                if f.url.is_none() && f.repo.is_none() && e.hf_repo.is_empty() {
+                    return Err(format!("`{}`: `{}` has no repo or url", e.id, f.name));
                 }
                 if let Some(h) = &f.sha256
                     && (h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -542,7 +631,7 @@ impl LocalModels {
             .files
             .iter()
             .map(|f| {
-                let dest = dir.join(&f.name);
+                let dest = dir.join(f.local());
                 std::fs::metadata(&dest)
                     .or_else(|_| std::fs::metadata(tern_providers::download::part_path(&dest)))
                     .map(|m| m.len())
@@ -564,23 +653,56 @@ impl LocalModels {
             .map(|e| ModelStatus {
                 state: self.state(e),
                 enabled: prefs.is_enabled(&e.id),
-                is_default: prefs.default_for(e.task) == Some(e.id.as_str()),
+                is_default: self.chosen(prefs, e.task).is_some_and(|c| c.id == e.id),
                 entry: e.clone(),
             })
             .collect()
     }
 
-    /// The model to use for `task`: the default when it is installed and
-    /// on, else the first installed model that is on.
-    pub fn usable(&self, prefs: &LocalModelPrefs, task: Task) -> Option<&ModelEntry> {
-        let ok = |e: &&ModelEntry| {
-            e.task == task && prefs.is_enabled(&e.id) && self.installed(&e.id).is_some()
-        };
+    /// The model picked for `task` ("Use for this task"): the user's pick,
+    /// else the manifest's Default. Installed or not.
+    pub fn chosen(&self, prefs: &LocalModelPrefs, task: Task) -> Option<&ModelEntry> {
         prefs
             .default_for(task)
             .and_then(|id| self.manifest.find(id))
-            .filter(ok)
-            .or_else(|| self.manifest.models.iter().find(ok))
+            .filter(|e| e.task == task)
+            .or_else(|| {
+                self.manifest
+                    .for_task(task)
+                    .find(|e| e.role == ModelRole::Default)
+            })
+    }
+
+    /// The task's backup for `entry`: the Alternative when `entry` is the
+    /// Default, else the Default.
+    pub fn alternative_to(&self, entry: &ModelEntry) -> Option<&ModelEntry> {
+        let want = match entry.role {
+            ModelRole::Default => ModelRole::Alternative,
+            ModelRole::Alternative => ModelRole::Default,
+            ModelRole::Addon => return None,
+        };
+        self.manifest
+            .for_task(entry.task)
+            .find(|e| e.role == want && e.id != entry.id)
+    }
+
+    /// The model to run for `task`: the chosen one when it is installed
+    /// and on, else another installed main model that is on (Default
+    /// before Alternative). Optional add-ons are never picked.
+    pub fn usable(&self, prefs: &LocalModelPrefs, task: Task) -> Option<&ModelEntry> {
+        let ok = |e: &&ModelEntry| {
+            e.task == task
+                && e.role != ModelRole::Addon
+                && prefs.is_enabled(&e.id)
+                && self.installed(&e.id).is_some()
+        };
+        self.chosen(prefs, task).filter(ok).or_else(|| {
+            self.manifest
+                .models
+                .iter()
+                .filter(ok)
+                .min_by_key(|e| e.role != ModelRole::Default)
+        })
     }
 
     /// Downloads every file of `id` into its folder, resuming partial
@@ -608,7 +730,7 @@ impl LocalModels {
         let mut before = 0u64;
         let mut files = Vec::new();
         for f in &entry.files {
-            let dest = dir.join(&f.name);
+            let dest = dir.join(f.local());
             let whole = std::fs::metadata(&dest).is_ok_and(|m| m.len() == f.size);
             if !whole {
                 let url = entry.file_url(f, &self.endpoint);
@@ -630,7 +752,7 @@ impl LocalModels {
                 .await
                 .map_err(|e| match e {
                     tern_providers::download::DownloadError::Cancelled => ModelError::Cancelled,
-                    e => ModelError::Download(format!("{}: {e}", f.name)),
+                    e => ModelError::Download(format!("{}: {e}", f.local())),
                 })?;
             }
             before += f.size;
@@ -638,16 +760,16 @@ impl LocalModels {
                 done: before,
                 total,
             });
-            on_event(DownloadEvent::Verifying(f.name.clone()));
+            on_event(DownloadEvent::Verifying(f.local().to_owned()));
             let got = sha256_file(&dest)?;
             if let Some(want) = &f.sha256
                 && !want.eq_ignore_ascii_case(&got)
             {
                 let _ = std::fs::remove_file(&dest);
-                return Err(ModelError::Checksum(f.name.clone()));
+                return Err(ModelError::Checksum(f.local().to_owned()));
             }
             files.push(InstalledFile {
-                name: f.name.clone(),
+                name: f.local().to_owned(),
                 size: f.size,
                 sha256: got,
             });

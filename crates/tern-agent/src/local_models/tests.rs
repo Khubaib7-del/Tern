@@ -79,17 +79,101 @@ async fn server() -> MockServer {
 }
 
 #[test]
-fn the_builtin_manifest_is_valid_and_marked_placeholder() {
+fn every_task_has_one_default_and_one_alternative() {
     let m = Manifest::builtin();
-    assert!(m.models.len() >= 2);
-    for e in &m.models {
-        assert!(e.placeholder, "{} should be marked placeholder", e.id);
-        assert!(e.size() > 0);
-        assert!(e.files.iter().all(|f| f.sha256.is_some()));
-        assert!(!e.licence.is_empty());
+    for t in Task::ALL {
+        let roles: Vec<ModelRole> = m
+            .for_task(t)
+            .map(|e| e.role)
+            .filter(|r| *r != ModelRole::Addon)
+            .collect();
+        assert_eq!(
+            roles,
+            vec![ModelRole::Default, ModelRole::Alternative],
+            "{t:?}"
+        );
     }
-    assert!(m.for_task(Task::Ocr).next().is_some());
-    assert!(m.for_task(Task::SpeechToText).next().is_some());
+    for e in &m.models {
+        assert!(!e.placeholder, "{}", e.id);
+        assert!(e.size() > 0);
+        assert!(e.files.iter().all(|f| f.sha256.is_some()), "{}", e.id);
+        assert!(
+            !e.licence.is_empty() && e.licence_note.is_some(),
+            "{}",
+            e.id
+        );
+        // Pinned revisions only, so the hashes cannot drift.
+        for f in &e.files {
+            let rev = f.revision.as_deref().unwrap_or(&e.revision);
+            assert!(f.url.is_some() || rev.len() == 40, "{} {}", e.id, f.name);
+        }
+    }
+    // Licences that need words on screen carry them.
+    let st = m.find("supertonic-3").unwrap();
+    assert_eq!(st.licence, "OpenRAIL-M");
+    assert!(st.licence_url.is_some());
+    assert!(
+        m.find("parakeet-tdt-0.6b-v3")
+            .unwrap()
+            .licence_note
+            .as_deref()
+            .unwrap()
+            .contains("Attribution")
+    );
+    // No GPL piece is downloaded for Kokoro.
+    let k = m.find("kokoro-82m-int8").unwrap();
+    assert!(k.files.iter().all(|f| !f.name.contains("espeak")));
+    assert!(k.licence_note.as_deref().unwrap().contains("espeak-ng"));
+}
+
+#[test]
+fn a_model_made_of_parts_fetches_each_from_its_repo() {
+    let m = Manifest::builtin();
+    let ocr = m.find("pp-ocrv6-small").unwrap();
+    let urls: Vec<String> = ocr
+        .files
+        .iter()
+        .map(|f| ocr.file_url(f, HF_ENDPOINT))
+        .collect();
+    assert!(
+        urls.iter()
+            .any(|u| u.contains("PP-OCRv6_small_rec_onnx/resolve/"))
+    );
+    assert!(
+        urls.iter()
+            .any(|u| u.contains("arabic_PP-OCRv5_mobile_rec_onnx/resolve/"))
+    );
+    let locals: std::collections::BTreeSet<&str> = ocr.files.iter().map(|f| f.local()).collect();
+    assert_eq!(locals.len(), ocr.files.len(), "local paths are distinct");
+    let t = m.find("tesseract-eng-urd").unwrap();
+    assert!(t.page().contains("github.com/tesseract-ocr"));
+}
+
+#[test]
+fn chosen_defaults_to_the_default_and_follows_the_users_pick() {
+    let dir = tempfile::tempdir().unwrap();
+    let lm = LocalModels::new(dir.path(), Manifest::builtin());
+    let mut prefs = LocalModelPrefs::default();
+    assert_eq!(lm.chosen(&prefs, Task::Ocr).unwrap().id, "pp-ocrv6-small");
+    let def = lm.manifest().find("pp-ocrv6-small").unwrap();
+    assert_eq!(lm.alternative_to(def).unwrap().id, "tesseract-eng-urd");
+    prefs.set_default(Task::Ocr, Some("tesseract-eng-urd"));
+    assert_eq!(
+        lm.chosen(&prefs, Task::Ocr).unwrap().id,
+        "tesseract-eng-urd"
+    );
+    let st = lm.statuses(&prefs);
+    assert!(
+        st.iter()
+            .any(|s| s.entry.id == "tesseract-eng-urd" && s.is_default)
+    );
+    assert!(
+        !st.iter()
+            .any(|s| s.entry.id == "pp-ocrv6-small" && s.is_default)
+    );
+    // The maths add-on is never the alternative.
+    let math = lm.manifest().find("pp-formulanet-plus-l").unwrap();
+    assert!(lm.alternative_to(math).is_none());
 }
 
 #[test]
@@ -121,7 +205,7 @@ fn manifest_rejects_unsafe_paths_duplicates_and_bad_hashes() {
 fn user_entries_replace_and_extend_the_builtin_list() {
     let dir = tempfile::tempdir().unwrap();
     let mut extra = manifest(None);
-    extra.models[0].id = "whisper-base-en".into();
+    extra.models[0].id = "whisper-small-q5_1".into();
     std::fs::write(
         dir.path().join(OVERRIDES),
         serde_json::to_string(&extra).unwrap(),
@@ -129,7 +213,7 @@ fn user_entries_replace_and_extend_the_builtin_list() {
     .unwrap();
     let (m, warn) = Manifest::load(dir.path());
     assert!(warn.is_none());
-    assert_eq!(m.find("whisper-base-en").unwrap().name, "Tiny OCR");
+    assert_eq!(m.find("whisper-small-q5_1").unwrap().name, "Tiny OCR");
     assert!(m.find("tiny-stt").is_some());
     std::fs::write(dir.path().join(OVERRIDES), "{not json").unwrap();
     let (m, warn) = Manifest::load(dir.path());
