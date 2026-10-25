@@ -8,6 +8,10 @@ use tern_agent::crawlers::{self, Crawler};
 use tern_agent::providers::{self as setup, CustomProvider, SecretStore};
 use tern_core::SecretString;
 
+use tern_agent::local_models::{
+    CancelDownload, DownloadEvent, LocalModelPrefs, LocalModels, ModelError, ModelStatus,
+};
+
 use super::{Bridge, Msg};
 use crate::providers::Kind;
 
@@ -23,6 +27,18 @@ pub enum SetupMsg {
     CustomSaved(Result<&'static str, String>),
     /// A custom provider was deleted, or why not.
     CustomRemoved(String, Result<(), String>),
+    /// Settings › Local models: every listed model with its state, the
+    /// models folder, and a warning (a broken `local-models.json`).
+    LocalModels(Vec<ModelStatus>, String, Option<String>),
+    /// A download's bytes so far across the model's files, and its size.
+    LocalProgress(String, u64, u64),
+    /// A download is checking this file's hash.
+    LocalVerifying(String, String),
+    /// A download ended: the model, the result, and whether it was
+    /// cancelled.
+    LocalDone(String, Result<(), String>, bool),
+    /// A model's files were deleted, or why not.
+    LocalRemoved(String, Result<(), String>),
 }
 
 fn send(tx: &tokio::sync::mpsc::UnboundedSender<Msg>, m: SetupMsg) {
@@ -39,6 +55,71 @@ fn crawler_keys() -> Vec<(Crawler, bool)> {
 }
 
 impl Bridge {
+    /// Reads every local model's state for Settings › Local models.
+    pub fn local_models_load(&self, prefs: LocalModelPrefs) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let m = match LocalModels::discover() {
+                Ok((lm, warn)) => SetupMsg::LocalModels(
+                    lm.statuses(&prefs),
+                    lm.root().display().to_string(),
+                    warn,
+                ),
+                Err(e) => SetupMsg::LocalModels(Vec::new(), String::new(), Some(e)),
+            };
+            send(&tx, m);
+        });
+    }
+
+    /// Downloads local model `id`; progress at most every 100 ms.
+    pub fn local_model_download(&self, id: String, cancel: CancelDownload) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let lm = match LocalModels::discover() {
+                Ok((lm, _)) => lm,
+                Err(e) => {
+                    send(&tx, SetupMsg::LocalDone(id, Err(e), false));
+                    return;
+                }
+            };
+            let progress_tx = tx.clone();
+            let pid = id.clone();
+            let mut last: Option<std::time::Instant> = None;
+            let mut on = move |e: DownloadEvent| match e {
+                DownloadEvent::Progress { done, total } => {
+                    let due =
+                        last.is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(100));
+                    if due || done == total {
+                        last = Some(std::time::Instant::now());
+                        send(
+                            &progress_tx,
+                            SetupMsg::LocalProgress(pid.clone(), done, total),
+                        );
+                    }
+                }
+                DownloadEvent::Verifying(f) => {
+                    send(&progress_tx, SetupMsg::LocalVerifying(pid.clone(), f));
+                }
+            };
+            let r = lm.download(&id, &cancel, &mut on).await;
+            let cancelled = matches!(r, Err(ModelError::Cancelled));
+            send(
+                &tx,
+                SetupMsg::LocalDone(id, r.map(|_| ()).map_err(|e| e.to_string()), cancelled),
+            );
+        });
+    }
+
+    /// Deletes local model `id`'s files.
+    pub fn local_model_remove(&self, id: String) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = LocalModels::discover()
+                .and_then(|(lm, _)| lm.remove(&id).map_err(|e| e.to_string()));
+            send(&tx, SetupMsg::LocalRemoved(id, r));
+        });
+    }
+
     /// Which page readers have a key.
     pub fn crawlers_load(&self) {
         let tx = self.tx.clone();

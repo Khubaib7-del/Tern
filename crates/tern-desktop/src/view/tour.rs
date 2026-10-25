@@ -820,6 +820,12 @@ fn script() -> Vec<Beat> {
             Section::Models,
         ),
         (
+            "t59b-settings-local-models",
+            "tern-only",
+            "Settings: Local models",
+            Section::LocalModels,
+        ),
+        (
             "t60-settings-tools",
             "tern-only",
             "Settings: Tools",

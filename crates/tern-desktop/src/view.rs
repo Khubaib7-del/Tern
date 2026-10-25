@@ -45,6 +45,7 @@ mod flow_view;
 mod frame;
 mod git_view;
 mod library_view;
+mod localmodels_view;
 mod onboarding_view;
 mod palette_view;
 mod panels_view;

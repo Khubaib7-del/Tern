@@ -157,7 +157,7 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                     // Redraw at most every ~1% to keep the terminal quiet.
                     if total == 0 || done == total || done.saturating_sub(last) * 100 >= total {
                         last = done;
-                        let pct = if total == 0 { 100 } else { done * 100 / total };
+                        let pct = (done * 100).checked_div(total).unwrap_or(100);
                         eprint!(
                             "\r  {pct:>3}%  {} / {}   ",
                             human_size(done),

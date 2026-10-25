@@ -62,6 +62,8 @@ pub struct LocalModelsPage {
     pub warning: Option<String>,
     /// Where models are stored, for the page's footer.
     pub root: Option<String>,
+    /// A Delete clicked once: the next click on the same model deletes.
+    pub confirm_delete: Option<String>,
 }
 
 impl LocalModelsPage {
@@ -127,6 +129,18 @@ impl LocalModelsPage {
             _ => {
                 self.errors.remove(id);
             }
+        }
+    }
+
+    /// The first Delete click on a model arms it; the second returns
+    /// `true`. Another model's Delete re-arms on that one.
+    pub fn arm_delete(&mut self, id: &str) -> bool {
+        if self.confirm_delete.as_deref() == Some(id) {
+            self.confirm_delete = None;
+            true
+        } else {
+            self.confirm_delete = Some(id.to_owned());
+            false
         }
     }
 
@@ -216,6 +230,15 @@ mod tests {
         assert_eq!(p.errors[id], "network");
         p.start(id);
         assert!(p.errors.is_empty(), "a new try clears the error");
+    }
+
+    #[test]
+    fn delete_asks_twice() {
+        let mut p = page();
+        assert!(!p.arm_delete("a"));
+        assert!(!p.arm_delete("b"));
+        assert!(p.arm_delete("b"));
+        assert!(p.confirm_delete.is_none());
     }
 
     #[test]
