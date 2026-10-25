@@ -5054,6 +5054,13 @@ impl Render for Workspace {
             .flex_col()
             .bg(p.canvas)
             .text_color(p.text)
+            // First in the tree: prepaints once the workspace is laid out
+            // (`crate::perf`'s layout phase ends here).
+            .child(
+                gpui_kit::canvas(|_, _, _| crate::perf::prepaint_start(), |_, _, _, _| ())
+                    .absolute()
+                    .size_0(),
+            )
             .when(panels.dragging().is_some(), |d| d.cursor_col_resize())
             .on_mouse_move(
                 cx.listener(|this, e: &gpui_kit::MouseMoveEvent, window, cx| {

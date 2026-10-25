@@ -3,11 +3,13 @@
 //! The window's root (`view::Shell`) marks the start of every frame it
 //! draws and a canvas at the end of its tree marks the end of paint, so a
 //! frame's time is its whole CPU side: render, layout, prepaint and paint
-//! (not the GPU). A canvas at the start of the tree splits it into
-//! phases: its prepaint runs once every element is rendered and laid out
-//! (`layout`: views' render, request_layout and the taffy pass), its
-//! paint once everything is prepainted (`prepaint`, with the deferred
-//! popovers), and the last canvas's paint ends `paint`. The workspace says when it rendered (a frame drawn with
+//! (not the GPU). Canvases split it into phases: one first in the
+//! root's tree and one first in the workspace's mark the end of
+//! `layout` (render, request_layout and the taffy pass; the cached
+//! workspace renders and lays out inside the root's prepaint, so the
+//! later mark counts), the root's first canvas paints when `prepaint`
+//! ends (with the deferred popovers), and the last canvas's paint ends
+//! `paint`. The workspace says when it rendered (a frame drawn with
 //! the workspace cached is only Scout) and how long building its elements
 //! took, under a tag for the screen (`settings/providers`, `chat`).
 //!
@@ -114,11 +116,13 @@ impl Meter {
         self.paint_at = None;
     }
 
-    /// The frame's first element started prepainting at `now` (layout
-    /// done).
+    /// An element marking the end of layout prepaints at `now`. The
+    /// window's root marks it, and so does the workspace when it renders:
+    /// a cached view renders and lays out inside its parent's prepaint,
+    /// so the last mark before paint is where layout ended.
     pub fn prepaint_start(&mut self, now: Instant) {
-        if self.frame_start.is_some() {
-            self.prepaint_at.get_or_insert(now);
+        if self.frame_start.is_some() && self.paint_at.is_none() {
+            self.prepaint_at = Some(now);
         }
     }
 
@@ -289,9 +293,10 @@ mod tests {
         m.prepaint_start(t0);
         m.frame_start(t0);
         m.workspace("settings/providers", ms(2), t0);
-        m.prepaint_start(t0 + ms(6));
-        m.prepaint_start(t0 + ms(7)); // only the first counts
+        m.prepaint_start(t0 + ms(3));
+        m.prepaint_start(t0 + ms(7)); // the last before paint counts
         m.paint_start(t0 + ms(9));
+        m.prepaint_start(t0 + ms(10)); // after paint: ignored
         assert!(m.frame_end(t0 + ms(13)).is_none());
         // A frame with no phase marks counts as all layout.
         m.frame_start(t0 + ms(20));
