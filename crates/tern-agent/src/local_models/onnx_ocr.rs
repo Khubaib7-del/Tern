@@ -24,6 +24,13 @@ pub struct OnnxOcr {
     loaded: Mutex<HashMap<PathBuf, Arc<Pipelines>>>,
 }
 
+impl std::fmt::Debug for OnnxOcr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.loaded.lock().map(|m| m.len()).unwrap_or(0);
+        f.debug_struct("OnnxOcr").field("loaded", &n).finish()
+    }
+}
+
 struct Pipelines {
     main: OAROCR,
     arabic: Option<OAROCR>,
@@ -129,5 +136,42 @@ impl LocalEngine for OnnxOcr {
             .filter(|l| !l.is_empty())
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_models::Manifest;
+
+    #[test]
+    fn runs_only_the_paddle_ocr_models() {
+        let m = Manifest::builtin();
+        let runs: Vec<&str> = m
+            .models
+            .iter()
+            .filter(|e| fits(e))
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(runs, ["pp-ocrv6-small"]);
+    }
+
+    /// Reads a real picture with the downloaded PP-OCRv6 model. Needs
+    /// `TERN_OCR_MODEL_DIR` (an installed `pp-ocrv6-small` folder) and
+    /// `TERN_OCR_IMAGE`; run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn reads_a_picture_with_the_installed_model() {
+        let dir = PathBuf::from(std::env::var("TERN_OCR_MODEL_DIR").unwrap());
+        let image = std::fs::read(std::env::var("TERN_OCR_IMAGE").unwrap()).unwrap();
+        let m = Manifest::builtin();
+        let entry = m.find("pp-ocrv6-small").unwrap();
+        let text = OnnxOcr::default().ocr(&dir, entry, &image).unwrap();
+        println!("{text}");
+        if let Ok(want) = std::env::var("TERN_OCR_EXPECT") {
+            for w in want.split('|') {
+                assert!(text.contains(w), "{w:?} not in {text:?}");
+            }
+        }
     }
 }
