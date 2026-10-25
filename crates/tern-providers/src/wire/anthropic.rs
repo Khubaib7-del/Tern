@@ -35,6 +35,14 @@ pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
+    if !req.tools.is_empty() {
+        body["tools"] = req
+            .tools
+            .iter()
+            .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.parameters}))
+            .collect();
+        body["tool_choice"] = json!({"type": "auto"});
+    }
     body
 }
 
@@ -49,6 +57,17 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
         .filter_map(|b| b.get("text").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("");
+    let calls: Vec<(String, Value)> = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|b| {
+            Some((
+                b.get("name")?.as_str()?.to_owned(),
+                b.get("input").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect();
+    let text = crate::chat::with_tool_calls(text, &calls);
     let usage = match (
         u64_at(v, &["usage", "input_tokens"]),
         u64_at(v, &["usage", "output_tokens"]),

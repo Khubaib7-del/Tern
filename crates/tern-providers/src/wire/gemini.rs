@@ -29,7 +29,82 @@ pub(crate) fn chat_body(req: &ChatRequest) -> Value {
     if let Some(s) = &req.system {
         body["systemInstruction"] = json!({"parts": [{"text": s}]});
     }
+    if !req.tools.is_empty() {
+        let decls: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                let mut d = json!({"name": t.name, "description": t.description});
+                let p = schema(&t.parameters);
+                if p.get("properties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|o| !o.is_empty())
+                {
+                    d["parameters"] = p;
+                }
+                d
+            })
+            .collect();
+        body["tools"] = json!([{"functionDeclarations": decls}]);
+        body["toolConfig"] = json!({"functionCallingConfig": {"mode": "AUTO"}});
+    }
     body
+}
+
+/// A JSON Schema cut down to the OpenAPI subset Gemini accepts (it
+/// refuses `additionalProperties`, `$schema`, `default` and the like).
+pub(crate) fn schema(v: &Value) -> Value {
+    let Some(o) = v.as_object() else {
+        return v.clone();
+    };
+    let mut out = serde_json::Map::new();
+    for (k, val) in o {
+        match k.as_str() {
+            "type" => {
+                // `["string", "null"]` becomes `string`, nullable.
+                if let Some(a) = val.as_array() {
+                    let t = a.iter().find(|t| t.as_str() != Some("null"));
+                    out.insert("type".into(), t.cloned().unwrap_or(json!("string")));
+                    if a.iter().any(|t| t.as_str() == Some("null")) {
+                        out.insert("nullable".into(), json!(true));
+                    }
+                } else {
+                    out.insert("type".into(), val.clone());
+                }
+            }
+            "description" | "enum" | "format" | "nullable" | "required" | "minimum" | "maximum"
+            | "minItems" | "maxItems" => {
+                out.insert(k.clone(), val.clone());
+            }
+            "items" => {
+                out.insert(k.clone(), schema(val));
+            }
+            "properties" => {
+                let props = val
+                    .as_object()
+                    .map(|p| p.iter().map(|(n, s)| (n.clone(), schema(s))).collect())
+                    .unwrap_or_default();
+                out.insert(k.clone(), Value::Object(props));
+            }
+            _ => {}
+        }
+    }
+    Value::Object(out)
+}
+
+/// The native function calls in a candidate's parts.
+pub(crate) fn function_calls(parts: Option<&Vec<Value>>) -> Vec<(String, Value)> {
+    parts
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let f = p.get("functionCall")?;
+            Some((
+                f.get("name")?.as_str()?.to_owned(),
+                f.get("args").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, String> {
@@ -49,6 +124,10 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
                 .join("")
         })
         .unwrap_or_default();
+    let text = crate::chat::with_tool_calls(
+        text,
+        &function_calls(cand.pointer("/content/parts").and_then(Value::as_array)),
+    );
     let usage = match (
         u64_at(v, &["usageMetadata", "promptTokenCount"]),
         u64_at(v, &["usageMetadata", "candidatesTokenCount"]),
