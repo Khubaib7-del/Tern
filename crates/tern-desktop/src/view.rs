@@ -1039,24 +1039,6 @@ impl Workspace {
             Msg::FileTranscribed(name, secs, result) => {
                 self.model.audio_transcribed(&name, secs, result);
             }
-            Msg::Transcribed(result) => {
-                self.model.transcribing = false;
-                match result {
-                    Ok(text) => {
-                        let now = self.composer.read(cx).value().to_string();
-                        let joined = if now.trim().is_empty() {
-                            text
-                        } else {
-                            format!("{} {text}", now.trim_end())
-                        };
-                        self.composer
-                            .update(cx, |c, cx| c.set_value(joined, window, cx));
-                    }
-                    Err(e) => self
-                        .model
-                        .toast_error(format!("Voice input failed: {e}"), None),
-                }
-            }
             Msg::Decision(m) => match *m {
                 crate::bridge::DecisionMsg::Loaded(rows, prefs, err) => {
                     self.model.decision.load(rows, prefs, err)
@@ -3822,7 +3804,7 @@ impl Workspace {
                 "Voice input needs a speech-to-text model: a local one (Settings › Local models) or a provider one (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
                 true,
             ),
-            (Some(v), false) if self.model.transcribing => (
+            (Some(v), false) if !self.model.audio_pending.is_empty() => (
                 AssetIcon::Mic,
                 format!("Transcribing with {v}…").into(),
                 false,

@@ -45,8 +45,6 @@ pub enum Msg {
     /// An attached audio file's transcript (file name, seconds it plays
     /// when known), or why not.
     FileTranscribed(String, Option<f64>, Result<String, String>),
-    /// Speech came back as text for the composer, or why not.
-    Transcribed(Result<String, String>),
     /// One window of streaming dictation came back: its number and text.
     Dictated(u64, Result<String, String>),
     /// A past chat's turns, read before its model connects, so the
@@ -224,7 +222,6 @@ impl std::fmt::Debug for Msg {
             Self::Info(e) => write!(f, "Info({e})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
-            Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
             Self::FileTranscribed(name, _, r) => {
                 write!(f, "FileTranscribed({name}, ok: {})", r.is_ok())
             }

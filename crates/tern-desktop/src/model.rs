@@ -396,8 +396,6 @@ pub struct Model {
     /// Every configured provider's models, for routing the mic and
     /// pictures (`tern_agent::media`).
     pub catalog: tern_agent::media::Catalog,
-    /// Speech is on its way to the speech-to-text model.
-    pub transcribing: bool,
     /// Attached audio files being transcribed: name and how long each
     /// plays, when known. Each shows as a chip until its transcript
     /// arrives as an attachment.
@@ -594,7 +592,6 @@ impl Model {
             attachments: Vec::new(),
             outgoing_images: Vec::new(),
             catalog: Default::default(),
-            transcribing: false,
             audio_pending: Vec::new(),
             mention: None,
             slash: None,
