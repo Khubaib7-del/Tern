@@ -39,6 +39,9 @@ pub fn fits(entry: &ModelEntry) -> bool {
         && model_file(entry).is_some()
 }
 
+/// The last run's load and inference times, for the timings line.
+static LAST: Mutex<String> = Mutex::new(String::new());
+
 fn threads() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get().clamp(1, 8) as i32)
@@ -91,8 +94,9 @@ impl LocalEngine for WhisperCpp {
 
     fn build_info(&self) -> String {
         format!(
-            "({} threads; {})",
+            "({} threads; {}; {})",
             threads(),
+            LAST.lock().map(|t| t.clone()).unwrap_or_default(),
             whisper_rs::print_system_info().trim()
         )
     }
@@ -106,7 +110,9 @@ impl LocalEngine for WhisperCpp {
         ctl: &TranscribeCtl,
     ) -> Result<String, String> {
         let file = model_file(entry).ok_or_else(|| format!("{} has no .bin file", entry.name))?;
+        let loading = std::time::Instant::now();
         let ctx = self.context(&dir.join(file))?;
+        let load_ms = loading.elapsed().as_millis();
         let mut state = ctx
             .create_state()
             .map_err(|e| format!("cannot start Whisper: {e}"))?;
@@ -129,15 +135,27 @@ impl LocalEngine for WhisperCpp {
             progress.set_progress((5 + pc.clamp(0, 100) * 95 / 100) as u8)
         });
         // Checked between the model's steps: × on the chip, or the timeout.
+        // whisper-rs 0.16 reads the closure back as the type it was given
+        // but stores it boxed as `Box<dyn FnMut() -> bool>`; a plain
+        // closure is then read as garbage and aborts every run (error -6,
+        // seen on CI). Handing it that boxed type makes both sides agree.
         let stop = ctl.clone();
-        p.set_abort_callback_safe(move || stop.is_cancelled());
+        let abort: Box<dyn FnMut() -> bool> = Box::new(move || stop.is_cancelled());
+        p.set_abort_callback_safe(abort);
         // whisper.cpp wants at least a second; pad short clips with quiet.
         let min = super::resample::RATE as usize + 1_600;
         let mut pcm = audio.to_vec();
         if pcm.len() < min {
             pcm.resize(min, 0.0);
         }
+        let running = std::time::Instant::now();
         let ran = state.full(p, &pcm);
+        if let Ok(mut t) = LAST.lock() {
+            *t = format!(
+                "load {load_ms} ms, whisper_full {} ms",
+                running.elapsed().as_millis()
+            );
+        }
         if ctl.is_cancelled() {
             return Err(CANCELLED.into());
         }
