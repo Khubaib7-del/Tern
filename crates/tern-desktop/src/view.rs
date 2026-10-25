@@ -159,6 +159,9 @@ pub struct Workspace {
     card_swipe: std::cell::RefCell<crate::swipe::Swipe>,
     /// Pressed controls' springs, for the press jiggle (`view/press.rs`).
     presses: press::Presses,
+    /// Where each culled row of a long Settings page last sat
+    /// (`crate::cull`).
+    cull_rows: std::rc::Rc<std::cell::RefCell<crate::cull::Rows>>,
     /// The empty state's mark (`crate::mark`), and when it started playing.
     mark_anim: std::rc::Rc<crate::mark::MarkAnim>,
     mark_since: Instant,
@@ -597,6 +600,7 @@ impl Workspace {
             mark_since: Instant::now(),
             mark_harness: tern_agent::Harness::Research,
             presses: Default::default(),
+            cull_rows: Default::default(),
             card_swipe: Default::default(),
             rail_slots: Default::default(),
             measured: Default::default(),
@@ -3940,7 +3944,11 @@ impl Workspace {
             .cloned()
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|r| self.service_row(r, p, cx))
+            .map(|r| {
+                let key = format!("{:?}-{}", r.kind, r.id);
+                let handle = self.settings_page_scroll();
+                self.culled(key, &handle, || self.service_row(r, p, cx))
+            })
             .collect();
         div()
             .flex()
@@ -3956,6 +3964,54 @@ impl Workspace {
                     .border_color(p.border)
                     .children(rows),
             )
+    }
+
+    /// A row of a long scrolling page: built by `build` when it is near
+    /// the viewport of `handle`'s scroll area, else an empty box of its
+    /// last height (`crate::cull`). Either way it records where it sits.
+    pub(super) fn culled(
+        &self,
+        key: String,
+        handle: &ScrollHandle,
+        build: impl FnOnce() -> AnyElement,
+    ) -> AnyElement {
+        let view = handle.bounds();
+        let off = f32::from(handle.offset().y);
+        let boxed = self.cull_rows.borrow().hidden(
+            &key,
+            off,
+            f32::from(view.origin.y),
+            f32::from(view.size.height),
+        );
+        let inner = match boxed {
+            Some(h) => div().w_full().h(px(h)).into_any_element(),
+            None => build(),
+        };
+        let rows = self.cull_rows.clone();
+        let handle = handle.clone();
+        div()
+            .relative()
+            .w_full()
+            .child(inner)
+            .child(
+                gpui_kit::canvas(
+                    move |b, _, _| {
+                        let off = f32::from(handle.offset().y);
+                        rows.borrow_mut().set(
+                            &key,
+                            crate::cull::Spot::at(
+                                f32::from(b.origin.y),
+                                f32::from(b.size.height),
+                                off,
+                            ),
+                        );
+                    },
+                    |_, _, _, _| (),
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .into_any_element()
     }
 
     fn service_row(&self, r: ServiceRow, p: Palette, cx: &mut Context<Self>) -> AnyElement {
