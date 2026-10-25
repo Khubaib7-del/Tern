@@ -44,7 +44,7 @@ impl Shell {
 }
 
 impl Render for Shell {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Every frame drawn starts here (the root re-renders whenever any
         // view in the window changed); the canvas at the end marks the end
         // of paint (`crate::perf`).
@@ -52,6 +52,7 @@ impl Render for Shell {
         let mut full = StyleRefinement::default();
         full.size.width = Some(gpui_kit::relative(1.).into());
         full.size.height = Some(gpui_kit::relative(1.).into());
+        let covers = self.theme_wipe(window, cx);
         div()
             .relative()
             .size_full()
@@ -69,12 +70,37 @@ impl Render for Shell {
             // the caption out (`crate::caption`).
             .children(caption_layer(window))
             .child(self.workspace.clone().cached(full))
+            .children(covers)
             .child(self.pet.clone())
             .child(
                 gpui_kit::canvas(|_, _, _| (), |_, _, _, _| crate::perf::end())
                     .absolute()
                     .size_0(),
             )
+    }
+}
+
+impl Shell {
+    /// The light/dark switch (v2 s17): the workspace draws once in the new
+    /// theme, whole, and the old theme's canvas parts from the centre out
+    /// over it. The covers are drawn here, over the cached workspace, so
+    /// the wipe's frames redraw only them, never the workspace (Settings
+    /// › Providers cost a full workspace frame per wipe frame before).
+    fn theme_wipe(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let now = Instant::now();
+        let w = self.workspace.read(cx).wipe.filter(|w| !w.done(now))?;
+        super::frame::next_frame(window, cx);
+        let cover = f32::from(window.viewport_size().width) * w.inset(now);
+        let old = w.old_canvas();
+        let side = || div().absolute().top_0().bottom_0().w(px(cover)).bg(old);
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .child(side().left_0())
+                .child(side().right_0())
+                .into_any_element(),
+        )
     }
 }
 

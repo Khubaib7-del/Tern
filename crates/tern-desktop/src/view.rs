@@ -4964,38 +4964,12 @@ impl Render for Workspace {
             now,
             reduced,
         );
-        if self.wipe.is_some() || self.sidebar_slide.moving() || self.panel_slide.moving() {
+        // The theme wipe's covers are drawn by the window's root over the
+        // cached workspace (`Shell`), so the wipe's frames never redraw
+        // the workspace: it draws once in the new theme.
+        if self.sidebar_slide.moving() || self.panel_slide.moving() {
             frame::next_frame(window, cx);
         }
-        // The theme change: the new theme is drawn whole and the old one's
-        // canvas parts from the centre out (v2 s17), no ripple.
-        let ripple = self.wipe.map(|w| {
-            let inset = w.inset(now);
-            let width = f32::from(window.viewport_size().width);
-            let cover = width * inset;
-            let old = w.old_canvas();
-            div()
-                .absolute()
-                .inset_0()
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left_0()
-                        .w(px(cover))
-                        .bg(old),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right_0()
-                        .w(px(cover))
-                        .bg(old),
-                )
-        });
         // The right pane: the browser when it is showing, else the docked
         // side chat, else the run panel.
         let side_docked = self.model.cont.side.open && !self.model.cont.side.popped;
@@ -5199,7 +5173,6 @@ impl Render for Workspace {
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
             .children(self.palette_overlay(p, cx))
-            .children(ripple)
             .children(self.splash(p, window));
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
