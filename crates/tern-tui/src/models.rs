@@ -14,7 +14,8 @@ use tern_agent::local_models::{
 pub(crate) enum ModelsCmd {
     /// Every model Tern can download, by task, with what is installed.
     List {
-        /// Only this task: ocr, doc_parse, vision, stt, tts, embedding.
+        /// Only this task: ocr, doc_parse, vision, dictation, stt, tts,
+        /// embedding.
         #[arg(long)]
         task: Option<String>,
         #[arg(long)]
@@ -81,6 +82,7 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                             "id": s.entry.id,
                             "task": s.entry.task,
                             "name": s.entry.name,
+                            "role": s.entry.role,
                             "size": s.entry.size(),
                             "licence": s.entry.licence,
                             "runtime": s.entry.runtime,
@@ -116,9 +118,10 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                         State::NotInstalled => "-".to_owned(),
                     };
                     println!(
-                        "  {} {:<26} {:>8}  {:<11} {:<14} {}{}",
+                        "  {} {:<28} {:<11} {:>8}  {:<11} {:<14} {}{}",
                         if s.is_default { '*' } else { ' ' },
                         s.entry.id,
+                        s.entry.role.badge(),
                         human_size(s.entry.size()),
                         s.entry.licence,
                         state,
@@ -132,7 +135,8 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                 }
             }
             println!(
-                "\n* default for its task. Models are stored in {}",
+                "\n* your default for its task. Default and Alternative are Tern's picks; \
+                 Optional parts download only when wanted.\nModels are stored in {}",
                 lm.root().display()
             );
             Ok(())

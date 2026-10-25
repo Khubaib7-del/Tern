@@ -301,6 +301,14 @@ mod tests {
         assert_eq!(LocalModelsPage::download_label(math), "Add");
         assert_eq!(LocalModelsPage::download_label(s), "Download");
         assert_eq!(logo_key(s), "whisper");
+        // Every source row shows its maker's logo, never a bare initial.
+        for s in p.statuses.iter().flatten() {
+            assert!(
+                matches!(crate::brands::logo(&logo_key(s)), crate::brands::Logo::Mark(..)),
+                "{} has no logo",
+                s.entry.id
+            );
+        }
         let mut s = s.clone();
         s.state = State::Partial(10);
         assert_eq!(LocalModelsPage::download_label(&s), "Resume");
