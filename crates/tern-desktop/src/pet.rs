@@ -694,6 +694,16 @@ impl ToolbarHover {
     }
 }
 
+/// The part of Scout's box that takes the pointer, as (x, y, w, h)
+/// inside a box of `size`: the body, not the frame's transparent margin
+/// or the shadow, so clicks beside Scout reach what is underneath.
+pub fn sprite_hit(size: (f32, f32)) -> (f32, f32, f32, f32) {
+    let (w, h) = size;
+    let x = w * 0.2;
+    let y = h * 0.1;
+    (x, y, (w - 2. * x).max(8.), (h - y - 4.).max(8.))
+}
+
 /// Where the toolbar sits for Scout at `pos` (top-left) of `size`: above
 /// it, or below it when there is no room under the title bar, centred on
 /// Scout and kept inside the window. Returns the toolbar's top-left in
@@ -967,6 +977,14 @@ mod tests {
         assert!(!h.visible(t0));
         h.set(HoverPart::Gap, false, ms(1));
         assert!(!h.visible(ms(2)));
+    }
+
+    #[test]
+    fn only_scouts_body_takes_the_pointer() {
+        let (x, y, w, h) = sprite_hit((90., 90.));
+        assert!(x > 0. && y > 0.);
+        assert!(x + w < 90. && y + h < 90.);
+        assert!(w >= 50. && h >= 70.);
     }
 
     #[test]

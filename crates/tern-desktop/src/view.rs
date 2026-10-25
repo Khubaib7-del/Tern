@@ -4875,9 +4875,16 @@ impl Render for Workspace {
         self.tick_scout(window, cx);
         self.tick_explain(window, cx);
         self.sync_web(window, cx);
-        // The Graph view draws in each time it opens.
+        // The Graph view draws in each time it opens, and again when the
+        // chat's graph changes (another chat, new sources or claims).
         if self.model.run_panel.view == RunView::Graph && self.model.run_panel_open {
-            self.graph.opened.get_or_insert_with(Instant::now);
+            let (_, _, changed) = self.graph_data();
+            if changed {
+                self.graph.opened = Some(Instant::now());
+                self.graph.hover = None;
+            } else {
+                self.graph.opened.get_or_insert_with(Instant::now);
+            }
         } else {
             self.graph.opened = None;
         }

@@ -21,7 +21,7 @@ use gpui_kit::{
 };
 
 use super::Workspace;
-use crate::pet::{Animator, Frame, Manifest, State};
+use crate::pet::{Animator, Frame, HoverPart, Manifest, State, ToolbarHover};
 use crate::theme::Palette;
 
 /// The window's root: the workspace (cached) with Scout floating over it.
@@ -77,9 +77,13 @@ pub struct Pet {
     /// While dragging: the press point's offset into the pet, and whether
     /// it has moved far enough to count as a drag (else it is a click).
     drag: Option<(Point<gpui_kit::Pixels>, bool)>,
-    hover: bool,
+    /// Scout, the gap and the toolbar as one hover region, with a short
+    /// grace before the toolbar hides (`crate::pet::ToolbarHover`).
+    hover: ToolbarHover,
     menu: bool,
     wake: Option<Task<()>>,
+    /// Wakes Scout when the toolbar's hide grace runs out.
+    hide: Option<Task<()>>,
     /// When Scout last turned to Done; it settles to idle after a beat.
     done_at: Option<Instant>,
 }
@@ -98,9 +102,10 @@ impl Pet {
             anim: Animator::new(Instant::now()),
             pos: None,
             drag: None,
-            hover: false,
+            hover: ToolbarHover::default(),
             menu: false,
             wake: None,
+            hide: None,
             done_at: None,
         }
     }
@@ -138,6 +143,38 @@ impl Pet {
                 });
             }));
         }
+    }
+
+    /// The pointer entered or left part of the hover region (or the menu
+    /// opened or closed). Called from listeners: it only notifies and
+    /// arms a timer, never asks GPUI for a frame directly.
+    fn set_hover(&mut self, part: HoverPart, on: bool, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        let was = self.hover;
+        self.hover.set(part, on, now);
+        if let Some(wait) = self.hover.hides_in(now) {
+            self.hide = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(wait + Duration::from_millis(10))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.hide = None;
+                    cx.notify();
+                });
+            }));
+        } else {
+            // Back inside: the pending hide is cancelled.
+            self.hide = None;
+        }
+        if was != self.hover {
+            cx.notify();
+        }
+    }
+
+    fn set_menu(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.menu = open;
+        self.set_hover(HoverPart::Menu, open, cx);
+        cx.notify();
     }
 
     fn drag_move(&mut self, at: Point<gpui_kit::Pixels>, window: &Window, cx: &mut Context<Self>) {
@@ -332,6 +369,8 @@ impl Render for Pet {
         };
         if snap.hidden {
             self.menu = false;
+            self.hover.reset();
+            self.hide = None;
             return div().into_any_element();
         }
         let p = snap.palette;
@@ -402,7 +441,7 @@ impl Render for Pet {
                     |d, t| d.opacity(t).mb(px((1. - t) * 4.)),
                 )
         });
-        let show_tools = (self.hover || self.menu) && !dragging;
+        let show_tools = self.hover.visible(now) && !dragging;
         let tool = |id: &'static str, icon: gpui_kit::component::Icon, tip: &'static str| {
             div()
                 .id(id)
@@ -424,52 +463,92 @@ impl Render for Pet {
                 })
         };
         let recording = snap.recording;
-        let toolbar = show_tools.then(|| {
+        let bar_w = 3. * crate::pet::TOOLBAR_BUTTON + 2. * crate::pet::TOOLBAR_GAP;
+        let ((bar_x, bar_y), bar_below) = crate::pet::toolbar_pos(pos, (w, h), bar_w, vp);
+        // The bridge between Scout and the toolbar: its own hover part, so
+        // the trip across the gap keeps the toolbar. It does not occlude,
+        // so a click there still reaches what is underneath.
+        let bridge = show_tools.then(|| {
+            let left = bar_x.min(pos.0 + w * 0.2);
+            let right = (bar_x + bar_w).max(pos.0 + w * 0.8);
+            let (top, bottom) = if bar_below {
+                (pos.1 + h - 8., bar_y + 2.)
+            } else {
+                (bar_y + crate::pet::TOOLBAR_BUTTON - 2., pos.1 + 12.)
+            };
             div()
+                .id("scout-pet-bridge")
                 .absolute()
-                .top(px(-30.))
-                .left(px((w - 3. * 26. - 2. * 4.) / 2.))
-                .flex()
-                .gap_1()
-                .occlude()
-                .child(
-                    tool(
-                        "pet-new-chat",
-                        gpui_kit::component::Icon::new(gpui_kit::component::IconName::Plus),
-                        "New chat",
+                .left(px(left))
+                .top(px(top))
+                .w(px(right - left))
+                .h(px((bottom - top).max(4.)))
+                .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                    this.set_hover(HoverPart::Gap, *on, cx);
+                }))
+        });
+        // Deferred so it draws over every other layer (popovers, the
+        // rails) and is never clipped by them.
+        let toolbar = show_tools.then(|| {
+            gpui_kit::deferred(
+                div()
+                    .id("scout-pet-toolbar")
+                    .absolute()
+                    .left(px(bar_x))
+                    .top(px(bar_y))
+                    .h(px(crate::pet::TOOLBAR_BUTTON))
+                    .flex()
+                    .gap_1()
+                    .occlude()
+                    .on_hover(cx.listener(|this, on: &bool, _, cx| {
+                        this.set_hover(HoverPart::Bar, *on, cx);
+                    }))
+                    .child(
+                        tool(
+                            "pet-new-chat",
+                            gpui_kit::component::Icon::new(gpui_kit::component::IconName::Plus),
+                            "New chat",
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.with_workspace(window, cx, |w, window, cx| {
+                                w.pet_new_chat(window, cx)
+                            });
+                        })),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.with_workspace(window, cx, |w, window, cx| w.pet_new_chat(window, cx));
-                    })),
-                )
-                .child(
-                    tool(
-                        "pet-dictate",
-                        gpui_kit::component::Icon::new(if recording {
-                            gpui_kit::assets::IconName::CircleStop
-                        } else {
-                            gpui_kit::assets::IconName::Mic
-                        }),
-                        "Dictate",
+                    .child(
+                        tool(
+                            "pet-dictate",
+                            gpui_kit::component::Icon::new(if recording {
+                                gpui_kit::assets::IconName::CircleStop
+                            } else {
+                                gpui_kit::assets::IconName::Mic
+                            }),
+                            "Dictate",
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.with_workspace(window, cx, |w, window, cx| {
+                                w.pet_dictate(window, cx)
+                            });
+                        })),
                     )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.with_workspace(window, cx, |w, window, cx| w.pet_dictate(window, cx));
-                    })),
-                )
-                .child(
-                    tool(
-                        "pet-menu",
-                        gpui_kit::component::Icon::new(gpui_kit::component::IconName::Ellipsis),
-                        "Scout",
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.menu = !this.menu;
-                        cx.notify();
-                    })),
-                )
+                    .child(
+                        tool(
+                            "pet-menu",
+                            gpui_kit::component::Icon::new(
+                                gpui_kit::component::IconName::Ellipsis,
+                            ),
+                            "Scout",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            let open = !this.menu;
+                            this.set_menu(open, cx);
+                        })),
+                    ),
+            )
+            .with_priority(3)
         });
         let menu = self.menu.then(|| {
             let item = |id: &'static str, label: &'static str| {
@@ -502,13 +581,12 @@ impl Render for Pet {
                     .shadow_lg()
                     .occlude()
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.menu = false;
-                        cx.notify();
+                        this.set_menu(false, cx);
                     }))
                     .child(
                         item("pet-hide", "Hide Scout   Ctrl+.").on_click(cx.listener(
                             |this, _, window, cx| {
-                                this.menu = false;
+                                this.set_menu(false, cx);
                                 this.with_workspace(window, cx, |w, _, cx| {
                                     w.set_scout_hidden(true, cx)
                                 });
@@ -518,7 +596,7 @@ impl Render for Pet {
                     .child(
                         item("pet-settings", "Scout settings…").on_click(cx.listener(
                             |this, _, window, cx| {
-                                this.menu = false;
+                                this.set_menu(false, cx);
                                 this.with_workspace(window, cx, |w, window, cx| {
                                     w.open_settings(crate::settings::Section::Scout, window, cx)
                                 });
@@ -527,7 +605,7 @@ impl Render for Pet {
                     )
                     .child(item("pet-home", "Back to the corner").on_click(cx.listener(
                         |this, _, window, cx| {
-                            this.menu = false;
+                            this.set_menu(false, cx);
                             this.pos = None;
                             this.with_workspace(window, cx, |w, _, _| {
                                 w.save_ui_prefs(|p| p.scout_pos = None)
@@ -538,21 +616,25 @@ impl Render for Pet {
             )
             .with_priority(4)
         });
-        let pet = div()
+        // Only Scout's body takes the pointer: the transparent margin of
+        // its frame lets clicks through to what is underneath (the
+        // Settings nav, the sidebar), so Scout never eats a click it is
+        // not visibly on.
+        let (hx, hy, hw, hh) = crate::pet::sprite_hit((w, h));
+        let hit = div()
             .id("scout-pet")
             .absolute()
-            .left(px(pos.0))
-            .top(px(pos.1))
-            .w(px(w))
-            .h(px(h))
+            .left(px(hx))
+            .top(px(hy))
+            .w(px(hw))
+            .h(px(hh))
             .cursor(if dragging {
                 gpui_kit::CursorStyle::ClosedHand
             } else {
                 gpui_kit::CursorStyle::OpenHand
             })
             .on_hover(cx.listener(|this, on: &bool, _, cx| {
-                this.hover = *on;
-                cx.notify();
+                this.set_hover(HoverPart::Pet, *on, cx);
             }))
             .on_mouse_down(
                 MouseButton::Left,
@@ -560,6 +642,8 @@ impl Render for Pet {
                     let grab = e.position - gpui_kit::point(px(pos.0), px(pos.1));
                     this.pos = Some(pos);
                     this.drag = Some((grab, false));
+                    this.hover.reset();
+                    this.hide = None;
                     cx.stop_propagation();
                     cx.notify();
                 }),
@@ -570,10 +654,16 @@ impl Render for Pet {
                     gpui_kit::component::tooltip::Tooltip::new(format!("Scout · {label}"))
                         .build(window, cx)
                 }
-            })
+            });
+        let pet = div()
+            .absolute()
+            .left(px(pos.0))
+            .top(px(pos.1))
+            .w(px(w))
+            .h(px(h))
             .child(fig)
             .children(bubble)
-            .children(toolbar)
+            .child(hit)
             .children(menu);
         // While dragging, a full-window layer follows the pointer and ends
         // the drag wherever the button comes up.
@@ -597,6 +687,8 @@ impl Render for Pet {
             .inset_0()
             .children(catcher)
             .child(pet)
+            .children(bridge)
+            .children(toolbar)
             .into_any_element()
     }
 }
