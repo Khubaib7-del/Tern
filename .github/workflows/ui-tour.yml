@@ -101,6 +101,22 @@ jobs:
           ffprobe -v error -show_entries format=duration -of csv=p=0 out/tern-current-tour.mp4 || true
           cp "${TERN_TOUR_HOME}/data/logs/crash.log" out/ 2>/dev/null || true
           find "${TERN_TOUR_HOME}" -name '*.log' -exec cp {} out/ \; 2>/dev/null || true
+      - name: Frames per scene (two stills a scene, from the scene log)
+        if: always()
+        run: |
+          set -u
+          mkdir -p out/frames
+          start=$(cat out/rec_start_unix_ms.txt 2>/dev/null || echo 0)
+          grep -h '^TOUR scene' out/scene-log.txt 2>/dev/null | while read -r line; do
+            ms=$(echo "$line" | sed -n 's/.*unix_ms=\([0-9]*\).*/\1/p')
+            id=$(echo "$line" | sed -n 's/.* id=\([^ ]*\).*/\1/p')
+            [ -n "$ms" ] && [ -n "$id" ] || continue
+            for d in 900 2400; do
+              at=$(awk "BEGIN{printf \"%.2f\", ($ms - $start + $d)/1000}")
+              ffmpeg -y -loglevel error -ss "$at" -i out/tern-current-tour.mp4 -frames:v 1 "out/frames/${id}-${d}.png" || true
+            done
+          done
+          ls out/frames | head -100
       - name: Upload the recording and scene log
         if: always()
         uses: actions/upload-artifact@v7
