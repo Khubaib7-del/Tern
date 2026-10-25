@@ -45,6 +45,18 @@ pub(crate) enum ModelsCmd {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Transcribe an audio file on this computer with a local Whisper model
+    /// (the one in use for transcription unless `--model` names another).
+    Transcribe {
+        /// WAV, MP3, M4A/AAC, Ogg Vorbis, or FLAC.
+        file: std::path::PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+        /// The spoken language as a code (`en`, `ur`); detected when left
+        /// out.
+        #[arg(long)]
+        language: Option<String>,
+    },
     /// Switch an installed model on or off without deleting it.
     Enable {
         id: String,
@@ -268,6 +280,30 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
             let bytes = std::fs::read(&image)
                 .map_err(|e| format!("cannot read {}: {e}", image.display()))?;
             println!("{}", lm.ocr(&id, &bytes)?);
+            Ok(())
+        }
+        ModelsCmd::Transcribe {
+            file,
+            model,
+            language,
+        } => {
+            let id = match model {
+                Some(id) => id,
+                None => lm
+                    .usable(&prefs.local_models, Task::SpeechToText)
+                    .map(|e| e.id.clone())
+                    .ok_or("no local transcription model is installed and on; try `tern models download whisper-small-q5_1`")?,
+            };
+            let bytes =
+                std::fs::read(&file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            let name = file.to_string_lossy().into_owned();
+            let started = std::time::Instant::now();
+            let text = lm.transcribe_file(&id, &bytes, &name, language.as_deref())?;
+            println!("{}", text.trim());
+            eprintln!(
+                "({id}, {:.1} s on this computer)",
+                started.elapsed().as_secs_f32()
+            );
             Ok(())
         }
         ModelsCmd::Enable { id, state } => {

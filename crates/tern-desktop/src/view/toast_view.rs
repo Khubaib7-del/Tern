@@ -15,9 +15,6 @@ use super::press::Capsule as _;
 use crate::theme::Palette;
 use crate::toast::{Level, Retry};
 
-/// The stack's width.
-const TOAST_W: f32 = 340.;
-
 impl Workspace {
     /// Advances the toasts and, while one is fading or counting down,
     /// schedules the next look at them (a timer, not every frame).
@@ -78,18 +75,23 @@ impl Workspace {
         if moving {
             self.anim_pending.set(true);
         }
-        // Never over the composer: the stack sits above it (measured last
-        // frame), and narrows with the chat column.
-        let window_h = self.window_h;
-        let above = self
+        // Never over the message column: in the free gutter to its right,
+        // else narrowed at the chat area's bottom right above the composer.
+        let composer_top = self
             .measured
             .borrow()
             .get(&("composer", 0))
             .filter(|_| self.model.screen == crate::model::Screen::Chat)
-            .map(|b| window_h - f32::from(b.origin.y) + 10.)
-            .unwrap_or(20.)
-            .max(20.);
-        let width = TOAST_W.min((self.centre_w - 24.).max(220.));
+            .map(|b| f32::from(b.origin.y));
+        let at = crate::toast::place(
+            self.window_w,
+            self.window_h,
+            self.centre_x,
+            self.centre_w,
+            super::COLUMN_MAX_W,
+            composer_top,
+        );
+        let width = at.width;
         let items = shown.iter().zip(fs).map(|(t, f)| {
             let id = t.id;
             let f = f.clamp(0., 1.1);
@@ -157,8 +159,8 @@ impl Workspace {
         Some(
             div()
                 .absolute()
-                .bottom(px(above))
-                .right(px(20.))
+                .bottom(px(at.bottom))
+                .right(px(at.right))
                 .flex()
                 .flex_col()
                 .items_end()

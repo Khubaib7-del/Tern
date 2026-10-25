@@ -168,6 +168,69 @@ impl Toasts {
     }
 }
 
+/// The stack's widest.
+pub const TOAST_W: f32 = 340.;
+/// The narrowest stack that still reads in the right gutter.
+pub const GUTTER_MIN_W: f32 = 220.;
+/// The stack's widest when it sits over the chat area, above the composer.
+pub const NARROW_W: f32 = 280.;
+/// Space between the stack and the column, the pane, or the window edge.
+const GAP: f32 = 12.;
+
+/// Where the stack sits, in window coordinates: its right edge's distance
+/// from the window's right edge, its bottom's distance from the window's
+/// bottom, and its width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub right: f32,
+    pub bottom: f32,
+    pub width: f32,
+    /// In the free gutter right of the message column (never over it).
+    pub in_gutter: bool,
+}
+
+/// Places the stack so it never covers the message column: in the free
+/// gutter between the column's right edge and the chat area's right edge
+/// when that is at least [`GUTTER_MIN_W`] wide, else narrowed at the chat
+/// area's bottom right, above the composer (whose top is `composer_top`,
+/// from the window's top). The chat area runs from `centre_x` for
+/// `centre_w`; the column is centred in it, at most `column_max` wide with
+/// 16 px padding each side.
+pub fn place(
+    window_w: f32,
+    window_h: f32,
+    centre_x: f32,
+    centre_w: f32,
+    column_max: f32,
+    composer_top: Option<f32>,
+) -> Place {
+    let column_w = column_max.min(centre_w - 32.).max(0.);
+    let centre_right = centre_x + centre_w;
+    let column_right = centre_x + (centre_w + column_w) / 2.;
+    let gutter = centre_right - column_right - 2. * GAP;
+    let right = (window_w - centre_right + GAP).max(GAP);
+    if gutter >= GUTTER_MIN_W {
+        return Place {
+            right,
+            bottom: 20.,
+            width: gutter.min(TOAST_W),
+            in_gutter: true,
+        };
+    }
+    let above = composer_top
+        .map(|top| window_h - top + 10.)
+        .unwrap_or(20.)
+        .max(20.);
+    Place {
+        right,
+        bottom: above,
+        width: (centre_w * 0.4)
+            .clamp(200., NARROW_W)
+            .min((centre_w - 2. * GAP).max(0.)),
+        in_gutter: false,
+    }
+}
+
 /// Whether a plain notice reads as a failure (it gets the error look and
 /// stays until dismissed).
 pub fn is_error_text(text: &str) -> bool {
@@ -262,5 +325,31 @@ mod tests {
         assert!(q.is_empty());
         assert!(is_error_text("Tern could not reopen that chat"));
         assert!(!is_error_text("Now answering with Mistral"));
+    }
+
+    #[test]
+    fn the_stack_takes_the_right_gutter_and_never_the_column() {
+        // The reported window: 1600 px, rail 52 + sidebar 260, no pane.
+        let p = place(1600., 900., 312., 1288., 760., Some(780.));
+        assert!(p.in_gutter);
+        let column_right = 312. + (1288. + 760.) / 2.;
+        let stack_left = 1600. - p.right - p.width;
+        assert!(stack_left >= column_right, "{stack_left} < {column_right}");
+        assert!(p.width >= GUTTER_MIN_W && p.width <= TOAST_W);
+        assert_eq!(p.bottom, 20.);
+        // A right pane beside the chat: the stack stays left of it.
+        let p = place(1900., 900., 312., 1288., 760., None);
+        assert!(1900. - p.right <= 312. + 1288.);
+    }
+
+    #[test]
+    fn a_narrow_window_stacks_small_above_the_composer() {
+        let p = place(1000., 800., 52., 948., 760., Some(700.));
+        assert!(!p.in_gutter);
+        assert_eq!(p.bottom, 110.);
+        assert!(p.width < TOAST_W && p.width >= 200.);
+        // Very narrow: still inside the chat area.
+        let p = place(400., 800., 52., 348., 760., Some(700.));
+        assert!(p.width <= 348.);
     }
 }

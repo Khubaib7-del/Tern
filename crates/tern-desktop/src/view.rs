@@ -80,7 +80,7 @@ pub(crate) const RAIL_W: f32 = 52.;
 const GRAPH_W: f32 = 440.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
-pub const NO_VOICE_MODEL: &str = "No voice model available — add Groq, OpenAI or Mistral";
+pub const NO_VOICE_MODEL: &str = "No voice model available — download one in Settings › Local models, or add Groq, OpenAI or Mistral";
 
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
@@ -242,6 +242,11 @@ pub struct Workspace {
     reveal_at: Option<Instant>,
     /// The chat column's width at the last render, for the tab strip.
     centre_w: f32,
+    /// Where the chat area starts from the window's left, at the last
+    /// render, for placing toasts beside the message column.
+    centre_x: f32,
+    /// The window's width at the last render.
+    window_w: f32,
     /// The right pane's width at the last render, for its header.
     side_w: f32,
     /// The run panel's ⋯ menu of views that do not fit is open.
@@ -671,6 +676,8 @@ impl Workspace {
             queued: None,
             reveal_at: None,
             centre_w: 800.,
+            centre_x: 0.,
+            window_w: 0.,
             side_w: crate::panels::RIGHT_DEFAULT,
             run_more_open: false,
             glides: Default::default(),
@@ -832,6 +839,7 @@ impl Workspace {
                 crate::bridge::ExtMsg::Prompt(r) => self.prompt_ready(*r, window, cx),
                 other => self.on_ext(other, cx),
             },
+            Msg::Info(text) => self.model.toast_info(text),
             Msg::Notice(text) => {
                 self.model.notice_line(text);
                 // A chat that would not reopen leaves no session; open a
@@ -1141,48 +1149,85 @@ impl Workspace {
         session.set_turn_mode(mode.turn_mode());
         session.set_effort(self.model.composer.effort);
         // A Study mode asks the same model to answer in its style.
-        let text = match mode.study_prefix() {
+        let mut text = match mode.study_prefix() {
             Some(prefix) => format!("{prefix}\n\n{text}"),
             None => text,
         };
         let images = std::mem::take(&mut self.model.outgoing_images);
-        let mut read_first = None;
+        let provider = self.provider_id();
+        let chat_model = self
+            .model
+            .connection
+            .as_ref()
+            .map(|c| c.model.clone())
+            .unwrap_or_default();
+        let sees = self
+            .model
+            .catalog
+            .info(&provider, &chat_model)
+            .sees_images()
+            && !tern_agent::media::is_not_vision(&provider, &chat_model);
+        // A model that cannot see never gets a picture, in this message or
+        // from earlier ones (a provider refuses the whole request when any
+        // message carries one).
+        session.set_sees_pictures(Some(sees));
+        if !sees {
+            session.drop_pictures();
+        }
+        let mut pictures = None;
         if !images.is_empty() {
-            let provider = self.provider_id();
-            let chat_model = self
-                .model
-                .connection
-                .as_ref()
-                .map(|c| c.model.clone())
-                .unwrap_or_default();
             // Reading the models folder is a few small file reads, once
             // per message with pictures.
             let local = tern_agent::local_models::LocalModels::discover()
                 .ok()
                 .map(|(lm, _)| lm);
-            match tern_agent::media::plan_images_local(
+            match tern_agent::media::route_images(
                 &self.model.catalog,
                 &provider,
                 &chat_model,
                 &self.model.providers.prefs,
                 local.as_ref(),
             ) {
-                tern_agent::media::ImagePlan::Send => session.attach_images(images),
-                tern_agent::media::ImagePlan::Read { via, job } => {
-                    read_first = Some(crate::bridge::ReadFirst {
-                        via: crate::bridge::ReadVia::Remote { via, job },
+                tern_agent::media::ImageRoute::Send { fallback } => {
+                    // Normalised for the provider (PNG/JPEG, 2048 px,
+                    // 5 MB); one it cannot take goes as a note.
+                    let mut ok = Vec::new();
+                    let mut notes = Vec::new();
+                    for img in &images {
+                        match tern_agent::pictures::prepare(img) {
+                            Ok(p) => ok.push(p),
+                            Err(e) => notes.push(format!("[Tern couldn't read {}: {e}]", img.name)),
+                        }
+                    }
+                    if !notes.is_empty() {
+                        self.model.toast_info(notes.join(" "));
+                        text = format!("{text}\n\n{}", notes.join("\n"));
+                    }
+                    session.attach_images(ok.clone());
+                    pictures = Some(crate::bridge::Pictures {
+                        images: ok,
+                        readers: fallback,
+                        sent: true,
+                        chat_model,
+                    });
+                }
+                tern_agent::media::ImageRoute::Read(readers) => {
+                    pictures = Some(crate::bridge::Pictures {
                         images,
+                        readers,
+                        sent: false,
                         chat_model,
                     })
                 }
-                tern_agent::media::ImagePlan::ReadLocal { model, name } => {
-                    read_first = Some(crate::bridge::ReadFirst {
-                        via: crate::bridge::ReadVia::Local { model, name },
-                        images,
-                        chat_model,
-                    })
+                tern_agent::media::ImageRoute::Missing(why) => {
+                    // The message still goes, with a note for the model.
+                    let names: Vec<&str> = images.iter().map(|i| i.name.as_str()).collect();
+                    text = format!(
+                        "{text}\n\n[Tern couldn't read {}: nothing on this computer or at a configured provider can read pictures]",
+                        names.join(", ")
+                    );
+                    self.model.toast_info(why);
                 }
-                tern_agent::media::ImagePlan::Missing(why) => self.model.notice_line(why),
             }
         }
         self.model.steering = Some(session.steering());
@@ -1193,7 +1238,7 @@ impl Workspace {
             self.bridge.deep(session, text, self.deep_control.clone());
         } else {
             self.bridge
-                .send(session, text, self.cancel.clone(), read_first);
+                .send(session, text, self.cancel.clone(), pictures);
         }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
@@ -1399,14 +1444,14 @@ impl Workspace {
                 .is_some_and(|n| tern_agent::media::is_audio_name(&n.to_string_lossy()))
         });
         for a in audio {
-            match self.stt_model() {
+            match self.file_stt_model() {
                 Some(via) => {
                     self.model.transcribing = true;
                     self.bridge.transcribe_file(via, a);
                 }
                 None => self.model.toast_error(
                     format!(
-                        "{} is audio. Tern transcribes audio once a provider that lists a speech-to-text model is set up (Groq or OpenAI Whisper, Mistral Voxtral).",
+                        "{} is audio. Tern transcribes audio once a speech-to-text model is set up: download Whisper in Settings › Local models (runs on this computer), or add a provider that lists one (Groq or OpenAI Whisper, Mistral Voxtral).",
                         a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
                     ),
                     None,
@@ -2070,6 +2115,8 @@ impl Workspace {
     /// Lists every usable provider's models for the routing (the mic and
     /// pictures the chat model cannot see).
     fn refresh_catalog(&mut self) {
+        // The local models too: the mic and audio files can use them.
+        self.reload_local_models();
         let ids: Vec<&'static str> = self
             .model
             .providers
@@ -2084,9 +2131,34 @@ impl Workspace {
         self.bridge.catalog(ids);
     }
 
-    /// The speech-to-text model the mic uses: the saved choice, else the
-    /// best listed one (the chat's provider first).
+    /// The speech-to-text model the mic uses: a local live-dictation
+    /// model when one is installed and on, else the saved provider model,
+    /// else the best listed one (the chat's provider first), else a local
+    /// transcription model.
     fn stt_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        let local = &self.model.settings.local;
+        local
+            .transcriber(Task::Dictation)
+            .or_else(|| self.remote_stt_model())
+            .or_else(|| local.transcriber(Task::SpeechToText))
+    }
+
+    /// The model that transcribes attached audio files: a local
+    /// transcription model when one is installed and on (it runs on this
+    /// computer), else the provider model the mic would use.
+    fn file_stt_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        self.model
+            .settings
+            .local
+            .transcriber(Task::SpeechToText)
+            .or_else(|| self.remote_stt_model())
+    }
+
+    /// The provider speech-to-text model: the saved choice, else the best
+    /// listed one (the chat's provider first).
+    fn remote_stt_model(&self) -> Option<tern_agent::media::ModelRef> {
         let near = self.model.providers.default_id(Kind::Model);
         self.model.catalog.pick(
             tern_agent::media::Job::Transcribe,
@@ -3690,7 +3762,7 @@ impl Workspace {
             (_, false) if finishing => (AssetIcon::Mic, "Finishing the transcript…".into(), false),
             (None, false) => (
                 AssetIcon::MicOff,
-                "Voice input needs a speech-to-text model (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
+                "Voice input needs a speech-to-text model: a local one (Settings › Local models) or a provider one (Groq or OpenAI Whisper, Mistral Voxtral)".into(),
                 true,
             ),
             (Some(v), false) if self.model.transcribing => (
@@ -5140,6 +5212,8 @@ impl Render for Workspace {
             frame.right
         };
         self.side_w = side_w;
+        self.window_w = viewport_w;
+        self.centre_x = RAIL_W + beside_sidebar;
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
             - RAIL_W

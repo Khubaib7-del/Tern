@@ -4,6 +4,29 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #63)
+
+Local model runtimes, part 2: speech on this computer.
+
+- **Local transcription with Whisper** (`local_models/whisper_cpp.rs`, the `whisper` feature, on in the desktop app and the CLI): Whisper small (q5_1) and large-v3 turbo (q5_0) on whisper.cpp through `whisper-rs`, CPU only, built from source and linked statically. Audio files (WAV, MP3, M4A/AAC, Ogg Vorbis, FLAC) are decoded with `symphonia` and resampled to 16 kHz mono (`audio.rs`, `resample.rs`). The x86-64 build targets AVX2/FMA/F16C through `.cargo/config.toml` (never `-march=native`); ARM64 uses NEON. An attached audio file on desktop is transcribed by the installed Whisper model before any provider. `tern models transcribe <file> [--model <id>] [--language <code>]`.
+- **Local live dictation with Moonshine Streaming Small** on ONNX Runtime (`local_models/moonshine_onnx.rs`, the `asr-onnx` feature). The mic uses it when it is installed and on, before a provider's speech-to-text model; with neither, an installed Whisper model takes the mic. Engines for the same runtime are told apart by name.
+
+### Fixed (PR #63)
+
+Pictures for chat models that cannot see (reported on Windows: codestral-2508 with an Urdu picture and local PP-OCRv6 installed; Tern borrowed ministral-14b-2512, Mistral answered 400 code 3051, and the whole run failed with a red toast of raw JSON).
+
+- **Readers in a fixed order, each failure falling through**: a local vision model, the local OCR model, a provider's vision model, a provider's OCR model (`media::route_images`, `readers_for`, `read_chain`, `read_with`). Any failure moves on to the next: a refused key, credits, a rate limit, a timeout, a server error, a model that refuses pictures, a local model that will not load or reads nothing. When all fail, the message still goes with "[Tern couldn't read img.jpg: <reason>]"; a picture never fails the turn.
+- **A chat model that refuses pictures** is remembered as not seeing (`<data>/not-vision.json`); the pictures leave that chat's earlier messages (each leaves a short note) and the turn runs again through the readers, with no failed run. A provider vision model that refuses is skipped from then on.
+- **Pictures normalised** before they go anywhere (`tern_agent::pictures`): PNG or JPEG, at most 2048 px on the long edge and 5 MB; WebP, GIF, oversized PNG and big JPEG converted; HEIC/AVIF and non-pictures refused with a plain reason.
+- **Plain error wording**: a provider's JSON error body reads as its message and code ("Mistral: Image input is not enabled for this model (code 3051) (HTTP 400)") in toasts and the run banner.
+- **"X can't see pictures, read with local PP-OCRv6" is an info toast**, naming the reader that read them, not a red error. A local model that fails shows the failure on its Settings › Local models row.
+- **A text-only message to a model that cannot see no longer fails with "Image input is not enabled" (code 3051).** After a picture turn, a later plain message to a Mistral text model failed the same way. No picture now reaches a model that cannot see from anywhere: the chat's earlier messages lose their pictures (each leaves "[image: name]") as soon as the session knows the model cannot see (`ChatSession::set_sees_pictures`, `is_blind`, set before every message from the provider's listing, and reset on a model change); a picture attached anyway goes as a note; when the provider refuses a turn because an earlier message still carried a picture, the session remembers the model, drops the pictures and runs the turn again; checkpoints never keep pictures, so **Resume** and **Retry failed workers** never replay one (an older checkpoint's pictures are dropped on resume). A new chat, and a chat opened from the list, start with no attachments and no waiting pictures. Regression tests: a text turn after an image turn to a model that cannot see carries no image part; a refusal caused by earlier pictures reruns without them and a new chat with that model sends none.
+- **Toasts never cover the message column**: the stack sits in the free gutter right of the column (at least 220 px, up to 340 px wide); when the gutter is too small it narrows at the chat area's bottom right, above the composer (`toast::place`, unit tested).
+
+### Not in this PR
+
+- Describing pictures with SmolVLM (through a separate `tern-vlm` llama.cpp helper process) and read aloud with Kokoro: the next PR.
+
 ### Added (PR #62)
 
 Images, OCR and voice, part 1: the foundation for local models, and pictures in the composer.

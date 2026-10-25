@@ -1,0 +1,11 @@
+# Settings for the C++ runtimes built from source (whisper.cpp's ggml).
+# A portable build: never `-march=native` (a CI machine's CPU is not the
+# user's). On x86-64 the CPU backend targets AVX2/FMA/F16C, which every
+# x86-64 PC from about 2013 on has; Apple silicon and other ARM64 use
+# ggml's portable NEON path.
+[env]
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"

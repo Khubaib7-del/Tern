@@ -17,7 +17,7 @@ workspace = true
 
 [dependencies]
 tern-core.workspace = true
-tern-agent = { workspace = true, features = ["ocr-onnx"] }
+tern-agent = { workspace = true, features = ["ocr-onnx", "whisper", "asr-onnx"] }
 clap.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }

@@ -15,10 +15,12 @@
 //! Each task has a Default and an Alternative (the backup); the user can
 //! switch with "Use for this task".
 //!
-//! The runtimes plug in as [`LocalEngine`]s. The first one linked is
-//! PaddleOCR on ONNX Runtime (`oar-ocr`, the `ocr-onnx` feature), which
-//! reads pictures with the OCR models; [`register_builtin_engines`] turns
-//! it on and [`can_run`] says which models this build can run.
+//! The runtimes plug in as [`LocalEngine`]s: PaddleOCR on ONNX Runtime
+//! (`oar-ocr`, the `ocr-onnx` feature) reads pictures with the OCR models,
+//! whisper.cpp (`whisper-rs`, the `whisper` feature) transcribes audio
+//! with the Whisper models, and Moonshine on ONNX Runtime (`asr-onnx`)
+//! writes live dictation. [`register_builtin_engines`] turns them on and
+//! [`can_run`] says which models this build can run.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -169,6 +171,11 @@ impl Runtime {
 pub trait LocalEngine: Send + Sync {
     /// The runtime this engine runs.
     fn runtime(&self) -> Runtime;
+    /// Its name; one runtime can have several engines (ONNX Runtime runs
+    /// both the OCR and the speech models), told apart by name.
+    fn name(&self) -> &'static str {
+        self.runtime().label()
+    }
     /// Whether it runs `entry` (an ONNX engine for OCR does not run an
     /// ONNX speech model).
     fn runs(&self, entry: &ModelEntry) -> bool {
@@ -181,6 +188,31 @@ pub trait LocalEngine: Send + Sync {
         let _ = (dir, image);
         Err(format!("{} cannot read pictures", entry.name))
     }
+    /// Transcribes speech (16 kHz mono samples in -1..1) with the model
+    /// installed in `dir`. `language` is a Whisper code (`en`, `ur`);
+    /// `None` detects it.
+    fn transcribe(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        audio: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        let _ = (dir, audio, language);
+        Err(format!("{} cannot transcribe speech", entry.name))
+    }
+    /// Describes a picture (PNG, JPEG, GIF, or WebP bytes) as asked by
+    /// `prompt`, with the vision model installed in `dir`.
+    fn describe(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+        prompt: &str,
+    ) -> Result<String, String> {
+        let _ = (dir, image, prompt);
+        Err(format!("{} cannot describe pictures", entry.name))
+    }
 }
 
 type Engines = std::sync::RwLock<Vec<std::sync::Arc<dyn LocalEngine>>>;
@@ -190,45 +222,61 @@ fn engines() -> &'static Engines {
     ENGINES.get_or_init(Default::default)
 }
 
-/// Makes `engine` run its runtime's models from now on.
+/// Makes `engine` run the models it runs from now on, replacing an
+/// engine of the same runtime and name.
 pub fn register_engine(engine: std::sync::Arc<dyn LocalEngine>) {
     if let Ok(mut list) = engines().write() {
-        list.retain(|e| e.runtime() != engine.runtime());
+        list.retain(|e| e.runtime() != engine.runtime() || e.name() != engine.name());
         list.push(engine);
     }
 }
 
-fn engine_for(runtime: Runtime) -> Option<std::sync::Arc<dyn LocalEngine>> {
+/// The engine that runs `entry`, if one is registered.
+fn engine_for(entry: &ModelEntry) -> Option<std::sync::Arc<dyn LocalEngine>> {
     engines()
         .read()
         .ok()?
         .iter()
-        .find(|e| e.runtime() == runtime)
+        .find(|e| e.runtime() == entry.runtime && e.runs(entry))
         .cloned()
 }
 
 /// Whether an engine for `runtime` is registered (it may run only some
 /// of that runtime's models; see [`can_run`]).
 pub fn runtime_available(runtime: Runtime) -> bool {
-    engine_for(runtime).is_some()
+    engines()
+        .read()
+        .is_ok_and(|l| l.iter().any(|e| e.runtime() == runtime))
 }
 
 /// Whether this build can run `entry`.
 pub fn can_run(entry: &ModelEntry) -> bool {
-    engine_for(entry.runtime).is_some_and(|e| e.runs(entry))
+    engine_for(entry).is_some()
 }
 
-/// Registers the engines compiled into this build. Today that is the
-/// PaddleOCR engine on ONNX Runtime, with the `ocr-onnx` feature; without
-/// it nothing is registered. Safe to call more than once.
+/// Registers the engines compiled into this build: PaddleOCR on ONNX
+/// Runtime (`ocr-onnx`), Whisper on whisper.cpp (`whisper`), and
+/// Moonshine on ONNX Runtime (`asr-onnx`). Without
+/// those features nothing is registered. Safe to call more than once.
 pub fn register_builtin_engines() {
     #[cfg(feature = "ocr-onnx")]
     register_engine(std::sync::Arc::new(onnx_ocr::OnnxOcr::default()));
+    #[cfg(feature = "whisper")]
+    register_engine(std::sync::Arc::new(whisper_cpp::WhisperCpp::default()));
+    #[cfg(feature = "asr-onnx")]
+    register_engine(std::sync::Arc::new(moonshine_onnx::MoonshineOnnx::default()));
 }
 
+#[cfg(feature = "audio")]
+pub mod audio;
+#[cfg(feature = "asr-onnx")]
+pub mod moonshine_onnx;
 #[cfg(feature = "ocr-onnx")]
 pub mod onnx_ocr;
 pub mod paddle;
+pub mod resample;
+#[cfg(feature = "whisper")]
+pub mod whisper_cpp;
 
 /// One file of a model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -813,6 +861,13 @@ impl LocalModels {
 
     /// Reads the text in a picture with installed model `id`.
     pub fn ocr(&self, id: &str, image: &[u8]) -> Result<String, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.ocr(&self.dir(id), entry, image)
+    }
+
+    /// The engine for installed model `id`, or why there is none.
+    fn engine(&self, id: &str) -> Result<std::sync::Arc<dyn LocalEngine>, String> {
         let entry = self
             .manifest
             .find(id)
@@ -820,10 +875,43 @@ impl LocalModels {
         if self.installed(id).is_none() {
             return Err(format!("{} is not downloaded", entry.name));
         }
-        let engine = engine_for(entry.runtime)
-            .filter(|e| e.runs(entry))
-            .ok_or_else(|| format!("this build cannot run {} yet", entry.name))?;
-        engine.ocr(&self.dir(id), entry, image)
+        engine_for(entry).ok_or_else(|| format!("this build cannot run {} yet", entry.name))
+    }
+
+    /// Describes a picture with installed vision model `id`.
+    pub fn describe(&self, id: &str, image: &[u8], prompt: &str) -> Result<String, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.describe(&self.dir(id), entry, image, prompt)
+    }
+
+    /// Transcribes speech (16 kHz mono samples) with installed model `id`.
+    /// `language` is a code such as `ur`; `None` detects it.
+    pub fn transcribe(
+        &self,
+        id: &str,
+        audio: &[f32],
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.transcribe(&self.dir(id), entry, audio, language)
+    }
+
+    /// Transcribes an audio file (WAV, MP3, M4A, Ogg Vorbis, FLAC; `name`
+    /// helps guess the format) with installed model `id`.
+    #[cfg(feature = "audio")]
+    pub fn transcribe_file(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        name: &str,
+        language: Option<&str>,
+    ) -> Result<String, String> {
+        // Fail fast on a model this build cannot run, before decoding.
+        self.engine(id)?;
+        let pcm = audio::decode_16k_mono(bytes, name)?;
+        self.transcribe(id, &pcm, language)
     }
 
     /// Deletes the model's folder, finished or partial. The caller drops it

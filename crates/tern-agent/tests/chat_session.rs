@@ -309,3 +309,278 @@ async fn a_failed_model_change_keeps_the_old_model() {
     assert_eq!(chat.model(), "llama3.2");
     assert_eq!(chat.provider_name(), "Ollama");
 }
+
+/// A chat model that turns out not to see: the provider's refusal reads in
+/// plain words and says so, and the pictures leave the history so the next
+/// request goes without them.
+#[tokio::test]
+async fn pictures_leave_the_history_of_a_model_that_cannot_see() {
+    use wiremock::matchers::body_string_contains;
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "llama3.2"}]
+        })))
+        .mount(&s)
+        .await;
+    // Mistral's refusal, for a request that carries a picture.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("image_url"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "object": "error",
+            "message": "Image input is not enabled for this model",
+            "type": "invalid_request_invalid_args",
+            "code": "3051"
+        })))
+        .with_priority(1)
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        })))
+        .with_priority(5)
+        .mount(&s)
+        .await;
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap();
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let picture = tern_providers::ImageInput {
+        name: "img.jpg".into(),
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    };
+    chat.attach_images(vec![picture]);
+    assert!(chat.has_attached_images());
+    let out = chat
+        .send(
+            "what does it say?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Failed);
+    let reason = out.reason.unwrap_or_default();
+    assert!(
+        tern_agent::media::rejects_images(&reason),
+        "not read as a refusal: {reason}"
+    );
+    let plain = tern_agent::media::plain_error(&reason);
+    assert!(
+        plain.contains("Image input is not enabled for this model (code 3051)"),
+        "{plain}"
+    );
+    assert!(!plain.contains("{\""), "raw JSON left: {plain}");
+    // The refused message never joined the history: nothing to drop.
+    assert_eq!(chat.drop_pictures(), 0);
+    let out = chat
+        .send(
+            "what does it say?\n\n[read text]",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+}
+
+#[tokio::test]
+async fn dropping_pictures_strips_them_from_earlier_messages() {
+    let s = server().await;
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    let mut chat = ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap();
+    let observer = |_: &tern_core::EventEnvelope| {};
+    chat.attach_images(vec![tern_providers::ImageInput {
+        name: "chart.png".into(),
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    }]);
+    chat.send("look", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(chat.drop_pictures(), 1);
+    assert_eq!(chat.drop_pictures(), 0, "already gone");
+    chat.send("again", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    let reqs = s.received_requests().await.unwrap();
+    let last = String::from_utf8_lossy(&reqs.last().unwrap().body).into_owned();
+    assert!(!last.contains("image_url"), "{last}");
+    assert!(last.contains("chart.png"), "the note names the picture");
+}
+
+fn chart() -> tern_providers::ImageInput {
+    tern_providers::ImageInput {
+        name: "chart.png".into(),
+        media_type: "image/png".into(),
+        data: "iVBORw0KGgo=".into(),
+    }
+}
+
+async fn open_on(s: &MockServer) -> ChatSession {
+    let opts = ChatOptions {
+        provider: Some("ollama".into()),
+        base_url: Some(format!("{}/v1", s.uri())),
+        search: Some("off".into()),
+        ..Default::default()
+    };
+    ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+        .await
+        .unwrap()
+}
+
+async fn last_body(s: &MockServer) -> String {
+    let reqs = s.received_requests().await.unwrap();
+    String::from_utf8_lossy(&reqs.last().unwrap().body).into_owned()
+}
+
+/// Regression (#63): after an image turn, a text-only turn to a model that
+/// cannot see carries no image part, in any message.
+#[tokio::test]
+async fn a_text_turn_after_an_image_turn_sends_no_picture_to_a_model_that_cannot_see() {
+    let s = server().await;
+    let mut chat = open_on(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    chat.attach_images(vec![chart()]);
+    let out = chat
+        .send("look", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    assert!(
+        last_body(&s).await.contains("image_url"),
+        "a seeing model gets it"
+    );
+    // The front end learns the model cannot see (the provider's listing).
+    chat.set_sees_pictures(Some(false));
+    assert!(chat.is_blind());
+    let out = chat
+        .send(
+            "give me 3 words",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let body = last_body(&s).await;
+    assert!(!body.contains("image_url"), "{body}");
+    assert!(!body.contains("iVBORw0KGgo"), "no picture data: {body}");
+    assert!(body.contains("[image: chart.png"), "{body}");
+    // A picture attached anyway goes as a note, never as an image part.
+    chat.attach_images(vec![chart()]);
+    chat.send("and this?", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert!(!last_body(&s).await.contains("image_url"));
+}
+
+/// Regression (#63): the provider refuses a text-only turn because an
+/// earlier message still carries a picture (Mistral 3051). The chat
+/// remembers the model cannot see, drops the pictures and runs the turn
+/// again, so the turn completes and no later request has one.
+#[tokio::test]
+async fn a_refusal_caused_by_earlier_pictures_reruns_the_turn_without_them() {
+    use wiremock::matchers::body_string_contains;
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "blind-text-2508"}]
+        })))
+        .mount(&s)
+        .await;
+    // The first picture gets through (as when the chat began on a model
+    // that sees, or before the provider changed its mind) ...
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("image_url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "a chart"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&s)
+        .await;
+    // ... then every request with a picture is refused.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("image_url"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "object": "error",
+            "message": "Image input is not enabled for this model",
+            "type": "invalid_request_invalid_args",
+            "code": "3051"
+        })))
+        .with_priority(2)
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        })))
+        .with_priority(5)
+        .mount(&s)
+        .await;
+    let mut chat = open_on(&s).await;
+    assert_eq!(chat.model(), "blind-text-2508");
+    let observer = |_: &tern_core::EventEnvelope| {};
+    chat.attach_images(vec![chart()]);
+    let out = chat
+        .send("look", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    let out = chat
+        .send(
+            "give me 3 words",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(out.answer.as_deref(), Some("ok"));
+    let body = last_body(&s).await;
+    assert!(!body.contains("image_url"), "{body}");
+    assert!(chat.is_blind(), "remembered as not seeing");
+    assert_eq!(chat.drop_pictures(), 0, "no picture left anywhere");
+    // A new chat with the same model never sends one either.
+    let mut fresh = open_on(&s).await;
+    assert!(fresh.is_blind());
+    fresh.attach_images(vec![chart()]);
+    let out = fresh
+        .send("hello", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.state, TurnState::Completed);
+    assert!(!last_body(&s).await.contains("image_url"));
+}
+
+#[test]
+fn strip_pictures_leaves_their_names() {
+    let mut msgs = vec![
+        tern_providers::ChatMessage::user("see").with_images(vec![chart()]),
+        tern_providers::ChatMessage::assistant("ok"),
+    ];
+    assert_eq!(tern_agent::chat::strip_pictures(&mut msgs), 1);
+    assert!(msgs[0].images.is_empty());
+    assert!(msgs[0].content.contains("[image: chart.png"));
+    assert_eq!(tern_agent::chat::strip_pictures(&mut msgs), 0);
+}

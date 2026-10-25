@@ -37,6 +37,9 @@ pub enum Msg {
     Resumed(Box<ChatSession>, Vec<PastTurn>, Vec<SessionSummary>),
     /// A plain note for the transcript (a chat that would not reopen).
     Notice(String),
+    /// A note that is information, never an error, whatever its words
+    /// ("codestral can't see pictures, so Tern read …").
+    Info(String),
     /// Every configured provider's listing, for routing.
     Catalog(Box<tern_agent::media::Catalog>),
     /// Speech came back as text for the composer, or why not.
@@ -215,6 +218,7 @@ impl std::fmt::Debug for Msg {
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
+            Self::Info(e) => write!(f, "Info({e})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
             Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
@@ -305,33 +309,19 @@ impl PlanApprover for UiPlanApprover {
 pub const MODELS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The tokio side of the app.
-/// Pictures another model reads before the turn (see [`Bridge::send`]).
+/// Pictures attached to a message, and how they reach the chat (see
+/// [`Bridge::send`]).
 #[derive(Debug)]
-pub struct ReadFirst {
-    pub via: ReadVia,
+pub struct Pictures {
+    /// Already normalised (PNG/JPEG, 2048 px, 5 MB) when `sent`.
     pub images: Vec<tern_agent::ImageInput>,
+    /// Who reads them when the chat model cannot see, best first (local
+    /// vision, local OCR, provider vision, provider OCR).
+    pub readers: Vec<tern_agent::media::Reader>,
+    /// The chat model sees them: they went with the message, and
+    /// `readers` is the fallback if the provider refuses pictures.
+    pub sent: bool,
     pub chat_model: String,
-}
-
-/// Who reads the pictures for a chat model that cannot see.
-#[derive(Debug)]
-pub enum ReadVia {
-    /// A model on a configured provider (vision or OCR).
-    Remote {
-        via: tern_agent::media::ModelRef,
-        job: tern_agent::media::Job,
-    },
-    /// A local OCR model on this computer: its id and name.
-    Local { model: String, name: String },
-}
-
-impl ReadVia {
-    fn label(&self) -> String {
-        match self {
-            Self::Remote { via, .. } => via.to_string(),
-            Self::Local { name, .. } => name.clone(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -648,69 +638,21 @@ impl Bridge {
     }
 
     /// Runs one turn and hands the session back when it ends. With
-    /// `read_first`, another model reads the pictures first (the chat model
-    /// cannot see) and its text joins the message.
+    /// `pictures` the chat model cannot see, the readers read them first
+    /// (each failure falls through to the next) and their text joins the
+    /// message; when none can, the message still goes with a note. When
+    /// the provider refuses pictures for the chat model itself, the model
+    /// is remembered as not seeing, the pictures leave the chat's history,
+    /// and the turn runs again through the readers, with no failed run.
     pub fn send(
         &self,
         mut session: Box<ChatSession>,
         text: String,
         cancel: CancelFlag,
-        read_first: Option<ReadFirst>,
+        pictures: Option<Pictures>,
     ) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
-            let text = match read_first {
-                None => text,
-                Some(r) => {
-                    let read = match &r.via {
-                        ReadVia::Remote { via, job } => {
-                            let keychain = setup::keychain();
-                            let secrets: Option<&dyn SecretStore> =
-                                keychain.as_ref().ok().map(|b| b.as_ref());
-                            tern_agent::media::read_images(
-                                secrets,
-                                via,
-                                *job,
-                                &r.images,
-                                &r.chat_model,
-                            )
-                            .await
-                        }
-                        ReadVia::Local { model, name } => {
-                            let (model, name) = (model.clone(), name.clone());
-                            let images = r.images.clone();
-                            let chat = r.chat_model.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let (lm, _) = tern_agent::local_models::LocalModels::discover()?;
-                                tern_agent::media::read_images_local(
-                                    &lm, &model, &name, &images, &chat,
-                                )
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(e.to_string()))
-                        }
-                    };
-                    match read {
-                        Ok((blocks, notice)) => {
-                            let _ = tx.send(Msg::Notice(notice));
-                            format!("{text}\n\n{blocks}")
-                        }
-                        Err(e) => {
-                            if let ReadVia::Local { model, .. } = &r.via {
-                                let _ = tx.send(Msg::Setup(Box::new(SetupMsg::LocalRunFailed(
-                                    model.clone(),
-                                    e.clone(),
-                                ))));
-                            }
-                            let _ = tx.send(Msg::Notice(format!(
-                                "{} could not read the pictures, so they were not sent: {e}",
-                                r.via.label()
-                            )));
-                            text
-                        }
-                    }
-                }
-            };
             let approver = UiApprover(tx.clone());
             let events = tx.clone();
             let observer = move |e: &tern_core::EventEnvelope| {
@@ -721,9 +663,37 @@ impl Bridge {
                 let _ = texts.send(Msg::Text(call, t.to_owned()));
             };
             session.set_reasoning_sink(Some(reasoning_sink(&tx)));
-            let out = session
-                .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
+            let text = match &pictures {
+                Some(p) if !p.sent => read_pictures(&tx, p, &text).await,
+                _ => text,
+            };
+            let mut out = session
+                .send_streaming(&text, &approver, cancel.clone(), &observer, Some(&on_text))
                 .await;
+            // The chat model refused the pictures sent with this message:
+            // it cannot see. The session already remembers that and drops
+            // earlier pictures on its own; here the pictures go through the
+            // readers and the turn runs again, with no failed run shown.
+            let refused = out.answer.is_none()
+                && out.state == tern_core::TurnState::Failed
+                && out
+                    .reason
+                    .as_deref()
+                    .is_some_and(tern_agent::media::rejects_images);
+            if refused
+                && !cancel.is_cancelled()
+                && let Some(p) = pictures.as_ref().filter(|p| p.sent)
+            {
+                let provider = session.provider_id().to_owned();
+                let model = session.model().to_owned();
+                tern_agent::media::mark_not_vision(&provider, &model);
+                session.set_sees_pictures(Some(false));
+                session.drop_pictures();
+                let text = read_pictures(&tx, p, &text).await;
+                out = session
+                    .send_streaming(&text, &approver, cancel, &observer, Some(&on_text))
+                    .await;
+            }
             let usage = session.context();
             // Check the answer's claims and write the run report; the
             // events reach the run panel before the turn is handed back.
@@ -1912,6 +1882,36 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
         "Works, {n} {what}{}, {ms} ms",
         if n == 1 { "" } else { "s" }
     )
+}
+
+/// Has `p.readers` read the pictures (first that works) and returns the
+/// message with their text, or with a note for each picture none could
+/// read. Says which reader did it in an info toast, and records a local
+/// model's failure on its Settings row.
+async fn read_pictures(tx: &mpsc::UnboundedSender<Msg>, p: &Pictures, text: &str) -> String {
+    let keychain = setup::keychain();
+    let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let out = tern_agent::media::read_with(secrets, &p.readers, &p.images, &p.chat_model).await;
+    for (r, e) in &out.failures {
+        if let tern_agent::media::Reader::Local { model, .. } = r {
+            let _ = tx.send(Msg::Setup(Box::new(SetupMsg::LocalRunFailed(
+                model.clone(),
+                e.clone(),
+            ))));
+        }
+    }
+    if !out.notice.is_empty() {
+        let _ = tx.send(if out.used.is_some() {
+            Msg::Info(out.notice.clone())
+        } else {
+            Msg::Notice(out.notice.clone())
+        });
+    }
+    if out.text.is_empty() {
+        text.to_owned()
+    } else {
+        format!("{text}\n\n{}", out.text)
+    }
 }
 
 #[cfg(test)]
