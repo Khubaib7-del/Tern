@@ -651,19 +651,13 @@ async fn open_with_search(s: &MockServer) -> ChatSession {
     chat
 }
 
-fn web_call(query: &str) -> String {
-    format!(
-        "```tool\n{}\n```",
-        json!({"tool": "web_search", "args": {"query": query}})
-    )
-}
-
 /// Regression (#64): a Chat-mode turn that asks for a web search runs the
-/// web tool, and the answer written from its result comes back.
+/// web tool, and the answer written from its result comes back. Since the
+/// prefetch, "use the web" runs the search before the first model call, so
+/// the turn makes one model call, which already sees the result.
 #[tokio::test]
 async fn a_chat_turn_asking_for_the_web_runs_web_search_and_answers() {
-    let call = web_call("creator of LangChain");
-    let s = web_server(&[&call, "Harrison Chase created LangChain [1]."]).await;
+    let s = web_server(&["Harrison Chase created LangChain [1]."]).await;
     let mut chat = open_with_search(&s).await;
     let seen = Mutex::new(Vec::new());
     let observer = |e: &tern_core::EventEnvelope| seen.lock().unwrap().push(e.kind.clone());
@@ -690,8 +684,10 @@ async fn a_chat_turn_asking_for_the_web_runs_web_search_and_answers() {
         .filter(|r| r.url.path() == "/v1/chat/completions")
         .map(|r| String::from_utf8_lossy(&r.body).into_owned())
         .collect();
+    assert_eq!(chats.len(), 1, "one model call: the search ran first");
     assert!(chats[0].contains("web_search"), "{}", chats[0]);
-    assert!(chats[1].contains("Harrison Chase"), "{}", chats[1]);
+    assert!(chats[0].contains("Harrison Chase"), "{}", chats[0]);
+    assert_eq!(out.model_calls, 1);
 }
 
 /// Regression (#64): consecutive turns each get their own new answer,
@@ -825,7 +821,8 @@ impl tern_agent::Approver for Approves {
 }
 
 /// Regression (#64): "read <full path>" with no workspace open reads the
-/// file after the user approves it; quoted paths with spaces work.
+/// file after the user approves it; quoted paths with spaces work. The path
+/// is read before the first model call, so the turn makes one model call.
 #[tokio::test]
 async fn a_typed_full_path_is_read_after_approval() {
     let d = tempfile::tempdir().unwrap();
@@ -836,7 +833,7 @@ async fn a_typed_full_path_is_read_after_approval() {
         "```tool\n{}\n```",
         json!({"tool": "file_read", "args": {"path": quoted}})
     );
-    let s = web_server(&[&call, "It says the meeting is on Tuesday."]).await;
+    let s = web_server(&["It says the meeting is on Tuesday."]).await;
     let mut chat = open_with_search(&s).await;
     let observer = |_: &tern_core::EventEnvelope| {};
     let approver = Approves::default();
@@ -864,11 +861,17 @@ async fn a_typed_full_path_is_read_after_approval() {
         .filter(|r| r.url.path() == "/v1/chat/completions")
         .map(|r| String::from_utf8_lossy(&r.body).into_owned())
         .collect();
+    assert_eq!(chats.len(), 1, "one model call: the file was read first");
+    assert_eq!(out.model_calls, 1);
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("It says the meeting is on Tuesday.")
+    );
     assert!(chats[0].contains("file_read"), "offered with no workspace");
     assert!(
-        chats[1].contains("The meeting is on Tuesday."),
+        chats[0].contains("The meeting is on Tuesday."),
         "{}",
-        chats[1]
+        chats[0]
     );
 
     // Declined, the file is not read and the turn says so.
