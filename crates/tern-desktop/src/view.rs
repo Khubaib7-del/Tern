@@ -1281,6 +1281,10 @@ impl Workspace {
             if let Some((server, uri)) = chosen.fetch {
                 self.bridge.mcp_resource(server, uri);
             }
+            if let Some(path) = chosen.attach {
+                // Chosen by the user from the menu, like the file picker.
+                self.attach_paths(vec![path], cx);
+            }
             if self.model.arg_form.is_some() && self.arg_inputs.is_empty() {
                 self.open_arg_form(window, cx);
             }
@@ -1361,6 +1365,10 @@ impl Workspace {
                         Pick::Browse => div()
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::FolderOpen).small())
+                            .into_any_element(),
+                        Pick::Path(_) => div()
+                            .text_color(p.muted)
+                            .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).small())
                             .into_any_element(),
                     };
                     div()

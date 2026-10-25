@@ -25,6 +25,20 @@ pub struct Active<'a> {
 /// The `@` token the cursor sits on, when the composer ends in one. An
 /// `@` inside a word (an email address) is not a mention.
 pub fn active(text: &str) -> Option<Active<'_>> {
+    // A quoted path being typed or pasted (`@"C:\My Files\a.txt"`) may
+    // hold spaces: it runs from `@"` to its closing quote or the end.
+    if let Some(i) = text.rfind("@\"") {
+        let rest = &text[i + 2..];
+        let quotes = rest.matches('"').count();
+        let open = quotes == 0 || (quotes == 1 && rest.ends_with('"'));
+        if open && text[..i].chars().last().is_none_or(char::is_whitespace) {
+            return Some(Active {
+                start: i,
+                role: None,
+                query: &text[i + 1..],
+            });
+        }
+    }
     let start = text
         .char_indices()
         .rev()
@@ -97,6 +111,14 @@ pub fn clear_active(text: &str) -> String {
         Some(a) => text[..a.start].to_owned(),
         None => text.to_owned(),
     }
+}
+
+/// The file an `@` query names when it is a full path the user typed or
+/// pasted (`@C:\Users\me\a.txt`, `@/home/me/x.md`, `@~/x.md`,
+/// `@"C:\My Files\a.txt"`), so the menu can offer to attach it.
+pub fn typed_path(query: &str) -> Option<std::path::PathBuf> {
+    let q = query.trim().trim_matches(['"', '\'']);
+    (crate::paths::looks_absolute(q) && q.len() > 1).then(|| crate::paths::user_path(q))
 }
 
 /// Every `@` reference in a message, as (role asked for, name).
@@ -222,5 +244,31 @@ mod tests {
         assert_eq!(a.source, Source::Link);
         assert_eq!(a.name, "RAG survey");
         assert!(a.files[0].text.contains("arxiv.org/abs/2312.10997"));
+    }
+
+    #[test]
+    fn a_typed_or_pasted_path_is_offered() {
+        let a = active("read @C:\\Users\\me\\notes.txt").unwrap();
+        assert_eq!(a.query, "C:\\Users\\me\\notes.txt");
+        assert_eq!(
+            typed_path(a.query),
+            Some(std::path::PathBuf::from("C:\\Users\\me\\notes.txt"))
+        );
+        let a = active("see @\"C:\\My Files\\a b.txt").unwrap();
+        assert_eq!(a.start, 4);
+        assert_eq!(
+            typed_path(a.query),
+            Some(std::path::PathBuf::from("C:\\My Files\\a b.txt"))
+        );
+        let a = active("see @\"/tmp/My Files/a.txt\"").unwrap();
+        assert_eq!(
+            typed_path(a.query),
+            Some(std::path::PathBuf::from("/tmp/My Files/a.txt"))
+        );
+        assert!(typed_path(active("@/home/me/x.md").unwrap().query).is_some());
+        assert_eq!(typed_path("README"), None);
+        assert_eq!(typed_path("/"), None);
+        // A closed quote earlier is not a mention being typed.
+        assert!(active("see @\"/tmp/a.txt\" and more").is_none());
     }
 }

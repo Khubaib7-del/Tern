@@ -155,6 +155,8 @@ pub enum Pick {
     Resource(Box<tern_agent::mcp::MenuItem>),
     /// Opens the file and folder picker.
     Browse,
+    /// A file the user typed or pasted by its full path, to attach.
+    Path(std::path::PathBuf),
 }
 
 /// One row of the `@` menu.
@@ -172,6 +174,8 @@ pub struct Chosen {
     pub browse: bool,
     /// An MCP resource to read and attach.
     pub fetch: Option<(String, String)>,
+    /// A file typed by its full path, to attach.
+    pub attach: Option<std::path::PathBuf>,
 }
 
 /// What choosing a `/` row asks the window to do.
@@ -1107,6 +1111,20 @@ impl Model {
         };
         let q = m.query.as_str();
         let mut rows: Vec<(u8, Candidate)> = Vec::new();
+        // A full path typed or pasted after `@` is offered first.
+        if let Some(path) = mention::typed_path(q) {
+            rows.push((
+                0,
+                Candidate {
+                    label: path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.display().to_string()),
+                    detail: format!("Attach {}", path.display()),
+                    pick: Pick::Path(path),
+                },
+            ));
+        }
         for (i, a) in self.attachments.iter().enumerate() {
             if mention::matches(q, &a.name) {
                 rows.push((
@@ -1194,11 +1212,24 @@ impl Model {
         let row = rows.get(index.unwrap_or(m.selected))?.clone();
         self.mention = None;
         let name = match row.pick {
+            Pick::Path(path) => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                return Some(Chosen {
+                    text: mention::complete(text, &name),
+                    browse: false,
+                    fetch: None,
+                    attach: Some(path),
+                });
+            }
             Pick::Browse => {
                 return Some(Chosen {
                     text: mention::clear_active(text),
                     browse: true,
                     fetch: None,
+                    attach: None,
                 });
             }
             Pick::Resource(item) if item.kind == ItemKind::Template => {
@@ -1210,6 +1241,7 @@ impl Model {
                     text: mention::clear_active(text),
                     browse: false,
                     fetch: None,
+                    attach: None,
                 });
             }
             Pick::Resource(item) => {
@@ -1218,6 +1250,7 @@ impl Model {
                     text: mention::complete(text, item.label()),
                     browse: false,
                     fetch: Some((item.server.clone(), item.uri.clone())),
+                    attach: None,
                 });
             }
             Pick::Attachment(i) => {
@@ -1241,6 +1274,7 @@ impl Model {
             text: mention::complete(text, &name),
             browse: false,
             fetch: None,
+            attach: None,
         })
     }
 
@@ -3072,6 +3106,30 @@ mod tests {
         assert!(msg.contains(r#"name="week-1" role="context""#));
         assert!(msg.contains("<untrusted-data source=\"mcp:notes/notes://week-1\">"));
         assert!(m.inserted.is_none());
+    }
+
+    #[test]
+    fn a_pasted_full_path_after_at_is_offered_as_a_file() {
+        let mut m = ready();
+        let typed = "summarise @\"C:\\My Files\\notes.txt\"";
+        m.on_composer_text(typed);
+        let rows = m.mention_candidates();
+        assert_eq!(rows[0].label, "notes.txt");
+        assert!(matches!(&rows[0].pick, Pick::Path(_)));
+        let chosen = m.choose_mention(typed, None).unwrap();
+        assert_eq!(chosen.text, "summarise @notes.txt ");
+        assert_eq!(
+            chosen.attach,
+            Some(std::path::PathBuf::from("C:\\My Files\\notes.txt"))
+        );
+        m.on_composer_text("read @/home/me/x.md");
+        assert!(matches!(&m.mention_candidates()[0].pick, Pick::Path(_)));
+        m.on_composer_text("read @rub");
+        assert!(
+            !m.mention_candidates()
+                .iter()
+                .any(|r| matches!(r.pick, Pick::Path(_)))
+        );
     }
 
     #[test]
