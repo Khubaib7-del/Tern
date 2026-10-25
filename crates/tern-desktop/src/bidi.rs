@@ -9,9 +9,11 @@
 //! left to right, so a sentence's final `۔` or `?` lands at the wrong end
 //! and the paragraph hugs the left edge. Here a message is split into
 //! paragraphs by direction (the first strong letter decides, as `dir=auto`
-//! does on the web); a right-to-left paragraph is drawn right-aligned, and
-//! each of its lines is wrapped in a right-to-left embedding (U+202B …
-//! U+202C) so punctuation and embedded English sit where a reader expects.
+//! does on the web); each line of a right-to-left paragraph is wrapped in
+//! a right-to-left embedding (U+202B … U+202C) so punctuation and embedded
+//! English sit where a reader expects, and drawn as a row of words that
+//! flows from the right edge and wraps there ([`RtlLine`], [`rtl_lines`]),
+//! because GPUI's own line wrapping cannot wrap a right-to-left line.
 //!
 //! GPUI-free so it is unit tested.
 
@@ -146,29 +148,108 @@ fn split_marker(line: &str) -> (&str, &str) {
     line.split_at(indent + n)
 }
 
-/// A user message's lines, each marked like [`blocks`] does, for the
-/// plain-text bubble: `(right to left, text)`.
-pub fn plain_lines(text: &str) -> (bool, String) {
-    if !has_rtl(text) {
-        return (false, text.to_owned());
+/// One line of a right-to-left paragraph, laid out by Tern rather than
+/// by GPUI's line wrapper.
+///
+/// GPUI shapes a paragraph as one line and then wraps it by the glyphs'
+/// x positions, which only works when they grow left to right. A line
+/// whose base direction is right to left is laid out from its right end
+/// leftwards (cosmic-text on Linux), so it never wraps and runs off the
+/// column's left edge; where the glyphs come in screen order (Windows,
+/// macOS) a long paragraph wraps with its last words on the first row.
+/// So a right-to-left line is drawn as a row of words, flowing from the
+/// right and wrapping by the layout engine: each word is short enough to
+/// shape as one run, which every platform joins and orders correctly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RtlLine {
+    /// A list marker drawn at the line's right end (`•`, `1.`).
+    pub marker: Option<String>,
+    /// `#` count for a heading line, else 0.
+    pub heading: u8,
+    /// The first line of a paragraph (after a blank line).
+    pub starts_paragraph: bool,
+    /// Words in reading order. A run of left-to-right words (an English
+    /// name, a number with its unit) stays one item, in its own order.
+    pub words: Vec<String>,
+}
+
+/// A right-to-left block's lines (see [`RtlLine`]). With `markdown`, list
+/// and heading markers are read and inline marks (`**`, `__`, backticks,
+/// `[text](link)`) are dropped, keeping their text.
+pub fn rtl_lines(text: &str, markdown: bool) -> Vec<RtlLine> {
+    let mut out = Vec::new();
+    let mut gap = false;
+    for raw in text.lines() {
+        let line: String = raw.chars().filter(|c| *c != RLE && *c != PDF).collect();
+        if line.trim().is_empty() {
+            gap = !out.is_empty();
+            continue;
+        }
+        let (mut marker, mut heading, mut body) = (None, 0u8, line.trim().to_owned());
+        if markdown {
+            let (m, rest) = split_marker(line.trim());
+            let m = m.trim();
+            if m.starts_with('#') {
+                heading = m.len().min(6) as u8;
+            } else if matches!(m, "-" | "*" | "+") {
+                marker = Some("•".to_owned());
+            } else if m == ">" {
+                marker = Some("▏".to_owned());
+            } else if !m.is_empty() {
+                marker = Some(m.to_owned());
+            }
+            body = strip_inline(rest.trim());
+        }
+        out.push(RtlLine {
+            marker,
+            heading,
+            starts_paragraph: std::mem::take(&mut gap),
+            words: group_words(&body),
+        });
     }
-    let rtl = is_rtl(text);
-    if !rtl {
-        return (false, text.to_owned());
+    out
+}
+
+/// Inline Markdown marks dropped, their text kept.
+fn strip_inline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('[') {
+        let after = &rest[i + 1..];
+        match after.find("](") {
+            Some(j) if after[j + 2..].contains(')') => {
+                let close = after[j + 2..].find(')').unwrap_or(0);
+                out.push_str(&rest[..i]);
+                out.push_str(&after[..j]);
+                rest = &after[j + 2 + close + 1..];
+            }
+            _ => {
+                out.push_str(&rest[..=i]);
+                rest = after;
+            }
+        }
     }
-    (
-        true,
-        text.lines()
-            .map(|l| {
-                if l.trim().is_empty() {
-                    l.to_owned()
-                } else {
-                    format!("{RLE}{l}{PDF}")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
+    out.push_str(rest);
+    out.replace("**", "").replace("__", "").replace('`', "")
+}
+
+/// Words split at spaces; consecutive words without a right-to-left
+/// letter are kept together as one left-to-right item.
+fn group_words(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut ltr_open = false;
+    for w in s.split_whitespace() {
+        let ltr = !has_rtl(w) && w.chars().any(char::is_alphanumeric);
+        match out.last_mut() {
+            Some(last) if ltr && ltr_open => {
+                last.push(' ');
+                last.push_str(w);
+            }
+            _ => out.push(w.to_owned()),
+        }
+        ltr_open = ltr;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -217,10 +298,25 @@ mod tests {
     }
 
     #[test]
-    fn a_users_urdu_message_is_marked_line_by_line() {
-        let (rtl, text) = plain_lines(&format!("{URDU}\n{URDU}"));
-        assert!(rtl);
-        assert_eq!(text.matches('\u{202B}').count(), 2);
-        assert_eq!(plain_lines("hi"), (false, "hi".to_owned()));
+    fn a_right_to_left_paragraph_is_laid_out_as_words_in_reading_order() {
+        let md = format!(
+            "\u{202B}{URDU}\u{202C}\n\n- \u{202B}**سلام** پاکستان\u{202C}\n## \u{202B}عنوان\u{202C}\n\u{202B}مختصر: سلام، Tern 2026 [ویب](https://x.org)\u{202C}"
+        );
+        let l = rtl_lines(&md, true);
+        assert_eq!(l.len(), 4);
+        assert_eq!(l[0].words, vec!["اردو", "ایک", "خوبصورت", "زبان", "ہے۔"]);
+        assert!(!l[0].starts_paragraph && l[0].marker.is_none());
+        assert!(l[1].starts_paragraph);
+        assert_eq!(l[1].marker.as_deref(), Some("•"));
+        assert_eq!(l[1].words, vec!["سلام", "پاکستان"]);
+        assert_eq!(
+            (l[2].heading, l[2].words.clone()),
+            (2, vec!["عنوان".to_owned()])
+        );
+        // English words stay one item in their own order; links keep text.
+        assert_eq!(l[3].words, vec!["مختصر:", "سلام،", "Tern 2026", "ویب"]);
+        // A user's message is plain text: marks are kept.
+        let plain = rtl_lines("**سلام** - ok", false);
+        assert_eq!(plain[0].words, vec!["**سلام**", "-", "ok"]);
     }
 }

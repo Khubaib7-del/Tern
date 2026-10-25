@@ -3222,11 +3222,15 @@ impl Workspace {
                         .rounded_xl()
                         .bg(p.raised)
                         .child({
-                            // An Urdu or Arabic message reads right to left.
-                            let (rtl, shown) = crate::bidi::plain_lines(text);
-                            div()
-                                .when(rtl, |d| d.text_right())
-                                .child(SharedString::from(shown))
+                            // An Urdu or Arabic message reads right to left,
+                            // as rows of words from the right edge.
+                            if crate::bidi::has_rtl(text) && crate::bidi::is_rtl(text) {
+                                rtl_flow(crate::bidi::rtl_lines(text, false), false)
+                            } else {
+                                div()
+                                    .child(SharedString::from(text.clone()))
+                                    .into_any_element()
+                            }
                         }),
                 )
                 .child(
@@ -5733,10 +5737,45 @@ pub(crate) fn bidi_markdown(
                 b.text,
             ));
             if b.rtl {
-                div().w_full().text_right().child(view).into_any_element()
+                rtl_flow(crate::bidi::rtl_lines(&b.text, true), true)
             } else {
                 view.into_any_element()
             }
+        }))
+        .into_any_element()
+}
+
+/// Right-to-left lines as rows of words flowing from the right edge and
+/// wrapping there (`crate::bidi::RtlLine` says why GPUI's own wrapping
+/// cannot). `fill`: each row spans the column, so a short line still sits
+/// at its right edge; off in a bubble, which takes the width of its text.
+pub(crate) fn rtl_flow(lines: Vec<crate::bidi::RtlLine>, fill: bool) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .when(fill, |d| d.w_full())
+        .gap_1()
+        .children(lines.into_iter().map(move |l| {
+            div()
+                .when(fill, |d| d.w_full())
+                .when(l.starts_paragraph, |d| d.mt_2())
+                .when(l.heading > 0, |d| {
+                    d.font_weight(FontWeight::SEMIBOLD)
+                        .when(l.heading <= 2, |d| d.text_lg())
+                })
+                .flex()
+                .flex_row_reverse()
+                .flex_wrap()
+                .gap_x(px(5.))
+                .children(
+                    l.marker
+                        .map(|m| div().flex_none().child(SharedString::from(m))),
+                )
+                .children(
+                    l.words
+                        .into_iter()
+                        .map(|w| div().flex_none().child(SharedString::from(w))),
+                )
         }))
         .into_any_element()
 }

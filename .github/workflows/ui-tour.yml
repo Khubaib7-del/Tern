@@ -154,7 +154,9 @@ jobs:
           [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() | Out-File out\rec_start_unix_ms.txt
           $p = Start-Process .\target\release\tern-desktop.exe -ArgumentList '--tour' -PassThru -RedirectStandardOutput out\tour-stdout.txt -RedirectStandardError out\tour-stderr.txt
           if (-not $p.WaitForExit(900000)) { $p.Kill() }
-          Start-Sleep 1
+          # ffmpeg is killed, which loses what its encoder still holds: keep
+          # recording a while so the last scenes are written.
+          Start-Sleep 12
           # A killed recording is still a readable Matroska file; remux it.
           Stop-Process -Id $ff.Id
           Start-Sleep 3

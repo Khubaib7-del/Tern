@@ -1716,7 +1716,19 @@ impl Model {
             _ => None,
         };
         match &mut self.phase {
-            Phase::Working { activity, run, .. } => {
+            Phase::Working {
+                activity,
+                run,
+                draft,
+                ..
+            } => {
+                // The reply that said it could not look this up (or copied
+                // the last one) is not the answer: Tern searches and asks
+                // again, so it leaves the screen while the search runs.
+                if e.kind == "web.safety_net" {
+                    draft.clear();
+                    self.draft_pacer = Default::default();
+                }
                 let next = match (e.kind.as_str(), e.payload.get("worker")) {
                     ("tool.executed", Some(_)) if e.payload["tool"] == "read_url" => {
                         Some(Activity::Reading)
@@ -3924,6 +3936,20 @@ mod tests {
         }
         m.set_resume_offer(Some(&done), Some((TurnState::Failed, Some("x"))));
         assert!(m.resume_offer.is_none());
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_screen_while_the_safety_net_searches() {
+        let mut m = ready();
+        assert!(m.start_turn("Who created LangChain?").is_some());
+        m.on_text(1, "I don't have real-time access to the internet.");
+        assert!(matches!(&m.phase, Phase::Working { draft, .. } if !draft.is_empty()));
+        m.on_event(&ev(
+            "web.safety_net",
+            "searched",
+            serde_json::json!({"query": "LangChain", "refused": true}),
+        ));
+        assert!(matches!(&m.phase, Phase::Working { draft, .. } if draft.is_empty()));
     }
 
     #[test]
