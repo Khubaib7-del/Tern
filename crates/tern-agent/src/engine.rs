@@ -357,6 +357,53 @@ pub struct RunHooks<'a> {
     /// refuses them gets the turn again without, and the model is
     /// remembered ([`mark_no_native_tools`]).
     pub native_tools: bool,
+    /// Before the first model call, read what the message plainly asks
+    /// for: a file by its full path (`file_read`, approved like any call
+    /// outside the workspace) and a web search when it says "use the web"
+    /// (`web_search`). Works with models that never call tools.
+    pub prefetch: bool,
+}
+
+/// What a message plainly asks Tern to read before the model answers: the
+/// file at a full path it names (when that file exists), and a web search
+/// when it says to use the web. Returns `(tool, args)` pairs.
+pub fn prefetch_calls(text: &str, tools: &ToolRegistry) -> Vec<(&'static str, Value)> {
+    let mut out = Vec::new();
+    if tools.get("file_read").is_some()
+        && let Some(raw) = crate::paths::find_in_text(text)
+        && crate::paths::user_path(&raw).is_file()
+    {
+        out.push(("file_read", json!({"path": raw})));
+    }
+    if tools.get("web_search").is_some()
+        && let Some(query) = web_query(text)
+    {
+        out.push(("web_search", json!({"query": query})));
+    }
+    out
+}
+
+/// The search a message asks for with "use the web (tool)", "search the
+/// web (for)", "look it up online", or "web search": the message without
+/// that phrase. `None` when it asks for no search.
+pub fn web_query(text: &str) -> Option<String> {
+    static ASK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)\b(?:(?:please\s+)?(?:use|using|with)\s+(?:the\s+)?(?:web|internet|online)(?:\s+(?:search\s+)?tool|\s+search)?|search\s+(?:the\s+)?(?:web|internet|online)(?:\s+for)?|look\s+(?:it\s+|this\s+)?up\s+online|web\s+search(?:\s+for)?)\b[:,]?",
+        )
+        .expect("valid pattern")
+    });
+    if !ASK.is_match(text) {
+        return None;
+    }
+    let q = ASK.replace_all(text, " ");
+    let q = q
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|c: char| c.is_whitespace() || ",.;:!?".contains(c))
+        .to_owned();
+    (q.chars().count() >= 3).then_some(q)
 }
 
 /// Models that refused native tools this session, as `provider/model`.
@@ -658,6 +705,22 @@ impl Run<'_, '_> {
             }
         }
         self.save(&messages[base..], &seen);
+        if self.cfg.hooks.prefetch && resume.is_none() {
+            for (name, args) in prefetch_calls(&message_text, self.cfg.tools) {
+                self.check_cancel()?;
+                self.go(TurnState::ToolRequested)?;
+                self.called.push(name.to_owned());
+                let result = self.tool_step(name, &args).await?;
+                // As if the model had asked: its call, then the result.
+                messages.push(ChatMessage::assistant(tern_providers::tool_block(
+                    name, &args,
+                )));
+                messages.push(ChatMessage::user(format!(
+                    "{result}\n\n(Tern ran this because the message asked for it. Answer the message using it.)"
+                )));
+                self.save(&messages[base..], &seen);
+            }
+        }
         let mut empty_retried = false;
 
         loop {

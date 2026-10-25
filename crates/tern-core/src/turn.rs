@@ -73,6 +73,9 @@ impl TurnState {
             (self, to),
             (Created, Preparing)
                 | (Preparing, ModelStreaming)
+                // Tern reads what the message names (a full path, "use the
+                // web") before the first model call.
+                | (Preparing, ToolRequested)
                 | (ModelStreaming, ToolRequested)
                 | (ModelStreaming, Verifying)
                 | (ToolRequested, PolicyCheck)

@@ -791,3 +791,79 @@ fn tool_refusals_are_told_apart_from_other_errors() {
     assert!(!rejects_tools("401 Unauthorized"));
     assert!(!rejects_tools("rate limit exceeded"));
 }
+
+#[test]
+fn the_web_is_searched_when_the_message_says_so() {
+    use tern_agent::engine::web_query;
+    assert_eq!(
+        web_query("use the web tool: latest Rust release").as_deref(),
+        Some("latest Rust release")
+    );
+    assert_eq!(
+        web_query("Search the web for tern migration routes").as_deref(),
+        Some("tern migration routes")
+    );
+    assert_eq!(
+        web_query("who won yesterday? look it up online").as_deref(),
+        Some("who won yesterday")
+    );
+    assert_eq!(web_query("what is a web server?"), None);
+    assert_eq!(web_query("use the web"), None);
+}
+
+#[tokio::test]
+async fn a_typed_path_is_read_first_so_a_model_that_never_calls_tools_still_answers() {
+    let mut s = Setup::new();
+    s.tools.register(tern_agent::workspace::LocalFileRead);
+    s.tools.set_mode(tern_agent::TurnMode::Chat);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plan.md");
+    std::fs::write(&file, "Ship on the 3rd of November.").unwrap();
+    // The model only ever answers; it never asks for a tool.
+    let model = Script::new(&["It ships on the 3rd of November."]);
+    let sink = MemorySink::default();
+    let approver = Answer::new(ApprovalAnswer::AllowOnce);
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "no-tools-model",
+        tools: &s.tools,
+        gate: &mut s.gate,
+        approver: &approver,
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: None,
+        hooks: tern_agent::engine::RunHooks {
+            prefetch: true,
+            ..Default::default()
+        },
+    }
+    .run(
+        Vec::new(),
+        &format!("when does {} say we ship?", file.display()),
+    )
+    .await;
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("It ships on the 3rd of November.")
+    );
+    // The file outside any workspace was approved first.
+    assert_eq!(approver.1.lock().unwrap().len(), 1);
+    let reqs = model.requests();
+    assert_eq!(reqs.len(), 1);
+    let sent: String = reqs[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(sent.contains("Ship on the 3rd of November."), "{sent}");
+    assert!(
+        kinds(&sink).iter().any(|k| k.starts_with("tool.")),
+        "{:?}",
+        kinds(&sink)
+    );
+}
