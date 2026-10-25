@@ -248,6 +248,9 @@ enum Act {
     Wheel(u8),
     /// Profiling: a line in the log between measured phases.
     Mark(&'static str),
+    /// Profiling: leave parts of Settings › Providers out
+    /// (`Workspace::perf_strip`).
+    Strip(u8),
     Quit,
 }
 
@@ -295,6 +298,20 @@ fn perf_script() -> Vec<Beat> {
         v.push(b(Act::Theme, 1500));
         v.push(b(Act::Theme, 2500));
         v.push(b(Act::Mark("wheel"), 0));
+        v.push(b(Act::Wheel(24), 4500));
+        v.push(b(Act::Mark("done"), 2100));
+    }
+    // What Providers' frames cost without each part: 1 logos, 2 the open
+    // model list, 4 the row buttons, 7 all three.
+    for (mark, mask) in [
+        ("strip-logos", 1),
+        ("strip-list", 2),
+        ("strip-buttons", 4),
+        ("strip-all", 7),
+        ("strip-none", 0),
+    ] {
+        v.push(b(Act::Strip(mask), 300));
+        v.push(b(Act::Mark(mark), 0));
         v.push(b(Act::Wheel(24), 4500));
         v.push(b(Act::Mark("done"), 2100));
     }
@@ -1621,6 +1638,7 @@ impl Workspace {
                 window.resize(size(px(w), px(h)));
             }
             Act::SeedModels => self.tour_seed_models(),
+            Act::Strip(mask) => self.perf_strip = mask,
             Act::Wheel(n) => self.tour_wheel(n, window, cx),
             Act::Mark(what) => log(&format!(
                 "PERF mark {what} on {} unix_ms={}",

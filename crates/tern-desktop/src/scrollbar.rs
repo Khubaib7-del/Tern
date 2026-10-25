@@ -134,6 +134,7 @@ impl WheelLatch {
     }
 
     /// Whether the page owns the gesture going on at `now`.
+    #[cfg(test)]
     pub fn page_owns(&self, now: std::time::Instant) -> bool {
         self.owner(now) == Some(Owner::Page)
     }

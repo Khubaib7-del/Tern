@@ -242,6 +242,10 @@ pub struct Workspace {
     /// Sliding highlights and knobs, by control, and whether one moved
     /// this frame (so the frame after is drawn too).
     glides: std::cell::RefCell<std::collections::HashMap<&'static str, crate::motion::Glide>>,
+    /// Profiling only (the UI tour's `perf` run): parts of Settings ›
+    /// Providers left out, to measure what each costs per frame.
+    /// 1 logos, 2 the model list, 4 the row buttons. Always 0 otherwise.
+    pub(super) perf_strip: u8,
     anim_pending: std::cell::Cell<bool>,
     /// The effort slider's track: its left edge in the window at the last
     /// paint, and whether the knob is being dragged.
@@ -661,6 +665,7 @@ impl Workspace {
             side_w: crate::panels::RIGHT_DEFAULT,
             run_more_open: false,
             glides: Default::default(),
+            perf_strip: 0,
             anim_pending: Default::default(),
             effort_track: Default::default(),
             effort_drag: None,
@@ -4115,6 +4120,9 @@ impl Workspace {
             }
         }
 
+        if self.perf_strip & 4 != 0 {
+            actions = div();
+        }
         let mut row = div()
             .flex()
             .flex_col()
@@ -4128,7 +4136,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(logo_tile(&r, p))
+                    .when(self.perf_strip & 1 == 0, |d| d.child(logo_tile(&r, p)))
                     .child(info)
                     .child(actions),
             );
@@ -4194,7 +4202,7 @@ impl Workspace {
         if kind == Kind::Model && self.model.settings.editing_url == Some(id) {
             row = row.child(self.base_url_row(id, p, cx));
         }
-        if kind == Kind::Model && is_default {
+        if kind == Kind::Model && is_default && self.perf_strip & 2 == 0 {
             row = row.child(self.provider_model_list(p, cx));
         }
         row.into_any_element()

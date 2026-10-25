@@ -45,6 +45,7 @@ pub struct Rect {
     pub h: f32,
 }
 
+#[cfg(test)]
 impl Rect {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
@@ -107,6 +108,7 @@ pub fn areas(width: f32, buttons: Buttons) -> Vec<(Area, Rect)> {
 }
 
 /// The area at a point (window px), if it is on the title bar.
+#[cfg(test)]
 pub fn area_at(width: f32, buttons: Buttons, x: f32, y: f32) -> Option<Area> {
     areas(width, buttons)
         .into_iter()

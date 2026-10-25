@@ -623,46 +623,53 @@ impl Workspace {
             (Action::AskSide, AssetIcon::MessageCircle),
         ];
         let (x, y) = h.at;
-        Some(
-            div()
-                .absolute()
-                .left(px((x - 160.).max(8.)))
-                .top(px(y + 12.))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_1()
-                .max_w(px(460.))
-                .rounded_lg()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .shadow_lg()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .children(actions.into_iter().map(|(a, ic)| {
-                            div()
-                                .id(SharedString::from(format!("hl-{}", a.label())))
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .text_xs()
-                                .cursor_pointer()
-                                .text_color(p.muted)
-                                .hover(move |d| d.bg(p.hover).text_color(p.text))
-                                .child(icon(ic, p.muted))
-                                .child(a.label())
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.highlight_action(a, window, cx)
-                                }))
-                        }))
-                        .child(
+        // The pill is as wide as its actions (no fixed or capped width, so
+        // nothing spills past it), anchored under the pointer and kept
+        // inside the window: GPUI's anchored element measures it and
+        // slides it back in from any edge it would cross.
+        let pill = div()
+            .id("highlight-bar")
+            .occlude()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_1()
+            .flex_none()
+            .rounded_lg()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.raised)
+            .shadow_lg()
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(2.))
+                    .whitespace_nowrap()
+                    .children(actions.into_iter().map(|(a, ic)| {
+                        div()
+                            .id(SharedString::from(format!("hl-{}", a.label())))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_1()
+                            .whitespace_nowrap()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .cursor_pointer()
+                            .text_color(p.muted)
+                            .hover(move |d| d.bg(p.hover).text_color(p.text))
+                            .child(icon(ic, p.muted))
+                            .child(a.label())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.highlight_action(a, window, cx)
+                            }))
+                    }))
+                    .child(
+                        div().flex_none().child(
                             Button::new("hl-close")
                                 .capsule()
                                 .icon(AssetIcon::X)
@@ -673,11 +680,29 @@ impl Workspace {
                                     cx.notify();
                                 })),
                         ),
+                    ),
+            )
+            .when_some(h.note.clone(), |d, n| {
+                // A note wraps under the actions rather than widening the pill.
+                d.child(
+                    div()
+                        .max_w(px(520.))
+                        .px_2()
+                        .pb_1()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(n),
                 )
-                .when_some(h.note.clone(), |d, n| {
-                    d.child(div().px_2().pb_1().text_xs().text_color(p.faint).child(n))
-                })
-                .into_any_element(),
+            });
+        Some(
+            gpui_kit::deferred(
+                gpui_kit::anchored()
+                    .position(gpui_kit::point(px((x - 160.).max(8.)), px(y + 12.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(pill),
+            )
+            .with_priority(2)
+            .into_any_element(),
         )
     }
 
