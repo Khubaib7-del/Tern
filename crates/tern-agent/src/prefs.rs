@@ -483,6 +483,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recent_files_are_newest_first_without_repeats() {
+        let mut p = Preferences::default();
+        p.note_recent_file("/a");
+        p.note_recent_file("/b");
+        p.note_recent_file("/a");
+        assert_eq!(p.recent_files, ["/a", "/b"]);
+        for i in 0..30 {
+            p.note_recent_file(&format!("/f{i}"));
+        }
+        assert_eq!(p.recent_files.len(), RECENT_FILES);
+        assert_eq!(p.recent_files[0], "/f29");
+    }
+
+    #[test]
     fn tools_base_urls_and_onboarding_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.json");
@@ -623,6 +637,7 @@ mod tests {
             scout_pos: Some((40, 600)),
             scout_variant: Some("study".into()),
             local_models: Default::default(),
+            recent_files: vec!["/home/me/notes.md".into()],
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;
