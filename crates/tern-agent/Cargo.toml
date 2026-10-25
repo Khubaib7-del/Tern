@@ -35,6 +35,8 @@ zip.workspace = true
 oar-ocr = { workspace = true, optional = true }
 image.workspace = true
 whisper-rs = { workspace = true, optional = true }
+# Physical cores, for whisper.cpp's thread count.
+num_cpus = { version = "1", optional = true }
 symphonia = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 
@@ -49,7 +51,7 @@ ocr-onnx = ["dep:oar-ocr"]
 audio = ["dep:symphonia"]
 # Local transcription: Whisper models on whisper.cpp (whisper-rs, built
 # statically, CPU). The desktop app and the CLI turn it on.
-whisper = ["audio", "dep:whisper-rs"]
+whisper = ["audio", "dep:whisper-rs", "dep:num_cpus"]
 # Local live dictation: Moonshine Streaming on ONNX Runtime (ort, the
 # runtime OCR already links). The desktop app and the CLI turn it on.
 asr-onnx = ["audio", "dep:ort"]
