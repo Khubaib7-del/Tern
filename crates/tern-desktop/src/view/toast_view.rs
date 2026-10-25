@@ -123,26 +123,37 @@ impl Workspace {
                         .rounded_full()
                         .bg(if error { red } else { p.accent }),
                 )
+                // The text takes the whole width; its action (Retry, Open…)
+                // sits under it, so a long label never squeezes the text
+                // into one word per line.
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_sm()
-                        .text_color(p.text)
-                        .child(SharedString::from(t.text.clone())),
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap_1()
+                        .child(
+                            div()
+                                .w_full()
+                                .text_sm()
+                                .text_color(p.text)
+                                .child(SharedString::from(t.text.clone())),
+                        )
+                        .children(retry.map(|r| {
+                            Button::new(("toast-retry", id as usize))
+                                .capsule()
+                                .label(r.label())
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.model.toasts.dismiss(id, Instant::now());
+                                    this.retry(r.clone(), window, cx);
+                                    cx.notify();
+                                }))
+                        })),
                 )
-                .children(retry.map(|r| {
-                    Button::new(("toast-retry", id as usize))
-                        .capsule()
-                        .label(r.label())
-                        .ghost()
-                        .xsmall()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.model.toasts.dismiss(id, Instant::now());
-                            this.retry(r.clone(), window, cx);
-                            cx.notify();
-                        }))
-                }))
                 .child(
                     Button::new(("toast-dismiss", id as usize))
                         .capsule()
