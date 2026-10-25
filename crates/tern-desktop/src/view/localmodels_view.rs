@@ -105,7 +105,7 @@ impl Workspace {
         let bid = |what: &str| SharedString::from(format!("local-{what}-{id}"));
         let dl = page.downloads.get(&id).cloned();
         let error = page.errors.get(&id).cloned();
-        let runnable = local_models::runtime_available(s.entry.runtime);
+        let runnable = local_models::can_run(&s.entry);
 
         let logo = div()
             .size(px(28.))
@@ -159,7 +159,7 @@ impl Workspace {
                     .text_xs()
                     .text_color(p.faint)
                     .child(SharedString::from(format!(
-                        "Downloaded. This build cannot run {} models yet.",
+                        "Downloaded. This build cannot run it yet: {} is not linked for this task.",
                         s.entry.runtime.label()
                     ))),
             );

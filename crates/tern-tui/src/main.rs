@@ -459,6 +459,8 @@ fn main() -> ExitCode {
 
 fn real_main() -> ExitCode {
     let cli = Cli::parse();
+    // Local model engines compiled in (OCR on ONNX Runtime).
+    tern_agent::local_models::register_builtin_engines();
     match cli.command.unwrap_or(Command::Chat(ChatArgs::default())) {
         Command::Doctor { json } => run_doctor(json),
         Command::Chat(args) => {

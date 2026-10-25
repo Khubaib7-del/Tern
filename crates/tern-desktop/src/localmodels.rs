@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use tern_agent::local_models::{
-    CancelDownload, ModelRole, ModelStatus, State, Task, human_size, runtime_available,
+    CancelDownload, ModelRole, ModelStatus, State, Task, can_run, human_size,
 };
 
 /// Each Default's Alternative and each Alternative's Default, by id.
@@ -23,11 +23,7 @@ fn alternatives(statuses: &[ModelStatus]) -> HashMap<String, (String, String, bo
         {
             out.insert(
                 s.entry.id.clone(),
-                (
-                    a.entry.id.clone(),
-                    a.entry.name.clone(),
-                    runtime_available(a.entry.runtime),
-                ),
+                (a.entry.id.clone(), a.entry.name.clone(), can_run(&a.entry)),
             );
         }
     }

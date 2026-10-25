@@ -279,7 +279,7 @@ pub fn plan_images_local(
     else {
         return plan;
     };
-    if crate::local_models::runtime_available(e.runtime) {
+    if crate::local_models::can_run(e) {
         ImagePlan::ReadLocal {
             model: e.id.clone(),
             name: e.name.clone(),

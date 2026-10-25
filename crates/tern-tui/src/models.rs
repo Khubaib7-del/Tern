@@ -37,6 +37,14 @@ pub(crate) enum ModelsCmd {
         task: Option<String>,
         id: Option<String>,
     },
+    /// Read the text in a picture with a local OCR model (the one in use
+    /// for OCR unless `--model` names another).
+    Read {
+        /// A PNG, JPEG, GIF, or WebP file.
+        image: std::path::PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Switch an installed model on or off without deleting it.
     Enable {
         id: String,
@@ -91,7 +99,7 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                             "partial_bytes": match s.state { State::Partial(n) => n, _ => 0 },
                             "enabled": s.enabled,
                             "default": s.is_default,
-                            "runnable": local_models::runtime_available(s.entry.runtime),
+                            "runnable": local_models::can_run(&s.entry),
                         })
                     })
                     .collect();
@@ -126,10 +134,10 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                         s.entry.licence,
                         state,
                         s.entry.name,
-                        if local_models::runtime_available(s.entry.runtime) {
+                        if local_models::can_run(&s.entry) {
                             String::new()
                         } else {
-                            format!("  [needs {}]", s.entry.runtime.label())
+                            format!("  [cannot run yet: {}]", s.entry.runtime.label())
                         }
                     );
                 }
@@ -188,9 +196,9 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                 prefs.save()?;
                 eprintln!("It is now the default for {}.", entry.task.label());
             }
-            if !local_models::runtime_available(entry.runtime) {
+            if !local_models::can_run(&entry) {
                 eprintln!(
-                    "Note: this build cannot run {} models yet; the file is ready for when it can.",
+                    "Note: this build cannot run it yet ({} is not linked for this task); the files are ready for when it can.",
                     entry.runtime.label()
                 );
             }
@@ -247,6 +255,19 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
             }
             prefs.save()?;
             println!("Saved.");
+            Ok(())
+        }
+        ModelsCmd::Read { image, model } => {
+            let id = match model {
+                Some(id) => id,
+                None => lm
+                    .usable(&prefs.local_models, Task::Ocr)
+                    .map(|e| e.id.clone())
+                    .ok_or("no local OCR model is installed and on; try `tern models download pp-ocrv6-small`")?,
+            };
+            let bytes = std::fs::read(&image)
+                .map_err(|e| format!("cannot read {}: {e}", image.display()))?;
+            println!("{}", lm.ocr(&id, &bytes)?);
             Ok(())
         }
         ModelsCmd::Enable { id, state } => {

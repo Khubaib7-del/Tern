@@ -15,8 +15,10 @@
 //! Each task has a Default and an Alternative (the backup); the user can
 //! switch with "Use for this task".
 //!
-//! The runtimes themselves (whisper.cpp, ONNX Runtime, …) plug in later:
-//! [`runtime_available`] says which ones this build can run.
+//! The runtimes plug in as [`LocalEngine`]s. The first one linked is
+//! PaddleOCR on ONNX Runtime (`oar-ocr`, the `ocr-onnx` feature), which
+//! reads pictures with the OCR models; [`register_builtin_engines`] turns
+//! it on and [`can_run`] says which models this build can run.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -161,12 +163,18 @@ impl Runtime {
     }
 }
 
-/// An engine that runs one runtime's models. None ship yet: the download,
-/// state, and defaults work today, and an engine (whisper.cpp, ONNX
-/// Runtime, …) plugs in by calling [`register_engine`] at startup.
+/// An engine that runs one runtime's models (or some of them). It plugs
+/// in by calling [`register_engine`] at startup; the built-in ones come
+/// from [`register_builtin_engines`].
 pub trait LocalEngine: Send + Sync {
     /// The runtime this engine runs.
     fn runtime(&self) -> Runtime;
+    /// Whether it runs `entry` (an ONNX engine for OCR does not run an
+    /// ONNX speech model).
+    fn runs(&self, entry: &ModelEntry) -> bool {
+        let _ = entry;
+        true
+    }
     /// Reads the text in a picture (PNG, JPEG, GIF, or WebP bytes) with
     /// the model installed in `dir`.
     fn ocr(&self, dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
@@ -199,10 +207,28 @@ fn engine_for(runtime: Runtime) -> Option<std::sync::Arc<dyn LocalEngine>> {
         .cloned()
 }
 
-/// Whether this build can run `runtime`'s models (an engine is registered).
+/// Whether an engine for `runtime` is registered (it may run only some
+/// of that runtime's models; see [`can_run`]).
 pub fn runtime_available(runtime: Runtime) -> bool {
     engine_for(runtime).is_some()
 }
+
+/// Whether this build can run `entry`.
+pub fn can_run(entry: &ModelEntry) -> bool {
+    engine_for(entry.runtime).is_some_and(|e| e.runs(entry))
+}
+
+/// Registers the engines compiled into this build. Today that is the
+/// PaddleOCR engine on ONNX Runtime, with the `ocr-onnx` feature; without
+/// it nothing is registered. Safe to call more than once.
+pub fn register_builtin_engines() {
+    #[cfg(feature = "ocr-onnx")]
+    register_engine(std::sync::Arc::new(onnx_ocr::OnnxOcr::default()));
+}
+
+#[cfg(feature = "ocr-onnx")]
+pub mod onnx_ocr;
+pub mod paddle;
 
 /// One file of a model.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,7 +821,8 @@ impl LocalModels {
             return Err(format!("{} is not downloaded", entry.name));
         }
         let engine = engine_for(entry.runtime)
-            .ok_or_else(|| format!("this build cannot run {} models yet", entry.runtime.label()))?;
+            .filter(|e| e.runs(entry))
+            .ok_or_else(|| format!("this build cannot run {} yet", entry.name))?;
         engine.ocr(&self.dir(id), entry, image)
     }
 
