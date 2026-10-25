@@ -3542,7 +3542,11 @@ mod tests {
         assert_eq!(rows.last().unwrap().pick, Pick::Browse);
         // Choosing a folder drills down; the menu stays open on it.
         let chosen = m.choose_mention(&typed, Some(1)).unwrap();
-        assert!(chosen.text.ends_with(&format!("notes{}", std::path::MAIN_SEPARATOR)));
+        assert!(
+            chosen
+                .text
+                .ends_with(&format!("notes{}", std::path::MAIN_SEPARATOR))
+        );
         assert!(chosen.attach.is_none() && !chosen.browse);
         m.on_composer_text(&chosen.text);
         let rows = m.mention_candidates();
@@ -3595,7 +3599,10 @@ mod tests {
             .collect();
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].label, "Budget review");
-        let i = rows.iter().position(|r| r.pick == Pick::Chat(other)).unwrap();
+        let i = rows
+            .iter()
+            .position(|r| r.pick == Pick::Chat(other))
+            .unwrap();
         let chosen = m.choose_mention("as in @budget", Some(i)).unwrap();
         assert_eq!(chosen.chat, Some((other, "Budget review".into())));
         assert_eq!(m.attaching, 1);

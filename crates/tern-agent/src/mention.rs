@@ -400,7 +400,11 @@ mod browse_tests {
             .into_iter()
             .map(|e| e.name)
             .collect();
-        assert_eq!(names, ["notes", "readme.txt"], "folders first, hidden left out");
+        assert_eq!(
+            names,
+            ["notes", "readme.txt"],
+            "folders first, hidden left out"
+        );
         let (dir, filter) = browsed_dir(&format!("{root}rea")).unwrap();
         assert_eq!(list_dir(&dir, &filter, 10)[0].name, "readme.txt");
         assert!(browsed_dir("notes/").is_none(), "only full paths browse");
