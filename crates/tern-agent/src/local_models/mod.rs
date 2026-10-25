@@ -17,8 +17,9 @@
 //!
 //! The runtimes plug in as [`LocalEngine`]s: PaddleOCR on ONNX Runtime
 //! (`oar-ocr`, the `ocr-onnx` feature) reads pictures with the OCR models,
-//! and whisper.cpp (`whisper-rs`, the `whisper` feature) transcribes audio
-//! with the Whisper models. [`register_builtin_engines`] turns them on and
+//! whisper.cpp (`whisper-rs`, the `whisper` feature) transcribes audio
+//! with the Whisper models, and Moonshine on ONNX Runtime (`asr-onnx`)
+//! writes live dictation. [`register_builtin_engines`] turns them on and
 //! [`can_run`] says which models this build can run.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -242,17 +243,22 @@ pub fn can_run(entry: &ModelEntry) -> bool {
 }
 
 /// Registers the engines compiled into this build: PaddleOCR on ONNX
-/// Runtime (`ocr-onnx`) and Whisper on whisper.cpp (`whisper`). Without
+/// Runtime (`ocr-onnx`), Whisper on whisper.cpp (`whisper`), and
+/// Moonshine on ONNX Runtime (`asr-onnx`). Without
 /// those features nothing is registered. Safe to call more than once.
 pub fn register_builtin_engines() {
     #[cfg(feature = "ocr-onnx")]
     register_engine(std::sync::Arc::new(onnx_ocr::OnnxOcr::default()));
     #[cfg(feature = "whisper")]
     register_engine(std::sync::Arc::new(whisper_cpp::WhisperCpp::default()));
+    #[cfg(feature = "asr-onnx")]
+    register_engine(std::sync::Arc::new(moonshine_onnx::MoonshineOnnx::default()));
 }
 
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "asr-onnx")]
+pub mod moonshine_onnx;
 #[cfg(feature = "ocr-onnx")]
 pub mod onnx_ocr;
 pub mod paddle;

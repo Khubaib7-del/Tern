@@ -9565,6 +9565,7 @@ dependencies = [
  "futures",
  "image",
  "oar-ocr",
+ "ort",
  "regex",
  "serde",
  "serde_json",
