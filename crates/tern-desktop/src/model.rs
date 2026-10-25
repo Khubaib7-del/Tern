@@ -1118,10 +1118,7 @@ impl Model {
             rows.push((
                 0,
                 Candidate {
-                    label: path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| path.display().to_string()),
+                    label: path_label(&path),
                     detail: format!("Attach {}", path.display()),
                     pick: Pick::Path(path),
                 },
@@ -1215,10 +1212,7 @@ impl Model {
         self.mention = None;
         let name = match row.pick {
             Pick::Path(path) => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string());
+                let name = path_label(&path);
                 return Some(Chosen {
                     text: mention::complete(text, &name),
                     browse: false,
@@ -2399,6 +2393,17 @@ fn trim(v: f64, unit: &str) -> String {
     } else {
         format!("{v:.1}{unit}")
     }
+}
+
+/// The file name of a typed path, splitting on both `/` and `\\` so a
+/// Windows path pasted on any platform still shows its file name.
+fn path_label(path: &std::path::Path) -> String {
+    let full = path.to_string_lossy().into_owned();
+    let name = full
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .map(str::to_owned);
+    name.unwrap_or(full)
 }
 
 #[cfg(test)]
