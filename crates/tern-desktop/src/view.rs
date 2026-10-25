@@ -242,6 +242,11 @@ pub struct Workspace {
     reveal_at: Option<Instant>,
     /// The chat column's width at the last render, for the tab strip.
     centre_w: f32,
+    /// Where the chat area starts from the window's left, at the last
+    /// render, for placing toasts beside the message column.
+    centre_x: f32,
+    /// The window's width at the last render.
+    window_w: f32,
     /// The right pane's width at the last render, for its header.
     side_w: f32,
     /// The run panel's ⋯ menu of views that do not fit is open.
@@ -671,6 +676,8 @@ impl Workspace {
             queued: None,
             reveal_at: None,
             centre_w: 800.,
+            centre_x: 0.,
+            window_w: 0.,
             side_w: crate::panels::RIGHT_DEFAULT,
             run_more_open: false,
             glides: Default::default(),
@@ -5167,6 +5174,8 @@ impl Render for Workspace {
             frame.right
         };
         self.side_w = side_w;
+        self.window_w = viewport_w;
+        self.centre_x = RAIL_W + beside_sidebar;
         // What the chat column gets, for the tab strip's overflow.
         self.centre_w = (viewport_w
             - RAIL_W
