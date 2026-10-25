@@ -60,6 +60,11 @@ static ACCENT: AtomicU8 = AtomicU8::new(0);
 static REDUCED: AtomicBool = AtomicBool::new(false);
 
 /// Turns reduced motion on or off for the scrollbars, and re-installs them.
+/// Whether motion is reduced (Settings › Appearance or the OS).
+pub fn reduced_motion() -> bool {
+    REDUCED.load(Ordering::Relaxed)
+}
+
 pub fn set_reduced_motion(on: bool, cx: &mut App) {
     REDUCED.store(on, Ordering::Relaxed);
     let dark = gpui_kit::component::Theme::global(cx).is_dark();

@@ -219,6 +219,8 @@ enum Act {
     Sidebar(bool),
     RightPanel(bool),
     Scout(Option<crate::pet::State>),
+    /// Holds Scout's hover toolbar open, as if the pointer were on it.
+    PetToolbar(bool),
     ModelMenu,
     EffortMenu,
     CloseMenu,
@@ -516,6 +518,16 @@ fn script() -> Vec<Beat> {
             1500,
         ),
         b(Act::QuickFinish, 3000),
+        // The Graph tab is built from the run it shows: the quick turn's
+        // map (one page read, its own key terms) is not the deep run's.
+        scene(
+            "t25b-graph-changes",
+            "s12",
+            "Graph: a different run draws a different map",
+            Act::View(RunView::Graph),
+            3500,
+        ),
+        b(Act::View(RunView::Summary), 300),
         scene(
             "t26-theme-light",
             "s17",
@@ -847,6 +859,14 @@ fn script() -> Vec<Beat> {
     }
     v.extend([
         b(Act::Scout(None), 1500),
+        scene(
+            "t70c-scout-toolbar",
+            "tern-only",
+            "Scout: the hover toolbar (stays while the pointer crosses to it)",
+            Act::PetToolbar(true),
+            2500,
+        ),
+        b(Act::PetToolbar(false), 300),
         scene(
             "t71-narrow",
             "tern-only",
@@ -1514,6 +1534,7 @@ impl Workspace {
             Act::Sidebar(on) => self.model.sidebar_open = on,
             Act::RightPanel(on) => self.model.run_panel_open = on,
             Act::Scout(m) => self.pet_preview = m,
+            Act::PetToolbar(on) => self.pet_tour_toolbar = on,
             Act::ModelMenu => {
                 self.model
                     .composer

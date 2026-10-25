@@ -1,11 +1,17 @@
-//! The run panel's Graph view: "FIG 1 · RUN MAP" (an isometric hairline
-//! figure of the run, no words inside it, its corner readout following the
-//! pointer) and the spend-over-time chart under it, both drawn from
-//! `crate::runmap`. Lines draw in on the motion curve when the view opens;
-//! the live phase's dot travels while the run goes. Reduced motion shows
-//! the finished figure and a still dot.
+//! The run panel's Graph view: "FIG 1 · CHAT MAP" (an isometric hairline
+//! figure of the active chat: the question at the centre, the sources,
+//! claims, workers and key terms its run touched around it, and the run's
+//! phases as a strip; the corner readout follows the pointer) and the
+//! spend-over-time chart under it, both from `crate::runmap` and
+//! `crate::chatgraph`. The graph is cached under
+//! `crate::chatgraph::graph_key`, so it is rebuilt when the chat, the run
+//! or the answer changes (a new source, a new check, switching chats)
+//! and never per frame or per pointer move. Lines draw in on the motion
+//! curve when the view opens or the graph changes; the newest node's dot
+//! travels while the run goes. Reduced motion shows the finished figure
+//! and a still dot.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -14,11 +20,12 @@ use gpui_kit::{
     AnyElement, App, Context, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, PathBuilder,
     Pixels, SharedString, Window, canvas, div, point, px,
 };
-use tern_agent::Run;
+use tern_agent::{Run, Verdict};
 
 use super::Workspace;
+use crate::chatgraph::{ChatGraph, NodeKind};
 use crate::model::RunView;
-use crate::runmap::{self, Figure, Ink, PhaseState, RunMap};
+use crate::runmap::{self, Figure, Ink, PhaseState, RunMap, Target};
 use crate::theme::Palette;
 
 /// How long the figure takes to draw in.
@@ -30,16 +37,43 @@ const CARD_H: f32 = 270.;
 /// The chart's height.
 const CHART_H: f32 = 150.;
 
-/// The Graph view's pointer state and the rectangles last painted.
+/// The graph built for one key, and its figure for one card size.
+#[derive(Debug)]
+pub(super) struct GraphCache {
+    pub key: u64,
+    pub map: Rc<RunMap>,
+    pub graph: Rc<ChatGraph>,
+    pub fig: Option<((u32, u32), Rc<Figure>)>,
+}
+
+/// The Graph view's pointer state, cache, and the rectangles last painted.
 #[derive(Debug, Default)]
 pub(super) struct GraphUi {
-    pub hover: Option<usize>,
+    pub hover: Option<Target>,
     /// Where across the chart the pointer is, 0 to 1.
     pub chart_x: Option<f32>,
-    /// When the view opened, for the draw-in.
+    /// When the view opened (or the graph last changed), for the draw-in.
     pub opened: Option<Instant>,
     pub card: Rc<Cell<[f32; 4]>>,
     pub chart: Rc<Cell<[f32; 4]>>,
+    pub cache: Rc<RefCell<Option<GraphCache>>>,
+}
+
+impl GraphUi {
+    /// The figure for a `w` × `h` card, laid out once per graph and size.
+    fn figure(cache: &RefCell<Option<GraphCache>>, w: f32, h: f32) -> Option<Rc<Figure>> {
+        let mut c = cache.borrow_mut();
+        let c = c.as_mut()?;
+        let size = (w.round() as u32, h.round() as u32);
+        if let Some((s, f)) = &c.fig
+            && *s == size
+        {
+            return Some(f.clone());
+        }
+        let f = Rc::new(runmap::figure(&c.map, &c.graph, w, h));
+        c.fig = Some((size, f.clone()));
+        Some(f)
+    }
 }
 
 fn stroke(
@@ -80,11 +114,41 @@ struct Inks {
     accent: Hsla,
 }
 
+/// A graph node's colour: read sources and supported claims in the text
+/// colour, results only seen faint, doubtful claims and running workers
+/// in the accent, terms muted; the newest node in the accent.
+fn node_ink(graph: &ChatGraph, i: usize, c: Inks) -> Hsla {
+    let Some(n) = graph.nodes.get(i) else {
+        return c.faint;
+    };
+    if n.fresh {
+        return c.accent;
+    }
+    match &n.kind {
+        NodeKind::Source { read: true, .. } => c.text,
+        NodeKind::Source { read: false, .. } => c.faint,
+        NodeKind::Worker { running, .. } => {
+            if *running {
+                c.accent
+            } else {
+                c.text
+            }
+        }
+        NodeKind::Claim { verdict, .. } => match verdict {
+            Verdict::Supported => c.text,
+            Verdict::Partly => c.muted,
+            Verdict::NotSupported | Verdict::NoSource => c.accent,
+        },
+        NodeKind::Entity { .. } => c.muted,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_figure(
     fig: &Figure,
     map: &RunMap,
-    hover: Option<usize>,
+    graph: &ChatGraph,
+    hover: Option<Target>,
     o: (f32, f32),
     drawn: f32,
     travel: f32,
@@ -93,28 +157,44 @@ fn paint_figure(
 ) {
     for l in &fig.lines {
         let (col, w) = match l.ink {
-            Ink::Hub => (c.text, 0.9),
+            Ink::Hub => (
+                if hover == Some(Target::Hub) {
+                    c.accent
+                } else {
+                    c.text
+                },
+                0.9,
+            ),
             Ink::HubInner => (c.muted, 0.9),
-            Ink::Phase(i) | Ink::Link(i) | Ink::Cube(i) => {
+            Ink::Phase(i) | Ink::Link(i) => {
                 let st = map.phases.get(i).map_or(PhaseState::Pending, |p| p.state);
                 let base = match st {
                     PhaseState::Live => c.accent,
-                    PhaseState::Done => c.text,
+                    PhaseState::Done => c.muted,
                     PhaseState::Pending => c.faint,
                 };
                 let col = match l.ink {
-                    Ink::Cube(_) => c.muted,
-                    Ink::Phase(_) if hover == Some(i) => c.text,
+                    Ink::Phase(_) if hover == Some(Target::Phase(i)) => c.text,
                     _ => base,
                 };
-                let w = if matches!(l.ink, Ink::Link(_)) && st == PhaseState::Live {
-                    1.2
-                } else if matches!(l.ink, Ink::Cube(_)) {
-                    0.7
+                (col, 0.8)
+            }
+            Ink::Node(i) => {
+                if hover == Some(Target::Node(i)) {
+                    (c.text, 1.3)
                 } else {
-                    0.9
-                };
-                (col, w)
+                    (node_ink(graph, i, c), 0.9)
+                }
+            }
+            Ink::Edge(i) => {
+                let fresh = graph.nodes.get(i).is_some_and(|n| n.fresh) && !map.ended;
+                if hover == Some(Target::Node(i)) {
+                    (c.muted, 1.0)
+                } else if fresh {
+                    (c.accent, 1.1)
+                } else {
+                    (c.faint, 0.7)
+                }
             }
         };
         let pts = runmap::trim(&l.pts, drawn);
@@ -140,11 +220,50 @@ fn paint_figure(
 }
 
 impl Workspace {
+    /// The Graph view's data for the panel's run: rebuilt only when
+    /// [`crate::chatgraph::graph_key`] changes (another chat, a new step,
+    /// source or check, the answer growing), else the cached copy.
+    pub(super) fn graph_data(&self) -> (Rc<RunMap>, Rc<ChatGraph>, bool) {
+        let run = self.model.panel_run();
+        let (chat, entries, question, answer) = self.model.graph_inputs();
+        let key = crate::chatgraph::graph_key(chat, entries, run, question, answer);
+        let mut cache = self.graph.cache.borrow_mut();
+        if let Some(c) = cache.as_ref()
+            && c.key == key
+        {
+            return (c.map.clone(), c.graph.clone(), false);
+        }
+        let map = Rc::new(RunMap::from_run(run));
+        let graph = Rc::new(ChatGraph::build(run, question, answer));
+        // A different set of nodes draws in again; the same nodes with a
+        // new count or shade do not.
+        let changed = cache
+            .as_ref()
+            .is_none_or(|c| c.graph.nodes.len() != graph.nodes.len());
+        *cache = Some(GraphCache {
+            key,
+            map: map.clone(),
+            graph: graph.clone(),
+            fig: None,
+        });
+        (map, graph, changed)
+    }
+
+    /// What is under the pointer at window point (`x`, `y`).
+    fn graph_hit(&self, x: f32, y: f32) -> Option<Target> {
+        let [cx0, cy0, w, h] = self.graph.card.get();
+        let _ = self.graph_data();
+        let fig = GraphUi::figure(&self.graph.cache, w, h)?;
+        runmap::hit(&fig, x - cx0, y - cy0)
+    }
+
     /// The Graph view of the run panel.
-    pub(super) fn run_graph(&self, run: &Run, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let map = RunMap::from_run(run);
-        let ui = &self.graph;
+    pub(super) fn run_graph(&self, _run: &Run, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        // `Workspace::render` refreshed the cache (and restarted the
+        // draw-in when the graph changed) before this.
+        let (map, graph, _) = self.graph_data();
         let now = Instant::now();
+        let ui = &self.graph;
         let opened = ui.opened.unwrap_or(now);
         let reduced = self.reduced_motion;
         let drawn = if reduced {
@@ -160,12 +279,13 @@ impl Workspace {
             (now.duration_since(opened).as_secs_f32() / TRAVEL.as_secs_f32()).fract()
         };
         let me = cx.entity_id();
-        let animating = !reduced
-            && (drawn < 1.
-                || map
-                    .current
-                    .is_some_and(|c| map.phases[c].state == PhaseState::Live));
-        let (line1, line2) = map.readout(ui.hover);
+        let running = !map.ended
+            && (map
+                .current
+                .is_some_and(|c| map.phases[c].state == PhaseState::Live)
+                || graph.nodes.iter().any(|n| n.fresh));
+        let animating = !reduced && (drawn < 1. || running);
+        let (line1, line2) = runmap::readout(&map, &graph, ui.hover);
         let inks = Inks {
             text: p.text,
             muted: p.muted,
@@ -173,8 +293,9 @@ impl Workspace {
             accent: p.accent,
         };
         let card_cell = ui.card.clone();
+        let cache = ui.cache.clone();
         let hover = ui.hover;
-        let fig_map = map.clone();
+        let empty = graph.is_empty();
         let mono = |t: &'static str| {
             div()
                 .absolute()
@@ -184,6 +305,8 @@ impl Workspace {
                 .text_color(p.faint)
                 .child(t)
         };
+        let fig_map = map.clone();
+        let fig_graph = graph.clone();
         let card = div()
             .id("runmap-card")
             .relative()
@@ -194,16 +317,9 @@ impl Workspace {
             .border_color(p.border)
             .bg(p.canvas)
             .overflow_hidden()
-            .cursor_pointer()
+            .when(hover.is_some(), |d| d.cursor_pointer())
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                let [x, y, w, h] = this.graph.card.get();
-                let map = RunMap::from_run(this.model.panel_run());
-                let fig = runmap::figure(&map, w, h);
-                let at = runmap::hit(
-                    &fig,
-                    f32::from(e.position.x) - x,
-                    f32::from(e.position.y) - y,
-                );
+                let at = this.graph_hit(f32::from(e.position.x), f32::from(e.position.y));
                 if at != this.graph.hover {
                     this.graph.hover = at;
                     cx.notify();
@@ -218,15 +334,25 @@ impl Workspace {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    // A phase opens the view that shows its steps.
-                    if let Some(i) = this.graph.hover {
-                        let deep = this.model.panel_run().deep.is_some();
-                        let view = match runmap::PHASES[i] {
+                    let deep = this.model.panel_run().deep.is_some();
+                    let (_, graph, _) = this.graph_data();
+                    // A phase or node opens the view that shows it.
+                    let view = match this.graph.hover {
+                        Some(Target::Phase(i)) => Some(match runmap::PHASES[i] {
                             "read" if deep => RunView::Workers,
                             "write" => RunView::Summary,
                             "verify" => RunView::Report,
                             _ => RunView::Detailed,
-                        };
+                        }),
+                        Some(Target::Node(i)) => match graph.nodes.get(i).map(|n| &n.kind) {
+                            Some(NodeKind::Claim { .. }) => Some(RunView::Report),
+                            Some(NodeKind::Worker { .. }) => Some(RunView::Workers),
+                            Some(NodeKind::Source { .. }) => Some(RunView::Ledger),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(view) = view {
                         this.model.set_run_view(view);
                         this.graph.hover = None;
                         cx.notify();
@@ -244,10 +370,13 @@ impl Workspace {
                             f32::from(b.size.height),
                         ];
                         card_cell.set(r);
-                        let fig = runmap::figure(&fig_map, r[2], r[3]);
+                        let Some(fig) = GraphUi::figure(&cache, r[2], r[3]) else {
+                            return;
+                        };
                         paint_figure(
                             &fig,
                             &fig_map,
+                            &fig_graph,
                             hover,
                             (r[0], r[1]),
                             drawn,
@@ -262,13 +391,36 @@ impl Workspace {
                 )
                 .size_full(),
             )
-            .child(mono("FIG 1 · RUN MAP").left(px(10.)))
-            .child(mono("POINT AT A PHASE").right(px(10.)))
+            .child(mono("FIG 1 · CHAT MAP").left(px(10.)))
+            .child(mono(if empty { "" } else { "POINT AT A NODE" }).right(px(10.)))
+            .when(empty, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(CARD_H / 2. + 26.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_0p5()
+                        .text_size(px(12.))
+                        .text_color(p.muted)
+                        .child("Nothing to map in this chat yet")
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(p.faint)
+                                .child("Sources, checked claims and key terms show here."),
+                        ),
+                )
+            })
             .child(
                 div()
                     .absolute()
                     .right(px(10.))
                     .bottom(px(8.))
+                    .max_w(px(260.))
                     .flex()
                     .flex_col()
                     .items_end()
@@ -277,10 +429,11 @@ impl Workspace {
                     .text_color(p.muted)
                     .child(
                         div()
+                            .truncate()
                             .when(hover.is_some(), |d| d.text_color(p.text))
                             .child(SharedString::from(line1)),
                     )
-                    .child(SharedString::from(line2)),
+                    .child(div().truncate().child(SharedString::from(line2))),
             );
         div()
             .flex()

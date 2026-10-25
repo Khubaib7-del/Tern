@@ -2010,6 +2010,51 @@ impl Model {
         }
     }
 
+    /// What the Graph tab is built from besides the run: the chat's
+    /// identity (its first message and length), the question the panel's
+    /// run answered, and its answer (the draft while it streams).
+    pub fn graph_inputs(&self) -> (&str, usize, &str, &str) {
+        let first = self
+            .entries
+            .iter()
+            .find_map(|e| match e {
+                Entry::User { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let user_before = |i: usize| {
+            self.entries[..i.min(self.entries.len())]
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    Entry::User { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("")
+        };
+        let n = self.entries.len();
+        let (q, a) = match &self.phase {
+            Phase::Working { draft, .. } => (user_before(n), draft.as_str()),
+            Phase::Approval { .. } | Phase::Plan { .. } => (user_before(n), ""),
+            _ => {
+                let at = self
+                    .run_panel
+                    .pinned
+                    .filter(|i| matches!(self.entries.get(*i), Some(Entry::Assistant { .. })))
+                    .or_else(|| {
+                        self.entries
+                            .iter()
+                            .rposition(|e| matches!(e, Entry::Assistant { .. }))
+                    });
+                match at.and_then(|i| self.entries.get(i).map(|e| (i, e))) {
+                    Some((i, Entry::Assistant { text, .. })) => (user_before(i), text.as_str()),
+                    _ => (user_before(n), ""),
+                }
+            }
+        };
+        (first, n, q, a)
+    }
+
     /// Opens the panel on an answer's run.
     pub fn show_run_of(&mut self, entry: usize) {
         if matches!(self.entries.get(entry), Some(Entry::Assistant { .. })) {

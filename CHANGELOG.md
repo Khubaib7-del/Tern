@@ -4,6 +4,15 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #60)
+
+Three bugs found testing the #59 build on Windows.
+
+- **Scout's hover toolbar no longer vanishes on the way to it.** The toolbar sat 4 px above Scout, outside the element whose hover showed it, so the moment the pointer left Scout's box for the toolbar it was hidden. Scout, the gap and the toolbar are now one hover region (`pet::ToolbarHover`): leaving it starts a 280 ms grace that coming back cancels, and the toolbar stays while its Scout menu is open. The toolbar is drawn in the deferred top layer at window coordinates, so popovers and rails never cover or clip it, and it drops below Scout when there is no room under the title bar. Only Scout's body takes the pointer now (`pet::sprite_hit`): clicks on the transparent margin of its frame reach what is underneath, such as the Settings section list.
+- **The Graph tab maps the chat it shows.** It drew the same fixed six-box template for every chat; only the shading of the phase boxes changed. "FIG 1 · CHAT MAP" is now built from the run's own data (`chatgraph.rs`): the question at the centre, then the deep-research workers, the answer's checked claims (by verdict, linked to the sources they cite), the sources read (solid) or only seen in results (faint), and the answer's key terms (bold spans, acronyms, names), each node placed by a stable hash of what it is, so two chats look different and one chat looks the same every time. The run's six phases are a small strip along the bottom. The graph is cached under `chatgraph::graph_key` (chat, run steps, checks, workers' pages, end, answer) and rebuilt when the chat, the run or the answer changes: switching chats, a new source, a new check. Pointing at a node shows what it is; clicking a claim, worker or source opens Report, Workers or Sources. A chat with nothing to map says so.
+- **Settings scrolls smoothly.** A mouse wheel moved the Settings page a notch (about 60 px) at a time, and a model list sliding under a still pointer took the rest of the turn, so the page stopped dead. Wheel notches now glide (`scrollbar::Glide`, an exponential approach over about 0.3 s; touchpad pixels and reduced motion land at once) on the Settings page and on the lists inside it, and a gesture stays with the area it started in until the wheel rests for 260 ms (`scrollbar::WheelLatch`); a list still hands on to the page at its ends. The Settings page scrolls in a plain GPUI div with its own handle and Tern's thin scrollbar.
+- **UI tour**: new scenes for Scout's hover toolbar (t70c) and the Graph tab drawing a different map for a different run (t25b).
+
 ### Added (PR #59)
 
 Research flow v2: the steer, needs-you, checkpoint, budget, report and review steps of a research run as the v2 concept draws them (s04 to s11, s13, s15), and the fixed animated mark.

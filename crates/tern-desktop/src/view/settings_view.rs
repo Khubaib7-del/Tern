@@ -91,6 +91,9 @@ pub(super) struct SettingsInputs {
     pub role_scroll: UniformListScrollHandle,
     pub provider_models_scroll: UniformListScrollHandle,
     pub onboarding_models_scroll: UniformListScrollHandle,
+    /// Each section page's scroll, by its place in `Section::ALL`, so a
+    /// page keeps its place when you come back to it.
+    pub page_scroll: Vec<gpui_kit::ScrollHandle>,
 }
 
 impl SettingsInputs {
@@ -146,6 +149,10 @@ impl SettingsInputs {
                 role_scroll: UniformListScrollHandle::new(),
                 provider_models_scroll: UniformListScrollHandle::new(),
                 onboarding_models_scroll: UniformListScrollHandle::new(),
+                page_scroll: Section::ALL
+                    .iter()
+                    .map(|_| gpui_kit::ScrollHandle::new())
+                    .collect(),
             },
             subs,
         )
@@ -581,26 +588,42 @@ impl Workspace {
                     .child(div().text_sm().text_color(p.muted).child(s.blurb())),
             )
             .children(extra);
+        // The page scrolls in its own div with its own handle, so the
+        // wheel glides (`super::smooth_page`) instead of jumping a notch
+        // at a time, and the lists inside hand on to it at their ends.
+        let at = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);
+        let handle = self.settings_inputs.page_scroll[at].clone();
         div()
+            .relative()
             .flex_1()
             .min_h_0()
-            .flex()
-            .flex_col()
-            .items_center()
             .child(
                 div()
-                    .w_full()
-                    .max_w(px(settings::PAGE_MAX_W))
+                    .id(SharedString::from(format!("settings-scroll-{}", s.id())))
+                    .size_full()
                     .flex()
                     .flex_col()
-                    .gap_5()
-                    .px_6()
-                    .py_6()
-                    .child(header)
-                    .children(body),
+                    .items_center()
+                    .overflow_y_scroll()
+                    .track_scroll(&handle)
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(settings::PAGE_MAX_W))
+                            .flex()
+                            .flex_col()
+                            .gap_5()
+                            .px_6()
+                            .py_6()
+                            .child(header)
+                            .children(body),
+                    ),
             )
-            .overflow_y_scrollbar()
-            .id(SharedString::from(format!("settings-scroll-{}", s.id())))
+            .child(super::smooth_page(s.id(), &handle, self.view_id))
+            .child(super::page_bar(
+                SharedString::from(format!("settings-bar-{}", s.id())),
+                &handle,
+            ))
             .into_any_element()
     }
 
@@ -801,6 +824,7 @@ impl Workspace {
                     // The wheel over the box scrolls the models first; at
                     // the list's ends it goes on to the page.
                     .child(super::wheel_first(
+                        "provider-models",
                         &self.settings_inputs.provider_models_scroll,
                         cx.entity_id(),
                     ))
@@ -1038,6 +1062,7 @@ impl Workspace {
                 .border_color(p.border)
                 .overflow_hidden()
                 .child(super::wheel_first(
+                    "models-catalogue",
                     &self.settings_inputs.catalog_scroll,
                     cx.entity_id(),
                 ))
@@ -1123,6 +1148,7 @@ impl Workspace {
             .mb_2()
             .h(px((n as f32 * LIST_ROW_H).min(220.)))
             .child(super::wheel_first(
+                "role-choices",
                 &self.settings_inputs.role_scroll,
                 cx.entity_id(),
             ))

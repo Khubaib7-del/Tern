@@ -1,10 +1,14 @@
 //! The right panel's Graph tab, GPUI-free so it is unit tested: "FIG 1 ·
-//! RUN MAP", an isometric hairline figure of the run (a central slab for
-//! the question, one small box per phase on a curved hairline, little
-//! cubes beside phases that found or read sources, dotted links for
-//! phases not reached, the live phase's link in the accent with a dot
-//! travelling on it), its corner readout, and the spend-over-time chart
-//! under it (the v2 concept's s12).
+//! CHAT MAP", an isometric hairline figure of the active chat's run. The
+//! question is the hub; around it, on rings, sit what the run touched:
+//! deep-research workers, the answer's checked claims, the sources read
+//! (solid) or only seen (faint), and the answer's key terms
+//! (`crate::chatgraph`), each joined by curved hairlines (dotted when
+//! weak). Placement comes from the chat's own data, so two chats look
+//! different. The run's six phases are a small strip along the bottom
+//! (dotted where not reached, the live one in the accent with a dot
+//! travelling into it). Under the figure: the spend-over-time chart
+//! (the v2 concept's s12).
 //!
 //! Everything comes from the run's own events (`tern_agent::Run`): which
 //! phase each step belongs to, counts, and tokens. Tern has no price
@@ -15,19 +19,10 @@ use std::time::Duration;
 
 use tern_agent::{Run, StepKind};
 
+use crate::chatgraph::{ChatGraph, NodeKind};
+
 /// The phases, in the order a Tern turn goes through them.
 pub const PHASES: [&str; 6] = ["search", "screen", "read", "synthesize", "write", "verify"];
-
-/// Where each phase box sits around the hub, in floor units (x, y), from
-/// the v2 figure.
-const POS: [(f32, f32); 6] = [
-    (-95., -10.),
-    (-60., -80.),
-    (15., -105.),
-    (90., -60.),
-    (100., 25.),
-    (40., 90.),
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhaseState {
@@ -48,8 +43,6 @@ pub struct Phase {
     pub unit: &'static str,
     /// Tokens spent while it was the phase.
     pub tokens: u64,
-    /// Little cubes beside it (sources it found or read), at most 6.
-    pub cubes: usize,
 }
 
 /// One point of the spend line: time since the turn started, and tokens
@@ -111,7 +104,6 @@ impl RunMap {
                     _ => "claims",
                 },
                 tokens: 0,
-                cubes: 0,
             })
             .collect();
         let mut seen = [false; 6];
@@ -202,8 +194,6 @@ impl RunMap {
             phases[5].count = run.checks.len() as u64;
             cur = Some(5);
         }
-        phases[0].cubes = (phases[0].count as usize).min(6);
-        phases[2].cubes = (phases[2].count as usize).min(6);
         for (i, ph) in phases.iter_mut().enumerate() {
             ph.state = if Some(i) == cur && !ended {
                 PhaseState::Live
@@ -298,13 +288,17 @@ pub fn tile(c: (f32, f32), s: f32, h: f32) -> Vec<Vec<(f32, f32)>> {
 /// What a line is part of, for its colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ink {
-    /// The hub, in the text colour.
+    /// The hub (the question), in the text colour.
     Hub,
     /// The inner slab on the hub.
     HubInner,
+    /// A phase tile on the progress strip, and the link into it.
     Phase(usize),
     Link(usize),
-    Cube(usize),
+    /// A node of the chat's graph (`crate::chatgraph`), and an edge into
+    /// it.
+    Node(usize),
+    Edge(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -314,13 +308,25 @@ pub struct Line {
     pub dotted: bool,
 }
 
+/// What the pointer can point at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Hub,
+    Phase(usize),
+    Node(usize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Figure {
     pub lines: Vec<Line>,
-    /// Each phase box's centre and radius, for pointing.
-    pub targets: Vec<((f32, f32), f32)>,
-    /// The live link's curve (hub, control, box), for the travelling dot.
+    /// What can be pointed at: its centre and radius.
+    pub targets: Vec<(Target, (f32, f32), f32)>,
+    /// The live curve (from, control, to), for the travelling dot: the
+    /// edge to the newest node while the run goes, else the strip's link
+    /// into the live phase.
     pub live: Option<[(f32, f32); 3]>,
+    /// Nothing in the chat to map: the view shows its empty state.
+    pub empty: bool,
 }
 
 /// A point on a quadratic curve.
@@ -340,81 +346,263 @@ fn control(a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
     )
 }
 
+/// Ring radii (floor units) in the order kinds are placed: workers,
+/// claims, sources, terms. Only the kinds present take a ring.
+const RINGS: [f32; 4] = [62., 92., 122., 148.];
+
+fn ring_of(k: &NodeKind) -> usize {
+    match k {
+        NodeKind::Worker { .. } => 0,
+        NodeKind::Claim { .. } => 1,
+        NodeKind::Source { .. } => 2,
+        NodeKind::Entity { .. } => 3,
+    }
+}
+
+/// `0..1` from a hash, for stable jitter.
+fn unit(h: u64, shift: u32) -> f32 {
+    ((h >> shift) & 0xffff) as f32 / 65535.
+}
+
+/// Each node's place on the floor (x, y) around the hub at (0, 0): its
+/// kind's ring, spread evenly, rotated by a hash of the chat and nudged by
+/// a hash of the node, so the figure is the chat's own and stable.
+pub fn layout(graph: &ChatGraph) -> Vec<(f32, f32)> {
+    let mut rings: [Vec<usize>; 4] = Default::default();
+    for (i, n) in graph.nodes.iter().enumerate() {
+        rings[ring_of(&n.kind)].push(i);
+    }
+    let mut radius = [0f32; 4];
+    let mut next = 0;
+    for (r, members) in rings.iter().enumerate() {
+        if !members.is_empty() {
+            radius[r] = RINGS[next];
+            next += 1;
+        }
+    }
+    let seed = crate::chatgraph::stable_hash(&graph.question);
+    let mut at = vec![(0f32, 0f32); graph.nodes.len()];
+    // A worker's angle, for the pages hanging off it.
+    let mut angle_of: Vec<Option<f32>> = vec![None; graph.nodes.len()];
+    for (r, members) in rings.iter().enumerate() {
+        let n = members.len();
+        if n == 0 {
+            continue;
+        }
+        let rot = unit(seed, (r as u32) * 13 % 48) * std::f32::consts::TAU;
+        let step = std::f32::consts::TAU / n as f32;
+        // Pages under a worker fan out around it instead of the ring.
+        let mut fans: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+        for &i in members {
+            if r == 2
+                && let Some(w) = graph
+                    .edges
+                    .iter()
+                    .find(|e| e.to == i)
+                    .and_then(|e| e.from)
+                    .filter(|f| matches!(graph.nodes[*f].kind, NodeKind::Worker { .. }))
+            {
+                fans.entry(w).or_default().push(i);
+            }
+        }
+        for (k, &i) in members.iter().enumerate() {
+            let h = crate::chatgraph::stable_hash(&graph.nodes[i].key);
+            let mut a = rot + k as f32 * step + (unit(h, 0) - 0.5) * step * 0.35;
+            if let Some((w, fan)) = fans.iter().find(|(_, f)| f.contains(&i)) {
+                if let Some(wa) = angle_of[*w] {
+                    let j = fan.iter().position(|x| *x == i).unwrap_or(0) as f32;
+                    let spread = (0.9 / fan.len().max(1) as f32).min(0.28);
+                    a = wa + (j - (fan.len() as f32 - 1.) / 2.) * spread;
+                }
+            }
+            let rr = radius[r] * (0.92 + unit(h, 16) * 0.16);
+            at[i] = (rr * a.cos(), rr * a.sin());
+            angle_of[i] = Some(a);
+        }
+    }
+    at
+}
+
+/// An isometric ellipse on the floor (a term's ring).
+fn ellipse(c: (f32, f32), r: f32) -> Vec<(f32, f32)> {
+    (0..=16)
+        .map(|j| {
+            let t = j as f32 / 16. * std::f32::consts::TAU;
+            let (a, b) = iso(r * t.cos(), r * t.sin(), 0.);
+            (c.0 + a, c.1 + b)
+        })
+        .collect()
+}
+
+/// A claim's standing diamond.
+fn diamond(c: (f32, f32), s: f32) -> Vec<(f32, f32)> {
+    vec![
+        (c.0, c.1 - 2. * s),
+        (c.0 + s, c.1 - s),
+        (c.0, c.1),
+        (c.0 - s, c.1 - s),
+        (c.0, c.1 - 2. * s),
+    ]
+}
+
 /// Lays the figure out in a `w` × `h` card (the v2 card is 410 × 270),
-/// scaled so it fits.
-pub fn figure(map: &RunMap, w: f32, h: f32) -> Figure {
+/// scaled so it fits: the question as the hub, the chat's graph around
+/// it, and the run's six phases as a small strip along the bottom.
+pub fn figure(map: &RunMap, graph: &ChatGraph, w: f32, h: f32) -> Figure {
     let k = (w / 410.).min(h / 270.).clamp(0.5, 2.5);
-    let hub = (w / 2. - 6. * k, h / 2. + 10. * k);
+    let hub = (w / 2., h / 2. - 4. * k);
     let mut lines = vec![];
-    for pts in tile(hub, 24. * k, 8. * k) {
+    let mut targets = vec![];
+    let mut live = None;
+    let empty = graph.is_empty();
+    for pts in tile(hub, 18. * k, 7. * k) {
         lines.push(Line {
             pts,
             ink: Ink::Hub,
-            dotted: false,
+            dotted: empty,
         });
     }
-    for pts in tile((hub.0, hub.1 - 8. * k), 12. * k, 5. * k) {
+    for pts in tile((hub.0, hub.1 - 7. * k), 9. * k, 4. * k) {
         lines.push(Line {
             pts,
             ink: Ink::HubInner,
-            dotted: false,
+            dotted: empty,
         });
     }
-    let mut targets = vec![];
-    let mut live = None;
-    for (i, ph) in map.phases.iter().enumerate() {
-        let (ax, ay) = iso(POS[i].0 * k, POS[i].1 * k, 0.);
-        let node = (hub.0 + ax, hub.1 + ay);
-        let c = control(hub, node);
-        let curve: Vec<(f32, f32)> = (0..=24)
-            .map(|j| bezier(hub, c, node, j as f32 / 24.))
-            .collect();
+    targets.push((Target::Hub, (hub.0, hub.1 - 6. * k), 20. * k));
+
+    // Nodes, in screen space.
+    let floor = layout(graph);
+    // Squash the rings a little when the card is short.
+    // The outer ring's farthest point lies 0.707 × 1.08 × its radius
+    // below the hub; keep it above the phase strip.
+    let outer = graph
+        .nodes
+        .iter()
+        .map(|n| ring_of(&n.kind))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let reach = RINGS[outer.max(1) - 1] * 0.765 * k;
+    let fit = ((h / 2. - 34. * k) / reach).clamp(0.5, 1.);
+    let place: Vec<(f32, f32)> = floor
+        .iter()
+        .map(|&(x, y)| {
+            let (a, b) = iso(x * k * fit, y * k * fit, 0.);
+            (hub.0 + a, hub.1 + b)
+        })
+        .collect();
+    let centre = |from: Option<usize>| from.map_or(hub, |f| place[f]);
+    // Edges first, so nodes draw over them.
+    for e in &graph.edges {
+        let a = centre(e.from);
+        let b = place[e.to];
+        let c = control(a, b);
+        let curve: Vec<(f32, f32)> = (0..=16).map(|j| bezier(a, c, b, j as f32 / 16.)).collect();
         lines.push(Line {
             pts: curve,
-            ink: Ink::Link(i),
-            dotted: ph.state == PhaseState::Pending,
+            ink: Ink::Edge(e.to),
+            dotted: e.weak,
         });
-        if ph.state == PhaseState::Live {
-            live = Some([hub, c, node]);
+        if graph.nodes[e.to].fresh && !map.ended {
+            live = Some([a, c, b]);
         }
-        let hgt = if ph.state == PhaseState::Live { 9. } else { 6. } * k;
-        for pts in tile(node, 11. * k, hgt) {
+    }
+    for (i, n) in graph.nodes.iter().enumerate() {
+        let c = place[i];
+        let (shapes, top): (Vec<Vec<(f32, f32)>>, f32) = match &n.kind {
+            NodeKind::Source { read, .. } => {
+                let hgt = if *read { 6. } else { 1.5 } * k;
+                (tile(c, if *read { 5. } else { 4. } * k, hgt), hgt)
+            }
+            NodeKind::Worker { .. } => (tile(c, 8. * k, 7. * k), 7. * k),
+            NodeKind::Claim { .. } => (vec![diamond(c, 5. * k)], 10. * k),
+            NodeKind::Entity { mentions, .. } => {
+                let r = (3.5 + (*mentions).min(5) as f32 * 0.6) * k;
+                (vec![ellipse(c, r)], 0.)
+            }
+        };
+        for pts in shapes {
+            lines.push(Line {
+                pts,
+                ink: Ink::Node(i),
+                dotted: false,
+            });
+        }
+        targets.push((Target::Node(i), (c.0, c.1 - top / 2.), 10. * k));
+    }
+
+    // The phase strip, bottom left.
+    let y = h - 18. * k;
+    let x0 = 18. * k;
+    let gap = 15. * k;
+    let mut prev: Option<(f32, f32)> = None;
+    for (i, ph) in map.phases.iter().enumerate() {
+        let c = (x0 + i as f32 * gap, y);
+        let hgt = if ph.state == PhaseState::Live {
+            5.
+        } else {
+            2.5
+        } * k;
+        if let Some(p) = prev {
+            let ctl = ((p.0 + c.0) / 2., (p.1 + c.1) / 2. - 3. * k);
+            let curve: Vec<(f32, f32)> =
+                (0..=8).map(|j| bezier(p, ctl, c, j as f32 / 8.)).collect();
+            lines.push(Line {
+                pts: curve,
+                ink: Ink::Link(i),
+                dotted: ph.state == PhaseState::Pending,
+            });
+            if ph.state == PhaseState::Live && live.is_none() {
+                live = Some([p, ctl, c]);
+            }
+        }
+        for pts in tile(c, 3.6 * k, hgt) {
             lines.push(Line {
                 pts,
                 ink: Ink::Phase(i),
                 dotted: false,
             });
         }
-        for j in 0..ph.cubes {
-            let cx = node.0 + (18. + (j % 3) as f32 * 9.) * k;
-            let cy = node.1 + (8. + (j / 3) as f32 * 6. - (j % 2) as f32 * 3.) * k;
-            for pts in tile((cx, cy), 3.2 * k, 3. * k) {
-                lines.push(Line {
-                    pts,
-                    ink: Ink::Cube(i),
-                    dotted: false,
-                });
-            }
-        }
-        targets.push(((node.0, node.1 - hgt / 2.), 16. * k));
+        targets.push((Target::Phase(i), (c.0, c.1 - hgt / 2.), 7. * k));
+        prev = Some(c);
     }
     Figure {
         lines,
         targets,
         live,
+        empty,
     }
 }
 
-/// The phase box under a point in the card, if any (the nearest one
+/// What is under a point in the card, if anything (the nearest target
 /// within its radius).
-pub fn hit(fig: &Figure, x: f32, y: f32) -> Option<usize> {
+pub fn hit(fig: &Figure, x: f32, y: f32) -> Option<Target> {
     fig.targets
         .iter()
-        .enumerate()
-        .map(|(i, (c, r))| (i, (c.0 - x).hypot(c.1 - y), *r))
+        .map(|(t, c, r)| (*t, (c.0 - x).hypot(c.1 - y), *r))
         .filter(|(_, d, r)| d <= r)
         .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(i, _, _)| i)
+        .map(|(t, _, _)| t)
+}
+
+/// The corner readout for what is pointed at.
+pub fn readout(map: &RunMap, graph: &ChatGraph, hover: Option<Target>) -> (String, String) {
+    match hover {
+        Some(Target::Phase(i)) => map.readout(Some(i)),
+        Some(Target::Node(i)) => graph.readout(i).unwrap_or_else(|| map.readout(None)),
+        Some(Target::Hub) => (
+            "question".to_owned(),
+            if graph.question.is_empty() {
+                "—".to_owned()
+            } else {
+                graph.question.clone()
+            },
+        ),
+        None => (
+            map.readout(None).0,
+            format!("{} · {} tok", graph.summary(), tokens_label(map.tokens)),
+        ),
+    }
 }
 
 /// A polyline cut to the first `frac` of its length, for the draw-in.
@@ -577,7 +765,6 @@ mod tests {
         assert_eq!(m.readout(Some(2)).0, "read");
         assert!(m.readout(Some(2)).1.starts_with("2 read"));
         assert_eq!(m.readout(Some(5)).1, "not reached · 0 tok");
-        assert_eq!(m.phases[0].cubes, 4);
         // Spend: a point per model reply, rising.
         assert_eq!(spend_at(&m.spend, Duration::from_secs(10)), 120);
         assert_eq!(spend_at(&m.spend, Duration::from_secs(400)), 1320);
@@ -629,25 +816,98 @@ mod tests {
         }
     }
 
+    fn graph_of(urls: &[&str]) -> ChatGraph {
+        let mut r = Run::new();
+        let hits: Vec<_> = urls
+            .iter()
+            .map(|u| serde_json::json!({"url": u, "title": u, "site": ""}))
+            .collect();
+        r.steps.push(RunStep {
+            seq: 1,
+            event: "tool.executed".into(),
+            summary: String::new(),
+            kind: StepKind::Search,
+            verb: "",
+            target: String::new(),
+            note: String::new(),
+            at: Duration::from_secs(1),
+            tokens: None,
+            ok: true,
+            detailed: true,
+            page: None,
+            payload: serde_json::json!({"meta": {"hits": hits}}),
+        });
+        ChatGraph::build(&r, urls.first().copied().unwrap_or(""), "")
+    }
+
     #[test]
-    fn the_figure_has_a_box_per_phase_dotted_links_when_pending_and_hits() {
+    fn the_figure_maps_the_chat_and_keeps_a_phase_strip() {
         let m = RunMap::from_run(&Run::new());
-        let f = figure(&m, 410., 270.);
-        assert_eq!(f.targets.len(), 6);
-        let links: Vec<&Line> = f
+        let empty = figure(&m, &ChatGraph::default(), 410., 270.);
+        assert!(empty.empty);
+        let phases = empty
+            .targets
+            .iter()
+            .filter(|t| matches!(t.0, Target::Phase(_)))
+            .count();
+        assert_eq!(phases, 6);
+        assert!(empty.live.is_none());
+        let g = graph_of(&["https://a.org/1", "https://b.org/2", "https://c.org/3"]);
+        let f = figure(&m, &g, 410., 270.);
+        assert!(!f.empty);
+        let nodes: Vec<_> = f
+            .targets
+            .iter()
+            .filter(|t| matches!(t.0, Target::Node(_)))
+            .collect();
+        assert_eq!(nodes.len(), 3);
+        // Every node inside the card.
+        for (_, c, _) in &nodes {
+            assert!(c.0 > 0. && c.0 < 410. && c.1 > 0. && c.1 < 270., "{c:?}");
+        }
+        let (_, c, _) = nodes[1];
+        assert_eq!(hit(&f, c.0, c.1), Some(Target::Node(1)));
+        assert_eq!(hit(&f, -500., -500.), None);
+        assert_eq!(hit(&f, 205., 270. / 2. - 10.), Some(Target::Hub));
+        let edges = f
             .lines
             .iter()
-            .filter(|l| matches!(l.ink, Ink::Link(_)))
-            .collect();
-        assert_eq!(links.len(), 6);
-        assert!(links.iter().all(|l| l.dotted));
-        assert!(f.live.is_none());
-        let (c, _) = f.targets[2];
-        assert_eq!(hit(&f, c.0, c.1), Some(2));
-        assert_eq!(hit(&f, -500., -500.), None);
-        // Bigger card, bigger figure, same shape.
-        let g = figure(&m, 820., 540.);
-        assert!(g.targets[0].1 > f.targets[0].1);
+            .filter(|l| matches!(l.ink, Ink::Edge(_)))
+            .count();
+        assert_eq!(edges, 3);
+        assert!(
+            f.lines
+                .iter()
+                .filter(|l| matches!(l.ink, Ink::Edge(_)))
+                .all(|l| l.dotted)
+        );
+        // Bigger card, bigger figure.
+        let big = figure(&m, &g, 820., 540.);
+        assert!(big.targets[1].2 > f.targets[1].2);
+    }
+
+    #[test]
+    fn two_chats_draw_two_different_figures_and_one_chat_the_same_twice() {
+        let m = RunMap::from_run(&Run::new());
+        let a = graph_of(&["https://a.org/1", "https://b.org/2"]);
+        let b = graph_of(&["https://x.org/9", "https://y.org/8", "https://z.org/7"]);
+        let fa = figure(&m, &a, 410., 270.);
+        let fb = figure(&m, &b, 410., 270.);
+        assert_ne!(fa.targets, fb.targets);
+        assert_eq!(fa, figure(&m, &a, 410., 270.), "stable");
+        // Same count, different chat: different placement.
+        let c = graph_of(&["https://q.org/1", "https://r.org/2"]);
+        assert_ne!(layout(&a), layout(&c));
+    }
+
+    #[test]
+    fn the_readout_follows_the_pointer() {
+        let m = RunMap::from_run(&Run::new());
+        let g = graph_of(&["https://a.org/1"]);
+        assert_eq!(readout(&m, &g, None).1, "1 seen · 0 tok");
+        assert!(readout(&m, &g, Some(Target::Node(0))).0.starts_with("seen"));
+        assert_eq!(readout(&m, &g, Some(Target::Hub)).0, "question");
+        assert_eq!(readout(&m, &g, Some(Target::Phase(5))).0, "verify");
     }
 
     #[test]
