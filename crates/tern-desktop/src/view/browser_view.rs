@@ -733,6 +733,7 @@ impl Workspace {
                 framed: true,
                 fill: false,
                 small: true,
+                underline: false,
             },
             p,
             std::rc::Rc::new(|this: &mut Self, i, _, cx| {

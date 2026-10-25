@@ -500,6 +500,16 @@ pub struct ResumeOffer {
     pub kind: tern_agent::OfferKind,
     /// The cause points at web search: the banner offers to fix it.
     pub about_search: bool,
+    /// It stopped at its token limit: the budget card shows instead.
+    pub budget: Option<BudgetStop>,
+}
+
+/// A run that stopped at its token limit: tokens used, and the run's
+/// limit when the checkpoint knows it (a deep run's plan budget).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BudgetStop {
+    pub used: u64,
+    pub limit: Option<u64>,
 }
 
 impl ResumeOffer {
@@ -511,7 +521,12 @@ impl ResumeOffer {
         ended: Option<(TurnState, Option<&str>)>,
     ) -> Option<Self> {
         let o = ck.offer(ended)?;
+        let budget = matches!(ended, Some((TurnState::BudgetExceeded, _))).then(|| BudgetStop {
+            used: ck.tokens_in + ck.tokens_out,
+            limit: ck.deep.as_ref().map(|d| d.plan.budget.tokens),
+        });
         Some(Self {
+            budget,
             about_search: o.about_search(),
             question: o.question,
             headline: o.headline,

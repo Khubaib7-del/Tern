@@ -1338,6 +1338,46 @@ impl ChatSession {
             .flatten()
     }
 
+    /// The turn limits this chat runs with.
+    pub fn budget(&self) -> Budget {
+        self.budget
+    }
+
+    /// Raises the chat's turn limits by `factor` (at least 1), and the
+    /// unfinished run's checkpoint with them (a deep run's plan budget and
+    /// each worker's slice), so a run stopped at its limit resumes with
+    /// more room. Returns the run's new token limit.
+    pub fn raise_budget(&mut self, factor: f64) -> Result<u64, String> {
+        use crate::checkpoint::CheckpointSink;
+        let f = if factor.is_finite() {
+            factor.max(1.0)
+        } else {
+            1.0
+        };
+        let up = |n: u64| (n as f64 * f).round() as u64;
+        let up32 = |n: u32| (f64::from(n) * f).ceil() as u32;
+        self.budget.max_tokens = up(self.budget.max_tokens);
+        self.budget.max_model_calls = up32(self.budget.max_model_calls);
+        self.budget.max_tool_calls = up32(self.budget.max_tool_calls);
+        let mut limit = self.budget.max_tokens;
+        if let (Some(mut ck), Some(dir)) = (self.checkpoint(), self.checkpoints.as_ref()) {
+            if let Some(deep) = ck.deep.as_mut() {
+                let b = &mut deep.plan.budget;
+                b.tokens = up(b.tokens);
+                b.pages = up32(b.pages);
+                b.seconds = up(b.seconds);
+                limit = b.tokens;
+                for w in &mut deep.workers {
+                    w.budget.tokens = up(w.budget.tokens);
+                    w.budget.pages = up32(w.budget.pages);
+                    w.budget.seconds = up(w.budget.seconds);
+                }
+            }
+            dir.save(&ck)?;
+        }
+        Ok(limit)
+    }
+
     /// Forgets this chat's unfinished run.
     pub fn discard_checkpoint(&self) -> Result<(), String> {
         use crate::checkpoint::CheckpointSink;

@@ -67,6 +67,9 @@ pub(super) struct Look {
     pub fill: bool,
     /// Text size: small for the title bar and Appearance, else extra small.
     pub small: bool,
+    /// A 2 px underline under the picked tab instead of a pill (v2's
+    /// rail tabs).
+    pub underline: bool,
 }
 
 /// Which rows each growing list has shown, so only new ones grow in.
@@ -236,10 +239,16 @@ impl Workspace {
         let n = options.len().max(1) as f32;
         let pill = div()
             .absolute()
-            .top(px(SEGMENT_PAD))
-            .bottom(px(SEGMENT_PAD))
-            .rounded_full()
-            .bg(p.hover)
+            .map(|d| {
+                if look.underline {
+                    d.bottom_0().h(px(2.)).bg(p.text)
+                } else {
+                    d.top(px(SEGMENT_PAD))
+                        .bottom(px(SEGMENT_PAD))
+                        .rounded_full()
+                        .bg(p.hover)
+                }
+            })
             .map(|d| {
                 if look.fill {
                     d.left(relative(at / n)).w(relative(1. / n))
@@ -255,6 +264,7 @@ impl Workspace {
             .p(px(SEGMENT_PAD))
             .rounded_full()
             .when(look.framed, |d| d.border_1().border_color(p.border))
+            .when(look.underline, |d| d.rounded_none())
             .map(|d| if look.fill { d.w_full() } else { d.flex_none() })
             // The pill's track is the padding box, so fractions line up.
             .child(
