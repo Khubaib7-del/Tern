@@ -189,3 +189,90 @@ fn streamed_tool_calls_are_assembled_for_every_wire() {
     let gemini = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"file_read\",\"args\":{\"path\":\"/tmp/a.txt\"}}}]}}]}\n\n";
     assert_eq!(streamed(Wire::Gemini, gemini), want);
 }
+
+/// The exact streaming body Tern sends Mistral for a Quick turn with web
+/// search on, after the message asked for the web: the web tool offered
+/// natively with `tool_choice: auto`, and the search Tern ran first in
+/// the conversation as its call and the live results (#66).
+#[test]
+fn mistral_quick_turn_body_with_the_web_tool_snapshot() {
+    let web = ToolSpec {
+        name: "web_search".into(),
+        description:
+            "Search the web. Returns titles, links, and snippets; read a link before citing it."
+                .into(),
+        parameters: json!({"type": "object", "required": ["query"], "additionalProperties": false,
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}}),
+    };
+    let call = crate::tool_block("web_search", &json!({"query": "who created LangChain"}));
+    let results = "Result of `web_search`:\nWeb search results for \"who created LangChain\" from Wikipedia, retrieved just now.";
+    let req = ChatRequest::new(
+        "codestral-2508",
+        vec![
+            ChatMessage::user("who created LangChain? use the web tool"),
+            ChatMessage::assistant(call.clone()),
+            ChatMessage::user(results),
+        ],
+    )
+    .with_system("You are Tern.")
+    .with_max_tokens(4096)
+    .with_tools(vec![web]);
+    let mut body = super::openai::chat_body(&req);
+    body["stream"] = json!(true);
+    let spec = crate::catalog::find("mistral").expect("mistral is built in");
+    crate::effort::apply(&mut body, spec, &req);
+    assert_eq!(
+        body,
+        json!({
+            "model": "codestral-2508",
+            "messages": [
+                {"role": "system", "content": "You are Tern."},
+                {"role": "user", "content": "who created LangChain? use the web tool"},
+                {"role": "assistant", "content": call},
+                {"role": "user", "content": results}
+            ],
+            "max_tokens": 4096,
+            "stream": true,
+            "tools": [{"type": "function", "function": {
+                "name": "web_search",
+                "description": "Search the web. Returns titles, links, and snippets; read a link before citing it.",
+                "parameters": {"type": "object", "required": ["query"], "additionalProperties": false,
+                    "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}}
+            }}],
+            "tool_choice": "auto"
+        })
+    );
+}
+
+/// Mistral streams parallel calls each whole, every one under `index` 0
+/// with its own id; they come back as separate calls, not glued together.
+#[test]
+fn mistral_parallel_calls_under_one_index_stay_apart() {
+    let raw = concat!(
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"a1\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\": \\\"langchain\\\"}\"},\"index\":0}]}}]}\n\n",
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"b2\",\"function\":{\"name\":\"read_url\",\"arguments\":\"{\\\"url\\\": \\\"https://x.org\\\"}\"},\"index\":0}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    assert_eq!(
+        streamed(Wire::OpenAiCompatible, raw),
+        format!(
+            "{}\n{}",
+            block("web_search", json!({"query": "langchain"})),
+            block("read_url", json!({"url": "https://x.org"}))
+        )
+    );
+    // OpenAI's parallel calls use distinct indexes and fragments.
+    let openai = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\"}},{\"index\":1,\"id\":\"d\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"a\\\"}\"}},{\"index\":1,\"function\":{\"arguments\":\"\\\"b\\\"}\"}}]}}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    assert_eq!(
+        streamed(Wire::OpenAiCompatible, openai),
+        format!(
+            "{}\n{}",
+            block("web_search", json!({"query": "a"})),
+            block("web_search", json!({"query": "b"}))
+        )
+    );
+}
