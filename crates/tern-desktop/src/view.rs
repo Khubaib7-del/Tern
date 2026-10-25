@@ -1036,6 +1036,9 @@ impl Workspace {
                 }
                 self.model.catalog = *c;
             }
+            Msg::FileTranscribed(name, secs, result) => {
+                self.model.audio_transcribed(&name, secs, result);
+            }
             Msg::Transcribed(result) => {
                 self.model.transcribing = false;
                 match result {
@@ -1452,18 +1455,22 @@ impl Workspace {
                 .is_some_and(|n| tern_agent::media::is_audio_name(&n.to_string_lossy()))
         });
         for a in audio {
+            let name = a
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if let Some(why) = tern_agent::media::audio_not_supported(&name) {
+                self.model.toast_error(why, None);
+                continue;
+            }
             match self.file_stt_model() {
                 Some(via) => {
-                    self.model.transcribing = true;
-                    self.bridge.transcribe_file(via, a);
+                    // The length is read from the file's headers only.
+                    let secs = tern_agent::media::audio_duration(&a);
+                    self.model.audio_started(name, secs);
+                    self.bridge.transcribe_file(via, a, secs);
                 }
-                None => self.model.toast_error(
-                    format!(
-                        "{} is audio. Tern transcribes audio once a speech-to-text model is set up: download Whisper in Settings › Local models (runs on this computer), or add a provider that lists one (Groq or OpenAI Whisper, Mistral Voxtral).",
-                        a.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
-                    ),
-                    None,
-                ),
+                None => self.model.audio_needs_model(&name),
             }
         }
         if paths.is_empty() {
@@ -3607,6 +3614,46 @@ impl Workspace {
                     format!("Reading {} items", self.model.attaching)
                 })
         });
+        // Audio files on their way to the speech-to-text model.
+        let audio = self.model.audio_pending.iter().map(|(name, secs)| {
+            let detail = match secs {
+                Some(s) => format!("Audio · {} · transcribing…", tern_agent::media::clock(*s)),
+                None => "Audio · transcribing…".to_owned(),
+            };
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_2()
+                .pr_2()
+                .py_1()
+                .max_w(px(280.))
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(Spinner::new().xsmall())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(p.text)
+                                .child(SharedString::from(name.clone())),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(detail)),
+                        ),
+                )
+        });
         div()
             .flex()
             .flex_wrap()
@@ -3620,6 +3667,7 @@ impl Workspace {
                     AttachSource::Paste => AssetIcon::ClipboardPaste,
                     AttachSource::Link => AssetIcon::Link,
                     AttachSource::Mcp => AssetIcon::Blocks,
+                    AttachSource::Audio(_) => AssetIcon::Mic,
                 };
                 let prompt = a.role == Role::Prompt;
                 let lead = match self.thumbnail(a) {
@@ -3706,6 +3754,7 @@ impl Workspace {
                             })),
                     )
             }))
+            .children(audio)
             .children(loading)
             .children(self.cannot_see_note(p))
     }

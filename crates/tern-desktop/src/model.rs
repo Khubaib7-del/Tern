@@ -398,6 +398,10 @@ pub struct Model {
     pub catalog: tern_agent::media::Catalog,
     /// Speech is on its way to the speech-to-text model.
     pub transcribing: bool,
+    /// Attached audio files being transcribed: name and how long each
+    /// plays, when known. Each shows as a chip until its transcript
+    /// arrives as an attachment.
+    pub audio_pending: Vec<(String, Option<f64>)>,
     /// The `@` menu over the composer, while a reference is being typed.
     pub mention: Option<MentionMenu>,
     /// The `/` menu over the composer, while a command is being typed.
@@ -591,6 +595,7 @@ impl Model {
             outgoing_images: Vec::new(),
             catalog: Default::default(),
             transcribing: false,
+            audio_pending: Vec::new(),
             mention: None,
             slash: None,
             arg_form: None,
@@ -1304,6 +1309,42 @@ impl Model {
             Ok(a) => self.attachments.push(a),
             Err(e) => self.toast_error(e, None),
         }
+    }
+
+    /// An attached audio file went to the speech-to-text model.
+    pub fn audio_started(&mut self, name: String, secs: Option<f64>) {
+        self.audio_pending.push((name, secs));
+    }
+
+    /// An attached audio file's transcript came back: it rides with the
+    /// next message as an attachment named for the file.
+    pub fn audio_transcribed(
+        &mut self,
+        name: &str,
+        secs: Option<f64>,
+        result: Result<String, String>,
+    ) {
+        if let Some(i) = self.audio_pending.iter().position(|(n, _)| n == name) {
+            self.audio_pending.remove(i);
+        }
+        match result {
+            Ok(text) if !text.trim().is_empty() => self
+                .attachments
+                .push(Attachment::transcript(name, secs, &text)),
+            Ok(_) => self.toast_error(format!("{name} has no speech Tern could hear."), None),
+            Err(e) => self.toast_error(format!("Tern could not transcribe {name}: {e}"), None),
+        }
+    }
+
+    /// An audio file was attached and nothing can transcribe it: the
+    /// toast's button opens Settings › Local models.
+    pub fn audio_needs_model(&mut self, name: &str) {
+        self.toast_error(
+            format!(
+                "{name} is audio. Download a transcription model (Whisper) in Settings › Local models, or add a provider with speech-to-text (Groq or OpenAI Whisper, Mistral Voxtral)."
+            ),
+            Some(crate::toast::Retry::LocalModels),
+        );
     }
 
     pub fn remove_attachment(&mut self, i: usize) {
@@ -3106,6 +3147,32 @@ mod tests {
         assert!(msg.contains(r#"name="week-1" role="context""#));
         assert!(msg.contains("<untrusted-data source=\"mcp:notes/notes://week-1\">"));
         assert!(m.inserted.is_none());
+    }
+
+    #[test]
+    fn an_attached_audio_file_becomes_its_transcript() {
+        let mut m = ready();
+        m.audio_started("memo.m4a".into(), Some(42.0));
+        assert_eq!(m.audio_pending.len(), 1);
+        m.audio_transcribed("memo.m4a", Some(42.0), Ok("Buy milk.".into()));
+        assert!(m.audio_pending.is_empty());
+        assert_eq!(m.attachments.len(), 1);
+        assert_eq!(m.attachments[0].detail(), "Audio · 0:42 · transcript");
+        let msg = m.start_turn("what did I say?").unwrap();
+        assert!(msg.contains("Buy milk."), "{msg}");
+        // A failure is a toast; nothing is attached.
+        let mut m = ready();
+        m.audio_started("x.wav".into(), None);
+        m.audio_transcribed("x.wav", None, Err("no model".into()));
+        assert!(m.attachments.is_empty() && m.audio_pending.is_empty());
+        // With no model, the toast opens Settings › Local models.
+        m.audio_needs_model("memo.m4a");
+        assert!(
+            m.toasts
+                .shown()
+                .iter()
+                .any(|t| t.retry == Some(crate::toast::Retry::LocalModels))
+        );
     }
 
     #[test]

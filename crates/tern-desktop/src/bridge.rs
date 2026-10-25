@@ -42,6 +42,9 @@ pub enum Msg {
     Info(String),
     /// Every configured provider's listing, for routing.
     Catalog(Box<tern_agent::media::Catalog>),
+    /// An attached audio file's transcript (file name, seconds it plays
+    /// when known), or why not.
+    FileTranscribed(String, Option<f64>, Result<String, String>),
     /// Speech came back as text for the composer, or why not.
     Transcribed(Result<String, String>),
     /// One window of streaming dictation came back: its number and text.
@@ -222,6 +225,9 @@ impl std::fmt::Debug for Msg {
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
             Self::Transcribed(r) => write!(f, "Transcribed(ok: {})", r.is_ok()),
+            Self::FileTranscribed(name, _, r) => {
+                write!(f, "FileTranscribed({name}, ok: {})", r.is_ok())
+            }
             Self::Dictated(seq, r) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
             Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
             Self::ResumeFailed(id, e) => write!(f, "ResumeFailed({id}, {e})"),
@@ -607,7 +613,12 @@ impl Bridge {
     }
 
     /// Reads an audio file off the UI thread and transcribes it.
-    pub fn transcribe_file(&self, via: tern_agent::media::ModelRef, path: std::path::PathBuf) {
+    pub fn transcribe_file(
+        &self,
+        via: tern_agent::media::ModelRef,
+        path: std::path::PathBuf,
+        secs: Option<f64>,
+    ) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let name = path
@@ -626,12 +637,14 @@ impl Bridge {
                     let secrets: Option<&dyn SecretStore> =
                         keychain.as_ref().ok().map(|b| b.as_ref());
                     let r = tern_agent::media::transcribe(secrets, &via, &bytes, &name).await;
-                    let _ = tx.send(Msg::Transcribed(r));
+                    let _ = tx.send(Msg::FileTranscribed(name, secs, r));
                 }
                 Err(e) => {
-                    let _ = tx.send(Msg::Transcribed(Err(format!(
-                        "Tern could not read {name}: {e}"
-                    ))));
+                    let _ = tx.send(Msg::FileTranscribed(
+                        name.clone(),
+                        secs,
+                        Err(format!("Tern could not read {name}: {e}")),
+                    ));
                 }
             }
         });

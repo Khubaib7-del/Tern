@@ -48,6 +48,7 @@ fn plus_icon(i: PlusItem) -> AssetIcon {
     match i {
         PlusItem::Files => AssetIcon::FileText,
         PlusItem::Images => AssetIcon::Image,
+        PlusItem::Audio => AssetIcon::Mic,
         PlusItem::Pdfs => AssetIcon::FileType,
         PlusItem::Folder => AssetIcon::FolderArchive,
         PlusItem::Link => AssetIcon::Link,
@@ -640,7 +641,9 @@ impl Workspace {
                 .children(self.steer_rows(p))
                 .children(self.steer_hint(p))
                 .when(
-                    !self.model.attachments.is_empty() || self.model.attaching > 0,
+                    !self.model.attachments.is_empty()
+                        || self.model.attaching > 0
+                        || !self.model.audio_pending.is_empty(),
                     |d| d.child(self.attachment_chips(p, cx)),
                 )
                 .child(
