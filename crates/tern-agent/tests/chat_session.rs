@@ -1089,7 +1089,8 @@ async fn a_reply_identical_to_the_previous_one_is_never_returned() {
     }
     let observer = |_: &tern_core::EventEnvelope| {};
     // No web search: the copy is asked again with a nudge.
-    let s = keyword_server(&["Paris.", "Paris.", "Berlin is Germany's capital."]).await;
+    const PARIS: &str = "The capital of France is Paris, on the Seine.";
+    let s = keyword_server(&[PARIS, PARIS, "Berlin is Germany's capital."]).await;
     let mut chat = chat_on(&s).await;
     chat.send(
         "capital of France?",
@@ -1109,7 +1110,7 @@ async fn a_reply_identical_to_the_previous_one_is_never_returned() {
         bodies[2]
     );
     // Twice the same: the turn ends with a gap, nothing is shown again.
-    let s = keyword_server(&["Paris.", "Paris.", "Paris."]).await;
+    let s = keyword_server(&[PARIS, PARIS, PARIS]).await;
     let mut chat = chat_on(&s).await;
     chat.send(
         "capital of France?",

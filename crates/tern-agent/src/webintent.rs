@@ -323,7 +323,8 @@ pub fn is_refusal(reply: &str) -> bool {
 }
 
 /// Whether `reply` is the same text as `previous` (ignoring case, spaces
-/// and punctuation at the edges).
+/// and punctuation at the edges). Short replies ("Yes.", "Done.") can
+/// rightly repeat, so only a reply of 40 characters or more counts.
 pub fn same_reply(reply: &str, previous: &str) -> bool {
     let norm = |s: &str| {
         s.split_whitespace()
@@ -333,7 +334,7 @@ pub fn same_reply(reply: &str, previous: &str) -> bool {
             .to_lowercase()
     };
     let (a, b) = (norm(reply), norm(previous));
-    !a.is_empty() && a == b
+    a.chars().count() >= 40 && a == b
 }
 
 #[cfg(test)]
@@ -451,5 +452,6 @@ mod tests {
             "LangChain was created by Harrison Chase."
         ));
         assert!(!same_reply("", ""));
+        assert!(!same_reply("Yes.", "Yes."), "short replies may repeat");
     }
 }
