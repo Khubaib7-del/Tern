@@ -3627,6 +3627,25 @@ impl Workspace {
                     )
             }))
             .children(loading)
+            .children(self.cannot_see_note(p))
+    }
+
+    /// Under waiting pictures, when the chat model cannot see: who will
+    /// read them instead, decided for real when the message is sent.
+    fn cannot_see_note(&self, p: Palette) -> Option<gpui_kit::Div> {
+        if !self.model.attachments.iter().any(|a| a.is_image()) {
+            return None;
+        }
+        let provider = self.provider_id();
+        let model = self.model.connection.as_ref()?.model.clone();
+        let text = crate::composer::cannot_see_note(&self.model.catalog, &provider, &model)?;
+        Some(
+            div()
+                .w_full()
+                .text_xs()
+                .text_color(p.faint)
+                .child(SharedString::from(text)),
+        )
     }
 
     /// A picture attachment's thumbnail, decoded once and kept while it
