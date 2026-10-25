@@ -3425,7 +3425,7 @@ mod tests {
         let b = Some(tern_core::SessionId::new());
         let mut m = ready();
         // Chat A: a picture and a voice memo still transcribing.
-        m.attachments.push(Attachment::paste("x".repeat(3)));
+        m.attachments.push(Attachment::paste(&"x".repeat(3)));
         let (id, ctl) = m.audio_started("memo.m4a".into(), Some(12.0), a);
         m.stash_draft(a, "half a question".into());
         // Chat B shows its own, empty composer.
@@ -3446,7 +3446,7 @@ mod tests {
     #[test]
     fn chips_go_with_x_or_backspace_and_x_cancels_a_transcription() {
         let mut m = ready();
-        m.attachments.push(Attachment::paste("x".repeat(3)));
+        m.attachments.push(Attachment::paste(&"x".repeat(3)));
         let (id, ctl) = m.audio_started("memo.m4a".into(), None, None);
         m.cancel_audio(id);
         assert!(ctl.is_cancelled() && m.audio_pending.is_empty());
