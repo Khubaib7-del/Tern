@@ -18,6 +18,7 @@ mod brands;
 mod bridge;
 mod browser;
 mod chatflow;
+mod chatgraph;
 mod commands;
 mod composer;
 mod continuity;

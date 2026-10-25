@@ -604,6 +604,119 @@ pub fn clamp_pos(pos: (f32, f32), size: (f32, f32), window: (f32, f32)) -> (f32,
     (pos.0.clamp(4., max_x), pos.1.clamp(40., max_y))
 }
 
+/// How long the hover toolbar stays after the pointer leaves Scout and
+/// the toolbar, so it survives the trip across the gap between them.
+pub const TOOLBAR_GRACE: std::time::Duration = std::time::Duration::from_millis(280);
+
+/// The hover toolbar's button size and its gap from Scout, in px.
+pub const TOOLBAR_BUTTON: f32 = 26.;
+pub const TOOLBAR_GAP: f32 = 4.;
+
+/// Which parts of Scout the pointer is over, and whether the toolbar is
+/// still showing. Scout, the toolbar and the gap between them are one
+/// hover region: leaving it starts [`TOOLBAR_GRACE`]; coming back before
+/// it runs out cancels the hide. An open Scout menu keeps the toolbar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ToolbarHover {
+    /// Over Scout's sprite.
+    pub pet: bool,
+    /// Over the gap between Scout and the toolbar.
+    pub gap: bool,
+    /// Over the toolbar itself.
+    pub bar: bool,
+    /// The Scout menu opened from the toolbar.
+    pub menu: bool,
+    /// When the pointer left the region; the toolbar hides at
+    /// `left_at + TOOLBAR_GRACE`.
+    left_at: Option<std::time::Instant>,
+    /// Whether the toolbar has shown since the pointer came in.
+    shown: bool,
+}
+
+/// A part of Scout's hover region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoverPart {
+    Pet,
+    Gap,
+    Bar,
+    Menu,
+}
+
+impl ToolbarHover {
+    fn inside(&self) -> bool {
+        self.pet || self.gap || self.bar || self.menu
+    }
+
+    /// The pointer entered or left a part (or the menu opened or closed).
+    pub fn set(&mut self, part: HoverPart, on: bool, now: std::time::Instant) {
+        let was = self.inside();
+        match part {
+            HoverPart::Pet => self.pet = on,
+            HoverPart::Gap => self.gap = on,
+            HoverPart::Bar => self.bar = on,
+            HoverPart::Menu => self.menu = on,
+        }
+        if self.inside() {
+            self.left_at = None;
+            // The gap alone does not open the toolbar; it only keeps it.
+            if part != HoverPart::Gap || self.shown {
+                self.shown = true;
+            }
+        } else if was && self.shown {
+            self.left_at = Some(now);
+        }
+    }
+
+    /// Hides at once (a drag starts, Scout is hidden).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether the toolbar shows at `now`.
+    pub fn visible(&self, now: std::time::Instant) -> bool {
+        if !self.shown {
+            return false;
+        }
+        if self.inside() {
+            return true;
+        }
+        self.left_at
+            .is_some_and(|at| now.saturating_duration_since(at) < TOOLBAR_GRACE)
+    }
+
+    /// How long until the grace runs out, while it is running.
+    pub fn hides_in(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        if self.inside() || !self.shown {
+            return None;
+        }
+        let at = self.left_at?;
+        TOOLBAR_GRACE.checked_sub(now.saturating_duration_since(at))
+    }
+}
+
+/// Where the toolbar sits for Scout at `pos` (top-left) of `size`: above
+/// it, or below it when there is no room under the title bar, centred on
+/// Scout and kept inside the window. Returns the toolbar's top-left in
+/// window px and whether it is below Scout.
+pub fn toolbar_pos(
+    pos: (f32, f32),
+    size: (f32, f32),
+    bar_w: f32,
+    window: (f32, f32),
+) -> ((f32, f32), bool) {
+    let above = pos.1 - TOOLBAR_GAP - TOOLBAR_BUTTON;
+    // The title bar is 40 px; keep the toolbar under it.
+    let below = above < 44.;
+    let y = if below {
+        pos.1 + size.1 + TOOLBAR_GAP
+    } else {
+        above
+    };
+    let x = pos.0 + (size.0 - bar_w) / 2.;
+    let x = x.clamp(4., (window.0 - bar_w - 4.).max(4.));
+    ((x, y), below)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,5 +916,71 @@ mod tests {
             let _ = State::of(m);
         }
         assert_eq!(State::of(Mood::Ready), State::Done);
+    }
+
+    #[test]
+    fn the_toolbar_survives_the_trip_from_scout_to_its_buttons() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut h = ToolbarHover::default();
+        assert!(!h.visible(t0));
+        h.set(HoverPart::Pet, true, t0);
+        assert!(h.visible(t0));
+        // Leaving Scout toward the toolbar: still shown inside the grace.
+        h.set(HoverPart::Pet, false, ms(10));
+        assert!(h.visible(ms(10 + 279)));
+        assert_eq!(
+            h.hides_in(ms(110)),
+            Some(std::time::Duration::from_millis(180))
+        );
+        // Crossing the gap keeps it; reaching the toolbar too.
+        h.set(HoverPart::Gap, true, ms(50));
+        h.set(HoverPart::Gap, false, ms(90));
+        h.set(HoverPart::Bar, true, ms(100));
+        assert!(h.visible(ms(5_000)));
+        assert_eq!(h.hides_in(ms(5_000)), None);
+        // Leaving everything: hides after the grace, not before.
+        h.set(HoverPart::Bar, false, ms(6_000));
+        assert!(h.visible(ms(6_000 + 270)));
+        assert!(!h.visible(ms(6_000 + 281)));
+        assert_eq!(h.hides_in(ms(6_400)), None);
+    }
+
+    #[test]
+    fn the_toolbar_stays_while_its_menu_is_open_and_reset_hides_it() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut h = ToolbarHover::default();
+        h.set(HoverPart::Bar, true, t0);
+        h.set(HoverPart::Menu, true, ms(5));
+        h.set(HoverPart::Bar, false, ms(10));
+        assert!(h.visible(ms(10_000)));
+        h.set(HoverPart::Menu, false, ms(10_000));
+        assert!(h.visible(ms(10_100)));
+        assert!(!h.visible(ms(10_300)));
+        h.set(HoverPart::Pet, true, ms(20_000));
+        h.reset();
+        assert!(!h.visible(ms(20_000)));
+        // The gap alone (pointer coming from elsewhere) opens nothing.
+        let mut h = ToolbarHover::default();
+        h.set(HoverPart::Gap, true, t0);
+        assert!(!h.visible(t0));
+        h.set(HoverPart::Gap, false, ms(1));
+        assert!(!h.visible(ms(2)));
+    }
+
+    #[test]
+    fn the_toolbar_sits_above_scout_or_below_it_near_the_title_bar() {
+        let ((x, y), below) = toolbar_pos((100., 300.), (80., 90.), 86., (1200., 800.));
+        assert!(!below);
+        assert_eq!(y, 300. - TOOLBAR_GAP - TOOLBAR_BUTTON);
+        assert_eq!(x, 100. + (80. - 86.) / 2.);
+        let ((_, y), below) = toolbar_pos((100., 40.), (80., 90.), 86., (1200., 800.));
+        assert!(below);
+        assert_eq!(y, 40. + 90. + TOOLBAR_GAP);
+        let ((x, _), _) = toolbar_pos((1150., 300.), (80., 90.), 86., (1200., 800.));
+        assert_eq!(x, 1200. - 86. - 4.);
+        let ((x, _), _) = toolbar_pos((0., 300.), (10., 90.), 86., (1200., 800.));
+        assert_eq!(x, 4.);
     }
 }
