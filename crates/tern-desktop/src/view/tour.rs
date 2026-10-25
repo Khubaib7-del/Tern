@@ -806,7 +806,7 @@ fn script() -> Vec<Beat> {
         ),
         b(Act::Chat, 500),
     ]);
-    let pages: [(&'static str, &'static str, &'static str, Section); 12] = [
+    let pages: [(&'static str, &'static str, &'static str, Section); 13] = [
         (
             "t58-settings-providers",
             "s16",
