@@ -264,8 +264,12 @@ pub fn fallback_queries(query: &str) -> Vec<String> {
             add(k[..n].join(" "));
         }
     }
-    if k.len() == 1 {
-        add(k[0].clone());
+    // The longest word alone (a name is usually the longest word).
+    if let Some(longest) = k.iter().fold(None::<&String>, |best, w| match best {
+        Some(b) if b.chars().count() >= w.chars().count() => Some(b),
+        _ => Some(w),
+    }) {
+        add(longest.clone());
     }
     out
 }
@@ -427,6 +431,10 @@ mod tests {
         );
         assert_eq!(fallback_queries("LangChain"), Vec::<String>::new());
         assert_eq!(fallback_queries("who is LangChain"), ["LangChain"]);
+        assert_eq!(
+            fallback_queries("who created langchain?"),
+            ["created langchain", "created", "langchain"]
+        );
     }
 
     #[test]

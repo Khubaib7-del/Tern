@@ -882,3 +882,245 @@ async fn a_typed_full_path_is_read_after_approval() {
         .await;
     assert_eq!(out.state, TurnState::Blocked);
 }
+
+/// A mock provider whose SearXNG-style search finds the LangChain page
+/// only for the one-word query `langchain`, and nothing for anything
+/// longer (as Wikipedia did for the user's typed sentence).
+async fn keyword_server(replies: &[&str]) -> MockServer {
+    use wiremock::matchers::query_param;
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "llama3.2"}]
+        })))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .and(query_param("q", "langchain"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": [
+            {"title": "LangChain - Wikipedia", "url": "https://en.wikipedia.org/wiki/LangChain",
+             "content": "LangChain was launched in October 2022 by Harrison Chase."}
+        ]})))
+        .with_priority(1)
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"results": []})))
+        .with_priority(5)
+        .mount(&s)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(Replies(Mutex::new(
+            replies.iter().map(|r| r.to_string()).collect(),
+        )))
+        .mount(&s)
+        .await;
+    s
+}
+
+/// The chat completion request bodies, in order.
+async fn chat_bodies(s: &MockServer) -> Vec<String> {
+    s.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+        .collect()
+}
+
+/// The search queries sent, in order.
+async fn searches(s: &MockServer) -> Vec<String> {
+    s.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/search")
+        .filter_map(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "q")
+                .map(|(_, v)| v.into_owned())
+        })
+        .collect()
+}
+
+/// Regression (#66, the user's Windows log): the web was searched for the
+/// whole typed sentence, the keyword index found nothing, and the model
+/// said it had no internet. Now the empty search falls back to keywords,
+/// and the pre-read results reach the model's message list framed as live
+/// results to answer from.
+#[tokio::test]
+async fn pre_read_web_results_reach_the_model_even_when_the_sentence_finds_nothing() {
+    let s = keyword_server(&["Harrison Chase created LangChain in October 2022 [1]."]).await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let out = chat
+        .send(
+            r#"can you provide me infor about how langchain erupted and comes out its developre and creator "use the web tool""#,
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let q = searches(&s).await;
+    assert_eq!(q.last().map(String::as_str), Some("langchain"), "{q:?}");
+    assert!(q.len() >= 2 && q[0].contains("developre"), "{q:?}");
+    let bodies = chat_bodies(&s).await;
+    assert_eq!(bodies.len(), 1, "one model call: the search ran first");
+    let v: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    let msgs = v["messages"].as_array().unwrap();
+    // system, the user's message, Tern's call, then the results as a user
+    // message the model answers from.
+    let results = msgs.last().unwrap()["content"].as_str().unwrap();
+    assert!(
+        results.contains("Web search results for \"langchain\""),
+        "{results}"
+    );
+    assert!(results.contains("retrieved just now"), "{results}");
+    assert!(results.contains("Harrison Chase"), "{results}");
+    assert!(
+        results.contains("en.wikipedia.org/wiki/LangChain"),
+        "{results}"
+    );
+    let call = msgs[msgs.len() - 2]["content"].as_str().unwrap();
+    assert!(
+        call.contains("```tool") && call.contains("web_search"),
+        "{call}"
+    );
+    assert_eq!(v["tool_choice"], "auto");
+}
+
+/// A model that says it cannot reach the internet while web search is on
+/// gets the question searched by Tern and answers again, once.
+#[tokio::test]
+async fn a_refusal_with_web_search_on_is_searched_and_answered_again() {
+    let s = keyword_server(&[
+        "I'm not sure who the creator of LangChain is. I don't have real-time access to the internet.",
+        "Harrison Chase created LangChain [1].",
+    ])
+    .await;
+    let mut chat = open_with_search(&s).await;
+    let kinds = Mutex::new(Vec::new());
+    let observer = |e: &tern_core::EventEnvelope| kinds.lock().unwrap().push(e.kind.clone());
+    let out = chat
+        .send(
+            "who created langchain?",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("Harrison Chase created LangChain [1].")
+    );
+    assert_eq!((out.model_calls, out.tool_calls), (2, 1));
+    assert!(kinds.lock().unwrap().iter().any(|k| k == "web.safety_net"));
+    let bodies = chat_bodies(&s).await;
+    assert!(bodies[1].contains("Harrison Chase"), "{}", bodies[1]);
+    // The refusal is not part of what the model sees next.
+    assert!(!bodies[1].contains("real-time access"), "{}", bodies[1]);
+}
+
+/// "browse about that" searches the previous question, and the follow-up
+/// answer is new.
+#[tokio::test]
+async fn browse_about_that_searches_the_previous_question() {
+    let s = keyword_server(&[
+        "LangChain is a framework for LLM apps.",
+        "Harrison Chase created it in October 2022 [1].",
+    ])
+    .await;
+    let mut chat = open_with_search(&s).await;
+    let observer = |_: &tern_core::EventEnvelope| {};
+    let first = chat
+        .send(
+            "what is langchain",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(first.tool_calls, 0);
+    chat.set_sees_pictures(Some(false));
+    let out = chat
+        .send(
+            "browse about that",
+            &DenyAll,
+            CancelFlag::default(),
+            &observer,
+        )
+        .await;
+    assert_eq!(
+        out.answer.as_deref(),
+        Some("Harrison Chase created it in October 2022 [1].")
+    );
+    assert_eq!(out.tool_calls, 1);
+    let q = searches(&s).await;
+    assert_eq!(
+        q.first().map(String::as_str),
+        Some("what is langchain"),
+        "{q:?}"
+    );
+    assert_eq!(q.last().map(String::as_str), Some("langchain"), "{q:?}");
+}
+
+/// Regression (#66): the follow-up came back word for word the same as the
+/// reply before it. A copy is asked again once; a second copy is never shown.
+#[tokio::test]
+async fn a_reply_identical_to_the_previous_one_is_never_returned() {
+    async fn chat_on(s: &MockServer) -> ChatSession {
+        let opts = ChatOptions {
+            provider: Some("ollama".into()),
+            base_url: Some(format!("{}/v1", s.uri())),
+            search: Some("off".into()),
+            no_mcp: true,
+            ..Default::default()
+        };
+        ChatSession::open_with(opts, None, Store::open_in_memory().unwrap())
+            .await
+            .unwrap()
+    }
+    let observer = |_: &tern_core::EventEnvelope| {};
+    // No web search: the copy is asked again with a nudge.
+    let s = keyword_server(&["Paris.", "Paris.", "Berlin is Germany's capital."]).await;
+    let mut chat = chat_on(&s).await;
+    chat.send(
+        "capital of France?",
+        &DenyAll,
+        CancelFlag::default(),
+        &observer,
+    )
+    .await;
+    let out = chat
+        .send("and Germany?", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.answer.as_deref(), Some("Berlin is Germany's capital."));
+    let bodies = chat_bodies(&s).await;
+    assert!(
+        bodies[2].contains("word for word the same"),
+        "{}",
+        bodies[2]
+    );
+    // Twice the same: the turn ends with a gap, nothing is shown again.
+    let s = keyword_server(&["Paris.", "Paris.", "Paris."]).await;
+    let mut chat = chat_on(&s).await;
+    chat.send(
+        "capital of France?",
+        &DenyAll,
+        CancelFlag::default(),
+        &observer,
+    )
+    .await;
+    let out = chat
+        .send("and Germany?", &DenyAll, CancelFlag::default(), &observer)
+        .await;
+    assert_eq!(out.answer, None);
+    assert_eq!(out.state, TurnState::CompletedWithGaps);
+}
