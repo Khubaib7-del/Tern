@@ -172,6 +172,8 @@ impl Toasts {
 pub const TOAST_W: f32 = 340.;
 /// The narrowest stack that still reads in the right gutter.
 pub const GUTTER_MIN_W: f32 = 220.;
+/// The stack's widest when it sits over the chat area, above the composer.
+pub const NARROW_W: f32 = 280.;
 /// Space between the stack and the column, the pane, or the window edge.
 const GAP: f32 = 12.;
 
@@ -222,10 +224,9 @@ pub fn place(
     Place {
         right,
         bottom: above,
-        width: TOAST_W
-            .min(centre_w * 0.5)
-            .min((centre_w - 2. * GAP).max(0.))
-            .max(200.min(centre_w)),
+        width: (centre_w * 0.4)
+            .clamp(200., NARROW_W)
+            .min((centre_w - 2. * GAP).max(0.)),
         in_gutter: false,
     }
 }
