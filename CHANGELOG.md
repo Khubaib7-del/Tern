@@ -4,6 +4,10 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #64)
+
+From the Windows test of #63 (work in progress).
+
 ### Added (PR #63)
 
 Local model runtimes, part 2: speech on this computer.
