@@ -150,6 +150,8 @@ pub struct Workspace {
     /// is hidden and which trim it wears (`None` follows the harness).
     pet_manifest: std::rc::Rc<crate::pet::Manifest>,
     pet_preview: Option<crate::pet::State>,
+    /// The UI tour shows Scout's hover toolbar as if pointed at.
+    pet_tour_toolbar: bool,
     pet_preview_anim: std::cell::RefCell<crate::pet::Animator>,
     scout_hidden: bool,
     scout_variant: Option<String>,
@@ -574,6 +576,7 @@ impl Workspace {
             scout_beat: 0,
             pet_manifest: std::rc::Rc::new(crate::pet::Manifest::embedded()),
             pet_preview: None,
+            pet_tour_toolbar: false,
             pet_preview_anim: std::cell::RefCell::new(crate::pet::Animator::new(Instant::now())),
             scout_hidden: tern_agent::Preferences::load().scout_hidden,
             scout_variant: tern_agent::Preferences::load().scout_variant,

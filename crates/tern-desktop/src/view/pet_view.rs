@@ -66,6 +66,8 @@ pub struct PetSnapshot {
     pub reduced: bool,
     pub saved_pos: Option<(f32, f32)>,
     pub recording: bool,
+    /// The UI tour holds the hover toolbar open.
+    pub tour_toolbar: bool,
 }
 
 pub struct Pet {
@@ -441,7 +443,7 @@ impl Render for Pet {
                     |d, t| d.opacity(t).mb(px((1. - t) * 4.)),
                 )
         });
-        let show_tools = self.hover.visible(now) && !dragging;
+        let show_tools = (self.hover.visible(now) || snap.tour_toolbar) && !dragging;
         let tool = |id: &'static str, icon: gpui_kit::component::Icon, tip: &'static str| {
             div()
                 .id(id)
@@ -724,6 +726,7 @@ impl Workspace {
             reduced: self.reduced_motion,
             saved_pos: prefs.scout_pos.map(|(x, y)| (x as f32, y as f32)),
             recording: self.recording.is_some(),
+            tour_toolbar: self.pet_tour_toolbar,
         }
     }
 
