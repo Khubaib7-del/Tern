@@ -58,14 +58,23 @@ pub fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
-/// The client used for model downloads: no overall timeout (files can be
-/// hundreds of megabytes), a connect timeout, and Tern's user agent.
-pub fn client() -> Result<reqwest::Client, DownloadError> {
-    reqwest::Client::builder()
+/// The client used for model downloads from `url`: no overall timeout
+/// (files can be hundreds of megabytes), a connect timeout, and Tern's user
+/// agent. Loopback servers (mirrors, tests) skip the system proxy.
+pub fn client_for(url: &str) -> Result<reqwest::Client, DownloadError> {
+    let loopback = url::Url::parse(url).ok().is_some_and(|u| {
+        matches!(
+            u.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+        )
+    });
+    let mut b = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| DownloadError::Network(e.to_string()))
+        .user_agent(concat!("Tern/", env!("CARGO_PKG_VERSION")));
+    if loopback {
+        b = b.no_proxy();
+    }
+    b.build().map_err(|e| DownloadError::Network(e.to_string()))
 }
 
 /// Downloads `url` to `dest`, resuming a `.part` file when one is there.
@@ -207,7 +216,7 @@ mod tests {
         let dest = dir.join("m.bin");
         let mut seen = Vec::new();
         let n = fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             Some(BODY.len() as u64),
@@ -238,7 +247,7 @@ mod tests {
         std::fs::write(part_path(&dest), &BODY[..10]).unwrap();
         let mut first = None;
         fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             Some(BODY.len() as u64),
@@ -265,7 +274,7 @@ mod tests {
         let dest = dir.join("m.bin");
         std::fs::write(part_path(&dest), b"garbage").unwrap();
         fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             None,
@@ -285,7 +294,7 @@ mod tests {
         let cancel = CancelDownload::new();
         let c2 = cancel.clone();
         let err = fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             Some(BODY.len() as u64),
@@ -305,7 +314,7 @@ mod tests {
         let dir = tempfile_dir();
         let dest = dir.join("m.bin");
         let err = fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             Some(5),
@@ -317,7 +326,7 @@ mod tests {
         assert!(matches!(err, DownloadError::Size { .. }), "{err}");
         assert!(!dest.exists());
         let err = fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/missing", s.uri()),
             &dest,
             None,
@@ -344,7 +353,7 @@ mod tests {
         let dir = tempfile_dir();
         let dest = dir.join("m.bin");
         fetch(
-            &client().unwrap(),
+            &client_for(&s.uri()).unwrap(),
             &format!("{}/m.bin", s.uri()),
             &dest,
             None,

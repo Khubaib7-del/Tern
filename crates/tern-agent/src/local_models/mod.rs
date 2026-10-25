@@ -38,9 +38,7 @@ pub const OVERRIDES: &str = "local-models.json";
 pub const HF_ENDPOINT: &str = "https://huggingface.co";
 
 /// What a local model does.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
     Ocr,
@@ -315,8 +313,7 @@ fn safe_path(p: &str) -> bool {
         && !p.starts_with('/')
         && !p.contains('\\')
         && !p.contains(':')
-        && p.split('/')
-            .all(|s| !s.is_empty() && s != "." && s != "..")
+        && p.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
 }
 
 /// The user's choices: models switched off and the default per task.
@@ -503,9 +500,7 @@ impl LocalModels {
             serde_json::from_str(&std::fs::read_to_string(dir.join(RECORD)).ok()?).ok()?;
         rec.files
             .iter()
-            .all(|f| {
-                std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size)
-            })
+            .all(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size))
             .then_some(rec)
     }
 
@@ -520,9 +515,7 @@ impl LocalModels {
             .map(|f| {
                 let dest = dir.join(&f.name);
                 std::fs::metadata(&dest)
-                    .or_else(|_| {
-                        std::fs::metadata(tern_providers::download::part_path(&dest))
-                    })
+                    .or_else(|_| std::fs::metadata(tern_providers::download::part_path(&dest)))
                     .map(|m| m.len())
                     .unwrap_or(0)
             })
@@ -581,8 +574,8 @@ impl LocalModels {
         let dir = self.dir(id);
         std::fs::create_dir_all(&dir)?;
         let total = entry.size();
-        let client =
-            tern_providers::download::client().map_err(|e| ModelError::Download(e.to_string()))?;
+        let client = tern_providers::download::client_for(&self.endpoint)
+            .map_err(|e| ModelError::Download(e.to_string()))?;
         let mut before = 0u64;
         let mut files = Vec::new();
         for f in &entry.files {

@@ -114,9 +114,7 @@ fn manifest_rejects_unsafe_paths_duplicates_and_bad_hashes() {
     }
     assert!(Manifest::parse(&doc(vec![entry("../a", "x", &ok)])).is_err());
     assert!(Manifest::parse(&doc(vec![entry("a", "x", "zz")])).is_err());
-    assert!(
-        Manifest::parse(&doc(vec![entry("a", "x", &ok), entry("a", "y", &ok)])).is_err()
-    );
+    assert!(Manifest::parse(&doc(vec![entry("a", "x", &ok), entry("a", "y", &ok)])).is_err());
 }
 
 #[test]
@@ -143,7 +141,10 @@ fn user_entries_replace_and_extend_the_builtin_list() {
 fn tasks_round_trip_their_words() {
     for t in Task::ALL {
         assert_eq!(Task::parse(t.key()), Some(t));
-        assert_eq!(serde_json::to_string(&t).unwrap(), format!("\"{}\"", t.key()));
+        assert_eq!(
+            serde_json::to_string(&t).unwrap(),
+            format!("\"{}\"", t.key())
+        );
     }
     assert_eq!(Task::parse("stt"), Some(Task::SpeechToText));
     assert_eq!(Task::parse("doc-parse"), Some(Task::DocParse));
@@ -218,7 +219,10 @@ async fn cancel_then_resume_finishes_the_download() {
 
     let cancel = CancelDownload::new();
     cancel.cancel();
-    let err = lm.download("tiny-ocr", &cancel, &mut |_| {}).await.unwrap_err();
+    let err = lm
+        .download("tiny-ocr", &cancel, &mut |_| {})
+        .await
+        .unwrap_err();
     assert_eq!(err, ModelError::Cancelled);
     assert!(lm.installed("tiny-ocr").is_none());
 
@@ -270,9 +274,11 @@ async fn defaults_enable_and_delete() {
 #[test]
 fn prefs_survive_a_round_trip_in_preferences() {
     let mut p = crate::Preferences::default();
-    p.local_models.set_default(Task::SpeechToText, Some("whisper-base-en"));
+    p.local_models
+        .set_default(Task::SpeechToText, Some("whisper-base-en"));
     p.local_models.set_enabled("rapidocr-ppocrv4-mobile", false);
-    let back: crate::Preferences = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    let back: crate::Preferences =
+        serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
     assert_eq!(back.local_models, p.local_models);
     // Older preference files without the key still load.
     let old: crate::Preferences = serde_json::from_str("{}").unwrap();

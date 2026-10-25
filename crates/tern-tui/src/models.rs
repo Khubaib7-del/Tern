@@ -29,9 +29,7 @@ pub(crate) enum ModelsCmd {
         default: bool,
     },
     /// Delete a downloaded model's files.
-    Remove {
-        id: String,
-    },
+    Remove { id: String },
     /// Show the defaults, or set one: `tern models default ocr <id>`
     /// (`none` clears it).
     Default {
@@ -95,7 +93,10 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                         })
                     })
                     .collect();
-                println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&rows).unwrap_or_default()
+                );
                 return Ok(());
             }
             for t in Task::ALL {
@@ -130,7 +131,10 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                     );
                 }
             }
-            println!("\n* default for its task. Models are stored in {}", lm.root().display());
+            println!(
+                "\n* default for its task. Models are stored in {}",
+                lm.root().display()
+            );
             Ok(())
         }
         ModelsCmd::Download { id, default } => {
@@ -170,7 +174,11 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
             lm.download(&id, &cancel, &mut on)
                 .await
                 .map_err(|e| format!("\n{e}"))?;
-            eprintln!("\rInstalled {} in {}            ", entry.id, lm.dir(&id).display());
+            eprintln!(
+                "\rInstalled {} in {}            ",
+                entry.id,
+                lm.dir(&id).display()
+            );
             if default {
                 prefs.local_models.set_default(entry.task, Some(&id));
                 prefs.save()?;
@@ -219,10 +227,16 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                         .find(id)
                         .ok_or_else(|| format!("no local model is called `{id}`"))?;
                     if e.task != t {
-                        return Err(format!("{id} is a {} model, not {}", e.task.label(), t.label()));
+                        return Err(format!(
+                            "{id} is a {} model, not {}",
+                            e.task.label(),
+                            t.label()
+                        ));
                     }
                     if lm.installed(id).is_none() {
-                        eprintln!("Note: {id} is not downloaded yet (`tern models download {id}`).");
+                        eprintln!(
+                            "Note: {id} is not downloaded yet (`tern models download {id}`)."
+                        );
                     }
                     prefs.local_models.set_default(t, Some(id));
                 }
