@@ -7,6 +7,11 @@ name: UI tour (screen recording)
 
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Run part of the tour: `perf` runs only the frame-cost scenes (Settings › Providers vs Tools)"
+        required: false
+        default: ""
   push:
     branches: [feat/v2-polish]
     paths:
@@ -60,6 +65,7 @@ jobs:
           WGPU_POWER_PREF: low
           RUST_BACKTRACE: "1"
           TERN_TOUR: "1"
+          TERN_TOUR_ONLY: ${{ inputs.only }}
           TERN_TOUR_HOME: ${{ runner.temp }}/tern-tour-home
           TERN_KEYRING: keyutils
         run: |
@@ -89,6 +95,8 @@ jobs:
           echo "exit $(cat out/tour-exit.txt)"
           tail -n 40 out/tour-stderr.txt || true
           cat out/scene-log.txt || true
+          grep -h PERF out/tour-stdout.txt out/scene-log.txt > out/perf.txt || true
+          cat out/perf.txt || true
           ls -la out
           ffprobe -v error -show_entries format=duration -of csv=p=0 out/tern-current-tour.mp4 || true
           cp "${TERN_TOUR_HOME}/data/logs/crash.log" out/ 2>/dev/null || true
@@ -118,6 +126,7 @@ jobs:
         shell: pwsh
         env:
           TERN_TOUR: "1"
+          TERN_TOUR_ONLY: ${{ inputs.only }}
           TERN_TOUR_HOME: ${{ runner.temp }}\tern-tour-home
           # The runner's desktop is 1024×768; leave room for the taskbar.
           TERN_TOUR_SIZE: 1024x720
@@ -136,6 +145,7 @@ jobs:
           ffmpeg -y -loglevel warning -i out\tern-current-tour-windows.mkv -c copy out\tern-current-tour-windows.mp4
           Get-ChildItem out
           Get-Content out\scene-log.txt -ErrorAction SilentlyContinue
+          Select-String -Path out\tour-stdout.txt,out\scene-log.txt -Pattern 'PERF' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line } | Tee-Object out\perf.txt
       - name: Upload the Windows recording
         if: always()
         uses: actions/upload-artifact@v7

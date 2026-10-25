@@ -609,6 +609,7 @@ impl Workspace {
                             .child(super::wheel_first(
                                 "onboarding-models",
                                 &self.settings_inputs.onboarding_models_scroll,
+                                None,
                                 cx.entity_id(),
                             ))
                             .child(

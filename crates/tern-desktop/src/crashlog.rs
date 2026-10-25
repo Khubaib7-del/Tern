@@ -97,6 +97,11 @@ pub fn note(text: &str) {
     append("tern.log", text);
 }
 
+/// Writes `text` to `tern.log` as it is (callers keep their own pace).
+pub fn log_line(text: &str) {
+    append("tern.log", text);
+}
+
 /// Records what the app is doing now (`explain: step 2 of 15`), so the
 /// watchdog can say what was on screen when the process ended. One small
 /// file, overwritten; call it for user actions, not per frame.

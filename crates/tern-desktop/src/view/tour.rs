@@ -240,6 +240,14 @@ enum Act {
     Budget(bool),
     /// Shows or clears a proposed change to a vault note.
     VaultDiff(bool),
+    /// Profiling: Mistral with a key and a 20-model list open on
+    /// Settings › Providers, as on the user's screen.
+    SeedModels,
+    /// Profiling: wheel notches over the Settings page (down, then up),
+    /// 40 ms apart, as a mouse wheel spun on Windows.
+    Wheel(u8),
+    /// Profiling: a line in the log between measured phases.
+    Mark(&'static str),
     Quit,
 }
 
@@ -267,8 +275,38 @@ fn scene(id: &'static str, v2: &'static str, title: &'static str, act: Act, hold
     }
 }
 
+/// The frame-cost run (`TERN_TOUR_ONLY=perf`): Settings › Providers
+/// (with a provider's model list open) against Settings › Tools, each
+/// idle, through two theme wipes and a wheel spin down and up. The frame
+/// meter's `PERF` lines (`crate::perf`) say what each costs.
+fn perf_script() -> Vec<Beat> {
+    let mut v = vec![b(Act::Nothing, 1500)];
+    for (id, s) in [
+        ("perf-providers", Section::Providers),
+        ("perf-tools", Section::Tools),
+        ("perf-providers-again", Section::Providers),
+    ] {
+        v.push(scene(id, "tern-only", id, Act::Settings(s), 1500));
+        if s == Section::Providers {
+            v.push(b(Act::SeedModels, 500));
+        }
+        v.push(b(Act::Mark("idle"), 4200));
+        v.push(b(Act::Mark("theme"), 0));
+        v.push(b(Act::Theme, 1500));
+        v.push(b(Act::Theme, 2500));
+        v.push(b(Act::Mark("wheel"), 0));
+        v.push(b(Act::Wheel(24), 4500));
+        v.push(b(Act::Mark("done"), 2100));
+    }
+    v.push(b(Act::Quit, 0));
+    v
+}
+
 /// The whole tour, in order.
 fn script() -> Vec<Beat> {
+    if std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("perf") {
+        return perf_script();
+    }
     use crate::onboarding::Step;
     let mut v = vec![
         b(Act::Nothing, 1500),
@@ -1582,6 +1620,13 @@ impl Workspace {
                 let w = if on { full_w.min(900.) } else { full_w };
                 window.resize(size(px(w), px(h)));
             }
+            Act::SeedModels => self.tour_seed_models(),
+            Act::Wheel(n) => self.tour_wheel(n, window, cx),
+            Act::Mark(what) => log(&format!(
+                "PERF mark {what} on {} unix_ms={}",
+                self.perf_tag(),
+                unix_ms()
+            )),
             Act::Quit => {
                 let t = self.tour.as_ref().map(|t| t.started.elapsed().as_secs_f32());
                 log(&format!(
@@ -1592,6 +1637,61 @@ impl Workspace {
                 cx.quit();
             }
         }
+    }
+
+    /// Mistral as the default provider, with a key and twenty models.
+    fn tour_seed_models(&mut self) {
+        use crate::providers::{Kind, ModelChoice, Models};
+        let st = &mut self.model.providers;
+        for r in st.rows.iter_mut() {
+            if r.kind == Kind::Model && matches!(r.id, "mistral" | "groq") {
+                r.key_saved = true;
+            }
+        }
+        st.prefs.provider = Some("mistral".to_owned());
+        let list = (0..20)
+            .map(|i| {
+                let mut m = ModelChoice::new(tern_agent::providers::ModelInfo::new(format!(
+                    "mistral-model-{i:02}-2512"
+                )));
+                m.context_window = Some(32_768 << (i % 4));
+                m
+            })
+            .collect();
+        st.models = Some(Models::Loaded("mistral", list));
+    }
+
+    /// `n` wheel notches down over the Settings page, then `n` up, 40 ms
+    /// apart, through GPUI's own input dispatch (hit test, listeners).
+    fn tour_wheel(&mut self, n: u8, window: &mut Window, cx: &mut Context<Self>) {
+        let vp = window.viewport_size();
+        // Right of the section list, a little above the middle: over the
+        // provider rows and, once scrolled, the open model list.
+        let at = gpui_kit::point(vp.width * 0.55, vp.height * 0.45);
+        let n = usize::from(n);
+        cx.spawn_in(window, async move |this, cx| {
+            for i in 0..2 * n {
+                let lines = if i < n { -3. } else { 3. };
+                let ok = this.update_in(cx, |_, window, cx| {
+                    window.dispatch_event(
+                        gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                            position: at,
+                            delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., lines)),
+                            modifiers: Default::default(),
+                            touch_phase: gpui_kit::TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                });
+                if ok.is_err() {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     /// The transcript index of the last answer.
