@@ -994,6 +994,25 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The UI tour's claim review: start, reject claim 3, note on claim 4,
+    /// then finish.
+    pub(super) fn tour_review(&mut self, step: u8, window: &mut Window, cx: &mut Context<Self>) {
+        let key = run_key(self.model.panel_run());
+        match step {
+            0 => {
+                self.model.run_panel_open = true;
+                self.model.set_run_view(crate::model::RunView::Report);
+                self.change_review(&key, |r| r.reviewing = true);
+            }
+            1 => self.change_review(&key, |r| r.toggle_reject(3)),
+            2 => self.change_review(&key, |r| {
+                r.set_note(4, "Check against the Adaptive-RAG appendix")
+            }),
+            _ => self.finish_review(&key, window, cx),
+        }
+        cx.notify();
+    }
+
     // ----- Export (v2 s15) -----
 
     /// Export buttons for the saved report: Markdown, and a printable HTML

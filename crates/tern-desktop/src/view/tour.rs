@@ -232,6 +232,12 @@ enum Act {
     DictationEnd,
     ContextRing,
     Narrow(bool),
+    /// Claim review: 0 starts, 1 rejects claim 3, 2 notes claim 4, 3 finishes.
+    Review(u8),
+    /// Shows or clears the budget card (a run paused at its token limit).
+    Budget(bool),
+    /// Shows or clears a proposed change to a vault note.
+    VaultDiff(bool),
     Quit,
 }
 
@@ -420,6 +426,30 @@ fn script() -> Vec<Beat> {
             1500,
         ),
         b(Act::ShowClaim, 3000),
+        scene(
+            "t17b-review-each",
+            "s09",
+            "Review claims: keep, reject, comment",
+            Act::Review(0),
+            1500,
+        ),
+        b(Act::Review(1), 1500),
+        b(Act::Review(2), 2500),
+        scene(
+            "t17c-reviewed",
+            "s09",
+            "Review done: report updated toast, note in the composer",
+            Act::Review(3),
+            3000,
+        ),
+        scene(
+            "t17d-budget-card",
+            "s11",
+            "Paused at a safe point: raise the limit and resume",
+            Act::Budget(true),
+            3500,
+        ),
+        b(Act::Budget(false), 300),
         scene(
             "t18-panel-summary",
             "s05",
@@ -689,6 +719,14 @@ fn script() -> Vec<Beat> {
         ),
         b(Act::CloseBrowser, 400),
         scene("t53-vault", "s13", "Vault editor", Act::Editor, 3500),
+        scene(
+            "t53b-vault-diff",
+            "s13",
+            "Vault diff: a change to a note waits for Accept or Reject",
+            Act::VaultDiff(true),
+            3500,
+        ),
+        b(Act::VaultDiff(false), 300),
         scene("t54-git", "tern-only", "Git panel", Act::Git, 3000),
         scene("t55-library", "tern-only", "Library", Act::Library, 3000),
         scene("t56-watches", "tern-only", "Watches", Act::Watches, 2500),
@@ -1336,6 +1374,39 @@ impl Workspace {
                 self.scroll.scroll_to_bottom();
             }
             Act::Editor => self.open_editor(window, cx),
+            Act::Review(step) => self.tour_review(step, window, cx),
+            Act::Budget(on) => {
+                self.model.resume_offer = on.then(|| crate::model::ResumeOffer {
+                    question: QUESTION.into(),
+                    headline: "Run paused: it reached its token limit".into(),
+                    progress: "Deep research · 3 of 4 done".into(),
+                    saved_at: "just now".into(),
+                    kind: tern_agent::OfferKind::Resume,
+                    about_search: false,
+                    budget: Some(crate::model::BudgetStop {
+                        used: 231_400,
+                        limit: Some(240_000),
+                    }),
+                });
+                self.scroll.scroll_to_bottom();
+            }
+            Act::VaultDiff(on) => {
+                self.model.editor.proposal = on.then(|| {
+                    let path = self
+                        .model
+                        .editor
+                        .open
+                        .clone()
+                        .unwrap_or_else(|| "Retrieval policies.md".into());
+                    crate::editor::Proposal {
+                        path,
+                        before: "# Retrieval policies\n\nFLARE retrieves on low-confidence tokens.\nSelf-RAG reflects with special tokens.".into(),
+                        after: "# Retrieval policies\n\nFLARE retrieves on low-confidence tokens.\nSelf-RAG decides with reflection tokens whether to retrieve.\nAdaptive-RAG routes by query complexity.".into(),
+                        source: "Changed outside the editor".into(),
+                        on_disk: false,
+                    }
+                });
+            }
             Act::Git => self.open_git(window, cx),
             Act::Library => self.open_library(cx),
             Act::Archived => self.open_archived(cx),
