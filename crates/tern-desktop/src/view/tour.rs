@@ -252,6 +252,30 @@ enum Act {
     /// (`Workspace::perf_strip`).
     Strip(u8),
     Quit,
+    /// Composer tour: attaches a file from the tour's folder.
+    CAttach(&'static str),
+    /// Composer tour: the last chip's ×.
+    CRemoveChip,
+    /// Composer tour: the toast for audio with no transcription model.
+    CNoModelToast,
+    /// Composer tour: makes sure the mock's `whisper-1` is listed.
+    CSeedStt,
+    /// Composer tour: Enter.
+    CSend,
+    /// Composer tour: remembers the open chat.
+    CRemember,
+    /// Composer tour: New chat.
+    CNewChat,
+    /// Composer tour: opens the remembered chat.
+    COpenRemembered,
+    /// Composer tour: types text with `{dir}` as the tour's folder.
+    CTypePath(&'static str),
+    /// Composer tour: picks the `@` row with this label.
+    CChooseMention(&'static str),
+    /// Composer tour: allows a pending tool approval, if one is asked.
+    CApprove,
+    /// Composer tour: a scene-log line with what the composer and chat show.
+    CState(&'static str),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -323,6 +347,9 @@ fn perf_script() -> Vec<Beat> {
 fn script() -> Vec<Beat> {
     if std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("perf") {
         return perf_script();
+    }
+    if composer_tour() {
+        return composer_script();
     }
     use crate::onboarding::Step;
     let mut v = vec![
@@ -957,6 +984,8 @@ pub(super) struct Tour {
     /// The Research transcript, put back after the Study visit (a harness
     /// switch opens a fresh chat, and the tour has no stored one).
     saved: Option<(Vec<crate::model::Entry>, tern_agent::Run)>,
+    /// The composer tour's first chat, to switch back to.
+    remembered: Option<SessionId>,
     _task: Option<gpui_kit::Task<()>>,
 }
 
@@ -973,6 +1002,7 @@ impl Tour {
             connected: false,
             streamed: String::new(),
             saved: None,
+            remembered: None,
             _task: None,
         }
     }
@@ -989,6 +1019,9 @@ pub(crate) fn seed() {
     prefs.study_offline = true;
     prefs.reduced_motion = false;
     prefs.deep_workers = Some(3);
+    if composer_tour() {
+        seed_composer(&mut prefs);
+    }
     if let Err(e) = prefs.save() {
         eprintln!("tour: preferences not saved: {e}");
     }
@@ -1121,7 +1154,9 @@ impl Workspace {
     /// Messages a tour leaves out: the throwaway home has no provider, so
     /// a launch's connection result would undo the scripted screen.
     pub(super) fn tour_drops(&self, msg: &Msg) -> bool {
+        // The composer tour runs a real chat against the mock model.
         self.tour.is_some()
+            && !composer_tour()
             && matches!(
                 msg,
                 Msg::Connected(..)
@@ -1652,6 +1687,71 @@ impl Workspace {
                 self.perf_tag(),
                 unix_ms()
             )),
+            Act::CAttach(name) => {
+                self.attach_paths(vec![tour_files().join(name)], cx);
+            }
+            Act::CRemoveChip => {
+                if let Some(i) = self.model.attachments.len().checked_sub(1) {
+                    self.model.remove_attachment(i);
+                }
+            }
+            Act::CNoModelToast => self.model.audio_needs_model("memo.wav"),
+            Act::CSeedStt => {
+                if self.file_stt_model().is_none() {
+                    use tern_agent::providers::{Capability, ModelInfo, custom};
+                    if let Some(spec) = custom::find("tourmock") {
+                        let mut m = ModelInfo::new("whisper-1");
+                        if !m.has(Capability::SpeechToText) {
+                            m.capabilities.push(Capability::SpeechToText);
+                        }
+                        let chat = ModelInfo::new("tour-chat");
+                        self.model.catalog = tern_agent::media::Catalog::new(vec![(
+                            spec.id,
+                            Ok(vec![chat, m]),
+                        )]);
+                        log("TOUR note the catalog had no speech model; listed tourmock/whisper-1");
+                    }
+                }
+                log(&format!(
+                    "TOUR note audio files go to {}",
+                    self.file_stt_model()
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| "nothing".into())
+                ));
+            }
+            Act::CSend => {
+                self.model.chat_here = self.current;
+                self.submit(window, cx);
+            }
+            Act::CRemember => {
+                let here = self.current;
+                if let Some(t) = self.tour.as_mut() {
+                    t.remembered = here;
+                }
+            }
+            Act::CNewChat => self.new_chat(window, cx),
+            Act::COpenRemembered => {
+                if let Some(id) = self.tour.as_ref().and_then(|t| t.remembered) {
+                    self.open_chat(id, cx);
+                } else {
+                    log("TOUR error no chat remembered");
+                }
+            }
+            Act::CTypePath(text) => self.set_composer(&with_dir(text), window, cx),
+            Act::CChooseMention(label) => {
+                let rows = self.model.mention_candidates();
+                match rows.iter().position(|r| r.label == label) {
+                    Some(i) => self.choose_mention(Some(i), window, cx),
+                    None => log(&format!("TOUR error no @ row {label}")),
+                }
+            }
+            Act::CApprove => {
+                if self.pending.is_some() {
+                    log("TOUR note approval asked; allowing once");
+                    self.answer(tern_agent::ApprovalAnswer::AllowOnce, cx);
+                }
+            }
+            Act::CState(what) => self.log_composer_state(what, cx),
             Act::Quit => {
                 let t = self.tour.as_ref().map(|t| t.started.elapsed().as_secs_f32());
                 log(&format!(
@@ -1720,6 +1820,59 @@ impl Workspace {
     }
 
     /// The transcript index of the last answer.
+    /// A scene-log line with the composer's text, chips, audio in flight,
+    /// the open @ rows, the chat's last answer, and the toasts, so a
+    /// recording's frames can be checked against what the app held.
+    fn log_composer_state(&self, what: &str, cx: &mut Context<Self>) {
+        use crate::model::Entry;
+        let text = self.composer.read(cx).value().to_string();
+        let chips: Vec<String> = self
+            .model
+            .attachments
+            .iter()
+            .map(|a| format!("{} [{}]", a.name, a.detail()))
+            .collect();
+        let audio: Vec<&str> = self
+            .model
+            .audio_pending
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        let rows: Vec<String> = self
+            .model
+            .mention_candidates()
+            .into_iter()
+            .map(|r| format!("{} ({})", r.label, r.detail))
+            .collect();
+        let answer = self
+            .last_answer()
+            .and_then(|i| match &self.model.entries[i] {
+                Entry::Assistant { text, run, .. } => Some(format!(
+                    "{} | steps: {}",
+                    text.chars().take(160).collect::<String>(),
+                    run.steps
+                        .iter()
+                        .map(|s| s.summary.clone())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )),
+                _ => None,
+            });
+        let toasts: Vec<&str> = self
+            .model
+            .toasts
+            .shown()
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect();
+        log(&format!(
+            "TOUR state {what}: chat={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?}",
+            self.current,
+            self.model.phase,
+            self.model.entries.len(),
+        ));
+    }
+
     fn last_answer(&self) -> Option<usize> {
         self.model
             .entries
@@ -1804,4 +1957,526 @@ fn unix_ms() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or_default()
+}
+
+/// The composer tour (`TERN_TOUR_ONLY=composer`): a real chat with a mock
+/// OpenAI-compatible model on localhost, so attachments, transcripts,
+/// typed paths, and `file_read` go through the real code.
+fn composer_tour() -> bool {
+    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("composer")
+}
+
+/// The folder the composer tour's files live in.
+fn tour_files() -> std::path::PathBuf {
+    std::env::temp_dir().join("tern-tour-files")
+}
+
+/// `{dir}` in a scripted line becomes the tour's files folder.
+fn with_dir(text: &str) -> String {
+    let mut dir = tour_files().display().to_string();
+    dir.push(std::path::MAIN_SEPARATOR);
+    text.replace("{dir}/", &dir).replace("{dir}", &dir)
+}
+
+/// What the mock's transcription returns for any audio file.
+const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
+const TOUR_NOTES: &str = "# Tour notes\n\nThe FYP demo is on 14 November in Lab 3.\n";
+const TOUR_PLAN: &str =
+    "# Plan\n\nWeek 1: retrieval baseline. Week 2: FLARE policy. Week 3: evaluation.\n";
+
+/// The composer scenes.
+fn composer_script() -> Vec<Beat> {
+    vec![
+        b(Act::Nothing, 4000),
+        b(Act::CState("start"), 200),
+        scene(
+            "c01-attach-image",
+            "tern-only",
+            "Attach an image",
+            Act::CAttach("photo.png"),
+            2500,
+        ),
+        b(Act::CState("image attached"), 200),
+        scene(
+            "c02-remove-chip",
+            "tern-only",
+            "× removes the chip",
+            Act::CRemoveChip,
+            2000,
+        ),
+        b(Act::CState("chip removed"), 200),
+        scene(
+            "c03-no-model-toast",
+            "tern-only",
+            "No transcription model toast",
+            Act::CNoModelToast,
+            3000,
+        ),
+        b(Act::ToastsClear, 500),
+        scene(
+            "c04-attach-audio",
+            "tern-only",
+            "Attach audio: transcribing",
+            Act::CSeedStt,
+            300,
+        ),
+        b(Act::CAttach("memo.wav"), 600),
+        b(Act::CState("audio transcribing"), 3500),
+        b(Act::CState("audio transcribed"), 200),
+        b(Act::Type("What did I ask for in the memo?"), 1200),
+        scene(
+            "c05-audio-answer",
+            "tern-only",
+            "Transcript sent and answered",
+            Act::CSend,
+            6000,
+        ),
+        b(Act::CState("audio answered"), 200),
+        b(Act::CRemember, 200),
+        b(Act::Type("Draft kept in the first chat"), 1500),
+        scene(
+            "c06-new-chat",
+            "tern-only",
+            "A new chat has its own composer",
+            Act::CNewChat,
+            2500,
+        ),
+        b(Act::CState("new chat"), 200),
+        b(Act::Type("Second chat's draft"), 1500),
+        scene(
+            "c07-back",
+            "tern-only",
+            "Back to the first chat: its draft is back",
+            Act::COpenRemembered,
+            3000,
+        ),
+        b(Act::CState("first chat again"), 200),
+        b(Act::ClearComposer, 300),
+        scene(
+            "c08-mention-recent",
+            "tern-only",
+            "@ menu: recent files",
+            Act::CTypePath("Summarise @"),
+            3000,
+        ),
+        b(Act::CState("mention recent"), 200),
+        scene(
+            "c09-mention-folder",
+            "tern-only",
+            "@ menu: a typed folder",
+            Act::CTypePath("Summarise @{dir}"),
+            3000,
+        ),
+        b(Act::CState("mention folder"), 200),
+        b(Act::CChooseMention("tour-notes.md"), 1500),
+        b(Act::CState("mention chosen"), 200),
+        scene(
+            "c10-mention-answer",
+            "tern-only",
+            "Attached file answered",
+            Act::CSend,
+            6000,
+        ),
+        b(Act::CState("mention answered"), 200),
+        b(Act::CNewChat, 1500),
+        b(Act::CTypePath("What does {dir}tour-plan.md say?"), 1500),
+        scene(
+            "c11-typed-path",
+            "tern-only",
+            "Typed full path: file_read",
+            Act::CSend,
+            2500,
+        ),
+        b(Act::CApprove, 2500),
+        b(Act::CApprove, 2500),
+        b(Act::CApprove, 2000),
+        b(Act::CState("typed path answered"), 200),
+        scene(
+            "c12-toasts",
+            "tern-only",
+            "Info and error toasts",
+            Act::Toasts,
+            3500,
+        ),
+        b(Act::CState("toasts"), 200),
+        b(Act::ToastsClear, 600),
+        b(Act::Quit, 0),
+    ]
+}
+
+/// Writes the composer tour's files (a note, a plan, a picture, a short
+/// tone as a voice memo) and starts the mock model as the chat's
+/// provider, with its `whisper-1` for audio files.
+fn seed_composer(prefs: &mut tern_agent::Preferences) {
+    let dir = tour_files();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir.join("drafts"));
+    let _ = std::fs::write(dir.join("tour-notes.md"), TOUR_NOTES);
+    let _ = std::fs::write(dir.join("tour-plan.md"), TOUR_PLAN);
+    let _ = std::fs::write(dir.join("drafts").join("chapter-2.md"), "# Chapter 2\n");
+    let _ = std::fs::write(dir.join("photo.png"), mock::png(96, 64));
+    let _ = std::fs::write(dir.join("memo.wav"), mock::wav(16_000, 3));
+    prefs.note_recent_file(&dir.join("tour-notes.md").display().to_string());
+    match mock::start() {
+        Ok(port) => {
+            log(&format!("TOUR mock model on 127.0.0.1:{port}"));
+            prefs.custom_providers = vec![tern_agent::providers::CustomProvider {
+                id: "tourmock".into(),
+                name: "Tour mock".into(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                needs_key: false,
+                models: vec!["tour-chat".into(), "whisper-1".into()],
+                ..Default::default()
+            }];
+            prefs.provider = Some("tourmock".into());
+            prefs.model = Some("tour-chat".into());
+            prefs.default_stt_model = Some("tourmock/whisper-1".into());
+        }
+        Err(e) => log(&format!("TOUR error mock model did not start: {e}")),
+    }
+}
+
+/// A tiny OpenAI-compatible server for the composer tour: lists two
+/// models, transcribes any audio as [`MEMO_TEXT`], and answers chats. When
+/// the user's message names a file by its full path and nothing was read
+/// yet this turn, it calls `file_read` on it; after a tool result it
+/// answers from the result; otherwise it answers from what was attached.
+mod mock {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    use serde_json::{Value, json};
+
+    pub(super) fn start() -> std::io::Result<u16> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    if let Err(e) = serve(stream) {
+                        super::log(&format!("TOUR mock error {e}"));
+                    }
+                });
+            }
+        });
+        Ok(port)
+    }
+
+    fn serve(stream: TcpStream) -> std::io::Result<()> {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let mut parts = line.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_owned();
+        let path = parts.next().unwrap_or_default().to_owned();
+        let (mut len, mut chunked) = (0usize, false);
+        loop {
+            let mut h = String::new();
+            if reader.read_line(&mut h)? == 0 || h == "\r\n" || h == "\n" {
+                break;
+            }
+            let lower = h.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+            if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+                chunked = true;
+            }
+        }
+        let body = if chunked {
+            let mut out = Vec::new();
+            loop {
+                let mut size = String::new();
+                reader.read_line(&mut size)?;
+                let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+                if n == 0 {
+                    let mut end = String::new();
+                    let _ = reader.read_line(&mut end);
+                    break;
+                }
+                let mut chunk = vec![0; n + 2];
+                reader.read_exact(&mut chunk)?;
+                chunk.truncate(n);
+                out.extend(chunk);
+            }
+            out
+        } else {
+            let mut b = vec![0; len];
+            reader.read_exact(&mut b)?;
+            b
+        };
+        let (ctype, reply) = route(&method, &path, &body);
+        super::log(&format!(
+            "TOUR mock {method} {path} -> {} bytes",
+            reply.len()
+        ));
+        let mut out = stream;
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            reply.len()
+        )?;
+        out.write_all(reply.as_bytes())?;
+        out.flush()
+    }
+
+    fn route(method: &str, path: &str, body: &[u8]) -> (&'static str, String) {
+        if method == "GET" && path.ends_with("/models") {
+            let data = ["tour-chat", "whisper-1"]
+                .map(|id| json!({"id": id, "object": "model", "owned_by": "tour"}));
+            return (
+                "application/json",
+                json!({"object": "list", "data": data}).to_string(),
+            );
+        }
+        if path.ends_with("/audio/transcriptions") {
+            return (
+                "application/json",
+                json!({"text": super::MEMO_TEXT}).to_string(),
+            );
+        }
+        let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let stream = req["stream"].as_bool().unwrap_or(false);
+        let (text, call) = decide(&req);
+        if stream {
+            ("text/event-stream", sse(&text, call.as_ref()))
+        } else {
+            let mut message = json!({"role": "assistant", "content": text});
+            if let Some((name, args)) = &call {
+                message["tool_calls"] = json!([{"id": "call_tour", "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()}}]);
+            }
+            let finish = if call.is_some() { "tool_calls" } else { "stop" };
+            (
+                "application/json",
+                json!({"id": "tour", "object": "chat.completion", "model": "tour-chat",
+                    "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                    "usage": {"prompt_tokens": 120, "completion_tokens": 40, "total_tokens": 160}})
+                .to_string(),
+            )
+        }
+    }
+
+    /// The text of a message's content (a string, or text parts).
+    fn text_of(m: &Value) -> String {
+        match &m["content"] {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
+
+    /// The reply: text, or a tool call (name, arguments).
+    fn decide(req: &Value) -> (String, Option<(String, Value)>) {
+        let msgs = req["messages"].as_array().cloned().unwrap_or_default();
+        let has_tools = req["tools"].as_array().is_some_and(|t| {
+            t.iter()
+                .any(|t| t["function"]["name"].as_str() == Some("file_read"))
+        });
+        let Some(last_user) = msgs.iter().rposition(|m| m["role"] == "user") else {
+            return ("Tour chat".into(), None);
+        };
+        let after = &msgs[last_user + 1..];
+        if let Some(tool) = after.iter().rev().find(|m| m["role"] == "tool") {
+            let result = text_of(tool);
+            let line = first_line(&result);
+            return (
+                format!("I read the file with file_read. It says: “{line}”"),
+                None,
+            );
+        }
+        let user = text_of(&msgs[last_user]);
+        if !has_tools {
+            // A title or other side request.
+            return ("Tour chat".into(), None);
+        }
+        if user.contains(super::MEMO_TEXT) || user.contains("FYP draft") {
+            return (
+                "Your memo asks to send the FYP draft to Doctor Amina on Friday.".into(),
+                None,
+            );
+        }
+        if user.contains("FYP demo is on 14 November") {
+            return (
+                "From the attached notes: the FYP demo is on 14 November in Lab 3.".into(),
+                None,
+            );
+        }
+        if user.contains("Week 1: retrieval baseline") {
+            return (
+                "The plan (read before answering): Week 1 retrieval baseline, Week 2 FLARE, Week 3 evaluation.".into(),
+                None,
+            );
+        }
+        if let Some(path) = user
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| "\"'`?,.;:()".contains(c)))
+            .find(|w| w.ends_with(".md") && (w.starts_with('/') || w.contains(":\\")))
+        {
+            return (
+                String::new(),
+                Some(("file_read".into(), json!({"path": path}))),
+            );
+        }
+        ("Got it.".into(), None)
+    }
+
+    fn first_line(text: &str) -> String {
+        text.lines()
+            .map(|l| l.trim_start_matches(['#', ' ']).trim())
+            .find(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with('{'))
+            .unwrap_or("(empty)")
+            .chars()
+            .take(160)
+            .collect()
+    }
+
+    fn sse(text: &str, call: Option<&(String, Value)>) -> String {
+        let mut out = String::new();
+        let mut push = |v: Value| {
+            out.push_str("data: ");
+            out.push_str(&v.to_string());
+            out.push_str("\n\n");
+        };
+        push(json!({"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]}));
+        for piece in text.split_inclusive(' ') {
+            push(json!({"choices": [{"index": 0, "delta": {"content": piece}}]}));
+        }
+        let finish = match call {
+            Some((name, args)) => {
+                push(
+                    json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0,
+                    "id": "call_tour", "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()}}]}}]}),
+                );
+                "tool_calls"
+            }
+            None => "stop",
+        };
+        push(
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 120, "completion_tokens": 40, "total_tokens": 160}}),
+        );
+        out.push_str("data: [DONE]\n\n");
+        out
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut c = 0xffff_ffffu32;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+
+    /// A small gradient picture as an uncompressed PNG.
+    pub(super) fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for y in 0..h {
+            raw.push(0u8);
+            for x in 0..w {
+                raw.extend([(x * 255 / w) as u8, (y * 255 / h) as u8, 200u8]);
+            }
+        }
+        // zlib with stored deflate blocks.
+        let mut z = vec![0x78, 0x01];
+        let chunks: Vec<&[u8]> = raw.chunks(65_535).collect();
+        for (i, c) in chunks.iter().enumerate() {
+            z.push(u8::from(i + 1 == chunks.len()));
+            let n = c.len() as u16;
+            z.extend(n.to_le_bytes());
+            z.extend((!n).to_le_bytes());
+            z.extend_from_slice(c);
+        }
+        let (mut a, mut b) = (1u32, 0u32);
+        for &x in &raw {
+            a = (a + u32::from(x)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        z.extend(((b << 16) | a).to_be_bytes());
+        let mut out = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let mut chunk = |kind: &[u8], data: &[u8]| {
+            out.extend((data.len() as u32).to_be_bytes());
+            let mut c = kind.to_vec();
+            c.extend_from_slice(data);
+            out.extend_from_slice(&c);
+            out.extend(crc32(&c).to_be_bytes());
+        };
+        let mut ihdr = Vec::new();
+        ihdr.extend(w.to_be_bytes());
+        ihdr.extend(h.to_be_bytes());
+        ihdr.extend([8, 2, 0, 0, 0]);
+        chunk(b"IHDR", &ihdr);
+        chunk(b"IDAT", &z);
+        chunk(b"IEND", &[]);
+        out
+    }
+
+    /// `secs` of a quiet tone as a 16-bit mono WAV.
+    pub(super) fn wav(rate: u32, secs: u32) -> Vec<u8> {
+        let n = rate * secs;
+        let mut out = Vec::new();
+        out.extend(b"RIFF");
+        out.extend((36 + n * 2).to_le_bytes());
+        out.extend(b"WAVEfmt ");
+        out.extend(16u32.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(1u16.to_le_bytes());
+        out.extend(rate.to_le_bytes());
+        out.extend((rate * 2).to_le_bytes());
+        out.extend(2u16.to_le_bytes());
+        out.extend(16u16.to_le_bytes());
+        out.extend(b"data");
+        out.extend((n * 2).to_le_bytes());
+        for i in 0..n {
+            let s =
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 3000.0) as i16;
+            out.extend(s.to_le_bytes());
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_mock_reads_a_typed_path_then_answers_from_the_result() {
+            let req = json!({"stream": true, "tools": [{"type": "function", "function": {"name": "file_read"}}],
+                "messages": [{"role": "user", "content": "What does /tmp/tern-tour-files/tour-plan.md say?"}]});
+            let (_, call) = decide(&req);
+            let (name, args) = call.unwrap();
+            assert_eq!(name, "file_read");
+            assert_eq!(args["path"], "/tmp/tern-tour-files/tour-plan.md");
+            let sse = sse("", Some(&(name, args)));
+            assert!(
+                sse.contains("\"finish_reason\":\"tool_calls\"")
+                    && sse.ends_with("data: [DONE]\n\n")
+            );
+            let req = json!({"stream": true, "tools": [{"type": "function", "function": {"name": "file_read"}}],
+                "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": ""},
+                    {"role": "tool", "content": "# Plan\n\nWeek 1"}]});
+            assert!(decide(&req).0.contains("“Plan”"));
+        }
+
+        #[test]
+        fn the_tour_picture_and_memo_are_well_formed() {
+            let p = png(4, 3);
+            assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(&p[p.len() - 8..p.len() - 4], b"IEND");
+            let w = wav(16_000, 1);
+            assert_eq!(w.len(), 44 + 32_000);
+        }
+    }
 }
