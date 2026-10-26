@@ -242,6 +242,11 @@ pub const ENTRIES: &[Entry] = &[
         "threads cores whisper speed slow transcription",
     ),
     e(
+        Section::Speech,
+        "Dictation language",
+        "urdu english language mic voice dictation moonshine auto arabic hindi persian rtl",
+    ),
+    e(
         Section::Tools,
         "Built-in tools",
         "web search read url vault files workspace skill on off disable",
@@ -315,6 +320,11 @@ pub const ENTRIES: &[Entry] = &[
         Section::Appearance,
         "Reduce motion",
         "animation motion wipe slide",
+    ),
+    e(
+        Section::Appearance,
+        "Open run panel automatically",
+        "run panel right panel auto open pin plan sources report graph context deep research",
     ),
     e(Section::Appearance, "Glyphs", "verdict icons scout"),
     e(
