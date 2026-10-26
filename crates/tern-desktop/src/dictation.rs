@@ -9,6 +9,14 @@
 //! No I/O here: the window asks for [`Request`]s, sends each window's
 //! samples to the speech-to-text model, and hands the text back with
 //! [`Dictation::on_result`]. Samples are 16 kHz mono.
+//!
+//! Two paces (#68): [`Pace::STREAMING`] for the fast English model
+//! (Moonshine), which resends the open window as it grows, and
+//! [`Pace::CHUNKED`] for Whisper (Urdu and every other language): short
+//! 2–5 s windows cut at pauses, each committed once, so text still
+//! streams in while the user talks. Every window's text goes through
+//! [`tern_agent::speech_guard::clean`] (loops and silence phrases), and a
+//! window with no speech is quiet: it is counted, not reported.
 
 /// Samples per second (16 kHz mono speech).
 pub const RATE: usize = 16_000;
@@ -26,6 +34,42 @@ pub const PAUSE: usize = RATE / 2;
 pub const MIN_FINAL: usize = RATE / 4;
 /// A window that failed this many times is dropped, not retried forever.
 pub const MAX_TRIES: u8 = 2;
+/// A window whose loudest 100 ms is under this is quiet (no speech).
+pub const QUIET_RMS: f32 = 0.01;
+
+/// How windows are cut and sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pace {
+    /// The open window is first sent at this length.
+    pub min: usize,
+    /// A window is closed by force at this length.
+    pub max: usize,
+    /// Interim resends after this much new audio; `None` sends each
+    /// window once, when it closes.
+    pub resend: Option<usize>,
+}
+
+impl Pace {
+    /// Moonshine: interim text every 3 s, windows up to 12 s.
+    pub const STREAMING: Pace = Pace {
+        min: MIN_WINDOW,
+        max: MAX_WINDOW,
+        resend: Some(RESEND_STEP),
+    };
+    /// Whisper: each 2–5 s window once (Whisper small takes about as long
+    /// as the audio on a laptop CPU, so resending would fall behind).
+    pub const CHUNKED: Pace = Pace {
+        min: MIN_WINDOW,
+        max: RATE * 5,
+        resend: None,
+    };
+}
+
+impl Default for Pace {
+    fn default() -> Self {
+        Pace::STREAMING
+    }
+}
 
 /// A window to transcribe: samples `start..end`. `last` windows are
 /// committed when their text comes back.
@@ -35,6 +79,8 @@ pub struct Request {
     pub start: usize,
     pub end: usize,
     pub last: bool,
+    /// The window held almost no sound.
+    pub quiet: bool,
 }
 
 /// Streaming dictation state for one recording.
@@ -52,6 +98,13 @@ pub struct Dictation {
     seq: u64,
     tries: u8,
     stopped: bool,
+    pace: Pace,
+    /// Everything committed so far (for the repeat guard).
+    said: String,
+    /// Windows that came back empty, and whether any brought text: a
+    /// recording with sound and no text at all gets one note at the end.
+    pub empty_windows: u32,
+    pub heard_any: bool,
     /// The last failure, for a toast.
     pub error: Option<String>,
 }
@@ -59,6 +112,26 @@ pub struct Dictation {
 impl Dictation {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Dictation cut at `pace`.
+    pub fn with_pace(pace: Pace) -> Self {
+        Self {
+            pace,
+            ..Self::default()
+        }
+    }
+
+    /// Changes the pace mid-recording (Auto heard the language).
+    pub fn set_pace(&mut self, pace: Pace) {
+        self.pace = pace;
+        if pace.resend.is_none() {
+            self.interim.clear();
+        }
+    }
+
+    pub fn pace(&self) -> Pace {
+        self.pace
     }
 
     /// The mic was stopped: the open window gets one last pass.
@@ -103,20 +176,23 @@ impl Dictation {
         }
         let len = samples.len();
         let open = len.saturating_sub(self.start);
+        let pace = self.pace;
         let req = if self.stopped {
             (open >= MIN_FINAL).then_some((len, true))
-        } else if open < MIN_WINDOW {
+        } else if open < pace.min {
             None
-        } else if open >= MAX_WINDOW {
+        } else if open >= pace.max {
             // Cut at the quietest spot in the last two seconds, so a word
             // is less likely to be split.
-            let from = len.saturating_sub(RATE * 2).max(self.start + MIN_WINDOW);
+            let from = len
+                .saturating_sub(RATE * 2)
+                .max(self.start + pace.min.min(pace.max / 2));
             Some((quietest(samples, from, len).unwrap_or(len), true))
         } else if paused(&samples[self.start..]) {
             Some((len - PAUSE / 2, true))
-        } else if self.sent_to <= self.start || len >= self.sent_to + RESEND_STEP {
+        } else if let Some(step) = pace.resend {
             // The window's first pass, or enough new speech since the last.
-            Some((len, false))
+            (self.sent_to <= self.start || len >= self.sent_to + step).then_some((len, false))
         } else {
             None
         };
@@ -125,11 +201,13 @@ impl Dictation {
         if !last {
             self.sent_to = end;
         }
+        let window = &samples[self.start.min(end)..end];
         let r = Request {
             seq: self.seq,
             start: self.start,
             end,
             last,
+            quiet: loudest(window) < QUIET_RMS,
         };
         self.in_flight = Some(r);
         Some(r)
@@ -141,14 +219,33 @@ impl Dictation {
             return;
         };
         self.in_flight = None;
+        // "Heard no speech" is a pause, not a failure.
+        let result = match result {
+            Err(e) if e.contains(tern_agent::media::NO_SPEECH) => Ok(String::new()),
+            r => r,
+        };
         match result {
             Ok(text) => {
                 self.tries = 0;
+                let text = tern_agent::speech_guard::clean(&text, &self.said, req.quiet);
                 if req.last {
                     // The window's own text wins over its interim guess.
                     let text = text.trim();
-                    if !text.is_empty() {
+                    if text.is_empty() {
+                        self.empty_windows += 1;
+                    } else {
+                        self.heard_any = true;
                         self.committed.push(text.to_owned());
+                        self.said.push(' ');
+                        self.said.push_str(text);
+                        // The guard only looks at the last few sentences.
+                        if self.said.len() > 2_000 {
+                            let cut = self.said.len() - 1_000;
+                            let cut = (cut..self.said.len())
+                                .find(|i| self.said.is_char_boundary(*i))
+                                .unwrap_or(0);
+                            self.said = self.said[cut..].to_owned();
+                        }
                     }
                     self.interim.clear();
                     self.start = req.end;
@@ -183,6 +280,126 @@ fn rms(s: &[f32]) -> f32 {
         return 0.0;
     }
     (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+}
+
+/// The loudest 100 ms of a window (RMS).
+pub fn loudest(window: &[f32]) -> f32 {
+    window.chunks(RATE / 10).map(rms).fold(0.0_f32, f32::max)
+}
+
+/// The note shown once when a whole recording with sound brought no
+/// text (#68: "heard no speech" toasts kept popping for each pause).
+pub fn nothing_heard_note(d: &Dictation, samples: &[f32]) -> Option<String> {
+    (!d.heard_any && d.empty_windows > 0 && samples.len() >= RATE * 2 && loudest(samples) >= QUIET_RMS)
+        .then(|| {
+            "Tern heard no words in that recording. Check the microphone, or pick your language in Settings › Speech › Dictation language.".to_owned()
+        })
+}
+
+/// Where dictated text goes in the composer (#68): at the end of the
+/// text dictated so far, so the caret follows it, unless the user moved
+/// the caret during dictation; then at the caret.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Caret {
+    /// Where the caret was left (byte offset) after the last insert, or
+    /// at the start of the recording.
+    left_at: Option<usize>,
+    inserted: bool,
+}
+
+impl Caret {
+    /// A recording started with the caret at `cursor`.
+    pub fn start(cursor: usize) -> Self {
+        Self {
+            left_at: Some(cursor),
+            inserted: false,
+        }
+    }
+
+    /// Puts `phrase` into `text` (caret at `cursor`) and returns the new
+    /// text and where the caret goes (the end of the phrase). The first
+    /// phrase goes at the end of the text unless the user moved the caret
+    /// since the recording started; later ones follow the last one, or go
+    /// where the user put the caret.
+    pub fn place(&mut self, text: &str, cursor: usize, phrase: &str) -> (String, usize) {
+        let cursor = cursor.min(text.len());
+        let moved = self.left_at != Some(cursor);
+        let at = if !self.inserted && !moved {
+            text.len()
+        } else {
+            cursor
+        };
+        let at = (0..=at).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+        let (head, tail) = text.split_at(at);
+        let mut piece = String::new();
+        if head.chars().last().is_some_and(|c| !c.is_whitespace()) {
+            piece.push(' ');
+        }
+        piece.push_str(phrase.trim());
+        let end = head.len() + piece.len();
+        if tail.chars().next().is_some_and(|c| !c.is_whitespace()) {
+            piece.push(' ');
+        }
+        let out = format!("{head}{piece}{tail}");
+        self.left_at = Some(end);
+        self.inserted = true;
+        (out, end)
+    }
+}
+
+/// Which model takes the next window (#68).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// The fast English model (Moonshine), streaming.
+    Fast,
+    /// Whisper (on this computer or a provider) in this language, or
+    /// detecting it on every window (`None`), in short chunks.
+    Whisper(Option<String>),
+    /// Auto: the first window goes to Whisper to hear the language;
+    /// English then goes on with the fast model, anything else stays on
+    /// Whisper in that language.
+    Detect,
+}
+
+impl Route {
+    /// The route for the saved language (`None` = Auto) and the models
+    /// there are, with a note when the choice cannot be honoured.
+    pub fn pick(language: Option<&str>, fast: bool, whisper: bool) -> Option<(Route, Option<String>)> {
+        match language {
+            Some("en") if fast => Some((Route::Fast, None)),
+            Some(l) if whisper => Some((Route::Whisper(Some(l.to_owned())), None)),
+            Some(l) if fast => Some((
+                Route::Fast,
+                Some(format!(
+                    "Dictation in {} needs Whisper: install Whisper small in Settings › Local models. The English model is listening for now.",
+                    tern_agent::local_models::speech::language_name(Some(l))
+                )),
+            )),
+            None if fast && whisper => Some((Route::Detect, None)),
+            None if fast => Some((Route::Fast, None)),
+            _ if whisper => Some((Route::Whisper(None), None)),
+            _ => None,
+        }
+    }
+
+    /// The pace for this route.
+    pub fn pace(&self) -> Pace {
+        match self {
+            Route::Fast => Pace::STREAMING,
+            Route::Whisper(_) | Route::Detect => Pace::CHUNKED,
+        }
+    }
+
+    /// What Auto does once Whisper said which language it heard: English
+    /// with the fast model there goes fast; anything else stays on Whisper
+    /// in that language.
+    pub fn heard(&self, language: Option<&str>, fast: bool) -> Route {
+        match (self, language) {
+            (Route::Detect, Some("en")) if fast => Route::Fast,
+            (Route::Detect, l) => Route::Whisper(l.map(str::to_owned)),
+            (r, _) => r.clone(),
+        }
+    }
 }
 
 /// Whether the window ends in a pause: its last [`PAUSE`] is much quieter
@@ -267,6 +484,104 @@ mod tests {
         let r = d.next_request(&s).unwrap();
         assert!(r.last);
         assert!(r.end > MIN_WINDOW && r.end <= s.len());
+    }
+
+    #[test]
+    fn whisper_windows_are_sent_once_and_cut_short() {
+        let mut d = Dictation::with_pace(Pace::CHUNKED);
+        // No interim pass: a 3 s window without a pause waits.
+        assert_eq!(d.next_request(&tone(RATE * 3)), None);
+        // At 5 s it is cut and committed.
+        let s = tone(RATE * 5);
+        let r = d.next_request(&s).unwrap();
+        assert!(r.last && !r.quiet);
+        assert!(r.end <= s.len() && r.end > RATE);
+        d.on_result(r.seq, Ok("آپ کیسے ہیں".into()));
+        assert_eq!(d.take_committed().as_deref(), Some("آپ کیسے ہیں"));
+        assert_eq!(d.interim_line(), None);
+    }
+
+    #[test]
+    fn no_speech_is_quiet_and_loops_are_dropped() {
+        let mut d = Dictation::new();
+        d.stop();
+        let silence = vec![0.0_f32; RATE];
+        let r = d.next_request(&silence).unwrap();
+        assert!(r.quiet);
+        d.on_result(
+            r.seq,
+            Err("moonshine-streaming-small (on this computer) heard no speech in the recording.".into()),
+        );
+        assert_eq!(d.error, None, "no toast for a pause");
+        assert_eq!(d.empty_windows, 1);
+        assert!(nothing_heard_note(&d, &silence).is_none(), "silence: no note");
+        // Whisper's "Thank you." on silence is dropped.
+        let mut d = Dictation::new();
+        d.stop();
+        let r = d.next_request(&silence).unwrap();
+        d.on_result(r.seq, Ok("Thank you.".into()));
+        assert_eq!(d.take_committed(), None);
+        // A loop is cut to one copy.
+        let mut d = Dictation::new();
+        d.stop();
+        let s = tone(RATE);
+        let r = d.next_request(&s).unwrap();
+        d.on_result(
+            r.seq,
+            Ok("You will not be able to do anything. You will not be able to do anything.".into()),
+        );
+        assert_eq!(
+            d.take_committed().as_deref(),
+            Some("You will not be able to do anything.")
+        );
+    }
+
+    #[test]
+    fn the_language_picks_the_model() {
+        assert_eq!(Route::pick(Some("en"), true, true).unwrap().0, Route::Fast);
+        assert_eq!(
+            Route::pick(Some("ur"), true, true).unwrap().0,
+            Route::Whisper(Some("ur".into()))
+        );
+        let (r, note) = Route::pick(Some("ur"), true, false).unwrap();
+        assert_eq!(r, Route::Fast);
+        assert!(note.unwrap().contains("Urdu"));
+        assert_eq!(Route::pick(None, true, true).unwrap().0, Route::Detect);
+        assert_eq!(Route::pick(None, true, false).unwrap().0, Route::Fast);
+        assert_eq!(Route::pick(None, false, true).unwrap().0, Route::Whisper(None));
+        assert!(Route::pick(None, false, false).is_none());
+        // Auto hears the first window.
+        assert_eq!(Route::Detect.heard(Some("en"), true), Route::Fast);
+        assert_eq!(
+            Route::Detect.heard(Some("ur"), true),
+            Route::Whisper(Some("ur".into()))
+        );
+        assert_eq!(Route::Detect.pace(), Pace::CHUNKED);
+        assert_eq!(Route::Fast.pace(), Pace::STREAMING);
+    }
+
+    #[test]
+    fn the_caret_follows_dictated_text() {
+        // Empty composer: each phrase goes after the last, caret at the end.
+        let mut c = Caret::start(0);
+        let (t, at) = c.place("", 0, "hello");
+        assert_eq!((t.as_str(), at), ("hello", 5));
+        let (t, at) = c.place(&t, at, "world");
+        assert_eq!((t.as_str(), at), ("hello world", 11));
+        // Text already typed, caret left at the start (set_value): the
+        // first phrase still goes at the end.
+        let mut c = Caret::start(0);
+        let (t, at) = c.place("draft", 0, "more");
+        assert_eq!((t.as_str(), at), ("draft more", 10));
+        // The user clicks between words during dictation: text goes there.
+        let (t, at) = c.place(&t, 5, "inserted");
+        assert_eq!((t.as_str(), at), ("draft inserted more", 14));
+        // Urdu, multi-byte.
+        let mut c = Caret::start(0);
+        let (t, at) = c.place("", 0, "آپ");
+        let (t, at) = c.place(&t, at, "کیسے ہیں");
+        assert_eq!(t, "آپ کیسے ہیں");
+        assert_eq!(at, t.len());
     }
 
     #[test]
