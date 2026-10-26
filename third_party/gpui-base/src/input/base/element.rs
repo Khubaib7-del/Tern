@@ -2234,7 +2234,7 @@ impl<M: InputModeKind> TextElement<M> {
                                 .extras
                                 .decoration_layers()
                                 .into_iter()
-                                .chain(tern_text_highlights(&state)),
+                                .chain(tern_text_highlights(state)),
                             visible_byte_range,
                         )
                     })
@@ -2250,7 +2250,7 @@ impl<M: InputModeKind> TextElement<M> {
                             .extras
                             .decoration_layers()
                             .into_iter()
-                            .chain(tern_text_highlights(&state)),
+                            .chain(tern_text_highlights(state)),
                         visible_byte_range,
                     )
                 })
