@@ -9,7 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::local_models::kokoro_text::{ENGLISH_ONLY, readable, sentences, speakable};
+use crate::local_models::kokoro_text::{CODE_BLOCK, ENGLISH_ONLY, readable, sentences, speakable};
 use crate::local_models::{LocalModelPrefs, LocalModels, Task, can_run};
 use crate::platform::speaker::Player;
 
@@ -119,7 +119,8 @@ pub fn prepare(text: &str) -> Result<Vec<String>, Missing> {
         .into_iter()
         .filter(|s| readable(s))
         .collect();
-    if s.is_empty() {
+    // Only code: nothing worth reading (the placeholder alone).
+    if s.iter().all(|x| x == CODE_BLOCK) {
         return Err(Missing::Empty);
     }
     Ok(s)

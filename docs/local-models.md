@@ -80,7 +80,7 @@ Attached documents become Markdown before the model sees them (`tern_agent::docs
 ### Read aloud: Kokoro
 
 - **Kokoro 82M (int8)** on ONNX Runtime through [`loqui-kokoro`](https://crates.io/crates/loqui-kokoro) (MIT) with [`loqui-g2p`](https://crates.io/crates/loqui-g2p) (MIT) for the phonemes: misaki's English lexicons and a small neural model for unknown words. No espeak-ng (GPL-3.0) is linked or downloaded.
-- **The speaker button** under an answer reads it sentence by sentence: the first sentence plays as soon as it is made, the next ones are made behind it. While it reads the button becomes **Pause**/**Play** and **Stop** with "Reading 2 of 5". Leaving the chat or starting another reading stops it. Code blocks and links are not read.
+- **The speaker button** under an answer reads it sentence by sentence: the first sentence plays as soon as it is made, the next ones are made behind it. While it reads the button becomes **Pause**/**Play** and **Stop** with "Reading 2 of 5". Leaving the chat or starting another reading stops it. Code blocks are not read out (they are announced as "code block"), and link addresses are left out.
 - **English only**: an Urdu answer gets the note "Read aloud supports English for now." instead of garbled phonemes; English sentences in a mixed answer are read.
 - **Settings › Speech › Read aloud**: Voice (Heart, Michael, Emma, George), Speed (0.8× to 1.3×), and the voice model in use. Saved as `read_aloud_voice` and `read_aloud_speed` in `preferences.json`.
 - With no voice model downloaded, the button shows the banner with **Download** (Kokoro 82M).

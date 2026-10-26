@@ -28,6 +28,9 @@ pub fn voice_or_default(saved: Option<&str>) -> &'static str {
         .map_or(DEFAULT_VOICE, |(id, _)| *id)
 }
 
+/// What a code block is read as.
+pub const CODE_BLOCK: &str = "(code block.)";
+
 /// Whether Kokoro can read `text`: mostly Latin letters. A message that
 /// is mostly another script (Urdu, Arabic, Hindi) is not.
 pub fn readable(text: &str) -> bool {
@@ -53,7 +56,8 @@ pub fn speakable(markdown: &str) -> String {
         if t.starts_with("```") {
             in_code = !in_code;
             if in_code {
-                out.push_str("(code block.)\n");
+                out.push_str(CODE_BLOCK);
+                out.push('\n');
             }
             continue;
         }
