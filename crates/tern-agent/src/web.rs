@@ -27,14 +27,16 @@ impl Tool for WebSearchTool {
         "web_search"
     }
     fn summary(&self) -> &'static str {
-        "Search the web. Returns titles, links, and snippets; read a link before citing it."
+        "Search the web. Write a short keyword query of 2-6 words (names, products, versions: `SubQ Snap 1.1`, `LangChain founder`), not a whole sentence; call it again for each separate topic. Returns titles, links, and snippets; read a link before citing it."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Network
     }
     fn input_schema(&self) -> Value {
         json!({"type": "object", "required": ["query"], "additionalProperties": false,
-               "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}})
+               "properties": {
+                   "query": {"type": "string", "description": "A short keyword query (2-6 words): the names, product and version, not the user's whole sentence."},
+                   "limit": {"type": "integer"}}})
     }
     fn target(&self, _args: &Value) -> Option<String> {
         Some(self.0.spec().id.to_owned())
@@ -47,41 +49,86 @@ impl Tool for WebSearchTool {
             let asked = args["query"].as_str().unwrap_or_default();
             let limit = args["limit"].as_u64().unwrap_or(6).clamp(1, 10) as usize;
             let service = self.0.spec().name;
+            let wikipedia = self.0.spec().id == tern_crawl::KEYLESS_SEARCH;
+            // Results that share none of the question's main terms are
+            // dropped (`relevance`): a keyword index answers what it does
+            // not know with pages matching one common word.
+            let topic = crate::relevance::Topic::of(asked);
+            let keep = |hits: Vec<tern_crawl::SearchHit>| {
+                topic.filter(hits, |h| format!("{} {} {}", h.title, h.snippet, h.url))
+            };
             // A keyword index (Wikipedia, SearXNG) finds nothing for a
             // whole sentence with typos; shorter keyword queries are tried
             // in turn before Tern says there was nothing.
             let mut tried = vec![asked.to_owned()];
-            let mut hits = self
+            let first = self
                 .0
                 .search(asked, limit)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
+            // Pages are counted once however many ladder queries return
+            // them: `found` is the distinct pages seen, `filtered` the
+            // distinct ones dropped as off-topic.
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut kept_urls: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            seen.extend(first.iter().map(|h| h.url.clone()));
+            let (mut hits, _) = keep(first);
+            kept_urls.extend(hits.iter().map(|h| h.url.clone()));
             let mut q = asked.to_owned();
             if hits.is_empty() {
                 for alt in crate::webintent::fallback_queries(asked) {
                     tried.push(alt.clone());
-                    match self.0.search(&alt, limit).await {
-                        Ok(h) if !h.is_empty() => {
-                            hits = h;
+                    if let Ok(h) = self.0.search(&alt, limit).await {
+                        seen.extend(h.iter().map(|h| h.url.clone()));
+                        let (k, _) = keep(h);
+                        kept_urls.extend(k.iter().map(|h| h.url.clone()));
+                        if !k.is_empty() {
+                            hits = k;
                             q = alt;
                             break;
                         }
-                        _ => {}
                     }
                 }
             }
+            let found = seen.len();
+            let filtered = seen.difference(&kept_urls).count();
             crate::diag::note(&format!(
-                "web_search: service={service} query={asked:?} used={q:?} tried={} results={}",
+                "web_search: service={service} query={asked:?} used={q:?} tried={} found={found} filtered={filtered} results={} terms={:?}",
                 tried.len(),
-                hits.len()
+                hits.len(),
+                topic.key_terms()
             ));
             if hits.is_empty() {
+                let also = if tried.len() > 1 {
+                    format!(" (also tried: {})", tried[1..].join("; "))
+                } else {
+                    String::new()
+                };
+                let off = if filtered > 0 {
+                    format!(" {filtered} result(s) were about something else and were dropped.")
+                } else {
+                    String::new()
+                };
+                let (text, notice) = if wikipedia {
+                    (
+                        format!(
+                            "Wikipedia has nothing on \"{asked}\"{also}.{off} Wikipedia only holds encyclopedia articles, so new products, models and niche topics are often missing. Tell the user plainly that Wikipedia had nothing on this, answer only what you are sure of without inventing details, and say that a free Tavily key (1,000 searches a month) or a Brave key under Settings › Search & Crawlers gives full-web results. Do not claim you cannot reach the web."
+                        ),
+                        Some("wikipedia_empty"),
+                    )
+                } else {
+                    (
+                        format!(
+                            "{service} found nothing on \"{asked}\"{also}.{off} Tell the user the search found nothing; do not claim you cannot reach the web."
+                        ),
+                        None,
+                    )
+                };
                 return Ok(ToolOutput {
-                    meta: json!({ "query": asked, "results": 0, "tried": tried, "service": service }),
-                    ..ToolOutput::text(format!(
-                        "{service} found nothing for \"{asked}\" (also tried: {}). Tell the user the search found nothing; do not claim you cannot reach the web.",
-                        tried[1..].join("; ")
-                    ))
+                    meta: json!({ "query": asked, "results": 0, "tried": tried, "service": service,
+                                  "found": found, "filtered": filtered, "notice": notice }),
+                    ..ToolOutput::text(text)
                 });
             }
             let q = q.as_str();
@@ -120,6 +167,7 @@ impl Tool for WebSearchTool {
                 ));
             }
             let mut meta = json!({ "query": q, "asked": asked, "tried": tried, "service": service, "results": hits.len(),
+                "found": found, "filtered": filtered,
                 "hits": hits.iter().map(|h| json!({"url": h.url, "title": h.title, "site": h.site})).collect::<Vec<_>>() });
             if let Some(d) = &decision {
                 meta["decision"] = serde_json::to_value(d).unwrap_or_default();

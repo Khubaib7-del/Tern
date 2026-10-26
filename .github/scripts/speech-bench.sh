@@ -51,21 +51,57 @@ for m in whisper-small-q5_1 moonshine-streaming-small; do
 done
 # Whisper small on the 12 s memo with 2 and 4 threads, flash attention on
 # and off (TERN_WHISPER_THREADS / TERN_WHISPER_FLASH), for the thread and
-# attention defaults (#66).
+# attention defaults (#66). On the CPU (TERN_SPEECH_DEVICE=cpu).
 if [ -f memo-44k.m4a ]; then
   echo "| whisper threads / flash | file | wall s | tern's timings |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-  # 6 and 8 threads on these 4-vCPU runners (more threads than logical
-  # cores) took 54-93 s on Linux and 266-575 s on Windows in #66, so they
-  # are no longer timed.
+  # 6 and 8 threads (Settings › Speech offers them, #67) are more threads
+  # than these 4-vCPU runners have and took 54-575 s in #66: timed once,
+  # flash attention off, cut off at 150 s.
+  for th in 6 8; do
+    s=$(date +%s%N)
+    out=$(TERN_SPEECH_DEVICE=cpu TERN_WHISPER_THREADS=$th TERN_WHISPER_FLASH=0 timeout 150 "$tern" models transcribe memo-44k.m4a --model whisper-small-q5_1 --language en 2> err.txt); rc=$?
+    ms=$(( ($(date +%s%N) - s) / 1000000 ))
+    info=$(tr '\n' ' ' < err.txt)
+    [ $rc -eq 124 ] && info="cut off after 150 s"
+    echo "== threads=$th flash=0 rc=$rc wall=${ms}ms"; echo "   $info"
+    echo "| $th / 0 | memo-44k.m4a | $(awk "BEGIN{printf \"%.1f\", $ms/1000}") | ${info//|//} |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  done
   for th in 2 4; do
     for fa in 1 0; do
       s=$(date +%s%N)
-      out=$(TERN_WHISPER_THREADS=$th TERN_WHISPER_FLASH=$fa timeout 600 "$tern" models transcribe memo-44k.m4a --model whisper-small-q5_1 --language en 2> err.txt); rc=$?
+      out=$(TERN_SPEECH_DEVICE=cpu TERN_WHISPER_THREADS=$th TERN_WHISPER_FLASH=$fa timeout 600 "$tern" models transcribe memo-44k.m4a --model whisper-small-q5_1 --language en 2> err.txt); rc=$?
       ms=$(( ($(date +%s%N) - s) / 1000000 ))
       info=$(tr '\n' ' ' < err.txt)
       echo "== threads=$th flash=$fa rc=$rc wall=${ms}ms"; echo "   $info"
       echo "| $th / $fa | memo-44k.m4a | $(awk "BEGIN{printf \"%.1f\", $ms/1000}") | ${info//|//} |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
     done
+  done
+fi
+# Where Whisper ran (#67): Auto on this runner, then GPU asked for. With
+# no GPU (and on Windows no vulkan-1.dll) both must run on the CPU and say
+# why; on Linux with GGML_VK_VISIBLE_DEVICES=0 Mesa's lavapipe (software
+# Vulkan) stands in for a GPU, which proves the Vulkan path end to end
+# (its time is a CPU emulating a GPU, not a GPU's).
+if [ -f jfk.wav ]; then
+  echo "| whisper device | file | wall s | tern's timings |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  runs="auto gpu"
+  if [ "$(uname -s)" = Linux ] && ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1; then runs="$runs lavapipe"; fi
+  for dev in $runs; do
+    s=$(date +%s%N)
+    case $dev in
+      lavapipe)
+        icd=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n 1)
+        out=$(VK_ICD_FILENAMES="$icd" VK_DRIVER_FILES="$icd" GGML_VK_VISIBLE_DEVICES=0 TERN_SPEECH_DEVICE=gpu timeout 900 "$tern" models transcribe jfk.wav --model whisper-small-q5_1 --language en 2> err.txt); rc=$? ;;
+      *)
+        out=$(TERN_SPEECH_DEVICE=$dev timeout 600 "$tern" models transcribe jfk.wav --model whisper-small-q5_1 --language en 2> err.txt); rc=$? ;;
+    esac
+    ms=$(( ($(date +%s%N) - s) / 1000000 ))
+    info=$(tr '\n' ' ' < err.txt)
+    echo "== device=$dev rc=$rc wall=${ms}ms"; echo "   text: $out"; echo "   $info"
+    echo "| $dev | jfk.wav | $(awk "BEGIN{printf \"%.1f\", $ms/1000}") | ${info//|//} |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+    if [ $rc -ne 0 ] || ! echo "$out" | grep -qi "country"; then
+      if [ $dev = lavapipe ]; then echo "::warning::lavapipe run failed (rc=$rc)"; else echo "   MISSING WORDS"; fail=1; fi
+    fi
   done
 fi
 exit $fail

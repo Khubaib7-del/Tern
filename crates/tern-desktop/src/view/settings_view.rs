@@ -44,6 +44,7 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::Providers => AssetIcon::KeyRound,
         Section::Models => AssetIcon::Cpu,
         Section::LocalModels => AssetIcon::Download,
+        Section::Speech => AssetIcon::Mic,
         Section::Tools => AssetIcon::Wrench,
         Section::Decision => AssetIcon::Signpost,
         Section::Evaluation => AssetIcon::FlaskConical,
@@ -212,6 +213,10 @@ impl Workspace {
                 }
             }
             Section::Instructions => self.open_instructions(window, cx),
+            Section::Speech => {
+                self.show_settings(s);
+                self.probe_gpu(cx);
+            }
             Section::Tools
             | Section::Study
             | Section::Privacy
@@ -221,6 +226,18 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// Settings › Search & Crawlers with `id`'s key field open (the
+    /// Wikipedia banner's "Add a Tavily key").
+    pub(super) fn open_search_key(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(Section::Search, window, cx);
+        self.edit_key(crate::providers::Kind::Search, id, window, cx);
     }
 
     /// Back (or Esc): the screen Settings was opened from, the chat
@@ -490,6 +507,7 @@ impl Workspace {
             Section::Providers => self.providers_page(p, cx),
             Section::Models => self.models_page(p, cx),
             Section::LocalModels => self.local_models_page(p, cx),
+            Section::Speech => self.speech_page(p, cx),
             Section::Tools => self.tools_page(p, cx),
             Section::Decision => self.decision_screen(p, cx),
             Section::Evaluation => self.eval_screen(p, cx),
@@ -1453,11 +1471,202 @@ impl Workspace {
         )
     }
 
+    // ----- Speech -----
+
+    /// Looks for a GPU off the UI thread (ggml starts Vulkan or Metal the
+    /// first time), then redraws the Speech page.
+    pub(super) fn probe_gpu(&mut self, cx: &mut Context<Self>) {
+        if tern_agent::local_models::gpu::peek().is_some() {
+            return;
+        }
+        std::thread::spawn(|| {
+            let _ = tern_agent::local_models::gpu::first();
+        });
+        cx.spawn(async move |this, cx| {
+            for _ in 0..60 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                if tern_agent::local_models::gpu::peek().is_some() {
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn save_speech(
+        &mut self,
+        device: Option<&'static str>,
+        threads: Option<Option<u32>>,
+    ) {
+        self.save_ui_prefs(|p| {
+            if let Some(d) = device {
+                p.speech_device = (d != "auto").then(|| d.to_owned());
+            }
+            if let Some(t) = threads {
+                p.speech_threads = t;
+            }
+        });
+        // In effect at once (the saved file follows on the bridge).
+        let prefs = &self.model.providers.prefs;
+        tern_agent::local_models::speech::set(tern_agent::local_models::speech::from_prefs(
+            prefs.speech_device.as_deref(),
+            prefs.speech_threads,
+        ));
+    }
+
+    fn speech_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use tern_agent::local_models::{gpu, speech};
+        let prefs = &self.model.providers.prefs;
+        let chosen = speech::from_prefs(prefs.speech_device.as_deref(), prefs.speech_threads);
+        let devices = speech::Device::ALL.map(|d| {
+            Button::new(SharedString::from(format!("speech-device-{}", d.id())))
+                .capsule()
+                .label(d.label())
+                .ghost()
+                .xsmall()
+                .selected(chosen.device == d)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.save_speech(Some(d.id()), None);
+                    cx.notify();
+                }))
+        });
+        let mut threads = vec![
+            Button::new("speech-threads-auto")
+                .capsule()
+                .label("Auto")
+                .ghost()
+                .xsmall()
+                .selected(chosen.threads.is_none())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.save_speech(None, Some(None));
+                    cx.notify();
+                })),
+        ];
+        threads.extend(speech::THREAD_CHOICES.map(|n| {
+            Button::new(SharedString::from(format!("speech-threads-{n}")))
+                .capsule()
+                .label(SharedString::from(n.to_string()))
+                .ghost()
+                .xsmall()
+                .selected(chosen.threads == Some(n))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.save_speech(None, Some(Some(n)));
+                    cx.notify();
+                }))
+        }));
+        let auto_threads = speech::pick_threads(
+            None,
+            None,
+            0,
+            std::thread::available_parallelism().map_or(1, |n| n.get()),
+        );
+        let found = match gpu::peek() {
+            None => "Looking for a GPU…".to_owned(),
+            Some(Ok(g)) => format!(
+                "{} · {}",
+                g.name,
+                if g.api == "metal" { "Metal" } else { "Vulkan" }
+            ),
+            Some(Err(why)) => format!("None: {why}. Speech runs on the CPU."),
+        };
+        let build = match gpu::API {
+            Some("vulkan") => {
+                "This build runs Whisper on Vulkan GPUs (NVIDIA, AMD, Intel) and falls back to the CPU."
+            }
+            Some("metal") => {
+                "This build runs Whisper on the Mac's GPU with Metal and falls back to the CPU."
+            }
+            _ => "This build runs speech on the CPU only.",
+        };
+        let failed = speech::gpu_failed_before();
+        let mut rows = vec![
+            Self::row(
+                "Device",
+                "Auto uses the GPU when one works, else the CPU. GPU always tries it first; CPU never uses it.",
+                Some(div().flex().gap_1().children(devices).into_any_element()),
+                p,
+            ),
+            Self::row(
+                "CPU threads",
+                SharedString::from(format!(
+                    "Auto picks {auto_threads} here (one per logical core, at most four: more were slower in tests). Wins over TERN_WHISPER_THREADS."
+                )),
+                Some(div().flex().gap_1().children(threads).into_any_element()),
+                p,
+            ),
+            Self::row("GPU found", SharedString::from(found), None, p),
+            Self::row(
+                "Last transcription",
+                SharedString::from(
+                    speech::last_device()
+                        .unwrap_or_else(|| "Nothing transcribed yet in this window.".into()),
+                ),
+                None,
+                p,
+            ),
+        ];
+        if failed {
+            rows.push(Self::row(
+                "GPU paused",
+                "A GPU transcription did not finish last time, so Auto stays on the CPU. Choose GPU to try it again.",
+                None,
+                p,
+            ));
+        }
+        let body = vec![
+            Self::settings_card("Speech-to-text", p, rows),
+            div()
+                .text_xs()
+                .text_color(p.faint)
+                .child(build)
+                .into_any_element(),
+        ];
+        self.page(Section::Speech, p, None, body)
+    }
+
     // ----- Search & Crawler -----
 
     fn search_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let st = &self.model.providers;
         let mut body: Vec<AnyElement> = Vec::new();
+        if st.only_wikipedia() {
+            body.push(
+                div()
+                    .id("search-nudge")
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.accent)
+                    .bg(p.canvas)
+                    .child(super::brand_logo("tavily", 18., p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(200.))
+                            .text_sm()
+                            .text_color(p.text)
+                            .child(crate::chatflow::TAVILY_NUDGE),
+                    )
+                    .child(
+                        Button::new("search-nudge-tavily")
+                            .capsule()
+                            .label("Add a Tavily key")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.edit_key(crate::providers::Kind::Search, "tavily", window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         if !st.loaded {
             body.push(loading("Reading the keychain…", p));
         } else {

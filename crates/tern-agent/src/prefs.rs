@@ -98,6 +98,13 @@ pub struct Preferences {
     pub git_credit_tern: bool,
     /// Deep research workers that run at once. `None` means 3.
     pub deep_workers: Option<usize>,
+    /// Where local speech runs (Settings › Speech): `auto`, `gpu` or
+    /// `cpu`. `None` means Auto.
+    pub speech_device: Option<String>,
+    /// CPU threads for local speech: 2, 4, 6 or 8. `None` means Auto (one
+    /// per logical core, at most twice the physical ones, at most four).
+    /// Wins over `TERN_WHISPER_THREADS`.
+    pub speech_threads: Option<u32>,
     /// Study without a model: the tutor quotes passages, quizzes are
     /// written from sentences, and the viva uses its own questions.
     pub study_offline: bool,
@@ -271,6 +278,10 @@ impl Preferences {
             crate::crawlers::has_key(c, keychain.as_deref())
         });
         crate::crawlers::set(c);
+        crate::local_models::speech::set(crate::local_models::speech::from_prefs(
+            self.speech_device.as_deref(),
+            self.speech_threads,
+        ));
     }
 
     /// Adds or replaces a custom provider (by id) and puts it into effect.
@@ -568,6 +579,8 @@ mod tests {
             git_email: None,
             git_credit_tern: true,
             deep_workers: Some(4),
+            speech_device: Some("cpu".into()),
+            speech_threads: Some(4),
             study_offline: true,
             study_quiz_count: Some(10),
             study_difficulty: Some("hard".into()),

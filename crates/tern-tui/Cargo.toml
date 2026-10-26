@@ -30,3 +30,11 @@ rpassword.workspace = true
 winresource = "0.1"
 
 [dev-dependencies]
+
+# Whisper on the GPU (#67): Vulkan on Windows and Linux, Metal on macOS.
+# With no usable GPU at run time it runs on the CPU.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tern-agent = { workspace = true, features = ["whisper-vulkan"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tern-agent = { workspace = true, features = ["whisper-metal"] }

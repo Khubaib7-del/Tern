@@ -743,7 +743,12 @@ impl Run<'_, '_> {
                 messages.push(ChatMessage::assistant(tern_providers::tool_block(
                     name, &args,
                 )));
-                let note = if name == "web_search" {
+                let found_nothing = name == "web_search"
+                    && (result.contains("Wikipedia has nothing on")
+                        || result.contains(" found nothing on \""));
+                let note = if found_nothing {
+                    "(Tern searched the web just now because the message asked for it, and the search found nothing on the question. Say so plainly as the result above says; do not make up an answer and do not say you cannot access the internet.)"
+                } else if name == "web_search" {
                     "(Tern searched the web just now because the message asked for it. These results are current: answer the user's question from them and cite the links as [n]. Do not say you cannot access the internet.)"
                 } else {
                     "(Tern ran this because the message asked for it. Answer the message using it.)"

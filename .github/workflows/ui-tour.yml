@@ -53,10 +53,15 @@ jobs:
             fonts-dejavu fonts-noto-core fonts-noto-color-emoji fonts-liberation \
             ffmpeg dbus-x11
           ls /usr/share/vulkan/icd.d/
+      # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK.
+      - name: Vulkan SDK (cached)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ui-tour
+          key: ui-tour-vulkan
       - name: Build tern-desktop and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-browser
       - name: Record the tour
@@ -135,7 +140,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-release-msvc-o2
+          key: desktop-release-msvc-o2-vulkan
+      # The SDK only, no runtime: the tour runner has no GPU and no
+      # vulkan-1.dll, so speech must fall back to the CPU (#67).
+      - name: Vulkan SDK (cached)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          install_runtime: false
       - name: Build tern-desktop and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-browser
       - name: Record the tour

@@ -31,7 +31,16 @@ jobs:
         with:
           # New key when whisper.cpp's CMake flags change: its build script
           # does not rerun for them, so a cached build keeps the old ones.
-          key: windows-msvc-o2
+          key: windows-msvc-o2-vulkan
+      # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK
+      # (headers, vulkan-1.lib, glslc for its shaders). Only the SDK: the
+      # runtime (vulkan-1.dll) is left out on purpose, so the tests and the
+      # speech benchmark also prove Tern runs without a Vulkan driver.
+      - name: Vulkan SDK (cached)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          install_runtime: false
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -79,7 +88,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           # New key when whisper.cpp's CMake flags change (see above).
-          key: desktop-release-msvc-o2
+          key: desktop-release-msvc-o2-vulkan
+      # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK
+      # (headers, vulkan-1.lib, glslc for its shaders). Only the SDK: the
+      # runtime (vulkan-1.dll) is left out on purpose, so the tests and the
+      # speech benchmark also prove Tern runs without a Vulkan driver.
+      - name: Vulkan SDK (cached)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
+          install_runtime: false
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
       - name: whisper.cpp's compiler flags (must hold /O2)
@@ -88,6 +106,38 @@ jobs:
           c=$(ls target/release/build/whisper-rs-sys-*/out/build/CMakeCache.txt | head -1)
           grep -E '^CMAKE_(C|CXX)_FLAGS(_RELEASE)?:|^CMAKE_GENERATOR(_TOOLSET)?:|^CMAKE_PROJECT_INCLUDE' "$c"
           grep -q 'Tern: MSVC C flags' -r target/release/build/whisper-rs-sys-*/output && grep -h 'Tern: MSVC C flags' target/release/build/whisper-rs-sys-*/output || echo "::warning::the MSVC optimisation include did not run"
+      - name: vulkan-1.dll is delay-loaded (Tern starts without a Vulkan driver)
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pefile
+          "System32 vulkan-1.dll present: $(Test-Path C:\Windows\System32\vulkan-1.dll)"
+          (Get-Command vulkan-1.dll -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source) ?? "vulkan-1.dll not on PATH"
+          python .github/scripts/check-delayload.py target/release/tern-desktop.exe target/release/tern.exe
+      # The runner image ships the Vulkan loader in System32 (no GPU behind
+      # it). Hide it so the start test and the speech benchmark below run
+      # the way a PC without a Vulkan driver does: the delay-load fails and
+      # the failure hook hands ggml a loader that registers no device.
+      - name: Hide System32 vulkan-1.dll (a PC without a Vulkan driver)
+        shell: pwsh
+        run: |
+          $dll = "C:\Windows\System32\vulkan-1.dll"
+          if (Test-Path $dll) {
+            takeown /f $dll | Out-Null
+            icacls $dll /grant "*S-1-5-32-544:F" | Out-Null
+            Rename-Item $dll "vulkan-1.dll.hidden-by-tern-ci"
+          }
+          $left = (Get-Command vulkan-1.dll -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+          if ($left) { "::warning::vulkan-1.dll still found at $left; the no-driver path is not exercised" } else { "vulkan-1.dll is not found anywhere on this runner now" }
+      - name: tern-desktop.exe starts with no Vulkan driver (the window opens, then it is closed)
+        shell: pwsh
+        run: |
+          $env:TERN_HOME = "$env:RUNNER_TEMP\tern-start-home"
+          $env:TERN_NO_WATCHDOG = "1"
+          $p = Start-Process .\target\release\tern-desktop.exe -PassThru
+          Start-Sleep 15
+          if ($p.HasExited) { "tern-desktop.exe exited early with code $($p.ExitCode)"; exit 1 }
+          "tern-desktop.exe is running after 15 s"
+          Stop-Process -Id $p.Id
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -129,19 +179,29 @@ jobs:
           df -h /
       - uses: actions/checkout@v7
       - name: System libraries for the desktop app (X11, Wayland, Vulkan, fonts) and the browser helper (WebKitGTK)
+        # A stalled mirror once held this step for over 50 minutes: time
+        # out each download and the step instead.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update
+          sudo apt-get $APT install -y --no-install-recommends \
             build-essential pkg-config libfontconfig-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-xcb-dev libxcb1-dev libvulkan-dev libssl-dev libasound2-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev ffmpeg
+            libwebkit2gtk-4.1-dev libgtk-3-dev ffmpeg mesa-vulkan-drivers vulkan-tools
+      # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK
+      # (headers and glslc for its shaders); libvulkan-dev links it.
+      - name: Vulkan SDK (cached)
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          cache: true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: linux
+          key: linux-vulkan
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy

@@ -179,6 +179,17 @@ impl ProvidersState {
             .map(|r| r.id)
     }
 
+    /// Whether chats search only Wikipedia: no full-web search service
+    /// has a key and the keyless one is in use. Settings and the
+    /// first-run tour then recommend Tavily (#67).
+    pub fn only_wikipedia(&self) -> bool {
+        self.loaded
+            && !self.section(Kind::Search).any(|r| !r.local && r.key_saved)
+            && self
+                .default_id(Kind::Search)
+                .is_none_or(|id| self.section(Kind::Search).any(|r| r.id == id && r.keyless))
+    }
+
     /// Whether the last Test of this row passed in this window.
     pub fn tested_ok(&self, kind: Kind, id: &str) -> bool {
         matches!(self.note(kind, id), Some(Note::Ok(_)))

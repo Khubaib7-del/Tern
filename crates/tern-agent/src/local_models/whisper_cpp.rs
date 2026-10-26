@@ -13,8 +13,9 @@ use super::{CANCELLED, LocalEngine, ModelEntry, Runtime, Task, TranscribeCtl};
 /// Runs ggml Whisper models (`ggml-*.bin`).
 #[derive(Default)]
 pub struct WhisperCpp {
-    /// The last model loaded, kept so a second file does not load it again.
-    loaded: Mutex<Option<(PathBuf, Arc<WhisperContext>)>>,
+    /// The last model loaded (and whether on the GPU), kept so a second
+    /// file does not load it again.
+    loaded: Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>,
 }
 
 impl std::fmt::Debug for WhisperCpp {
@@ -42,27 +43,16 @@ pub fn fits(entry: &ModelEntry) -> bool {
 /// The last run's load and inference times, for the timings line.
 static LAST: Mutex<String> = Mutex::new(String::new());
 
-/// Threads for whisper.cpp: `TERN_WHISPER_THREADS` when set, else one
-/// per logical core, at most twice the physical cores and at most six.
-/// Measured on CI (#66, a 12 s clip, whisper small, 4-vCPU runners):
-/// Linux 8.3 s with 2 threads, 7.8 s with 4, 61 s with 6 and 93 s with 8;
-/// Windows 11.7 s, 9.6 s, 295 s and 575 s. The user's 4-core, 8-thread
-/// laptop needed 37.3 s for an 11.7 s clip with 8, so ggml's thread
+/// Threads for whisper.cpp: Settings › Speech, else
+/// `TERN_WHISPER_THREADS`, else one per logical core, at most twice the
+/// physical cores and at most four (`speech::threads`). Measured on CI
+/// (#66, a 12 s clip, whisper small, 4-vCPU runners): Linux 8.3 s with 2
+/// threads, 7.8 s with 4, 61 s with 6 and 93 s with 8; Windows 11.7 s,
+/// 9.6 s, 295 s and 575 s. The user's 4-core, 8-thread laptop needed
+/// 37.3 s for an 11.7 s clip with 8 and 19-30 s with 6, so ggml's thread
 /// barriers cost far more than they gain once threads fill every core.
 fn threads() -> i32 {
-    if let Some(n) = std::env::var("TERN_WHISPER_THREADS")
-        .ok()
-        .and_then(|v| v.trim().parse::<i32>().ok())
-        .filter(|n| *n > 0)
-    {
-        return n.min(64);
-    }
-    pick_threads(num_cpus::get_physical(), num_cpus::get())
-}
-
-fn pick_threads(physical: usize, logical: usize) -> i32 {
-    let cap = if physical > 0 { physical * 2 } else { logical };
-    logical.min(cap).clamp(1, 6) as i32
+    super::speech::threads()
 }
 
 /// Flash attention: off unless `TERN_WHISPER_FLASH=1`. On the CI runners
@@ -72,25 +62,87 @@ fn flash_attn() -> bool {
     std::env::var("TERN_WHISPER_FLASH").as_deref() == Ok("1")
 }
 
+/// Where a run goes: the GPU (and which), or the CPU and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Placement {
+    Gpu(super::gpu::Gpu),
+    Cpu(String),
+}
+
+impl Placement {
+    /// The device line for `tern.log` and Settings › Speech.
+    fn line(&self, threads: i32) -> String {
+        match self {
+            Placement::Gpu(g) => format!("engine=whisper.cpp gpu={} {}", g.api, g.name),
+            Placement::Cpu(why) => {
+                format!("engine=whisper.cpp cpu {threads} threads ({why})")
+            }
+        }
+    }
+
+    fn label(&self, threads: i32) -> String {
+        match self {
+            Placement::Gpu(g) => format!("GPU · {} · {}", api_name(g.api), g.name),
+            Placement::Cpu(why) => format!("CPU · {threads} threads ({why})"),
+        }
+    }
+}
+
+fn api_name(api: &str) -> &str {
+    match api {
+        "vulkan" => "Vulkan",
+        "metal" => "Metal",
+        a => a,
+    }
+}
+
+/// The device the saved choice and this machine allow.
+fn placement() -> Placement {
+    use super::speech::Device;
+    super::gpu::keep_hook();
+    let choice = super::speech::choice();
+    match choice.device {
+        Device::Cpu => Placement::Cpu("CPU chosen in Settings".into()),
+        Device::Auto if super::speech::gpu_failed_before() => Placement::Cpu(
+            "the GPU stopped an earlier run; choose GPU in Settings › Speech to try it again"
+                .into(),
+        ),
+        Device::Auto | Device::Gpu => match super::gpu::first() {
+            Ok(g) => Placement::Gpu(g),
+            Err(why) => Placement::Cpu(why),
+        },
+    }
+}
+
 impl WhisperCpp {
-    fn context(&self, path: &Path) -> Result<Arc<WhisperContext>, String> {
+    fn context(
+        &self,
+        path: &Path,
+        gpu: Option<&super::gpu::Gpu>,
+    ) -> Result<Arc<WhisperContext>, String> {
         let mut slot = self
             .loaded
             .lock()
             .map_err(|_| "the Whisper engine is unusable")?;
-        if let Some((p, ctx)) = slot.as_ref()
+        if let Some((p, on_gpu, ctx)) = slot.as_ref()
             && p == path
+            && *on_gpu == gpu.is_some()
         {
             return Ok(ctx.clone());
         }
+        *slot = None;
         // whisper.cpp logs to stderr unless hooked; this silences it.
         whisper_rs::install_logging_hooks();
         let mut params = WhisperContextParameters::default();
         params.flash_attn(flash_attn());
+        params.use_gpu(gpu.is_some());
+        if let Some(g) = gpu {
+            params.gpu_device(g.index);
+        }
         let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| format!("cannot load the Whisper model: {e}"))?;
         let ctx = Arc::new(ctx);
-        *slot = Some((path.to_owned(), ctx.clone()));
+        *slot = Some((path.to_owned(), gpu.is_some(), ctx.clone()));
         Ok(ctx)
     }
 }
@@ -120,8 +172,8 @@ impl LocalEngine for WhisperCpp {
 
     fn build_info(&self) -> String {
         format!(
-            "({} threads; {}; {})",
-            threads(),
+            "({}; {}; {})",
+            super::speech::last_device().unwrap_or_else(|| format!("{} threads", threads())),
             LAST.lock().map(|t| t.clone()).unwrap_or_default(),
             whisper_rs::print_system_info().trim()
         )
@@ -137,8 +189,37 @@ impl LocalEngine for WhisperCpp {
     ) -> Result<String, String> {
         let file = model_file(entry).ok_or_else(|| format!("{} has no .bin file", entry.name))?;
         let loading = std::time::Instant::now();
-        let ctx = self.context(&dir.join(file))?;
+        let n_threads = threads();
+        let mut place = placement();
+        // A marker while the GPU runs: if the GPU takes the app down, the
+        // next start finds it and Auto stays on the CPU.
+        let marker = match &place {
+            Placement::Gpu(_) => super::speech::gpu_trial_marker(),
+            Placement::Cpu(_) => None,
+        };
+        if let Some(m) = &marker {
+            if let Some(dir) = m.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(m, place.line(n_threads));
+        }
+        let gpu = match &place {
+            Placement::Gpu(g) => Some(g.clone()),
+            Placement::Cpu(_) => None,
+        };
+        let ctx = match self.context(&dir.join(file), gpu.as_ref()) {
+            Ok(c) => c,
+            // The GPU would not take the model: the CPU then.
+            Err(e) if gpu.is_some() => {
+                crate::diag::note(&format!("whisper: GPU load failed ({e}); using the CPU"));
+                place = Placement::Cpu(format!("the GPU could not load the model: {e}"));
+                self.context(&dir.join(file), None)?
+            }
+            Err(e) => return Err(e),
+        };
         let load_ms = loading.elapsed().as_millis();
+        crate::diag::note(&format!("whisper: {}", place.line(n_threads)));
+        super::speech::set_last_device(&place.label(n_threads));
         let mut state = ctx
             .create_state()
             .map_err(|e| format!("cannot start Whisper: {e}"))?;
@@ -149,7 +230,7 @@ impl LocalEngine for WhisperCpp {
             .unwrap_or("auto");
         p.set_language(Some(lang));
         p.set_translate(false);
-        p.set_n_threads(threads());
+        p.set_n_threads(n_threads);
         p.set_print_progress(false);
         p.set_print_realtime(false);
         p.set_print_special(false);
@@ -183,10 +264,14 @@ impl LocalEngine for WhisperCpp {
         }
         let running = std::time::Instant::now();
         let ran = state.full(p, &pcm);
+        if let Some(m) = &marker {
+            let _ = std::fs::remove_file(m);
+        }
         if let Ok(mut t) = LAST.lock() {
             *t = format!(
-                "load {load_ms} ms, whisper_full {} ms",
-                running.elapsed().as_millis()
+                "load {load_ms} ms, whisper_full {} ms, {}",
+                running.elapsed().as_millis(),
+                place.line(n_threads)
             );
         }
         if ctl.is_cancelled() {
@@ -200,8 +285,7 @@ impl LocalEngine for WhisperCpp {
             t.push_str(&format!(", language {heard} (asked {lang})"));
         }
         crate::diag::note(&format!(
-            "whisper: language detected={heard} asked={lang} threads={}",
-            threads()
+            "whisper: language detected={heard} asked={lang} threads={n_threads}"
         ));
         let text = state
             .as_iter()
@@ -217,20 +301,6 @@ impl LocalEngine for WhisperCpp {
 mod tests {
     use super::*;
     use crate::local_models::Manifest;
-
-    #[test]
-    fn threads_follow_logical_cores_up_to_six() {
-        // The user's laptop: 4 cores, 8 threads.
-        assert_eq!(pick_threads(4, 8), 6);
-        // A 4-vCPU CI runner (2 cores, 4 threads).
-        assert_eq!(pick_threads(2, 4), 4);
-        assert_eq!(pick_threads(16, 32), 6);
-        assert_eq!(pick_threads(1, 2), 2);
-        assert_eq!(pick_threads(4, 4), 4);
-        // Physical count unknown: the logical ones, at most six.
-        assert_eq!(pick_threads(0, 8), 6);
-        assert_eq!(pick_threads(0, 1), 1);
-    }
 
     #[test]
     fn runs_the_whisper_models() {

@@ -19,6 +19,20 @@ Set the choice to `off` (`"search": "off"` in `preferences.json`, or `--search o
 
 Wikipedia is called through the MediaWiki Action API (`list=search`), which the Wikimedia API usage guidelines allow programs to use. Every request identifies Tern with a descriptive User-Agent, and rate limits (HTTP 429, `maxlag`) are reported, not retried in a loop. Why Wikipedia and not a scraped search page: [ADR 0008](decisions/0008-keyless-search.md). Wikipedia alone is thin for news, products, and niche topics; add Tavily, Brave, or SearXNG for those.
 
+## Relevance guard and the Wikipedia notice (#67)
+
+A keyword index answers what it does not know with pages that match one common word: "SubQ Snap 1.1 AI model definition or meaning" came back from Wikipedia with six pages about Japanese words and medicine, and "harness2 by Google AI model or project" found nothing at all. So every `web_search` result is held to the question's main terms (`crates/tern-agent/src/relevance.rs`):
+
+- **Strong terms**: quoted phrases, words with digits (`harness2`, `gpt-4o`), a name with its version (`Snap 1.1`), and words with an inner capital (`SubQ`, `LangChain`).
+- **Names**: other capitalised words that do not start the question (`Google`, `Lahore`).
+- **Keywords**: the rest, without filler and without generic words (`model`, `project`, `definition`, `meaning`, `AI`…).
+
+A result (title, snippet and link) must carry one term of the strongest kind the question has, or it is dropped. A generic word alone never lets a page through, and a version number alone (`1.1`) is never a term. When nothing is left, Tern tries shorter keyword queries (never a lone generic word) and then says so. `tern.log` records each search: `web_search: service=Wikipedia query=… used=… tried=N found=F filtered=D results=K terms=[…]`.
+
+When the service is **Wikipedia** and nothing on-topic is left, the tool tells the model plainly that Wikipedia has nothing on it (so it does not invent an answer), and the desktop shows a notice over the composer: *"Wikipedia has nothing on this. Add a free Tavily key (1,000 searches/month) or Brave under Settings › Search & Crawlers for full-web results."* with **Add a Tavily key**, which opens that row with its key field ready. While only Wikipedia is set up, Settings › Search & Crawlers and the first-run tour's search step recommend Tavily.
+
+The `web_search` tool asks the model for a short keyword query of 2–6 words (names, products, versions), not the user's whole sentence, and to call it once per separate topic. The status line names the service ("Searching Wikipedia…"), and the answer's working rollup says which service answered and how many off-topic pages were dropped ("Searched 1 on Wikipedia · 6 off-topic dropped").
+
 ## Tavily or Brave
 
 Desktop: **Providers › Search**, paste the key on the service's row. Terminal:

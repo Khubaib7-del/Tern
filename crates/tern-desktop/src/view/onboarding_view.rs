@@ -669,6 +669,28 @@ impl Workspace {
                     .child(div().text_sm().text_color(p.muted).child(
                         "Tern searches the web, then Tern Crawl reads the pages. Wikipedia needs no key; the others take a key you can add later.",
                     ))
+                    .when(self.model.providers.only_wikipedia(), |d| {
+                        d.child(
+                            div()
+                                .id("ob-search-nudge")
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .p_2()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(p.accent)
+                                .child(super::brand_logo("tavily", 18., p))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_xs()
+                                        .text_color(p.text)
+                                        .child(crate::chatflow::TAVILY_NUDGE),
+                                ),
+                        )
+                    })
                     .children(rows.into_iter().map(|r| {
                         let id = r.id;
                         let usable = r.usable() && self.model.providers.can_choose(&r);

@@ -159,6 +159,11 @@ const STOP: &[&str] = &[
     "say",
 ];
 
+/// Whether `lower` (a lower-case word) is filler a search cannot use.
+pub fn is_stop(lower: &str) -> bool {
+    STOP.contains(&lower)
+}
+
 /// Words that only point back at something said before.
 const POINTERS: &[&str] = &[
     "that", "this", "it", "those", "these", "them", "same", "above", "previous", "question",
@@ -248,7 +253,13 @@ fn clean_previous(p: &str) -> String {
 /// nothing: its keywords, then the first three, two and one of them.
 /// Never repeats a query already in the list or `query` itself.
 pub fn fallback_queries(query: &str) -> Vec<String> {
-    let k = keywords(query);
+    // Generic words ("model", "project", "definition") never make a
+    // query on their own or pad one: a keyword index matches them
+    // anywhere.
+    let k: Vec<String> = keywords(query)
+        .into_iter()
+        .filter(|w| !crate::relevance::is_generic(w))
+        .collect();
     let mut out: Vec<String> = Vec::new();
     let mut add = |q: String| {
         if !q.is_empty()
@@ -265,7 +276,9 @@ pub fn fallback_queries(query: &str) -> Vec<String> {
         }
     }
     // The longest word alone (a name is usually the longest word).
-    if let Some(longest) = k.iter().fold(None::<&String>, |best, w| match best {
+    // A version number alone ("1.1") is never a query.
+    let words = k.iter().filter(|w| w.chars().any(char::is_alphabetic));
+    if let Some(longest) = words.fold(None::<&String>, |best, w| match best {
         Some(b) if b.chars().count() >= w.chars().count() => Some(b),
         _ => Some(w),
     }) {
@@ -424,7 +437,6 @@ mod tests {
         assert_eq!(
             fallback_queries(&q),
             [
-                "langchain erupted developre creator",
                 "langchain erupted developre",
                 "langchain erupted",
                 "langchain"
@@ -432,9 +444,15 @@ mod tests {
         );
         assert_eq!(fallback_queries("LangChain"), Vec::<String>::new());
         assert_eq!(fallback_queries("who is LangChain"), ["LangChain"]);
+        assert_eq!(fallback_queries("who created langchain?"), ["langchain"]);
+        // The user's searches (#67): never a lone generic word.
         assert_eq!(
-            fallback_queries("who created langchain?"),
-            ["created langchain", "created", "langchain"]
+            fallback_queries("harness2 by Google AI model or project"),
+            ["harness2 Google", "harness2"]
+        );
+        assert_eq!(
+            fallback_queries("SubQ Snap 1.1 AI model definition or meaning"),
+            ["SubQ Snap 1.1", "SubQ Snap", "SubQ"]
         );
     }
 

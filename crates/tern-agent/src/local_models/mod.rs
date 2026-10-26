@@ -339,12 +339,14 @@ pub fn register_builtin_engines() {
 
 #[cfg(feature = "audio")]
 pub mod audio;
+pub mod gpu;
 #[cfg(feature = "asr-onnx")]
 pub mod moonshine_onnx;
 #[cfg(feature = "ocr-onnx")]
 pub mod onnx_ocr;
 pub mod paddle;
 pub mod resample;
+pub mod speech;
 #[cfg(feature = "whisper")]
 pub mod whisper_cpp;
 

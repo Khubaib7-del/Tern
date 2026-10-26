@@ -310,6 +310,34 @@ impl PlatformTextSystem for DirectWriteTextSystem {
     }
 }
 
+/// Tern patch: whether the first strong character of `text` reads right to
+/// left (Hebrew, Arabic, Urdu, Syriac, Thaana, N'Ko and their presentation
+/// forms, or an RLM/RLE/RLO/RLI mark). Digits and Arabic punctuation are
+/// weak and skipped; any other letter is a strong left-to-right one.
+fn first_strong_is_rtl(text: &str) -> bool {
+    for c in text.chars() {
+        let u = c as u32;
+        match u {
+            0x200F | 0x202B | 0x202E | 0x2067 => return true,
+            0x200E | 0x202A | 0x202D | 0x2066 => return false,
+            // Arabic number signs, comma, digits, separators, end of ayah.
+            0x0600..=0x0605 | 0x060C | 0x0660..=0x066C | 0x06DD | 0x06F0..=0x06F9 => {}
+            0x0590..=0x08FF
+            | 0xFB1D..=0xFDFF
+            | 0xFE70..=0xFEFF
+            | 0x10800..=0x10FFF
+            | 0x1E800..=0x1EFFF => {
+                if !c.is_numeric() {
+                    return true;
+                }
+            }
+            _ if c.is_alphabetic() => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
 impl DirectWriteState {
     fn select_and_cache_font(
         &mut self,
@@ -615,6 +643,21 @@ impl DirectWriteState {
                 text_layout.SetTypography(&font_info.features, text_range)?;
 
                 break_ligatures = !break_ligatures;
+            }
+
+            // Tern patch: a line whose first strong letter reads right to
+            // left (Urdu, Arabic, Hebrew) is laid out as a right-to-left
+            // paragraph, as `dir=auto` does on the web and cosmic-text does
+            // on Linux. Laid out left to right, a neutral at its end (an
+            // ASCII `?` or `.` typed after Urdu) sat on the right, the
+            // sentence's start. Measured first and right-aligned to its own
+            // width with no wrapping, so it still starts at x = 0.
+            if first_strong_is_rtl(text) {
+                let mut metrics = DWRITE_TEXT_METRICS::default();
+                text_layout.GetMetrics(&mut metrics)?;
+                text_layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                text_layout.SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT)?;
+                text_layout.SetMaxWidth(metrics.widthIncludingTrailingWhitespace.max(0.0))?;
             }
 
             let mut runs = Vec::new();
