@@ -1517,6 +1517,13 @@ impl Workspace {
         ));
     }
 
+    /// Settings › Speech › Dictation language (`auto` clears it).
+    pub(super) fn save_dictation_language(&mut self, code: &'static str) {
+        self.save_ui_prefs(|p| {
+            p.dictation_language = (code != "auto").then(|| code.to_owned());
+        });
+    }
+
     fn speech_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         use tern_agent::local_models::{gpu, speech};
         let prefs = &self.model.providers.prefs;
@@ -1557,6 +1564,23 @@ impl Workspace {
                     cx.notify();
                 }))
         }));
+        let language = speech::dictation_language(prefs.dictation_language.as_deref());
+        let languages = speech::DICTATION_LANGUAGES.map(|(code, name)| {
+            Button::new(SharedString::from(format!("dictation-lang-{code}")))
+                .capsule()
+                .label(name)
+                .ghost()
+                .xsmall()
+                .selected(language.unwrap_or("auto") == code)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.save_dictation_language(code);
+                    cx.notify();
+                }))
+        });
+        let last = speech::last_run()
+            .map(|r| r.line(tern_agent::cards::local_offset()))
+            .or_else(speech::last_device)
+            .unwrap_or_else(|| "Nothing transcribed yet in this window.".into());
         let auto_threads = speech::pick_threads(
             None,
             None,
@@ -1584,6 +1608,21 @@ impl Workspace {
         let failed = speech::gpu_failed_before();
         let mut rows = vec![
             Self::row(
+                "Dictation language",
+                "The language the mic listens for. English uses the fast live model (Moonshine); every other language uses Whisper in short chunks. Auto lets Whisper hear the first phrase and picks.",
+                None,
+                p,
+            ),
+            div()
+                .id("dictation-languages")
+                .px_3()
+                .pb_2()
+                .flex()
+                .flex_wrap()
+                .gap_1()
+                .children(languages)
+                .into_any_element(),
+            Self::row(
                 "Device",
                 "Auto uses the GPU when one works, else the CPU. GPU always tries it first; CPU never uses it.",
                 Some(div().flex().gap_1().children(devices).into_any_element()),
@@ -1598,15 +1637,7 @@ impl Workspace {
                 p,
             ),
             Self::row("GPU found", SharedString::from(found), None, p),
-            Self::row(
-                "Last transcription",
-                SharedString::from(
-                    speech::last_device()
-                        .unwrap_or_else(|| "Nothing transcribed yet in this window.".into()),
-                ),
-                None,
-                p,
-            ),
+            Self::row("Last transcription", SharedString::from(last), None, p),
         ];
         if failed {
             rows.push(Self::row(
