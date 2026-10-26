@@ -21,6 +21,9 @@ pub mod motion;
 pub mod open;
 pub mod paths;
 pub mod secrets;
+/// The speakers, for read aloud (#69; cpal, same feature as the mic).
+#[cfg(feature = "mic")]
+pub mod speaker;
 
 pub use disk::DiskSpace;
 pub use paths::AppPaths;

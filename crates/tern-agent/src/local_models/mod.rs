@@ -297,7 +297,12 @@ pub trait LocalEngine: Send + Sync {
     }
     /// Reads one page image (PNG or JPEG bytes) to Markdown with the
     /// document model installed in `dir` (Granite-Docling, #69).
-    fn page_markdown(&self, dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
+    fn page_markdown(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+    ) -> Result<String, String> {
         let _ = (dir, image);
         Err(format!("{} cannot read pages", entry.name))
     }
@@ -379,6 +384,7 @@ pub mod audio;
 pub mod gpu;
 #[cfg(feature = "tts")]
 pub mod kokoro;
+pub mod kokoro_text;
 pub mod llama_vlm;
 #[cfg(feature = "asr-onnx")]
 pub mod moonshine_onnx;

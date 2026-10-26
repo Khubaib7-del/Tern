@@ -617,7 +617,10 @@ mod tests {
             Route::Detect
         );
         assert_eq!(Route::Detect.after_window(None, true, true), Route::Detect);
-        assert_eq!(Route::Detect.after_window(Some("en"), true, true), Route::Fast);
+        assert_eq!(
+            Route::Detect.after_window(Some("en"), true, true),
+            Route::Fast
+        );
         assert_eq!(
             Route::Whisper(Some("ur".into())).after_window(Some("en"), true, true),
             Route::Whisper(Some("ur".into()))

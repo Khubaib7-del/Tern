@@ -60,6 +60,9 @@ pub mod prompts;
 pub mod protocol;
 pub mod providers;
 pub mod range;
+/// Read aloud with the local voice model (#69; needs the speakers).
+#[cfg(feature = "mic")]
+pub mod read_aloud;
 pub mod refs;
 pub mod relevance;
 pub mod reply;
@@ -131,6 +134,9 @@ pub mod platform {
     pub use tern_platform::motion::os_reduces_motion;
     pub use tern_platform::open::{file_url, open};
     pub use tern_platform::os_name;
+    /// The speakers, for read aloud (the `mic` feature).
+    #[cfg(feature = "mic")]
+    pub use tern_platform::speaker;
 }
 
 /// Opens the user's database, creating the data folder if needed.

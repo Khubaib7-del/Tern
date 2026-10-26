@@ -156,8 +156,7 @@ fn picture_file(image: &[u8]) -> Result<PathBuf, String> {
     let is_png = image.starts_with(b"\x89PNG");
     let is_jpeg = image.starts_with(&[0xFF, 0xD8]);
     let ext = if is_jpeg { "jpg" } else { "png" };
-    let path =
-        std::env::temp_dir().join(format!("tern-vlm-{}-{n}.{ext}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("tern-vlm-{}-{n}.{ext}", std::process::id()));
     if is_png || is_jpeg {
         std::fs::write(&path, image).map_err(|e| e.to_string())?;
     } else {
@@ -346,7 +345,12 @@ impl LocalEngine for LlamaVlm {
         self.run(dir, entry, image, prompt).map(|r| r.text)
     }
 
-    fn page_markdown(&self, dir: &Path, entry: &ModelEntry, image: &[u8]) -> Result<String, String> {
+    fn page_markdown(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+    ) -> Result<String, String> {
         let prompt = if entry.id.contains("docling") {
             DOCLING_PROMPT
         } else {
@@ -471,7 +475,12 @@ mod tests {
             .filter(|e| fits(e))
             .map(|e| e.id.as_str())
             .collect();
-        for want in ["smolvlm-500m", "smolvlm-256m", "qwen3-vl-2b", "granite-docling-258m"] {
+        for want in [
+            "smolvlm-500m",
+            "smolvlm-256m",
+            "qwen3-vl-2b",
+            "granite-docling-258m",
+        ] {
             assert!(ids.contains(&want), "{want} missing from {ids:?}");
         }
         assert!(!ids.contains(&"embeddinggemma-2-q8"));
@@ -480,8 +489,14 @@ mod tests {
     #[test]
     fn the_device_is_read_from_the_log() {
         let log = "llama_model_load_from_file_impl: using device Vulkan0 (Intel(R) UHD Graphics) - 7000 MiB free\n";
-        assert_eq!(device_from_log(log), "GPU · Vulkan0 (Intel(R) UHD Graphics)");
-        assert_eq!(device_from_log("load_tensors: offloaded 0/33 layers to GPU"), "CPU");
+        assert_eq!(
+            device_from_log(log),
+            "GPU · Vulkan0 (Intel(R) UHD Graphics)"
+        );
+        assert_eq!(
+            device_from_log("load_tensors: offloaded 0/33 layers to GPU"),
+            "CPU"
+        );
         assert_eq!(device_from_log("nothing here"), "CPU");
     }
 
@@ -499,7 +514,10 @@ mod tests {
 
     #[test]
     fn answers_drop_the_prompt_echo() {
-        assert_eq!(clean_answer("<__media__>Describe\n A cat. \n"), "Describe\n A cat.");
+        assert_eq!(
+            clean_answer("<__media__>Describe\n A cat. \n"),
+            "Describe\n A cat."
+        );
         assert_eq!(clean_answer("  A red square.\n"), "A red square.");
     }
 
