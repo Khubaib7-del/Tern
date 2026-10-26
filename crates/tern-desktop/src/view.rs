@@ -3622,7 +3622,7 @@ impl Workspace {
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.composer.update(cx, |c, cx| {
-                                crate::view::set_end(c, prompt.to_owned(), window, cx);
+                                crate::view::set_end(c, prompt, window, cx);
                                 c.focus(window, cx);
                             });
                             cx.notify();

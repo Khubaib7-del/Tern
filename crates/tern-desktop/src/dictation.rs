@@ -130,10 +130,6 @@ impl Dictation {
         }
     }
 
-    pub fn pace(&self) -> Pace {
-        self.pace
-    }
-
     /// The mic was stopped: the open window gets one last pass.
     pub fn stop(&mut self) {
         self.stopped = true;

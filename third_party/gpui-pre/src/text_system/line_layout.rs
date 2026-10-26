@@ -96,7 +96,10 @@ impl LineLayout {
     pub fn closest_index_for_x(&self, x: Pixels) -> usize {
         // Tern patch: the character boundary whose caret is nearest `x`.
         if let Some(map) = self.rtl_clusters() {
-            let mut best = (self.len, (Self::caret_x(&map, self.len, self.width) - x).abs());
+            let mut best = (
+                self.len,
+                (Self::caret_x(&map, self.len, self.width) - x).abs(),
+            );
             for ix in map.keys() {
                 let d = (Self::caret_x(&map, *ix, self.width) - x).abs();
                 if d < best.1 {
@@ -177,7 +180,7 @@ impl LineLayout {
         if !falls {
             return None;
         }
-        glyphs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        glyphs.sort_by(|a, b| a.0.0.total_cmp(&b.0.0));
         let n = glyphs.len();
         // A glyph reads right to left when a screen neighbour in its run
         // has a lower index on its right or a higher one on its left; a
@@ -194,10 +197,15 @@ impl LineLayout {
         let rtl_count = rtl.iter().filter(|d| **d == Some(true)).count();
         let ltr_count = rtl.iter().filter(|d| **d == Some(false)).count();
         let majority = rtl_count >= ltr_count;
-        let mut map: std::collections::BTreeMap<usize, RtlCluster> = std::collections::BTreeMap::new();
+        let mut map: std::collections::BTreeMap<usize, RtlCluster> =
+            std::collections::BTreeMap::new();
         for i in 0..n {
             let (x, ix, _) = glyphs[i];
-            let right = if i + 1 < n { glyphs[i + 1].0 } else { self.width };
+            let right = if i + 1 < n {
+                glyphs[i + 1].0
+            } else {
+                self.width
+            };
             let right = if right < x { x } else { right };
             let r = rtl[i].unwrap_or(majority);
             let c = map.entry(ix).or_insert(RtlCluster {
