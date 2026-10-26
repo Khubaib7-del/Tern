@@ -2044,6 +2044,10 @@ const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پ�
 /// question mark, and a mixed Urdu and English line.
 const URDU_TYPED: &str = "کیا آپ اردو بولتے ہیں؟";
 const MIXED_TYPED: &str = "Tern میں Whisper small کتنا تیز ہے؟ (GPU)";
+/// The same Urdu question ending in an ASCII `?` (an English keyboard
+/// layout): a neutral character, which the composer's left-to-right line
+/// puts on the right (known gap, see CHANGELOG #67).
+const URDU_ASCII_TYPED: &str = "کیا آپ اردو بولتے ہیں?";
 /// What Wikipedia (the mock) finds for "SubQ Snap 1.1": the user's log
 /// had six Japanese and medical pages, none about SubQ.
 const WIKI_OFF_TOPIC: [(&str, &str); 4] = [
@@ -2241,7 +2245,8 @@ fn composer_script() -> Vec<Beat> {
             Act::CSend,
             1200,
         ),
-        b(Act::CState("wikipedia searching"), 4500),
+        // The keyword ladder tries four queries (about 6 s on the runners).
+        b(Act::CState("wikipedia searching"), 9000),
         b(Act::CState("wikipedia answered"), 2500),
         b(Act::CSearch("searxng"), 800),
         // #67: Settings › Speech: device and CPU threads, and the GPU probe
@@ -2277,6 +2282,8 @@ fn composer_script() -> Vec<Beat> {
         b(Act::CState("urdu typed"), 300),
         b(Act::Type(MIXED_TYPED), 3000),
         b(Act::CState("mixed typed"), 300),
+        b(Act::Type(URDU_ASCII_TYPED), 3000),
+        b(Act::CState("urdu ascii typed"), 300),
         b(Act::ClearComposer, 500),
         scene(
             "c12-toasts",

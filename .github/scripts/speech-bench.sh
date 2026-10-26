@@ -54,9 +54,18 @@ done
 # attention defaults (#66). On the CPU (TERN_SPEECH_DEVICE=cpu).
 if [ -f memo-44k.m4a ]; then
   echo "| whisper threads / flash | file | wall s | tern's timings |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-  # 6 and 8 threads on these 4-vCPU runners (more threads than logical
-  # cores) took 54-93 s on Linux and 266-575 s on Windows in #66, so they
-  # are no longer timed.
+  # 6 and 8 threads (Settings › Speech offers them, #67) are more threads
+  # than these 4-vCPU runners have and took 54-575 s in #66: timed once,
+  # flash attention off, cut off at 150 s.
+  for th in 6 8; do
+    s=$(date +%s%N)
+    out=$(TERN_SPEECH_DEVICE=cpu TERN_WHISPER_THREADS=$th TERN_WHISPER_FLASH=0 timeout 150 "$tern" models transcribe memo-44k.m4a --model whisper-small-q5_1 --language en 2> err.txt); rc=$?
+    ms=$(( ($(date +%s%N) - s) / 1000000 ))
+    info=$(tr '\n' ' ' < err.txt)
+    [ $rc -eq 124 ] && info="cut off after 150 s"
+    echo "== threads=$th flash=0 rc=$rc wall=${ms}ms"; echo "   $info"
+    echo "| $th / 0 | memo-44k.m4a | $(awk "BEGIN{printf \"%.1f\", $ms/1000}") | ${info//|//} |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  done
   for th in 2 4; do
     for fa in 1 0; do
       s=$(date +%s%N)

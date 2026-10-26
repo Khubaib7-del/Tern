@@ -164,9 +164,13 @@ jobs:
           df -h /
       - uses: actions/checkout@v7
       - name: System libraries for the desktop app (X11, Wayland, Vulkan, fonts) and the browser helper (WebKitGTK)
+        # A stalled mirror once held this step for over 50 minutes: time
+        # out each download and the step instead.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          sudo apt-get $APT update
+          sudo apt-get $APT install -y --no-install-recommends \
             build-essential pkg-config libfontconfig-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-xcb-dev libxcb1-dev libvulkan-dev libssl-dev libasound2-dev \

@@ -34,7 +34,9 @@ async fn off_topic_wikipedia_pages_are_dropped_and_the_tool_says_so() {
         .await
         .unwrap();
     assert_eq!(out.meta["results"], 0, "{}", out.content);
-    assert!(out.meta["filtered"].as_u64().unwrap() >= 6);
+    // The six pages come back for every ladder query; each counts once.
+    assert_eq!(out.meta["filtered"], 6, "{}", out.meta);
+    assert_eq!(out.meta["found"], 6);
     assert_eq!(out.meta["notice"], "wikipedia_empty");
     assert_eq!(out.meta["service"], "Wikipedia");
     assert!(out.content.starts_with("Wikipedia has nothing on"));

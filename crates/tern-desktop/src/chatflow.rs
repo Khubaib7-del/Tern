@@ -106,15 +106,16 @@ pub fn seconds(d: Duration) -> String {
 /// The working rollup's one line: "Searched 3 · read 6 · 3 verified".
 /// `None` when the run did no tool work.
 pub fn rollup(run: &Run) -> Option<String> {
-    let searched = run
-        .steps
-        .iter()
-        .filter(|s| {
-            matches!(s.event.as_str(), "tool.started" | "tool.executed")
-                && s.payload["tool"] == "web_search"
-                && (s.event == "tool.started" || s.payload.get("worker").is_some())
-        })
-        .count();
+    // Deep workers announce a search with `tool.started`; a chat turn's
+    // engine records only `tool.executed`. Count whichever the run has
+    // more of, so a search logged as both started and executed counts once.
+    let web = |event: &str| {
+        run.steps
+            .iter()
+            .filter(|s| s.event == event && s.payload["tool"] == "web_search")
+            .count()
+    };
+    let searched = web("tool.started").max(web("tool.executed"));
     let read = run
         .steps
         .iter()
@@ -555,6 +556,16 @@ mod tests {
         assert_eq!(
             rollup(&run).unwrap(),
             "Searched 2 on Wikipedia · 4 off-topic dropped · read 1 · 1 file step"
+        );
+        // A chat turn records only `tool.executed` (no `tool.started`).
+        let mut chat = Run::new();
+        chat.push(&ev(
+            "tool.executed",
+            json!({"tool": "web_search", "meta": {"service": "Wikipedia", "found": 16, "filtered": 16, "results": 0}}),
+        ));
+        assert_eq!(
+            rollup(&chat).unwrap(),
+            "Searched 1 on Wikipedia · 16 off-topic dropped"
         );
         let mut deep = Run::new();
         deep.push(&ev(

@@ -66,17 +66,23 @@ impl Tool for WebSearchTool {
                 .search(asked, limit)
                 .await
                 .map_err(|e| ToolError::Failed(e.to_string()))?;
-            let found_first = first.len();
-            let (mut hits, mut filtered) = keep(first);
-            let mut found = found_first;
+            // Pages are counted once however many ladder queries return
+            // them: `found` is the distinct pages seen, `filtered` the
+            // distinct ones dropped as off-topic.
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut kept_urls: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            seen.extend(first.iter().map(|h| h.url.clone()));
+            let (mut hits, _) = keep(first);
+            kept_urls.extend(hits.iter().map(|h| h.url.clone()));
             let mut q = asked.to_owned();
             if hits.is_empty() {
                 for alt in crate::webintent::fallback_queries(asked) {
                     tried.push(alt.clone());
                     if let Ok(h) = self.0.search(&alt, limit).await {
-                        found += h.len();
-                        let (k, f) = keep(h);
-                        filtered += f;
+                        seen.extend(h.iter().map(|h| h.url.clone()));
+                        let (k, _) = keep(h);
+                        kept_urls.extend(k.iter().map(|h| h.url.clone()));
                         if !k.is_empty() {
                             hits = k;
                             q = alt;
@@ -85,6 +91,8 @@ impl Tool for WebSearchTool {
                     }
                 }
             }
+            let found = seen.len();
+            let filtered = seen.difference(&kept_urls).count();
             crate::diag::note(&format!(
                 "web_search: service={service} query={asked:?} used={q:?} tried={} found={found} filtered={filtered} results={} terms={:?}",
                 tried.len(),
