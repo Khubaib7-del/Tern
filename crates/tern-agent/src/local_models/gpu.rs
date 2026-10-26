@@ -59,11 +59,17 @@ fn find() -> Result<Gpu, String> {
     use std::ffi::CStr;
     use whisper_rs::whisper_rs_sys as sys;
 
+    // Without the Vulkan loader ggml's registry still starts (every
+    // transcription starts it, on the CPU too): asking for the devices
+    // here goes through the delay-load hook the same way, so a broken
+    // hook shows on the first look rather than in the middle of a run.
     #[cfg(all(windows, feature = "whisper-vulkan"))]
-    if !win::loader_present() {
+    let no_loader = {
         win::keep_hook();
-        return Err("no Vulkan driver (vulkan-1.dll not found)".into());
-    }
+        !win::loader_present()
+    };
+    #[cfg(not(all(windows, feature = "whisper-vulkan")))]
+    let no_loader = false;
     let text = |p: *const std::os::raw::c_char| {
         if p.is_null() {
             String::new()
@@ -93,6 +99,10 @@ fn find() -> Result<Gpu, String> {
                 name = text(unsafe { sys::ggml_backend_dev_name(dev) });
             }
             // The first GPU-type device: Whisper's `gpu_device` 0.
+            crate::diag::note(&format!(
+                "speech: gpu probe: {} {name}",
+                API.unwrap_or("gpu")
+            ));
             return Ok(Gpu {
                 index: 0,
                 api: API.unwrap_or("gpu"),
@@ -100,7 +110,12 @@ fn find() -> Result<Gpu, String> {
             });
         }
     }
+    crate::diag::note(&format!(
+        "speech: gpu probe: {n} ggml devices, none a GPU{}",
+        if no_loader { " (no vulkan-1.dll)" } else { "" }
+    ));
     Err(match API {
+        _ if no_loader => "no Vulkan driver (vulkan-1.dll not found)".into(),
         Some("vulkan") => "no Vulkan GPU found".into(),
         Some("metal") => "no Metal GPU found".into(),
         _ => "no GPU found".into(),

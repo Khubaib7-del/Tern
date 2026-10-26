@@ -42,6 +42,18 @@ fn spec(id: &str) -> Result<&'static SearchSpec, String> {
     find_search(id).ok_or_else(|| SearchError::Unknown(id.to_owned()).to_string())
 }
 
+/// Where the keyless Wikipedia search goes instead of en.wikipedia.org:
+/// set only by tests and the UI tour's mock server.
+static WIKIPEDIA_BASE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Points Wikipedia searches at `base` (tests and the UI tour), or back at
+/// en.wikipedia.org with `None`.
+pub fn set_wikipedia_base(base: Option<String>) {
+    if let Ok(mut b) = WIKIPEDIA_BASE.write() {
+        *b = base;
+    }
+}
+
 /// A ready client. With no id, the first service with a saved key, else
 /// the keyless default ([`KEYLESS_SEARCH`]). A base URL only applies to a
 /// self-hosted service.
@@ -61,9 +73,13 @@ pub fn connect(
                 "No web search is set up yet. Add a key with `tern search add tavily` (or `brave`), or point Tern at your own SearXNG with `--search searxng`.".to_owned()
             })?,
     };
+    let wiki = (spec.id == KEYLESS_SEARCH)
+        .then(|| WIKIPEDIA_BASE.read().ok().and_then(|b| b.clone()))
+        .flatten();
     let base_url = base_url
         .map(str::trim)
-        .filter(|u| spec.self_hosted && !u.is_empty());
+        .filter(|u| spec.self_hosted && !u.is_empty())
+        .or(wiki.as_deref());
     let key = if spec.needs_key {
         match secrets {
             Some(s) => s

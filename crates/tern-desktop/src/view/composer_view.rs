@@ -380,7 +380,7 @@ impl Workspace {
     }
 
     /// Picks a search service (or off) in place.
-    fn choose_search(&mut self, id: Option<&'static str>, cx: &mut Context<Self>) {
+    pub(super) fn choose_search(&mut self, id: Option<&'static str>, cx: &mut Context<Self>) {
         if self.model.is_busy() {
             return;
         }

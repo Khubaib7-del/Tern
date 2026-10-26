@@ -1496,7 +1496,11 @@ impl Workspace {
         .detach();
     }
 
-    fn save_speech(&mut self, device: Option<&'static str>, threads: Option<Option<u32>>) {
+    pub(super) fn save_speech(
+        &mut self,
+        device: Option<&'static str>,
+        threads: Option<Option<u32>>,
+    ) {
         self.save_ui_prefs(|p| {
             if let Some(d) = device {
                 p.speech_device = (d != "auto").then(|| d.to_owned());

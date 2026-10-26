@@ -276,6 +276,13 @@ enum Act {
     CApprove,
     /// Composer tour: a scene-log line with what the composer and chat show.
     CState(&'static str),
+    /// Composer tour: the chat's search service (`wikipedia`, `searxng`).
+    CSearch(&'static str),
+    /// Composer tour: Settings › Speech choices (device id, threads).
+    CSpeech(&'static str, Option<u32>),
+    /// Composer tour: a scene-log line with the GPU probe, the speech
+    /// choice in effect and what the last transcription ran on.
+    CSpeechState(&'static str),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -833,7 +840,7 @@ fn script() -> Vec<Beat> {
         ),
         b(Act::Chat, 500),
     ]);
-    let pages: [(&'static str, &'static str, &'static str, Section); 13] = [
+    let pages: [(&'static str, &'static str, &'static str, Section); 14] = [
         (
             "t58-settings-providers",
             "s16",
@@ -851,6 +858,12 @@ fn script() -> Vec<Beat> {
             "tern-only",
             "Settings: Local models",
             Section::LocalModels,
+        ),
+        (
+            "t59c-settings-speech",
+            "tern-only",
+            "Settings: Speech (device and CPU threads)",
+            Section::Speech,
         ),
         (
             "t60-settings-tools",
@@ -1752,6 +1765,32 @@ impl Workspace {
                 }
             }
             Act::CState(what) => self.log_composer_state(what, cx),
+            Act::CSearch(id) => {
+                self.choose_search(Some(id), cx);
+                log(&format!("TOUR note search service {id}"));
+            }
+            Act::CSpeech(device, threads) => {
+                self.save_speech(Some(device), Some(threads));
+                cx.notify();
+            }
+            Act::CSpeechState(what) => {
+                use tern_agent::local_models::{gpu, speech};
+                let probe = match gpu::first() {
+                    Ok(g) => format!("gpu {} {}", g.api, g.name),
+                    Err(why) => format!("cpu ({why})"),
+                };
+                let c = speech::choice();
+                log(&format!(
+                    "TOUR speech {what}: build_api={:?} probe={probe} device={} threads_choice={:?} threads_in_effect={} gpu_failed_before={} last={:?}",
+                    gpu::API,
+                    c.device.id(),
+                    c.threads,
+                    speech::threads(),
+                    speech::gpu_failed_before(),
+                    speech::last_device()
+                ));
+                cx.notify();
+            }
             Act::Quit => {
                 let t = self.tour.as_ref().map(|t| t.started.elapsed().as_secs_f32());
                 log(&format!(
@@ -1866,12 +1905,22 @@ impl Workspace {
             .map(|t| t.text.as_str())
             .collect();
         log(&format!(
-            "TOUR state {what}: chat={:?} status={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?}",
+            "TOUR state {what}: chat={:?} status={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?} notices={:?} wiki_empty={:?}",
             self.current,
             self.model.working_line().map(|w| w.phrase),
             self.model.phase,
             self.model.entries.len(),
+            self.model.active_notices(),
+            self.model.wiki_empty,
         ));
+        if let Some(Entry::Assistant { run, .. }) =
+            self.last_answer().map(|i| &self.model.entries[i])
+        {
+            log(&format!(
+                "TOUR state {what}: rollup={:?}",
+                crate::chatflow::rollup(run)
+            ));
+        }
     }
 
     fn last_answer(&self) -> Option<usize> {
@@ -1991,6 +2040,30 @@ const URDU_QUESTION: &str = "اردو اور عربی میں کیا فرق ہے�
 /// The mock's Urdu answer: a right-to-left paragraph, an English line, and
 /// a short mixed line.
 const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پاکستان کی قومی زبان ہے۔ اردو اور عربی میں بنیادی فرق یہ ہے کہ اردو ایک ہند آریائی زبان ہے جبکہ عربی ایک سامی زبان ہے، اگرچہ دونوں کا رسم الخط ملتا جلتا ہے۔\n\nIn English: Urdu is an Indo-Aryan language and Pakistan's national language; Arabic is a Semitic language.\n\nمختصر جملہ: سلام پاکستان، Tern 2026";
+/// Typed into the composer by the tour (#67): Urdu ending in the Urdu
+/// question mark, and a mixed Urdu and English line.
+const URDU_TYPED: &str = "کیا آپ اردو بولتے ہیں؟";
+const MIXED_TYPED: &str = "Tern میں Whisper small کتنا تیز ہے؟ (GPU)";
+/// What Wikipedia (the mock) finds for "SubQ Snap 1.1": the user's log
+/// had six Japanese and medical pages, none about SubQ.
+const WIKI_OFF_TOPIC: [(&str, &str); 4] = [
+    (
+        "Sabi (Japanese aesthetics)",
+        "In definition and meaning, wabi-sabi is a Japanese world view",
+    ),
+    (
+        "Medical model",
+        "The medical model is the term coined by psychiatrist R. D. Laing",
+    ),
+    (
+        "Snap (gene)",
+        "SNAP proteins: definition of soluble NSF attachment protein",
+    ),
+    (
+        "Kanji",
+        "meaning of logographic Chinese characters adapted from Japanese",
+    ),
+];
 /// What the mock's web search finds for any query.
 const WEB_HITS: [(&str, &str, &str); 2] = [
     (
@@ -2156,6 +2229,55 @@ fn composer_script() -> Vec<Beat> {
             5000,
         ),
         b(Act::CState("urdu answered"), 300),
+        // #67: Wikipedia answers "SubQ Snap 1.1" with off-topic pages; Tern
+        // drops them and says Wikipedia has nothing, with a Tavily button.
+        b(Act::CSearch("wikipedia"), 1500),
+        b(Act::CNewChat, 1500),
+        b(Act::Type("What is SubQ Snap 1.1? Search the web."), 1200),
+        scene(
+            "c17-wiki-off-topic",
+            "tern-only",
+            "Off-topic Wikipedia results dropped; the Wikipedia notice offers Tavily",
+            Act::CSend,
+            1200,
+        ),
+        b(Act::CState("wikipedia searching"), 4500),
+        b(Act::CState("wikipedia answered"), 2500),
+        b(Act::CSearch("searxng"), 800),
+        // #67: Settings › Speech: device and CPU threads, and the GPU probe
+        // (the Windows runner has no GPU and no vulkan-1.dll: CPU).
+        scene(
+            "c18-settings-speech",
+            "tern-only",
+            "Settings › Speech: Auto/GPU/CPU and CPU threads",
+            Act::Settings(Section::Speech),
+            2500,
+        ),
+        b(Act::CSpeechState("opened"), 1500),
+        scene(
+            "c19-speech-choices",
+            "tern-only",
+            "Speech: GPU chosen, 4 threads; the probe falls back to the CPU",
+            Act::CSpeech("gpu", Some(4)),
+            2500,
+        ),
+        b(Act::CSpeechState("gpu and 4 threads chosen"), 1500),
+        b(Act::CSpeech("auto", None), 1000),
+        b(Act::CSpeechState("back to auto"), 300),
+        b(Act::CloseSettings, 1000),
+        // #67: typing Urdu with an Urdu question mark in the composer.
+        b(Act::CNewChat, 1500),
+        scene(
+            "c20-urdu-typing",
+            "tern-only",
+            "Urdu typed in the composer (؟ at the end of the sentence)",
+            Act::Type(URDU_TYPED),
+            3000,
+        ),
+        b(Act::CState("urdu typed"), 300),
+        b(Act::Type(MIXED_TYPED), 3000),
+        b(Act::CState("mixed typed"), 300),
+        b(Act::ClearComposer, 500),
         scene(
             "c12-toasts",
             "tern-only",
@@ -2185,7 +2307,9 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     match mock::start() {
         Ok(port) => {
             log(&format!("TOUR mock model on 127.0.0.1:{port}"));
-            // The same mock answers web searches the SearXNG way.
+            // The same mock answers web searches the SearXNG way, and as
+            // Wikipedia for the #67 scene.
+            tern_agent::search::set_wikipedia_base(Some(format!("http://127.0.0.1:{port}")));
             prefs.search = Some("searxng".into());
             prefs.search_url = Some(format!("http://127.0.0.1:{port}"));
             prefs.custom_providers = vec![tern_agent::providers::CustomProvider {
@@ -2313,6 +2437,20 @@ mod mock {
                 json!({"query": q, "results": results}).to_string(),
             );
         }
+        if method == "GET" && path.starts_with("/w/api.php") {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let q = query_param(path, "srsearch").unwrap_or_default();
+            super::log(&format!("TOUR mock wikipedia srsearch={q:?}"));
+            let rows: Vec<Value> = super::WIKI_OFF_TOPIC
+                .iter()
+                .enumerate()
+                .map(|(i, (title, snippet))| json!({"ns": 0, "title": title, "pageid": i + 1, "snippet": snippet}))
+                .collect();
+            return (
+                "application/json",
+                json!({"batchcomplete": true, "query": {"search": rows}}).to_string(),
+            );
+        }
         if path.ends_with("/audio/transcriptions") {
             return (
                 "application/json",
@@ -2403,6 +2541,12 @@ mod mock {
         let user = text_of(&msgs[last_user]);
         // Web results Tern sent back (its own search, or the model's call):
         // a cited answer. The follow-up says it searched again.
+        if user.starts_with("Result of `web_search`") && user.contains("Wikipedia has nothing") {
+            return (
+                "Wikipedia has nothing on SubQ Snap 1.1, and I won't guess. A Tavily or Brave key under Settings › Search & Crawlers searches the whole web.".into(),
+                None,
+            );
+        }
         if user.starts_with("Result of `web_search`") {
             let asked = msgs[..last_user]
                 .iter()
@@ -2422,6 +2566,15 @@ mod mock {
                 "From the web:"
             };
             return (format!("{lead} {content} [1]\n\n[1] {title} — {url}"), None);
+        }
+        if has_tools && user.contains("SubQ Snap 1.1") {
+            return (
+                String::new(),
+                Some((
+                    "web_search".into(),
+                    json!({"query": "SubQ Snap 1.1 AI model definition or meaning"}),
+                )),
+            );
         }
         if has_tools && user.contains("Who created LangChain") {
             return (
