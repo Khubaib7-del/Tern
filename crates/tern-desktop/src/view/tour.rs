@@ -297,6 +297,20 @@ enum Act {
     Dictate(&'static str),
     /// The run panel's Auto-open switch.
     RunAutoOpen(bool),
+    /// #69: a picture read by a local vision model before the model is
+    /// asked: `true` starts a turn with "Looking at image…" leading the
+    /// working line, `false` finishes it with the local description.
+    CLocalPicture(bool),
+    /// #69: the read-aloud control under the last answer (mock, no
+    /// audio): 0 Preparing, 1 Playing sentence 2, 2 Paused, 3 stopped.
+    CReadAloud(u8),
+    /// #69: the local-model banner over the composer (SmolVLM 500M timed
+    /// out, SmolVLM 256M downloaded), or cleared.
+    CLocalFailed(bool),
+    /// #69: Auto dictation's first recording: where the route starts, a
+    /// silent first window, then a window heard as English (the route
+    /// logic the mic uses, without audio).
+    CDictationAuto,
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1883,6 +1897,90 @@ impl Workspace {
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 self.log_caret(cx);
             }
+            Act::CLocalPicture(start) => {
+                if start {
+                    self.model.set_mode(crate::composer::Mode::Chat, None);
+                    if self.model.start_turn(LOCAL_PICTURE_Q).is_some() {
+                        self.model.doing = Some("Looking at image…".to_owned());
+                        self.start_ticker(cx);
+                    } else {
+                        log("TOUR error the picture turn did not start");
+                    }
+                } else {
+                    self.model.doing = None;
+                    self.model
+                        .finish_turn(&outcome(LOCAL_PICTURE_A), context(3_200, 120));
+                    self.model.reveal_all();
+                    self.scroll.scroll_to_bottom();
+                }
+                log(&format!(
+                    "TOUR note working line {:?}",
+                    self.model.working_line().map(|w| w.phrase)
+                ));
+                cx.notify();
+            }
+            Act::CReadAloud(step) => {
+                use tern_agent::read_aloud::{Phase, Status};
+                let Some(entry) = self.last_answer() else {
+                    log("TOUR error no answer to read aloud");
+                    return;
+                };
+                let session = self.current;
+                let phase = match step {
+                    0 => Some((Phase::Preparing, 0)),
+                    1 => Some((Phase::Playing, 1)),
+                    2 => Some((Phase::Paused, 1)),
+                    _ => None,
+                };
+                self.read_aloud = phase.map(|(phase, sentence)| super::read_aloud_view::ReadingNow {
+                    entry,
+                    session,
+                    model: "kokoro-82m-int8".into(),
+                    player: None,
+                    status: Status {
+                        phase,
+                        sentence,
+                        sentences: 3,
+                    },
+                });
+                log(&format!(
+                    "TOUR note read aloud {}",
+                    self.read_aloud
+                        .as_ref()
+                        .map(|r| super::read_aloud_view::status_label(&r.status))
+                        .unwrap_or_else(|| "stopped (speaker button)".into())
+                ));
+                cx.notify();
+            }
+            Act::CLocalFailed(on) => {
+                self.model.local_failed = on.then(|| crate::chatflow::LocalFailure {
+                    id: "smolvlm-500m".into(),
+                    name: "SmolVLM 500M Instruct (Q8)".into(),
+                    task: tern_agent::local_models::Task::Vision,
+                    error: "the vision helper did not finish in 240 s".into(),
+                    alternative: Some((
+                        "smolvlm-256m".into(),
+                        "SmolVLM 256M Instruct (Q8)".into(),
+                        true,
+                    )),
+                    missing: false,
+                });
+                log(&format!(
+                    "TOUR note local banner {:?}",
+                    self.model.local_failed.as_ref().map(|f| f.line())
+                ));
+                cx.notify();
+            }
+            Act::CDictationAuto => {
+                use crate::dictation::Route;
+                let start = self.dictation_route.clone();
+                let silent = start.after_window(None, true, false);
+                let english = silent.after_window(Some("en"), true, true);
+                let urdu = Route::Detect.after_window(Some("ur"), true, true);
+                log(&format!(
+                    "TOUR note dictation auto: first recording starts {start:?}; a window with no words -> {silent:?}; heard en -> {english:?}; heard ur -> {urdu:?}"
+                ));
+            }
             Act::RunAutoOpen(on) => {
                 self.set_run_panel_auto(on);
                 log(&format!(
@@ -2158,6 +2256,11 @@ fn with_dir(text: &str) -> String {
     dir.push(std::path::MAIN_SEPARATOR);
     text.replace("{dir}/", &dir).replace("{dir}", &dir)
 }
+
+/// #69: the question and the local vision model's description in the
+/// local picture scene.
+const LOCAL_PICTURE_Q: &str = "What is in this picture?";
+const LOCAL_PICTURE_A: &str = "The picture shows a small green rectangle on a white background. It looks like a placeholder image. There is no visible text in it.";
 
 /// What the mock's transcription returns for any audio file.
 const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
@@ -2462,6 +2565,71 @@ fn composer_script() -> Vec<Beat> {
         ),
         b(Act::CState("mentions coloured"), 300),
         b(Act::ClearComposer, 500),
+        // #69: local pictures, documents, read aloud, the local banner and
+        // Auto dictation's first recording.
+        b(Act::CNewChat, 1500),
+        scene(
+            "c25-local-picture",
+            "tern-only",
+            "A picture read on this computer: \"Looking at image…\" leads the working line",
+            Act::CLocalPicture(true),
+            2500,
+        ),
+        b(Act::CState("looking at image"), 300),
+        b(Act::CLocalPicture(false), 1500),
+        b(Act::CState("local description answered"), 300),
+        scene(
+            "c26-read-aloud",
+            "tern-only",
+            "Read aloud under the answer: speaker button, then Preparing, Reading 2 of 3, Paused",
+            Act::CReadAloud(3),
+            2000,
+        ),
+        b(Act::CReadAloud(0), 1800),
+        b(Act::CReadAloud(1), 1800),
+        b(Act::CReadAloud(2), 1800),
+        b(Act::CReadAloud(3), 1000),
+        scene(
+            "c27-pdf-markdown",
+            "tern-only",
+            "A PDF attached: \"Converting report.pdf to Markdown…\", then the chip \"PDF text → Markdown · 2 pages\"",
+            Act::CAttach("report.pdf"),
+            2500,
+        ),
+        b(Act::CState("pdf converted"), 300),
+        b(Act::CAttach("notes.docx"), 2500),
+        b(Act::CState("docx converted"), 300),
+        b(Act::CRemoveChip, 300),
+        b(Act::CRemoveChip, 500),
+        scene(
+            "c28-local-banner",
+            "tern-only",
+            "A local model failed: the banner over the composer offers Use the alternative",
+            Act::CLocalFailed(true),
+            3000,
+        ),
+        b(Act::CState("local banner"), 300),
+        b(Act::CLocalFailed(false), 800),
+        scene(
+            "c29-dictation-auto",
+            "tern-only",
+            "Auto dictation: the first recording starts by detecting the language, like every later one",
+            Act::CDictationAuto,
+            800,
+        ),
+        b(Act::DictationLanguage("auto"), 300),
+        b(Act::DictateFrom("", 0), 600),
+        b(Act::Dictate("Hello from the first recording."), 2000),
+        b(Act::CState("first auto recording"), 300),
+        b(Act::ClearComposer, 500),
+        scene(
+            "c30-settings-read-aloud",
+            "tern-only",
+            "Settings › Speech › Read aloud: voice, speed and the voice model",
+            Act::Settings(Section::Speech),
+            3500,
+        ),
+        b(Act::CloseSettings, 800),
         scene(
             "c12-toasts",
             "tern-only",
@@ -2487,6 +2655,15 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     let _ = std::fs::write(dir.join("drafts").join("chapter-2.md"), "# Chapter 2\n");
     let _ = std::fs::write(dir.join("photo.png"), mock::png(96, 64));
     let _ = std::fs::write(dir.join("memo.wav"), mock::wav(16_000, 3));
+    // #69: a two-page PDF with a text layer and a small Word file.
+    let _ = std::fs::write(
+        dir.join("report.pdf"),
+        tern_agent::docs::sample_pdf(&[
+            "Quarterly report: revenue grew in Lahore and Islamabad this quarter.",
+            "Next steps: hire two engineers and ship the local models release.",
+        ]),
+    );
+    let _ = std::fs::write(dir.join("notes.docx"), tern_agent::docs::sample_docx());
     prefs.note_recent_file(&dir.join("tour-notes.md").display().to_string());
     match mock::start() {
         Ok(port) => {

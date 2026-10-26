@@ -47,6 +47,27 @@ impl Converted {
     }
 }
 
+/// A small PDF with one line of text per page (the UI tour, tests).
+pub fn sample_pdf(pages: &[&str]) -> Vec<u8> {
+    tern_crawl::pdf::sample(pages)
+}
+
+/// A small Word file: a heading, a paragraph and a list item (the UI tour).
+pub fn sample_docx() -> Vec<u8> {
+    use std::io::Write as _;
+    let doc = r#"<w:document xmlns:w="w"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Meeting notes</w:t></w:r></w:p><w:p><w:r><w:t>The demo is on Friday in Lab 3.</w:t></w:r></w:p></w:body></w:document>"#;
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut out);
+        let opts = zip::write::SimpleFileOptions::default();
+        if z.start_file("word/document.xml", opts).is_ok() {
+            let _ = z.write_all(doc.as_bytes());
+        }
+        let _ = z.finish();
+    }
+    out.into_inner()
+}
+
 /// `<!-- Tern: report.pdf → Markdown (PDF text, 12 pages) -->`.
 pub fn header(name: &str, how: &str, pages: Option<usize>) -> String {
     let pages = match pages {
