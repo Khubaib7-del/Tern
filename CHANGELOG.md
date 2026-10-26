@@ -17,7 +17,7 @@ From the Windows test of #67.
 - **Opening a link** shows chat and page half and half. The divider can be dragged between 30 % and 70 %. The sidebar folds away while the page is open and comes back when it closes. The pane opens on the Page tab.
 - **No flash when the browser opens or resizes.** The native page is hidden straight away only when the pane is not showing. A missed placement or a focus hand-off gets a 250 ms grace. With `TERN_PERF=1`, `tern.log` gets a PERF line for each show and hide.
 - **Scout stays left of the browser pane** while a page is open.
-- **UI tour** (composer): c21 types Urdu key by key and then `??` at the caret, c22 presses the arrow keys on Urdu, c23 shows the sent bubble and the sidebar title, and c24 shows coloured `@` references. The state line logs the caret, direction, mentions and title.
+- **UI tour** (composer): c21 types Urdu key by key and then `??` at the caret, c22 presses the arrow keys on Urdu, c23 shows the sent bubble and the sidebar title, and c24 shows coloured `@` references. The state line logs the caret, direction, mentions and title. Full tour: t46b turns the run panel's Auto-open off, t50b sets Settings › Speech › Dictation language, and t50c streams mocked dictated phrases in between `hello` and `world` through the mic's own path, the caret following. The Linux tour focuses the window with `xdotool`, so its frames show the caret.
 
 ### Changed (PR #67): search quality and GPU speech
 

@@ -292,9 +292,11 @@ pub fn nothing_heard_note(d: &Dictation, samples: &[f32]) -> Option<String> {
         })
 }
 
-/// Where dictated text goes in the composer (#68): at the end of the
-/// text dictated so far, so the caret follows it, unless the user moved
-/// the caret during dictation; then at the caret.
+/// Where dictated text goes in the composer (#68): at the caret, and the
+/// caret follows each phrase, so the next one goes after it. A caret at
+/// the very start of text that was already there is the text field's
+/// default after its value was set, not a place the user chose: the first
+/// phrase then goes at the end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Caret {
     /// Where the caret was left (byte offset) after the last insert, or
@@ -313,14 +315,14 @@ impl Caret {
     }
 
     /// Puts `phrase` into `text` (caret at `cursor`) and returns the new
-    /// text and where the caret goes (the end of the phrase). The first
-    /// phrase goes at the end of the text unless the user moved the caret
-    /// since the recording started; later ones follow the last one, or go
-    /// where the user put the caret.
+    /// text and where the caret goes (the end of the phrase). Each phrase
+    /// goes at the caret: where the user clicked before or during the
+    /// recording, else right after the last phrase. Only a first phrase
+    /// with the caret still at the start of existing text goes at the end.
     pub fn place(&mut self, text: &str, cursor: usize, phrase: &str) -> (String, usize) {
         let cursor = cursor.min(text.len());
         let moved = self.left_at != Some(cursor);
-        let at = if !self.inserted && !moved {
+        let at = if !self.inserted && !moved && cursor == 0 {
             text.len()
         } else {
             cursor
@@ -588,6 +590,13 @@ mod tests {
         // The user clicks between words during dictation: text goes there.
         let (t, at) = c.place(&t, 5, "inserted");
         assert_eq!((t.as_str(), at), ("draft inserted more", 14));
+        // The caret put between two words before the mic started: the
+        // phrases go in there, one after the other.
+        let mut c = Caret::start(5);
+        let (t, at) = c.place("hello world", 5, "compare");
+        assert_eq!((t.as_str(), at), ("hello compare world", 13));
+        let (t, at) = c.place(&t, at, "retrieval");
+        assert_eq!((t.as_str(), at), ("hello compare retrieval world", 23));
         // Urdu, multi-byte.
         let mut c = Caret::start(0);
         let (t, at) = c.place("", 0, "آپ");
