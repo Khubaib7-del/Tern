@@ -4028,7 +4028,9 @@ impl Workspace {
                     .pl_2()
                     .pr_1()
                     .py_1()
-                    .max_w(px(280.))
+                    // Wide enough for "PDF text → Markdown · 2 pages ·
+                    // 48 lines" beside the role and remove buttons (#69).
+                    .max_w(px(440.))
                     .rounded_lg()
                     .border_1()
                     .border_color(if prompt { p.muted } else { p.border })
