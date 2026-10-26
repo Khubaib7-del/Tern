@@ -60,13 +60,17 @@ fn norm(s: &str) -> String {
         .join(" ")
 }
 
-/// Sentences with their end marks (`.`, `!`, `?`, `؟`, `۔`).
+/// Sentences with their end marks (`.`, `!`, `?`, `؟`, `۔`). A mark
+/// ends a sentence only before a space or the end, so "Amara.org" and
+/// "3.5" stay whole.
 fn sentences(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
         cur.push(c);
-        if matches!(c, '.' | '!' | '?' | '؟' | '۔' | '。') {
+        let at_break = chars.peek().is_none_or(|n| n.is_whitespace());
+        if at_break && matches!(c, '.' | '!' | '?' | '؟' | '۔' | '。') {
             let t = cur.trim().to_owned();
             if !t.is_empty() {
                 out.push(t);
