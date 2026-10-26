@@ -607,6 +607,7 @@ impl Workspace {
             model.panels =
                 crate::panels::Panels::from_prefs(prefs.sidebar_width, prefs.right_pane_width);
             model.composer.effort = prefs.effort();
+            model.run_panel_auto = prefs.run_panel_auto.unwrap_or(true);
         }
         // The harness, Study tab, right panel and sidebar as they were.
         model.choose_harness(shown.harness);
@@ -4724,6 +4725,13 @@ impl Workspace {
     }
 
     /// The run panel: one run in three views (Summary, Detailed, Raw).
+    /// The run panel's Auto-open switch (and Settings › Appearance),
+    /// remembered in preferences.
+    pub(crate) fn set_run_panel_auto(&mut self, on: bool) {
+        self.model.run_panel_auto = on;
+        self.save_ui_prefs(|p| p.run_panel_auto = Some(on));
+    }
+
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
@@ -4876,7 +4884,24 @@ impl Workspace {
                     .gap_1()
                     .min_w_0()
                     .child(tabs)
-                    .children(more),
+                    .children(more)
+                    .child(
+                        Button::new("run-auto-open")
+                            .capsule()
+                            .label("Auto-open")
+                            .ghost()
+                            .xsmall()
+                            .selected(self.model.run_panel_auto)
+                            .tooltip(if self.model.run_panel_auto {
+                                "Opens by itself for deep research. Click to keep it closed until you open it."
+                            } else {
+                                "Stays closed until you open it. Click to open it by itself for deep research."
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_run_panel_auto(!this.model.run_panel_auto);
+                                cx.notify();
+                            })),
+                    ),
             );
         let status: Option<AnyElement> = if let Some(line) = self.model.working_line() {
             Some(working_line(&line, p, self.reduced_motion, "panel").into_any_element())
@@ -5454,7 +5479,11 @@ impl Render for Workspace {
         // beside the chat; closing it keeps it closed for that run.
         if !self.model.is_busy() {
             self.rail_auto = false;
-        } else if !self.rail_auto && layout.panel_beside && self.model.screen == Screen::Chat {
+        } else if !self.rail_auto
+            && layout.panel_beside
+            && self.model.screen == Screen::Chat
+            && self.model.run_panel_opens_itself()
+        {
             let run = self.model.panel_run();
             if !run.checks.is_empty() || !run.ledger().sources.is_empty() {
                 self.rail_auto = true;
