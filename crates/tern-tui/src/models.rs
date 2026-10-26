@@ -65,7 +65,10 @@ pub(crate) enum ModelsCmd {
         #[arg(long)]
         model: Option<String>,
         /// What to ask about it.
-        #[arg(long, default_value = "Describe this picture in detail. Transcribe any visible text exactly.")]
+        #[arg(
+            long,
+            default_value = "Describe this picture in detail. Transcribe any visible text exactly."
+        )]
         prompt: String,
     },
     /// Speak English text with the local voice model (Kokoro) into a WAV
@@ -382,7 +385,8 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
             let started = std::time::Instant::now();
             let audio = lm.speak(&id, &text, &voice, speed)?;
             let wav = tern_agent::platform::audio::wav(&audio, 24_000);
-            std::fs::write(&out, wav).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+            std::fs::write(&out, wav)
+                .map_err(|e| format!("cannot write {}: {e}", out.display()))?;
             eprintln!(
                 "({id}, {:.1} s of speech in {:.1} s)",
                 audio.len() as f32 / 24_000.0,

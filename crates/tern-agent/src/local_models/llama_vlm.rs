@@ -101,7 +101,7 @@ pub fn helper_missing() -> String {
 }
 
 /// One run of the helper: what it printed and on what it ran.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub text: String,
     /// "GPU · Vulkan0 (Intel(R) UHD Graphics)" or "CPU".
