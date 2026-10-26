@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn the_main_terms_are_names_versions_and_quotes() {
         let t = Topic::of("SubQ Snap 1.1 AI model definition or meaning");
-        assert_eq!(t.key_terms(), ["subq snap", "subq", "snap 1.1"]);
+        assert_eq!(t.key_terms(), ["subq", "subq snap", "snap 1.1"]);
         let t = Topic::of("harness2 by Google AI model or project");
         assert_eq!(t.key_terms(), ["harness2"]);
         let t = Topic::of(r#"what is "mixture of experts" in Mistral"#);
