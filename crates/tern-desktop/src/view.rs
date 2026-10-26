@@ -2527,13 +2527,19 @@ impl Workspace {
         let Some(text) = self.dictation.as_mut().and_then(|d| d.take_committed()) else {
             return;
         };
+        self.insert_dictated(&text, window, cx);
+    }
+
+    /// Puts a dictated phrase into the composer and moves the caret to
+    /// its end (the UI tour streams mocked phrases through it too).
+    fn insert_dictated(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         // At the end of what was dictated so far (the caret follows it),
         // or where the user put the caret during dictation (#68).
         let (now, cursor) = {
             let c = self.composer.read(cx);
             (c.value().to_string(), c.cursor())
         };
-        let (joined, at) = self.dictation_caret.place(&now, cursor, &text);
+        let (joined, at) = self.dictation_caret.place(&now, cursor, text);
         self.model.chat_here = self.current;
         self.model.on_composer_text(&joined);
         self.composer.update(cx, |c, cx| {
@@ -4757,13 +4763,14 @@ impl Workspace {
         row.into_any_element()
     }
 
-    /// The run panel: one run in three views (Summary, Detailed, Raw).
     /// The run panel's Auto-open switch (and Settings › Appearance),
     /// remembered in preferences.
     pub(crate) fn set_run_panel_auto(&mut self, on: bool) {
         self.model.run_panel_auto = on;
         self.save_ui_prefs(|p| p.run_panel_auto = Some(on));
     }
+
+    /// The run panel: one run in three views (Summary, Detailed, Raw).
 
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();

@@ -288,6 +288,15 @@ enum Act {
     CKeys(&'static str),
     /// Composer tour: the Left (`true`) or Right arrow key in the composer.
     CArrow(bool),
+    /// Settings › Speech › Dictation language (`auto`, `en`, `ur`, ...).
+    DictationLanguage(&'static str),
+    /// Sets the composer's text with the caret at this byte offset, and
+    /// starts a mocked recording there (#68: dictation at the caret).
+    DictateFrom(&'static str, usize),
+    /// A mocked dictated phrase, through the same path as the mic's.
+    Dictate(&'static str),
+    /// The run panel's Auto-open switch.
+    RunAutoOpen(bool),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -783,6 +792,16 @@ fn script() -> Vec<Beat> {
             2000,
         ),
         b(Act::RightPanel(true), 1200),
+        // #68: the run panel opens by itself only for deep research and
+        // only with Auto-open on; the switch is in its header.
+        scene(
+            "t46b-run-auto-open-off",
+            "tern-only",
+            "Run panel header: Auto-open off (it stays closed until opened)",
+            Act::RunAutoOpen(false),
+            2500,
+        ),
+        b(Act::RunAutoOpen(true), 800),
         scene(
             "t47-model-picker",
             "tern-only",
@@ -809,6 +828,29 @@ fn script() -> Vec<Beat> {
             3000,
         ),
         b(Act::DictationEnd, 300),
+        // #68: Settings › Speech › Dictation language, then dictated
+        // phrases go in at the caret and the caret follows them.
+        b(Act::Settings(Section::Speech), 1200),
+        scene(
+            "t50b-dictation-language",
+            "tern-only",
+            "Settings › Speech › Dictation language: Urdu",
+            Act::DictationLanguage("ur"),
+            2500,
+        ),
+        b(Act::DictationLanguage("auto"), 600),
+        b(Act::CloseSettings, 800),
+        scene(
+            "t50c-dictation-caret",
+            "tern-only",
+            "Dictation at the caret: phrases go in between hello and world, the caret follows",
+            Act::DictateFrom("hello world", 5),
+            1500,
+        ),
+        b(Act::Dictate("compare retrieval"), 900),
+        b(Act::Dictate("policies by cost"), 900),
+        b(Act::Dictate("per question"), 2500),
+        b(Act::ClearComposer, 300),
         scene(
             "t51-context-ring",
             "tern-only",
@@ -1818,6 +1860,38 @@ impl Workspace {
                 ));
                 cx.notify();
             }
+            Act::DictationLanguage(code) => {
+                self.save_dictation_language(code);
+                log(&format!(
+                    "TOUR note dictation language {:?}",
+                    self.model.providers.prefs.dictation_language
+                ));
+                cx.notify();
+            }
+            Act::DictateFrom(text, at) => {
+                self.composer.update(cx, |c, cx| {
+                    c.set_value(text, window, cx);
+                    c.set_selected_range(at..at, cx);
+                    c.focus(window, cx);
+                });
+                self.dictation_caret = crate::dictation::Caret::start(at);
+                self.log_dictation("caret placed");
+                self.log_caret(cx);
+            }
+            Act::Dictate(phrase) => {
+                self.insert_dictated(phrase, window, cx);
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+                self.log_caret(cx);
+            }
+            Act::RunAutoOpen(on) => {
+                self.set_run_panel_auto(on);
+                log(&format!(
+                    "TOUR note run panel auto-open {} (opens itself: {})",
+                    self.model.run_panel_auto,
+                    self.model.run_panel_opens_itself()
+                ));
+                cx.notify();
+            }
             Act::Quit => {
                 let t = self.tour.as_ref().map(|t| t.started.elapsed().as_secs_f32());
                 log(&format!(
@@ -1889,6 +1963,22 @@ impl Workspace {
     /// A scene-log line with the composer's text, chips, audio in flight,
     /// the open @ rows, the chat's last answer, and the toasts, so a
     /// recording's frames can be checked against what the app held.
+    fn log_dictation(&self, what: &str) {
+        log(&format!(
+            "TOUR dictation {what}: language={:?}",
+            self.model.providers.prefs.dictation_language
+        ));
+    }
+
+    /// A scene-log line with the composer's text and caret.
+    fn log_caret(&self, cx: &mut Context<Self>) {
+        let c = self.composer.read(cx);
+        let text = c.value().to_string();
+        let at = c.cursor();
+        let (head, tail) = text.split_at(at.min(text.len()));
+        log(&format!("TOUR caret {head}|{tail} (at {at})"));
+    }
+
     fn log_composer_state(&self, what: &str, cx: &mut Context<Self>) {
         use crate::model::Entry;
         let text = self.composer.read(cx).value().to_string();
