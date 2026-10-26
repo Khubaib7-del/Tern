@@ -26,6 +26,18 @@ whisper: engine=whisper.cpp cpu 4 threads (no Vulkan driver (vulkan-1.dll not fo
 
 and the GPU probe one line, `speech: gpu probe: …`.
 
+## Dictation (#68)
+
+The mic's live dictation picks its engine from **Settings › Speech › Dictation language**. The choice is saved as `dictation_language` in `preferences.json`.
+
+- **English**: Moonshine Streaming, phrase by phrase, with at most 4 threads.
+- **Any of the other 17 languages** (Urdu, Arabic, Hindi, Persian, Chinese, Spanish…): Whisper, re-run every 2–5 s over the open window. The words show grey until the window closes at a pause.
+- **Auto** (default): the first window goes to Whisper, which detects the language. English then moves to Moonshine, and anything else stays on Whisper.
+
+Moonshine knows only English. Given Urdu, it writes English that was never said, such as "You will not be able to do anything" over and over. The speech guard (`crates/tern-agent/src/speech_guard.rs`) keeps that out of the composer. It drops runs of the same words, a sentence repeated from the window before, and the phrases models write on silence ("Thank you.", "Thanks for watching", "Subtitles by the Amara.org community"). A window with no speech counts as a pause, so it shows no error. Dictated text goes in at the caret, and the caret moves with it.
+
+**Last transcription** in Settings › Speech names the model, the device (GPU or CPU and threads) and how long it took, for every engine.
+
 ## Fallback to the CPU
 
 - **No GPU, no driver**: ggml's Vulkan backend registers no device and Whisper runs on the CPU.

@@ -33,6 +33,10 @@ When the service is **Wikipedia** and nothing on-topic is left, the tool tells t
 
 The `web_search` tool asks the model for a short keyword query of 2–6 words (names, products, versions), not the user's whole sentence, and to call it once per separate topic. The status line names the service ("Searching Wikipedia…"), and the answer's working rollup says which service answered and how many off-topic pages were dropped ("Searched 1 on Wikipedia · 6 off-topic dropped").
 
+## Compound names (#68)
+
+A name made of several words, or one with a version (`SubQ Snap 1.1`), is matched as a whole. A result must contain the name (`SubQ Snap`), or every one of its distinctive words (`SubQ` and `Snap`). One of them alone is not enough: on the Windows test, Wikipedia's medical pages matched `Snap` and got through. When the question has two or more strong words, the keyword fallback never searches just one of them. The fixture `crates/tern-agent/tests/fixtures/wiki-subq-medical.json` holds the pages from that log, and its test checks that none of them is kept.
+
 ## Tavily or Brave
 
 Desktop: **Providers › Search**, paste the key on the service's row. Terminal:
