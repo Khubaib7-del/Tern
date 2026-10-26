@@ -4771,7 +4771,6 @@ impl Workspace {
     }
 
     /// The run panel: one run in three views (Summary, Detailed, Raw).
-
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
         let view = self.model.run_panel.view;
