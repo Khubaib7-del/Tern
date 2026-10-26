@@ -226,6 +226,7 @@ impl std::fmt::Debug for Msg {
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
             Self::Info(e) => write!(f, "Info({e})"),
+            Self::Doing(d) => write!(f, "Doing({d:?})"),
             Self::Compacted(_, r, _) => write!(f, "Compacted(ok: {})", r.is_ok()),
             Self::Catalog(c) => write!(f, "Catalog({} providers)", c.providers.len()),
             Self::FileTranscribed(id, r) => {
