@@ -1008,7 +1008,13 @@ fn read_local(id: &str, describe: bool, images: &[ImageInput]) -> Result<Vec<Str
             .decode(&img.data)
             .map_err(|e| format!("{} is not readable: {e}", img.name))?;
         let text = if describe {
-            lm.describe(id, &bytes, LOCAL_DESCRIBE)?
+            let d = lm.describe(id, &bytes, LOCAL_DESCRIBE)?;
+            // A small vision model misreads text; the local OCR model's
+            // reading goes with the description when there is one (#69).
+            match ocr_with_description(&lm, &bytes) {
+                Some(t) => format!("{}\n\nText in the picture (local OCR):\n{t}", d.trim()),
+                None => d,
+            }
         } else {
             lm.ocr(id, &bytes)?
         };
@@ -1022,6 +1028,19 @@ fn read_local(id: &str, describe: bool, images: &[ImageInput]) -> Result<Vec<Str
         texts.push(text);
     }
     Ok(texts)
+}
+
+/// The local OCR model's reading of a picture already described, when an
+/// OCR model is installed, on and runnable and finds text.
+fn ocr_with_description(lm: &crate::local_models::LocalModels, image: &[u8]) -> Option<String> {
+    let prefs = crate::prefs::Preferences::load();
+    let ocr = lm
+        .usable(&prefs.local_models, crate::local_models::Task::Ocr)
+        .filter(|e| crate::local_models::can_run(e))?;
+    lm.ocr(&ocr.id, image)
+        .ok()
+        .map(|t| t.trim().to_owned())
+        .filter(|t| !t.is_empty())
 }
 
 /// What a small local vision model is asked.
