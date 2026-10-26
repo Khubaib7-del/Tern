@@ -97,7 +97,8 @@ pub fn sentences(text: &str) -> Vec<String> {
         let chars: Vec<char> = line.chars().collect();
         for (i, &c) in chars.iter().enumerate() {
             cur.push(c);
-            let end = matches!(c, '.' | '!' | '?' | '…')
+            // Urdu's full stop and question mark end a sentence too.
+            let end = matches!(c, '.' | '!' | '?' | '…' | '۔' | '؟')
                 && chars.get(i + 1).is_none_or(|n| n.is_whitespace())
                 && !ends_with_abbreviation(&cur);
             let too_long = cur.chars().count() >= 300 && c.is_whitespace();

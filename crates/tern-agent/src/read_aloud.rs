@@ -109,21 +109,18 @@ pub fn voice_model(lm: &LocalModels, prefs: &LocalModelPrefs) -> Result<String, 
 /// Checks `text` before reading: the spoken sentences, or why not.
 pub fn prepare(text: &str) -> Result<Vec<String>, Missing> {
     let spoken = speakable(text);
-    if spoken.trim().is_empty() {
+    let all = sentences(&spoken);
+    let words: Vec<&String> = all.iter().filter(|s| *s != CODE_BLOCK).collect();
+    if words.is_empty() {
+        // Nothing, or only code (the placeholder alone).
         return Err(Missing::Empty);
     }
-    if !readable(&spoken) {
+    // English sentences of a mixed answer are read; an answer with none
+    // (Urdu) gets the note.
+    if !words.iter().any(|s| readable(s)) {
         return Err(Missing::NotEnglish);
     }
-    let s: Vec<String> = sentences(&spoken)
-        .into_iter()
-        .filter(|s| readable(s))
-        .collect();
-    // Only code: nothing worth reading (the placeholder alone).
-    if s.iter().all(|x| x == CODE_BLOCK) {
-        return Err(Missing::Empty);
-    }
-    Ok(s)
+    Ok(all.into_iter().filter(|s| readable(s)).collect())
 }
 
 struct Inner {
