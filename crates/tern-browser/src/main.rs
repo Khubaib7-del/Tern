@@ -19,6 +19,7 @@
 //! ```
 
 use std::io::{BufRead as _, Write as _};
+use std::time::{Duration, Instant};
 
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event as TaoEvent, StartCause, WindowEvent};
@@ -35,6 +36,66 @@ enum Wake {
     Orphaned,
     /// The page reported something (sent from wry's handlers).
     Out(Event),
+    /// A real page (not `about:blank`) finished loading.
+    Painted,
+}
+
+/// How long a page that is still loading may stay hidden after the app
+/// asked to show it.
+const REVEAL_MAX: Duration = Duration::from_millis(2500);
+
+/// Whether the docked window shows when the app asks (#68). A page that
+/// has not finished loading is a white rectangle, so it stays hidden,
+/// with Tern's own reading of the page under it, until it has loaded or
+/// for at most [`REVEAL_MAX`].
+#[derive(Debug, Default)]
+struct Reveal {
+    loaded: bool,
+    asked: Option<Instant>,
+}
+
+impl Reveal {
+    /// The app asked to show the page: whether to show it now.
+    fn show(&mut self, now: Instant) -> bool {
+        if self.loaded {
+            self.asked = None;
+            true
+        } else {
+            self.asked.get_or_insert(now);
+            false
+        }
+    }
+
+    fn hide(&mut self) {
+        self.asked = None;
+    }
+
+    /// A new address starts loading: a later show waits for it.
+    fn navigate(&mut self) {
+        self.loaded = false;
+    }
+
+    /// The page finished loading: whether a waiting show goes through.
+    fn loaded(&mut self) -> bool {
+        self.loaded = true;
+        self.asked.take().is_some()
+    }
+
+    /// When the loop should wake to show a page that is taking long.
+    fn deadline(&self) -> Option<Instant> {
+        self.asked.map(|t| t + REVEAL_MAX)
+    }
+
+    /// The loop woke at `now`: whether a waiting show is due.
+    fn due(&mut self, now: Instant) -> bool {
+        match self.asked {
+            Some(t) if now >= t + REVEAL_MAX => {
+                self.asked = None;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -143,6 +204,9 @@ fn build_view(
             let loading = matches!(e, wry::PageLoadEvent::Started);
             let _ = loads.send_event(Wake::Out(Event::Loading { loading }));
             if !loading {
+                if !url.starts_with("about:") {
+                    let _ = loads.send_event(Wake::Painted);
+                }
                 let _ = loads.send_event(Wake::Out(Event::Url { url }));
             }
         })
@@ -180,9 +244,16 @@ fn read_stdin(proxy: EventLoopProxy<Wake>) {
 }
 
 /// Applies one command. Returns `false` to exit.
-fn apply(cmd: Command, window: &Window, view: &WebView, detached: &mut bool) -> bool {
+fn apply(
+    cmd: Command,
+    window: &Window,
+    view: &WebView,
+    detached: &mut bool,
+    reveal: &mut Reveal,
+) -> bool {
     match cmd {
         Command::Navigate { url } => {
+            reveal.navigate();
             if let Err(e) = view.load_url(&url) {
                 emit(&Event::Error {
                     message: e.to_string(),
@@ -205,9 +276,14 @@ fn apply(cmd: Command, window: &Window, view: &WebView, detached: &mut bool) -> 
             }
         }
         Command::Show => {
-            window.set_visible(true);
+            if *detached || reveal.show(Instant::now()) {
+                window.set_visible(true);
+            }
         }
-        Command::Hide => window.set_visible(false),
+        Command::Hide => {
+            reveal.hide();
+            window.set_visible(false);
+        }
         Command::Detach { detached: d } => {
             *detached = d;
             window.set_decorations(d);
@@ -269,6 +345,7 @@ fn main() {
         read_stdin(proxy);
     }
     let base_title = args.title.clone().unwrap_or_else(|| "Tern browser".into());
+    let mut reveal = Reveal::default();
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         // Keep these alive for as long as the loop runs.
@@ -283,9 +360,19 @@ fn main() {
                     });
                 }
             }
+            TaoEvent::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                if reveal.due(Instant::now()) {
+                    window.set_visible(true);
+                }
+            }
             TaoEvent::UserEvent(Wake::Cmd(cmd)) => {
-                if !apply(cmd, &window, &view, &mut detached) {
+                if !apply(cmd, &window, &view, &mut detached, &mut reveal) {
                     *flow = ControlFlow::Exit;
+                }
+            }
+            TaoEvent::UserEvent(Wake::Painted) => {
+                if reveal.loaded() {
+                    window.set_visible(true);
                 }
             }
             TaoEvent::UserEvent(Wake::Orphaned) => *flow = ControlFlow::Exit,
@@ -317,5 +404,43 @@ fn main() {
             },
             _ => {}
         }
+        // A show waiting for its page wakes the loop when it is due.
+        if matches!(*flow, ControlFlow::Wait)
+            && let Some(at) = reveal.deadline()
+        {
+            *flow = ControlFlow::WaitUntil(at);
+        }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_still_loading_shows_once_it_has_loaded() {
+        let now = Instant::now();
+        let mut r = Reveal::default();
+        r.navigate();
+        assert!(!r.show(now), "white while loading: wait");
+        assert_eq!(r.deadline(), Some(now + REVEAL_MAX));
+        assert!(r.loaded(), "the waiting show goes through");
+        assert_eq!(r.deadline(), None);
+        assert!(r.show(now), "a loaded page shows at once");
+    }
+
+    #[test]
+    fn a_slow_page_shows_after_the_wait_and_a_hide_cancels_it() {
+        let now = Instant::now();
+        let mut r = Reveal::default();
+        assert!(!r.show(now));
+        assert!(!r.due(now + REVEAL_MAX / 2));
+        assert!(r.due(now + REVEAL_MAX));
+        assert!(!r.loaded(), "nothing waits any more");
+        let mut r = Reveal::default();
+        assert!(!r.show(now));
+        r.hide();
+        assert!(!r.due(now + REVEAL_MAX));
+        assert!(!r.loaded(), "a hidden pane does not pop up on load");
+    }
 }
