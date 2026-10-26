@@ -115,7 +115,7 @@ jobs:
         run: .github/scripts/build-vlm.sh "$PWD/vlm-out"
       - name: Put tern-vlm beside tern-desktop.exe (target/release/vlm)
         shell: bash
-        run: rm -rf target/release/vlm && cp -r vlm-out target/release/vlm && ls -la target/release/vlm
+        run: rm -rf target/release/vlm && cp -r vlm-out target/release/vlm && cp NOTICE target/release/NOTICE.txt && ls -la target/release/vlm
       - name: whisper.cpp's compiler flags (must hold /O2)
         shell: bash
         run: |
@@ -168,6 +168,7 @@ jobs:
             target/release/tern.exe
             target/release/tern-browser.exe
             target/release/vlm/
+            target/release/NOTICE.txt
           retention-days: 14
       - name: ffmpeg for the speech benchmark
         shell: pwsh
@@ -275,7 +276,7 @@ jobs:
           cp -a target/release/vlm "$out/vlm"
           cp crates/tern-desktop/packaging/linux/io.github.khubaib7_del.Tern.desktop "$out/share/applications/"
           cp assets/brand/tern-app-icon.png "$out/share/icons/hicolor/512x512/apps/io.github.khubaib7_del.Tern.png"
-          cp LICENSE "$out/"
+          cp LICENSE NOTICE "$out/"
           printf '%s\n' \
             'Tern (pre-alpha, not released). Linux x64 build from CI.' \
             'Run ./tern-desktop for the app or ./tern for the CLI.' \
@@ -352,7 +353,7 @@ jobs:
           mv "$app" tern-macos-arm64/
           cp target/release/tern target/release/tern-browser tern-macos-arm64/
           cp -a vlm-out tern-macos-arm64/vlm
-          cp LICENSE tern-macos-arm64/
+          cp LICENSE NOTICE tern-macos-arm64/
           printf '%s\n' \
             'Tern (pre-alpha, not released). macOS arm64 build from CI, unsigned.' \
             'First launch: right-click Tern.app, choose Open, then Open again (Gatekeeper).' \

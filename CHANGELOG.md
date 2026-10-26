@@ -4,6 +4,19 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #69): local pictures, documents to Markdown, read aloud
+
+- **Pictures described on this computer**: SmolVLM 500M (default), SmolVLM 256M (new, the first alternative: half the size, faster on an older laptop) and Qwen3-VL 2B run on llama.cpp through `tern-vlm`, a helper program shipped in `vlm/` beside the app (llama.cpp `b11900` `llama-mtmd-cli`, built by CI with `.github/scripts/build-vlm.sh`: ggml's CPU and Vulkan backends loaded at run time on Windows and Linux, Metal on macOS). A helper keeps a crash in the C++ runtime or a GPU driver out of Tern. Settings › Speech › Device applies: Auto and GPU offload every layer and run again on the CPU when that fails; at most four CPU threads; a 240 s limit; no console window on Windows. Each run logs model, device, threads and time. The status line says "Looking at image…" while a local model reads a picture, and the local OCR text goes with the description.
+- **Documents become Markdown** before the model sees them (`tern_agent::docs`): PDF text page by page, scanned pages through Granite-Docling (DocTags → Markdown) or the local OCR model, DOCX (headings, lists, tables), PPTX (a section per slide), XLSX (a table per sheet) and HTML; cached by SHA-256. The chip says how: "PDF text → Markdown · 12 pages". While one document converts, the composer says "Converting report.pdf to Markdown…".
+- **Read aloud**: a speaker button under every answer reads it with Kokoro 82M on this computer (ONNX Runtime through `loqui-kokoro` and `loqui-g2p`, MIT; misaki's English lexicons, no espeak-ng), sentence by sentence, with Pause/Play, Stop and "Reading 2 of 5". **Settings › Speech › Read aloud**: voice (Heart, Michael, Emma, George), speed (0.8×–1.3×) and the voice model in use. English only: an Urdu answer gets a note.
+- **A failed local model is a banner, never a crash**: over the composer, for every local job (OCR, speech, pictures, documents, read aloud), with **Use the alternative** or **Download**.
+- **Auto dictation's first recording** routes like every later one: Auto starts in the detecting state, the models folder is read before the first recording if it was not yet, and windows with no words stay on Whisper until one has words.
+- **GPUI**: `third_party/gpui-pre` guards `window.rs` so a `current_view()` call outside a draw no longer panics.
+- **CLI**: `tern models describe <picture>`, `tern models speak "text" --out a.wav`, `tern models convert <file>`.
+- **CI**: `tern-vlm` is built (cached) on Windows, Linux and macOS and shipped in each test build's `vlm/`; on Windows `tern-vlm.exe --list-devices` runs with the Vulkan loader hidden; on Linux `.github/scripts/local-runtimes-smoke.sh` describes a test picture with SmolVLM 256M, speaks a sentence with Kokoro and converts a DOCX with the release `tern` (models cached).
+- **NOTICE** lists the third-party pieces #69 ships or downloads (llama.cpp, loqui, misaki, SmolVLM, Kokoro, Granite-Docling).
+- Docs: [local-models.md](docs/local-models.md#pictures-documents-and-read-aloud-69), [speech.md](docs/speech.md#read-aloud-69).
+
 ### Fixed (PR #68): Windows test, round 2
 
 From the Windows test of #67.
