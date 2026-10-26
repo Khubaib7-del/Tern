@@ -86,7 +86,6 @@ fn sentences(text: &str) -> Vec<String> {
 /// becomes one. Short runs (1–2 words) need three copies, so "very very"
 /// stays.
 fn collapse_runs(words: Vec<&str>) -> Vec<&str> {
-    let key = |w: &str| norm(w);
     let mut out: Vec<&str> = Vec::new();
     for w in words {
         out.push(w);
@@ -101,7 +100,7 @@ fn collapse_runs(words: Vec<&str>) -> Vec<&str> {
                 out[start..start + n]
                     .iter()
                     .zip(tail)
-                    .all(|(a, b)| key(a) == key(b))
+                    .all(|(a, b)| norm(a) == norm(b))
             });
             if repeated {
                 let keep = out.len() - n * (copies - 1);
