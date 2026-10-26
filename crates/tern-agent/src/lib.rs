@@ -59,6 +59,7 @@ pub mod protocol;
 pub mod providers;
 pub mod range;
 pub mod refs;
+pub mod relevance;
 pub mod reply;
 pub mod report;
 pub mod rules;
