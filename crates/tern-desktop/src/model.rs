@@ -454,6 +454,10 @@ pub struct Model {
     pub all_sessions: Vec<SessionSummary>,
     pub sidebar_open: bool,
     pub run_panel_open: bool,
+    /// Whether the run panel opens by itself for a deep research run
+    /// (#68: its Auto-open switch and Settings › Appearance). A plain
+    /// chat question never opens it.
+    pub run_panel_auto: bool,
     pub run_panel: RunPanel,
     /// The latest turn's run, kept even when it ended without an answer.
     pub last_run: Run,
@@ -674,6 +678,7 @@ impl Model {
             all_sessions: Vec::new(),
             sidebar_open: true,
             run_panel_open: false,
+            run_panel_auto: true,
             run_panel: RunPanel::default(),
             last_run: Run::new(),
             dark: true,
@@ -2042,7 +2047,16 @@ impl Model {
             editing: false,
         };
         self.run_panel.view = RunView::Workers;
-        self.run_panel_open = true;
+        if self.run_panel_auto {
+            self.run_panel_open = true;
+        }
+    }
+
+    /// Whether a run that just found sources opens the panel by itself:
+    /// only a deep research run, and only with Auto-open on (#68: it
+    /// opened on every question).
+    pub fn run_panel_opens_itself(&self) -> bool {
+        self.run_panel_auto && self.deep_mode
     }
 
     /// The plan card's Edit and Discard edits.

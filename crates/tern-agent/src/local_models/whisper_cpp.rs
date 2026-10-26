@@ -281,6 +281,9 @@ impl LocalEngine for WhisperCpp {
         ctl.set_progress(100);
         // The language whisper heard (auto-detect unless one was given).
         let heard = whisper_rs::get_lang_str(state.full_lang_id_from_state()).unwrap_or("?");
+        if heard != "?" {
+            ctl.set_heard(heard);
+        }
         if let Ok(mut t) = LAST.lock() {
             t.push_str(&format!(", language {heard} (asked {lang})"));
         }

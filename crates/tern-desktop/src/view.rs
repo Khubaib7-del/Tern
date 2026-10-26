@@ -85,6 +85,22 @@ pub const NO_VOICE_MODEL: &str = "No voice model available — download one in S
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
 
+/// Sets the composer's text with the caret at its end (#68). The input's
+/// own `set_value` puts a multi-line input's caret at the start, so `@`
+/// from the button, a picked mention or command, or a restored draft
+/// left the caret before the text.
+pub(crate) fn set_end(
+    c: &mut TextareaState,
+    text: impl AsRef<str>,
+    window: &mut Window,
+    cx: &mut Context<TextareaState>,
+) {
+    let text: String = text.as_ref().to_owned();
+    let end = text.len();
+    c.set_value(text, window, cx);
+    c.set_selected_range(end..end, cx);
+}
+
 /// The one window of the app.
 pub struct Workspace {
     model: Model,
@@ -254,6 +270,12 @@ pub struct Workspace {
     window_w: f32,
     /// The right pane's width at the last render, for its header.
     side_w: f32,
+    /// The browser's share of the room beside the sidebar (#68: half),
+    /// whether opening it closed the sidebar (to reopen on close), and
+    /// whether it showed last frame.
+    browser_share: f32,
+    browser_hid_sidebar: bool,
+    browser_was_open: bool,
     /// The run panel's ⋯ menu of views that do not fit is open.
     run_more_open: bool,
     /// Sliding highlights and knobs, by control, and whether one moved
@@ -296,6 +318,14 @@ pub struct Workspace {
     /// timer that sends windows.
     dictation: Option<crate::dictation::Dictation>,
     dictation_model: Option<tern_agent::media::ModelRef>,
+    /// The fast English model and the Whisper one for this recording,
+    /// and which takes the next window (#68: Settings › Speech ›
+    /// Dictation language).
+    dictation_fast: Option<tern_agent::media::ModelRef>,
+    dictation_whisper: Option<tern_agent::media::ModelRef>,
+    dictation_route: crate::dictation::Route,
+    /// Where dictated text goes in the composer (follows the text).
+    dictation_caret: crate::dictation::Caret,
     dictation_samples: Vec<f32>,
     dictation_pos: usize,
     dictation_task: Option<Task<()>>,
@@ -583,6 +613,7 @@ impl Workspace {
             model.panels =
                 crate::panels::Panels::from_prefs(prefs.sidebar_width, prefs.right_pane_width);
             model.composer.effort = prefs.effort();
+            model.run_panel_auto = prefs.run_panel_auto.unwrap_or(true);
         }
         // The harness, Study tab, right panel and sidebar as they were.
         model.choose_harness(shown.harness);
@@ -687,6 +718,9 @@ impl Workspace {
             centre_x: 0.,
             window_w: 0.,
             side_w: crate::panels::RIGHT_DEFAULT,
+            browser_share: crate::browser::SPLIT_DEFAULT,
+            browser_hid_sidebar: false,
+            browser_was_open: false,
             run_more_open: false,
             glides: Default::default(),
             perf_strip: 0,
@@ -705,6 +739,10 @@ impl Workspace {
             pending_pick: None,
             dictation: None,
             dictation_model: None,
+            dictation_fast: None,
+            dictation_whisper: None,
+            dictation_route: crate::dictation::Route::Fast,
+            dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
             dictation_task: None,
@@ -803,7 +841,7 @@ impl Workspace {
                     );
                 }
             }
-            Msg::Dictated(seq, result) => self.dictated(seq, result, window, cx),
+            Msg::Dictated(seq, result, heard) => self.dictated(seq, result, heard, window, cx),
             Msg::Resumed(s, turns, recent) => {
                 self.resume_retry = None;
                 self.model.switching_to = None;
@@ -971,7 +1009,8 @@ impl Workspace {
                 self.apply_pending_pick();
                 // A message queued with Tab goes now.
                 if let Some(q) = self.queued.take() {
-                    self.composer.update(cx, |c, cx| c.set_value(q, window, cx));
+                    self.composer
+                        .update(cx, |c, cx| crate::view::set_end(c, q, window, cx));
                     self.submit(window, cx);
                 }
             }
@@ -1254,10 +1293,31 @@ impl Workspace {
         let deep = self.model.deep_mode;
         self.model.deep_mode = false;
         self.composer.update(cx, |c, cx| {
-            c.set_value(tern_agent::CONTINUE_PROMPT, window, cx)
+            crate::view::set_end(c, tern_agent::CONTINUE_PROMPT, window, cx)
         });
         self.submit(window, cx);
         self.model.deep_mode = deep;
+    }
+
+    /// The composer follows its text: right to left (right-aligned, arrow
+    /// keys swapped) when the first strong letter is Urdu, Arabic, Persian
+    /// or Hebrew, as `dir="auto"` on the web; `@` references in the accent
+    /// (#68). Both are no-ops while nothing changed.
+    fn style_composer(&mut self, p: Palette, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().to_string();
+        let rtl = crate::bidi::has_rtl(&text) && crate::bidi::is_rtl(&text);
+        let style = gpui_kit::HighlightStyle {
+            color: Some(p.accent),
+            ..Default::default()
+        };
+        let spans: Vec<_> = crate::composer::mention_spans(&text)
+            .into_iter()
+            .map(|r| (r, style))
+            .collect();
+        self.composer.update(cx, |c, cx| {
+            c.set_right_to_left(rtl, cx);
+            c.set_text_highlights(spans, cx);
+        });
     }
 
     /// Picks a row of the `@` menu (the highlighted one for `None`).
@@ -1270,7 +1330,7 @@ impl Workspace {
         let text = self.composer.read(cx).value().to_string();
         if let Some(chosen) = self.model.choose_mention(&text, index) {
             self.composer.update(cx, |c, cx| {
-                c.set_value(chosen.text, window, cx);
+                crate::view::set_end(c, chosen.text, window, cx);
                 c.focus(window, cx);
             });
             if chosen.browse {
@@ -2039,7 +2099,7 @@ impl Workspace {
                 self.new_chat(window, cx);
                 let draft = tab.place.draft.clone();
                 self.composer
-                    .update(cx, |c, cx| c.set_value(draft, window, cx));
+                    .update(cx, |c, cx| crate::view::set_end(c, draft, window, cx));
             }
         }
         self.persist_tabs();
@@ -2162,7 +2222,7 @@ impl Workspace {
         }
         let text = self.model.restore_draft(self.current);
         self.composer.update(cx, |c, cx| {
-            c.set_value(text, window, cx);
+            crate::view::set_end(c, text, window, cx);
             c.focus(window, cx);
         });
         cx.notify();
@@ -2250,6 +2310,19 @@ impl Workspace {
             .or_else(|| local.transcriber(Task::SpeechToText))
     }
 
+    /// The Whisper model dictation uses for languages other than English
+    /// (#68): a local Whisper model when one is installed and on, else
+    /// the provider speech-to-text model (they take a language too).
+    fn whisper_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        self.model
+            .settings
+            .local
+            .transcriber(Task::SpeechToText)
+            .filter(|m| m.model.starts_with("whisper"))
+            .or_else(|| self.remote_stt_model())
+    }
+
     /// The model that transcribes attached audio files: a local
     /// transcription model when one is installed and on (it runs on this
     /// computer), else the provider model the mic would use.
@@ -2283,16 +2356,70 @@ impl Workspace {
             self.stop_mic(window, cx);
             return;
         }
-        let Some(via) = self.stt_model() else {
+        use tern_agent::local_models::{Task, speech};
+        let fast = self.model.settings.local.transcriber(Task::Dictation);
+        let whisper = self.whisper_model();
+        let language =
+            speech::dictation_language(self.model.providers.prefs.dictation_language.as_deref());
+        let Some((route, note)) =
+            crate::dictation::Route::pick(language, fast.is_some(), whisper.is_some())
+        else {
+            // Nothing for the language rule: the old order (a provider
+            // model, a local transcription model), else no voice model.
+            let Some(via) = self.stt_model() else {
+                self.model.toast_error(NO_VOICE_MODEL, None);
+                cx.notify();
+                return;
+            };
+            self.start_recording(
+                via.clone(),
+                None,
+                Some(via),
+                crate::dictation::Route::Fast,
+                window,
+                cx,
+            );
+            return;
+        };
+        if let Some(n) = note {
+            self.model.toast_info(n);
+        }
+        let via = match route {
+            crate::dictation::Route::Fast => fast.clone(),
+            _ => whisper.clone(),
+        };
+        let Some(via) = via else {
             self.model.toast_error(NO_VOICE_MODEL, None);
             cx.notify();
             return;
         };
+        tern_agent::diag::note(&format!(
+            "dictation: language={} route={route:?} via={via}",
+            speech::language_name(language)
+        ));
+        self.start_recording(via, fast, whisper, route, window, cx);
+    }
+
+    /// Opens the mic and starts streaming windows to `via`.
+    fn start_recording(
+        &mut self,
+        via: tern_agent::media::ModelRef,
+        fast: Option<tern_agent::media::ModelRef>,
+        whisper: Option<tern_agent::media::ModelRef>,
+        route: crate::dictation::Route,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match tern_agent::platform::mic::Recording::start() {
             Ok(r) => {
                 self.recording = Some(r);
-                self.dictation = Some(crate::dictation::Dictation::new());
+                self.dictation = Some(crate::dictation::Dictation::with_pace(route.pace()));
                 self.dictation_model = Some(via);
+                self.dictation_fast = fast;
+                self.dictation_whisper = whisper;
+                self.dictation_route = route;
+                let cursor = self.composer.read(cx).cursor();
+                self.dictation_caret = crate::dictation::Caret::start(cursor);
                 self.dictation_samples.clear();
                 self.dictation_pos = 0;
                 self.start_dictation_timer(window, cx);
@@ -2361,7 +2488,11 @@ impl Workspace {
                 &self.dictation_samples[start..end],
                 tern_agent::platform::audio::SPEECH_RATE,
             );
-            self.bridge.dictate(via, req.seq, wav);
+            let language = match &self.dictation_route {
+                crate::dictation::Route::Whisper(l) => l.clone(),
+                crate::dictation::Route::Fast | crate::dictation::Route::Detect => None,
+            };
+            self.bridge.dictate(via, req.seq, wav, language);
         }
         self.commit_dictation(window, cx);
         let finished = self
@@ -2369,9 +2500,17 @@ impl Workspace {
             .as_ref()
             .is_some_and(|d| d.done(self.dictation_samples.len()));
         if finished {
+            // One note per recording at most (#68: "heard no speech"
+            // toasts kept popping for every pause).
             if let Some(e) = self.dictation.as_mut().and_then(|d| d.error.take()) {
                 self.model
                     .toast_error(format!("Some speech could not be transcribed: {e}"), None);
+            } else if let Some(n) = self
+                .dictation
+                .as_ref()
+                .and_then(|d| crate::dictation::nothing_heard_note(d, &self.dictation_samples))
+            {
+                self.model.toast_info(n);
             }
             self.dictation = None;
             self.dictation_model = None;
@@ -2388,16 +2527,25 @@ impl Workspace {
         let Some(text) = self.dictation.as_mut().and_then(|d| d.take_committed()) else {
             return;
         };
-        let now = self.composer.read(cx).value().to_string();
-        let joined = if now.trim().is_empty() {
-            text
-        } else {
-            format!("{} {text}", now.trim_end())
+        self.insert_dictated(&text, window, cx);
+    }
+
+    /// Puts a dictated phrase into the composer and moves the caret to
+    /// its end (the UI tour streams mocked phrases through it too).
+    fn insert_dictated(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // At the end of what was dictated so far (the caret follows it),
+        // or where the user put the caret during dictation (#68).
+        let (now, cursor) = {
+            let c = self.composer.read(cx);
+            (c.value().to_string(), c.cursor())
         };
+        let (joined, at) = self.dictation_caret.place(&now, cursor, text);
         self.model.chat_here = self.current;
         self.model.on_composer_text(&joined);
-        self.composer
-            .update(cx, |c, cx| c.set_value(joined, window, cx));
+        self.composer.update(cx, |c, cx| {
+            c.set_value(joined, window, cx);
+            c.set_selected_range(at..at, cx);
+        });
         cx.notify();
     }
 
@@ -2406,11 +2554,29 @@ impl Workspace {
         &mut self,
         seq: u64,
         result: Result<String, String>,
+        heard: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(d) = self.dictation.as_mut() {
             d.on_result(seq, result);
+            // Auto: the first window told which language it is.
+            if self.dictation_route == crate::dictation::Route::Detect {
+                let next = self
+                    .dictation_route
+                    .heard(heard.as_deref(), self.dictation_fast.is_some());
+                tern_agent::diag::note(&format!(
+                    "dictation: heard {} -> {next:?}",
+                    heard.as_deref().unwrap_or("?")
+                ));
+                d.set_pace(next.pace());
+                self.dictation_model = match next {
+                    crate::dictation::Route::Fast => self.dictation_fast.clone(),
+                    _ => self.dictation_whisper.clone(),
+                }
+                .or(self.dictation_model.take());
+                self.dictation_route = next;
+            }
         }
         self.pump_dictation(window, cx);
     }
@@ -2946,7 +3112,10 @@ impl Workspace {
                     .min_w_0()
                     .py(px(3.))
                     .truncate()
-                    .child(SharedString::from(s.title.clone())),
+                    // An Urdu title reads right to left, `??` at its left
+                    // end (#68).
+                    .when(crate::bidi::is_rtl(&s.title), |d| d.text_right())
+                    .child(SharedString::from(crate::bidi::display_line(&s.title))),
             )
             .when(running, |d| d.child(Spinner::new().xsmall()))
             // v2's one mark: ◆ when this chat is waiting on you.
@@ -3483,7 +3652,7 @@ impl Workspace {
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.composer.update(cx, |c, cx| {
-                                c.set_value(prompt.to_owned(), window, cx);
+                                crate::view::set_end(c, prompt, window, cx);
                                 c.focus(window, cx);
                             });
                             cx.notify();
@@ -4594,6 +4763,13 @@ impl Workspace {
         row.into_any_element()
     }
 
+    /// The run panel's Auto-open switch (and Settings › Appearance),
+    /// remembered in preferences.
+    pub(crate) fn set_run_panel_auto(&mut self, on: bool) {
+        self.model.run_panel_auto = on;
+        self.save_ui_prefs(|p| p.run_panel_auto = Some(on));
+    }
+
     /// The run panel: one run in three views (Summary, Detailed, Raw).
     fn run_panel(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let run = self.model.panel_run();
@@ -4606,8 +4782,11 @@ impl Workspace {
         let titles: Vec<String> = RailTab::ALL.iter().map(|t| t.title(run)).collect();
         let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
         let active = RailTab::ALL.iter().position(|&t| t == tab).unwrap_or(0);
-        let (show_label, shown, hidden) =
-            crate::panels::run_header_fit(&labels, self.side_w, active);
+        let (show_label, shown, hidden) = crate::panels::run_header_fit(
+            &labels,
+            self.side_w - crate::panels::AUTO_OPEN_W,
+            active,
+        );
         let segs: Vec<segmented::Segment> = shown
             .iter()
             .map(|&i| segmented::Segment::text(titles[i].clone()))
@@ -4747,7 +4926,24 @@ impl Workspace {
                     .gap_1()
                     .min_w_0()
                     .child(tabs)
-                    .children(more),
+                    .children(more)
+                    .child(
+                        Button::new("run-auto-open")
+                            .capsule()
+                            .label("Auto-open")
+                            .ghost()
+                            .xsmall()
+                            .selected(self.model.run_panel_auto)
+                            .tooltip(if self.model.run_panel_auto {
+                                "Opens by itself for deep research. Click to keep it closed until you open it."
+                            } else {
+                                "Stays closed until you open it. Click to open it by itself for deep research."
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_run_panel_auto(!this.model.run_panel_auto);
+                                cx.notify();
+                            })),
+                    ),
             );
         let status: Option<AnyElement> = if let Some(line) = self.model.working_line() {
             Some(working_line(&line, p, self.reduced_motion, "panel").into_any_element())
@@ -5279,7 +5475,7 @@ impl Render for Workspace {
         let build_from = Instant::now();
         if let Some(text) = self.composer_restore.take() {
             self.composer
-                .update(cx, |c, cx| c.set_value(text, window, cx));
+                .update(cx, |c, cx| crate::view::set_end(c, text, window, cx));
         }
         self.save_session_soon(cx);
         self.tick_scout(window, cx);
@@ -5325,7 +5521,11 @@ impl Render for Workspace {
         // beside the chat; closing it keeps it closed for that run.
         if !self.model.is_busy() {
             self.rail_auto = false;
-        } else if !self.rail_auto && layout.panel_beside && self.model.screen == Screen::Chat {
+        } else if !self.rail_auto
+            && layout.panel_beside
+            && self.model.screen == Screen::Chat
+            && self.model.run_panel_opens_itself()
+        {
             let run = self.model.panel_run();
             if !run.checks.is_empty() || !run.ledger().sources.is_empty() {
                 self.rail_auto = true;
@@ -5341,6 +5541,25 @@ impl Render for Workspace {
             Some(w) => w.palette(now),
             None => Palette::get(self.model.dark),
         };
+        self.style_composer(p, cx);
+        // A page opening shows chat | page half and half with the sidebar
+        // folded away (back when the page closes), on the Page tab (#68).
+        let browser_open = self.model.browser.visible
+            && self.model.run_panel_open
+            && self.model.screen != Screen::Settings;
+        if browser_open != self.browser_was_open {
+            if browser_open {
+                self.browser_share = crate::browser::SPLIT_DEFAULT;
+                self.model.browser.view = crate::browser::PaneView::Page;
+                if self.model.sidebar_open {
+                    self.model.sidebar_open = false;
+                    self.browser_hid_sidebar = true;
+                }
+            } else if std::mem::take(&mut self.browser_hid_sidebar) {
+                self.model.sidebar_open = true;
+            }
+            self.browser_was_open = browser_open;
+        }
         // Settings has its own section list: the chat list slides away
         // while it shows and comes back after.
         let sidebar = self.sidebar_slide.frame(
@@ -5376,7 +5595,17 @@ impl Render for Workspace {
             0.
         };
         let want = if self.model.browser.visible {
-            browser_view::BROWSER_W.max(right_w)
+            // Half of what is right of the rail and the sidebar: with the
+            // sidebar open, chat and page still get equal halves.
+            let handle = if beside_sidebar > 0. {
+                crate::panels::HANDLE_W
+            } else {
+                0.
+            };
+            crate::browser::split_width(
+                viewport_w - RAIL_W - beside_sidebar - handle,
+                self.browser_share,
+            )
         } else if side_docked {
             continuity_view::SIDE_W.max(right_w)
         } else if self.model.run_panel.view == RunView::Graph && self.model.screen != Screen::Study

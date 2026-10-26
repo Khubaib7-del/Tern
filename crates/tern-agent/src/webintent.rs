@@ -260,9 +260,13 @@ pub fn fallback_queries(query: &str) -> Vec<String> {
         .into_iter()
         .filter(|w| !crate::relevance::is_generic(w))
         .collect();
+    // A question with several distinctive words ("SubQ Snap 1.1") is
+    // never searched by one word alone: "SubQ" finds medical pages (#68).
+    let several = crate::relevance::Topic::of(query).distinctive_words() >= 2;
     let mut out: Vec<String> = Vec::new();
     let mut add = |q: String| {
         if !q.is_empty()
+            && !(several && !q.trim().contains(' '))
             && q.to_lowercase() != query.trim().to_lowercase()
             && !out.iter().any(|o| o.to_lowercase() == q.to_lowercase())
         {
@@ -452,7 +456,12 @@ mod tests {
         );
         assert_eq!(
             fallback_queries("SubQ Snap 1.1 AI model definition or meaning"),
-            ["SubQ Snap 1.1", "SubQ Snap", "SubQ"]
+            ["SubQ Snap 1.1", "SubQ Snap"]
+        );
+        // #68: several distinctive words never fall back to one of them.
+        assert_eq!(
+            fallback_queries("SubQ Snap 1.1 AI model"),
+            ["SubQ Snap 1.1", "SubQ Snap"]
         );
     }
 

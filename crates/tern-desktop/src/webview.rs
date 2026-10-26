@@ -68,11 +68,22 @@ enum Incoming {
 
 impl Process {
     fn spawn(exe: &std::path::Path, args: &[String]) -> Result<Self, String> {
-        let mut child = std::process::Command::new(exe)
-            .args(args)
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // The helper is a console program (so `tern-browser --help` and
+        // standalone runs print). Started from the windowed app it would
+        // open a console window of its own (#68: a black terminal window
+        // over Tern in the Windows tour while the page started).
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
         let mut stdin = child.stdin.take().ok_or("no stdin")?;
@@ -154,7 +165,20 @@ pub struct Host {
     pub owner: Option<isize>,
     /// Starts so far, to stop retrying forever when it keeps failing.
     starts: u32,
+    /// Since when the page has been off screen for a soft reason (not
+    /// placed this frame, or neither window in front), still shown.
+    away_since: Option<Instant>,
+    /// Show and hide commands sent, for the flicker check (`TERN_PERF`).
+    pub shows: u32,
+    pub hides: u32,
 }
+
+/// How long the page may miss being placed, or have neither Tern nor the
+/// page in front, before its window is hidden (#68). Hiding at once made
+/// the native page flash dark and back: a frame that re-rendered without
+/// painting the pane, or the moment focus passes from Tern to the page,
+/// hid it and the next frame showed it again.
+pub const AWAY_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -183,6 +207,9 @@ impl Default for Host {
             data_dir: None,
             owner: None,
             starts: 0,
+            away_since: None,
+            shows: 0,
+            hides: 0,
         }
     }
 }
@@ -213,7 +240,7 @@ impl Host {
     /// Whether the helper should be read every so often (it is starting,
     /// or the page is up and may report a new address or title).
     pub fn wants_ticks(&self) -> bool {
-        matches!(self.status, Status::Starting(_) | Status::Ready(_))
+        matches!(self.status, Status::Starting(_) | Status::Ready(_)) || self.away_since.is_some()
     }
 
     pub fn shared() -> Shared {
@@ -398,10 +425,27 @@ impl Host {
     /// should not show (or its element was not drawn last frame), and keep
     /// it on top only while Tern or the page is in front.
     pub fn frame(&mut self, show: bool, tern_active: bool) {
-        self.pump(Instant::now());
-        let front = tern_active || self.page_focused;
-        if !show || !self.seen || (!front && !self.detached) {
+        let now = Instant::now();
+        self.pump(now);
+        self.frame_at(show, tern_active, now);
+    }
+
+    /// [`Host::frame`] at `now`: hidden at once when the pane is not
+    /// showing; hidden after [`AWAY_GRACE`] when it was not placed or
+    /// neither window is in front.
+    fn frame_at(&mut self, show: bool, tern_active: bool, now: Instant) {
+        let front = tern_active || self.page_focused || self.detached;
+        if !show {
+            self.away_since = None;
             self.hide();
+        } else if !self.seen || !front {
+            let since = *self.away_since.get_or_insert(now);
+            if now.duration_since(since) >= AWAY_GRACE {
+                self.away_since = None;
+                self.hide();
+            }
+        } else {
+            self.away_since = None;
         }
         self.seen = false;
     }
@@ -413,6 +457,8 @@ impl Host {
             return;
         }
         self.shown = false;
+        self.hides += 1;
+        perf_line("hide", self.shows, self.hides);
         if !self.detached {
             self.send(Command::Hide);
             self.send(Command::OnTop { on_top: false });
@@ -438,6 +484,8 @@ impl Host {
             self.bounds = Some(rect);
         }
         if !self.shown {
+            self.shows += 1;
+            perf_line("show", self.shows, self.hides);
             self.send(Command::Show);
             if !self.detached {
                 self.send(Command::OnTop { on_top: true });
@@ -448,9 +496,61 @@ impl Host {
     }
 }
 
+/// A `PERF web` line per show and hide of the page window under
+/// `TERN_PERF=1` (stderr and `tern.log`): a flicker is a hide and a show
+/// a frame apart.
+fn perf_line(what: &str, shows: u32, hides: u32) {
+    if !crate::perf::verbose() && !crate::view::tour::enabled() {
+        return;
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let line = format!("PERF web {what} shows={shows} hides={hides} unix_ms={ms}");
+    if crate::perf::verbose() {
+        eprintln!("{line}");
+        crate::crashlog::log_line(&line);
+    }
+    if crate::view::tour::enabled() {
+        println!("{line}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missed_frame_or_a_focus_hand_off_does_not_flash_the_page() {
+        let mut h = Host {
+            status: Status::Ready("test".into()),
+            shown: true,
+            ..Host::default()
+        };
+        let t0 = Instant::now();
+        // A frame that re-rendered without placing the pane: still shown.
+        h.frame_at(true, true, t0);
+        assert!(h.shown);
+        // Placed again next frame: nothing was sent.
+        h.seen = true;
+        h.frame_at(true, true, t0 + std::time::Duration::from_millis(16));
+        assert!(h.shown && h.away_since.is_none());
+        // Focus passes to the page before it reports focus: still shown.
+        h.seen = true;
+        h.frame_at(true, false, t0 + std::time::Duration::from_millis(32));
+        assert!(h.shown);
+        assert_eq!(h.hides, 0);
+        // Really away: hidden once the grace (from the first miss) is up.
+        h.frame_at(true, false, t0 + std::time::Duration::from_millis(200));
+        assert!(h.shown, "the grace starts at the first miss");
+        h.frame_at(true, false, t0 + std::time::Duration::from_millis(300));
+        assert!(!h.shown);
+        assert_eq!(h.hides, 1);
+        // Not showing hides at once.
+        h.shown = true;
+        h.frame_at(false, true, t0 + std::time::Duration::from_millis(720));
+        assert!(!h.shown);
+    }
 
     #[test]
     fn a_host_without_a_helper_keeps_what_to_show() {

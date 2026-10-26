@@ -131,6 +131,16 @@ impl Workspace {
                 )
                 .into_any_element(),
         ];
+        let run_panel = vec![
+            gpui_kit::component::switch::Switch::new("look-run-panel-auto")
+                .checked(self.model.run_panel_auto)
+                .small()
+                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                    this.set_run_panel_auto(*on);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        ];
         let one = |v: Vec<AnyElement>| -> Option<AnyElement> {
             Some(
                 div()
@@ -175,12 +185,20 @@ impl Workspace {
                 p,
             ),
         ];
-        let motion_rows = vec![Self::row(
-            "Reduce motion",
-            "No slides, wipes, or flapping; scrollbars show and hide at once. Also follows your system setting.",
-            one(motion),
-            p,
-        )];
+        let motion_rows = vec![
+            Self::row(
+                "Reduce motion",
+                "No slides, wipes, or flapping; scrollbars show and hide at once. Also follows your system setting.",
+                one(motion),
+                p,
+            ),
+            Self::row(
+                "Open run panel automatically",
+                "The run panel (plan, sources, report, graph) opens by itself when deep research starts. Off: it stays closed until you open it. A plain question never opens it.",
+                one(run_panel),
+                p,
+            ),
+        ];
         self.page(
             Section::Appearance,
             p,

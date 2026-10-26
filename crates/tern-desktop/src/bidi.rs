@@ -38,6 +38,18 @@ pub fn is_rtl(paragraph: &str) -> bool {
     unicode_bidi::get_base_direction(paragraph) == Direction::Rtl
 }
 
+/// A one-line label (a chat's title in the sidebar) as drawn: a title
+/// that reads right to left goes inside a right-to-left embedding, so
+/// punctuation at its end (`??`, `۔`) sits at its left end, where an Urdu
+/// reader expects it, not after the first word. Others are unchanged.
+pub fn display_line(text: &str) -> String {
+    if has_rtl(text) && is_rtl(text) {
+        format!("{RLE}{text}{PDF}")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// A run of paragraphs that share a direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
@@ -271,6 +283,85 @@ fn group_words(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shaped line as DirectWrite (with Tern's patch) or cosmic-text
+    /// gives it: glyphs in screen order, a right-to-left run's indices
+    /// falling. `glyphs` is (x, byte index) per run.
+    fn line(width: f32, len: usize, runs: &[&[(f32, usize)]]) -> gpui::LineLayout {
+        gpui::LineLayout {
+            font_size: gpui::px(14.),
+            width: gpui::px(width),
+            ascent: gpui::px(10.),
+            descent: gpui::px(4.),
+            len,
+            runs: runs
+                .iter()
+                .enumerate()
+                .map(|(r, glyphs)| gpui::ShapedRun {
+                    font_id: gpui::FontId(r),
+                    glyphs: glyphs
+                        .iter()
+                        .map(|(x, ix)| gpui::ShapedGlyph {
+                            id: gpui::GlyphId(1),
+                            position: gpui::point(gpui::px(*x), gpui::px(0.)),
+                            index: *ix,
+                            is_emoji: false,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_caret_on_an_urdu_line_follows_the_text() {
+        use gpui::px;
+        // A three-letter Urdu word (2 bytes a letter), 10 px a letter,
+        // laid out from the right: index 4 leftmost, index 0 rightmost.
+        let l = line(30., 6, &[&[(0., 4), (10., 2), (20., 0)]]);
+        assert_eq!(
+            l.x_for_index(0),
+            px(30.),
+            "before the first letter: the right edge"
+        );
+        assert_eq!(l.x_for_index(2), px(20.));
+        assert_eq!(
+            l.x_for_index(6),
+            px(0.),
+            "after the last letter: the left edge"
+        );
+        // A click at the left end puts the caret at the end of the text,
+        // at the right end at its start.
+        assert_eq!(l.closest_index_for_x(px(1.)), 6);
+        assert_eq!(l.closest_index_for_x(px(29.)), 0);
+        assert_eq!(l.index_for_x(px(5.)), Some(4));
+        // "…ہیں??": the ASCII ?? typed at the end sit at the left end; the
+        // caret after them is at the far left (#68: they went before the
+        // last word).
+        let l = line(
+            40.,
+            8,
+            &[&[(0., 7), (5., 6)], &[(10., 4), (20., 2), (30., 0)]],
+        );
+        assert_eq!(l.x_for_index(8), px(0.));
+        assert_eq!(l.x_for_index(6), px(10.));
+        assert_eq!(l.closest_index_for_x(px(0.5)), 8);
+        // A left-to-right line keeps GPUI's own answers.
+        let l = line(30., 3, &[&[(0., 0), (10., 1), (20., 2)]]);
+        assert!(l.rtl_clusters().is_none());
+        assert_eq!(l.x_for_index(1), px(10.));
+        assert_eq!(l.x_for_index(3), px(30.));
+    }
+
+    #[test]
+    fn an_urdu_title_reads_right_to_left_with_its_question_marks() {
+        assert_eq!(
+            display_line("آپ کیسے ہیں??"),
+            "\u{202B}آپ کیسے ہیں??\u{202C}"
+        );
+        assert_eq!(display_line("Hello??"), "Hello??");
+        assert_eq!(display_line("Tern says سلام"), "Tern says سلام");
+    }
 
     const URDU: &str = "اردو ایک خوبصورت زبان ہے۔";
 

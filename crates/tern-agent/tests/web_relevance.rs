@@ -83,3 +83,30 @@ async fn on_topic_pages_stay_and_the_rest_are_counted() {
     assert!(!out.content.contains("Volcano"));
     assert!(out.content.contains("from Wikipedia"));
 }
+
+/// The user's log on Windows (#68), with only Wikipedia:
+/// `web_search: service=Wikipedia query="SubQ Snap 1.1 AI model" used="SubQ"
+/// tried=4 found=22 filtered=17 results=5 terms=["subq","snap 1.1"]`. The
+/// last ladder query was "SubQ" alone and five medical pages ("SubQ" =
+/// subcutaneous) were kept, so no "Wikipedia has nothing" notice showed.
+#[tokio::test]
+async fn subq_alone_never_lets_medical_pages_through() {
+    let (_s, tool) = wikipedia_answering(include_str!("fixtures/wiki-subq-medical.json")).await;
+    let out = tool
+        .call(json!({"query": "SubQ Snap 1.1 AI model"}))
+        .await
+        .unwrap();
+    assert_eq!(out.meta["results"], 0, "{}", out.content);
+    assert_eq!(out.meta["notice"], "wikipedia_empty");
+    assert_eq!(out.meta["found"], out.meta["filtered"], "{}", out.meta);
+    assert!(out.content.starts_with("Wikipedia has nothing on"));
+    assert!(!out.content.contains("Subcutaneous"));
+    let tried: Vec<&str> = out.meta["tried"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert!(!tried.contains(&"SubQ"), "{tried:?}");
+    assert!(tried.iter().skip(1).all(|t| t.contains(' ')), "{tried:?}");
+}

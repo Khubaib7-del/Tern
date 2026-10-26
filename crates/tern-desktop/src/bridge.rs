@@ -48,7 +48,8 @@ pub enum Msg {
     /// why not.
     FileTranscribed(u64, Result<String, String>),
     /// One window of streaming dictation came back: its number and text.
-    Dictated(u64, Result<String, String>),
+    /// A dictation window's text (or why not) and the language heard.
+    Dictated(u64, Result<String, String>, Option<String>),
     /// A past chat's turns, read before its model connects, so the
     /// transcript shows at once; `Resumed` (or a connect failure) follows.
     Opening(SessionId, Vec<PastTurn>),
@@ -227,7 +228,7 @@ impl std::fmt::Debug for Msg {
             Self::FileTranscribed(id, r) => {
                 write!(f, "FileTranscribed({id}, ok: {})", r.is_ok())
             }
-            Self::Dictated(seq, r) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
+            Self::Dictated(seq, r, _) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
             Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
             Self::ResumeFailed(id, e) => write!(f, "ResumeFailed({id}, {e})"),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
@@ -1278,13 +1279,20 @@ impl Bridge {
     }
 
     /// Transcribes one window of streaming dictation (a WAV).
-    pub fn dictate(&self, via: tern_agent::media::ModelRef, seq: u64, wav: Vec<u8>) {
+    pub fn dictate(
+        &self,
+        via: tern_agent::media::ModelRef,
+        seq: u64,
+        wav: Vec<u8>,
+        language: Option<String>,
+    ) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
-            let r = tern_agent::media::transcribe(secrets, &via, &wav, "speech.wav").await;
-            let _ = tx.send(Msg::Dictated(seq, r));
+            let (r, heard) =
+                tern_agent::media::dictate(secrets, &via, &wav, language.as_deref()).await;
+            let _ = tx.send(Msg::Dictated(seq, r, heard));
         });
     }
 

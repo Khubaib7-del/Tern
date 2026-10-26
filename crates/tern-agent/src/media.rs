@@ -288,6 +288,42 @@ pub async fn transcribe_with(
     ctl: &crate::local_models::TranscribeCtl,
     audio_secs: Option<f64>,
 ) -> Result<String, String> {
+    transcribe_in(secrets, via, audio, file_name, ctl, audio_secs, None).await
+}
+
+/// One window of live dictation (#68) in `language` (a Whisper code;
+/// `None` lets Whisper detect it). Returns the text, or why not, and the
+/// language the model heard when it says (Whisper does). An empty window
+/// is an empty text here, not an error: a pause is not a failure.
+pub async fn dictate(
+    secrets: Option<&dyn SecretStore>,
+    via: &ModelRef,
+    wav: &[u8],
+    language: Option<&str>,
+) -> (Result<String, String>, Option<String>) {
+    let ctl = crate::local_models::TranscribeCtl::new();
+    let r = transcribe_in(secrets, via, wav, "speech.wav", &ctl, None, language).await;
+    let r = match r {
+        Err(e) if e.contains(NO_SPEECH) => Ok(String::new()),
+        r => r,
+    };
+    (r, ctl.heard())
+}
+
+/// The end of the "heard no speech" error.
+pub const NO_SPEECH: &str = "heard no speech in the recording";
+
+/// [`transcribe_with`] in a given language (`None`: the model's own
+/// choice, auto-detect for Whisper).
+pub async fn transcribe_in(
+    secrets: Option<&dyn SecretStore>,
+    via: &ModelRef,
+    audio: &[u8],
+    file_name: &str,
+    ctl: &crate::local_models::TranscribeCtl,
+    audio_secs: Option<f64>,
+    language: Option<&str>,
+) -> Result<String, String> {
     use crate::local_models::CANCELLED;
     let limit = transcribe_timeout(audio_secs);
     let started = std::time::Instant::now();
@@ -301,13 +337,16 @@ pub async fn transcribe_with(
         limit.as_secs()
     ));
     let r: Result<String, String> = if via.is_local() {
-        let (id, bytes, name, c) = (
+        let (id, bytes, name, c, lang) = (
             via.model.clone(),
             audio.to_vec(),
             file_name.to_owned(),
             ctl.clone(),
+            language.map(str::to_owned),
         );
-        let job = tokio::task::spawn_blocking(move || transcribe_local(&id, &bytes, &name, &c));
+        let job = tokio::task::spawn_blocking(move || {
+            transcribe_local(&id, &bytes, &name, lang.as_deref(), &c)
+        });
         match tokio::time::timeout(limit, job).await {
             Ok(joined) => match joined.map_err(|e| e.to_string()) {
                 Ok(Ok(t)) => {
@@ -321,6 +360,20 @@ pub async fn transcribe_with(
                         started.elapsed().as_millis(),
                         t.engine
                     ));
+                    use crate::local_models::speech;
+                    let device = if t.engine.starts_with("whisper") {
+                        speech::last_device().unwrap_or_else(|| "CPU".into())
+                    } else {
+                        format!("CPU · {} threads", speech::threads())
+                    };
+                    speech::set_last_run(speech::LastRun {
+                        model: via.model.clone(),
+                        device,
+                        at_unix: unix_now(),
+                        audio_secs: Some(t.audio_secs),
+                        ms: started.elapsed().as_millis(),
+                        language: ctl.heard(),
+                    });
                     Ok(t.text)
                 }
                 Ok(Err(e)) => {
@@ -342,7 +395,7 @@ pub async fn transcribe_with(
     } else {
         let remote = async {
             let p = connect_by_id(&via.provider, secrets, None).map_err(|e| e.to_string())?;
-            p.transcribe(&via.model, audio, file_name, None)
+            p.transcribe(&via.model, audio, file_name, language)
                 .await
                 .map_err(|e| e.to_string())
         };
@@ -368,9 +421,7 @@ pub async fn transcribe_with(
             .unwrap_or_else(|| CANCELLED.into()));
     }
     match r {
-        Ok(text) if text.trim().is_empty() => {
-            Err(format!("{via} heard no speech in the recording."))
-        }
+        Ok(text) if text.trim().is_empty() => Err(format!("{via} {NO_SPEECH}.")),
         Ok(text) => {
             if !via.is_local() {
                 crate::diag::note(&format!(
@@ -378,6 +429,14 @@ pub async fn transcribe_with(
                     ext_of(file_name),
                     started.elapsed().as_millis()
                 ));
+                crate::local_models::speech::set_last_run(crate::local_models::speech::LastRun {
+                    model: via.to_string(),
+                    device: format!("{} (online)", via.provider),
+                    at_unix: unix_now(),
+                    audio_secs,
+                    ms: started.elapsed().as_millis(),
+                    language: language.map(str::to_owned),
+                });
             }
             Ok(text)
         }
@@ -413,10 +472,18 @@ fn transcribe_local(
     id: &str,
     audio: &[u8],
     file_name: &str,
+    language: Option<&str>,
     ctl: &crate::local_models::TranscribeCtl,
 ) -> Result<crate::local_models::Transcript, String> {
     let (lm, _) = crate::local_models::LocalModels::discover()?;
-    lm.transcribe_file_with(id, audio, file_name, None, ctl)
+    lm.transcribe_file_with(id, audio, file_name, language, ctl)
+}
+
+/// Seconds since 1970.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 #[cfg(not(feature = "audio"))]
@@ -424,6 +491,7 @@ fn transcribe_local(
     id: &str,
     _audio: &[u8],
     _file_name: &str,
+    _language: Option<&str>,
     _ctl: &crate::local_models::TranscribeCtl,
 ) -> Result<crate::local_models::Transcript, String> {
     Err(format!("this build cannot run the local model {id}"))

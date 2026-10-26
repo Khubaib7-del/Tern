@@ -162,6 +162,9 @@ pub struct PetSnapshot {
     pub recording: bool,
     /// The UI tour holds the hover toolbar open.
     pub tour_toolbar: bool,
+    /// The browser pane's left edge while a page is open: Scout stays
+    /// left of it (#68).
+    pub keep_left_of: Option<f32>,
 }
 
 pub struct Pet {
@@ -497,6 +500,11 @@ impl Render for Pet {
             .unwrap_or((56. + 12., vp.1 - h - 18.));
         let pos = crate::pet::clamp_pos(pos, (w, h), vp);
         let dragging = self.drag.is_some_and(|d| d.1);
+        let pos = if dragging {
+            pos
+        } else {
+            crate::pet::keep_left_of(pos, (w, h), snap.keep_left_of)
+        };
         let fig = figure(
             &self.manifest,
             &snap.variant,
@@ -819,6 +827,9 @@ impl Workspace {
             saved_pos: prefs.scout_pos.map(|(x, y)| (x as f32, y as f32)),
             recording: self.recording.is_some(),
             tour_toolbar: self.pet_tour_toolbar,
+            keep_left_of: self.browser_was_open.then(|| {
+                (self.window_w - self.side_w - crate::panels::HANDLE_W).max(super::RAIL_W)
+            }),
         }
     }
 

@@ -105,6 +105,14 @@ pub struct Preferences {
     /// per logical core, at most twice the physical ones, at most four).
     /// Wins over `TERN_WHISPER_THREADS`.
     pub speech_threads: Option<u32>,
+    /// The language the mic listens for (Settings › Speech › Dictation
+    /// language): `en`, `ur`, … `None` means Auto (Whisper hears the
+    /// first phrase; English goes on with the fast Moonshine model,
+    /// anything else with Whisper in that language).
+    pub dictation_language: Option<String>,
+    /// Whether the run panel opens by itself when a deep research run
+    /// starts (its pin, and Settings › Appearance). `None` means on.
+    pub run_panel_auto: Option<bool>,
     /// Study without a model: the tutor quotes passages, quizzes are
     /// written from sentences, and the viva uses its own questions.
     pub study_offline: bool,
@@ -581,6 +589,8 @@ mod tests {
             deep_workers: Some(4),
             speech_device: Some("cpu".into()),
             speech_threads: Some(4),
+            dictation_language: Some("ur".into()),
+            run_panel_auto: Some(false),
             study_offline: true,
             study_quiz_count: Some(10),
             study_difficulty: Some("hard".into()),

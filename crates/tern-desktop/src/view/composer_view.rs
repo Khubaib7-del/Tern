@@ -264,7 +264,7 @@ impl Workspace {
         }
         text.push(c);
         self.composer.update(cx, |s, cx| {
-            s.set_value(text.clone(), window, cx);
+            crate::view::set_end(s, text.clone(), window, cx);
             s.focus(window, cx);
         });
         self.model.chat_here = self.current;

@@ -7,12 +7,33 @@ use tern_agent::browse::{self, BrowsedPage, History};
 /// What the browser pane shows: the live page (a real engine where the
 /// build has one), Tern's explanation of it (the page read by the
 /// crawler, search results, Tern's cited answer), or both side by side.
+/// Page first (#68): a link opens chat | page half and half, so the
+/// pane shows just the page; Explanation and Side by side stay as tabs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PaneView {
+    #[default]
     Page,
     Explanation,
-    #[default]
     Split,
+}
+
+/// The browser's share of the room beside the sidebar when it opens: half
+/// (#68: chat | page 50/50); the divider drags it between the bounds.
+pub const SPLIT_DEFAULT: f32 = 0.5;
+pub const SPLIT_MIN: f32 = 0.3;
+pub const SPLIT_MAX: f32 = 0.7;
+
+/// The browser pane's width: its share of `room` (the window right of
+/// the rail and any open sidebar) less the divider.
+pub fn split_width(room: f32, share: f32) -> f32 {
+    ((room - crate::panels::HANDLE_W).max(0.) * share.clamp(SPLIT_MIN, SPLIT_MAX)).floor()
+}
+
+/// The share the divider dragged to `x`, in a room from `left` to the
+/// window's right edge `right`.
+pub fn split_share(x: f32, left: f32, right: f32) -> f32 {
+    let room = (right - left).max(1.);
+    ((right - x) / room).clamp(SPLIT_MIN, SPLIT_MAX)
 }
 
 impl PaneView {
@@ -368,7 +389,15 @@ mod tests {
             engine_address("tern-search:c++ & rust"),
             "https://duckduckgo.com/?q=c%2B%2B+%26+rust"
         );
-        assert_eq!(PaneView::default(), PaneView::Split);
+        assert_eq!(PaneView::default(), PaneView::Page);
+        // Half and half: the chat and the page get the same width.
+        let room = 1228.;
+        let w = split_width(room, SPLIT_DEFAULT);
+        assert_eq!(w, ((room - crate::panels::HANDLE_W) / 2.).floor());
+        assert!((room - crate::panels::HANDLE_W - w - w).abs() <= 1.);
+        assert_eq!(split_share(52. + 614., 52., 1280.), 0.5);
+        assert_eq!(split_share(100., 52., 1280.), SPLIT_MAX);
+        assert_eq!(split_share(1270., 52., 1280.), SPLIT_MIN);
         assert!(PaneView::Split.shows_page() && PaneView::Split.shows_explanation());
         assert!(!PaneView::Page.shows_explanation());
     }

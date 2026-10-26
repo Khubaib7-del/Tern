@@ -19,6 +19,12 @@
 //!
 //! A generic word alone is never enough, and a version number alone
 //! (`1.1`) is never a term.
+//!
+//! A question that names a compound or versioned thing (`SubQ Snap`,
+//! `Snap 1.1`) is stricter (#68): a result must carry one of those
+//! compound names, or every distinctive word of the question. One word
+//! alone is not enough: with only Wikipedia, "SubQ Snap 1.1 AI model"
+//! kept five medical pages that say "SubQ" for "subcutaneous".
 
 use crate::webintent::is_stop;
 
@@ -192,6 +198,7 @@ impl Topic {
             .filter(|w| !w.is_empty())
             .collect();
         let mut prev: Option<&str> = None;
+        let mut prev_strength: Option<Strength> = None;
         for (i, w) in raw.iter().enumerate() {
             let lower = w.to_lowercase();
             if is_version(w) {
@@ -200,10 +207,12 @@ impl Topic {
                     push(normalise(&format!("{p} {w}")), Strength::Strong);
                 }
                 prev = None;
+                prev_strength = None;
                 continue;
             }
             if is_stop(&lower) || (lower.chars().count() < 2 && !has_digit(w)) {
                 prev = None;
+                prev_strength = None;
                 continue;
             }
             let generic = is_generic(w);
@@ -211,14 +220,24 @@ impl Topic {
                 Strength::Strong
             } else if generic {
                 prev = None;
+                prev_strength = None;
                 continue;
             } else if i > 0 && w.chars().next().is_some_and(char::is_uppercase) {
                 Strength::Name
             } else {
                 Strength::Keyword
             };
+            // "SubQ Snap": a strong word next to another name is one
+            // compound name.
+            if let (Some(p), Some(ps)) = (prev, prev_strength) {
+                let named = |s: Strength| s >= Strength::Name;
+                if named(ps) && named(strength) && ps.max(strength) == Strength::Strong {
+                    push(normalise(&format!("{p} {w}")), Strength::Strong);
+                }
+            }
             push(normalise(w), strength);
             prev = Some(w);
+            prev_strength = Some(strength);
         }
         Topic { terms }
     }
@@ -254,13 +273,42 @@ impl Topic {
         }
         let hay = format!(" {} ", normalise(text));
         let compact: String = hay.chars().filter(|c| *c != ' ').collect();
-        need.iter().any(|t| {
+        let carries = |t: &str| {
             hay.contains(&format!(" {t} "))
                 // A plural or possessive: "transformers", "langchain s".
                 || hay.contains(&format!(" {t}s "))
                 // "harness 2" / "snap-1.1" / "snap1.1" for terms with digits.
                 || (has_digit(t) && t.chars().count() >= 4 && compact.contains(&t.replace(' ', "")))
-        })
+        };
+        let compounds: Vec<&str> = need.iter().copied().filter(|t| t.contains(' ')).collect();
+        if compounds.is_empty() || need.len() < 2 {
+            return need.iter().any(|t| carries(t));
+        }
+        // A compound or versioned name: that name, or every distinctive
+        // word of the question, never one word alone.
+        compounds.iter().any(|t| carries(t))
+            || need
+                .iter()
+                .flat_map(|t| t.split(' '))
+                .all(|w| carries(w) || (is_version(w) && compact.contains(w)))
+    }
+
+    /// How many distinctive words the question has (the words of its
+    /// strong terms: names with capitals inside, digits, versions, quotes):
+    /// with two or more, a one-word search is too loose. Plain keywords
+    /// ("langchain erupted developre") do not count.
+    pub fn distinctive_words(&self) -> usize {
+        let mut words: Vec<&str> = self
+            .terms
+            .iter()
+            .filter(|t| t.strength == Strength::Strong)
+            .map(|t| t.words.as_str())
+            .flat_map(|t| t.split(' '))
+            .filter(|w| !is_version(w))
+            .collect();
+        words.sort_unstable();
+        words.dedup();
+        words.len()
     }
 
     /// Keeps the hits that match; returns them and how many were dropped.
@@ -282,7 +330,7 @@ mod tests {
     #[test]
     fn the_main_terms_are_names_versions_and_quotes() {
         let t = Topic::of("SubQ Snap 1.1 AI model definition or meaning");
-        assert_eq!(t.key_terms(), ["subq", "snap 1.1"]);
+        assert_eq!(t.key_terms(), ["subq", "subq snap", "snap 1.1"]);
         let t = Topic::of("harness2 by Google AI model or project");
         assert_eq!(t.key_terms(), ["harness2"]);
         let t = Topic::of(r#"what is "mixture of experts" in Mistral"#);
@@ -329,6 +377,26 @@ mod tests {
         });
         assert_eq!(kept, ["Snap 1.1 by SubQ"]);
         assert_eq!(dropped, 2);
+    }
+
+    #[test]
+    fn a_compound_name_never_passes_on_one_word() {
+        // The user's log (#68): "SubQ" alone kept medical pages.
+        let t = Topic::of("SubQ Snap 1.1 AI model");
+        assert_eq!(t.distinctive_words(), 2);
+        assert!(!t.matches("Subcutaneous injection: a subcutaneous (SubQ, SQ) injection"));
+        assert!(!t.matches("SubQ insulin and the snap of a pen"));
+        assert!(t.matches("SubQ Snap: a long-context decision model"));
+        assert!(t.matches("Subquadratic releases Snap 1.1"));
+        assert!(t.matches("Snap v1.1 from SubQ"));
+        // One plain name keeps the old rule.
+        let t = Topic::of("Google Gemini pricing");
+        assert!(t.matches("Gemini (Google) — chatbot"));
+        assert_eq!(Topic::of("harness2 by Google").distinctive_words(), 1);
+        assert_eq!(
+            Topic::of("langchain erupted developre").distinctive_words(),
+            0
+        );
     }
 
     #[test]

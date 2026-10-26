@@ -4,6 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #68): Windows test, round 2
+
+From the Windows test of #67.
+
+- **Compound names in search** (`relevance.rs`, `webintent.rs`): a result for `SubQ Snap 1.1` must name `SubQ Snap`, or have every one of its distinctive words. The keyword fallback never searches one word alone when the question has two or more strong words. A fixture built from the Windows log (`tests/fixtures/wiki-subq-medical.json`) has no medical page left.
+- **Dictation language**: Settings › Speech › Dictation language offers Auto and 18 languages. English goes to Moonshine. Every other language goes to Whisper, in 2–5 s windows. Auto picks after the first window. Moonshine is English only: on the user's laptop it heard Urdu and wrote "You will not be able to do anything" again and again. `speech_guard` drops such loops, a sentence repeated from the window before, and phrases models write on silence ("Thank you.", "Subtitles by the Amara.org community"). A window with no speech counts as a pause, not an error. Moonshine uses at most 4 threads. **Last transcription** names the model, the device and how long it took. Dictated text goes in at the caret, and the caret follows it.
+- **The caret stays at the end** after an `@` pick, a command, a suggestion or a restored draft (`set_end`).
+- **Urdu in the composer reads right to left.** The bug: typing `آپ کیسے ہیں` then `??` put the marks between the words. GPUI's caret code assumed that the byte index grows with x. On a right-to-left line the caret after typed Urdu sat at the line's right end, and a click at its left end landed inside the last word. Two patched copies, used through `[patch.crates-io]`, fix it. `third_party/gpui-pre` (0.3.9) places the caret and resolves clicks on right-to-left glyph runs. `third_party/gpui-base` (0.8.0) right-aligns a composer whose first strong letter is right-to-left (like `dir="auto"`), swaps Left/Right on it, aligns each wrapped row the way it is painted, and highlights a selection between its carets. Each copy has a `TERN_PATCH.md`. In the sidebar, an Urdu chat title is right-aligned with `??` at its left end.
+- **`@` references are coloured** in the composer, in the palette's accent.
+- **The run panel opens by itself only for deep research**, and only when **Auto-open** is on: a switch in the panel's header, or Settings › Appearance › Open run panel automatically. The choice is remembered.
+- **Opening a link** shows chat and page half and half. The divider can be dragged between 30 % and 70 %. The sidebar folds away while the page is open and comes back when it closes. The pane opens on the Page tab.
+- **No flash when the browser opens or resizes.** The native page is hidden straight away only when the pane is not showing. A missed placement or a focus hand-off gets a 250 ms grace. With `TERN_PERF=1`, `tern.log` gets a PERF line for each show and hide.
+- **Scout stays left of the browser pane** while a page is open.
+- **UI tour** (composer): c21 types Urdu key by key and then `??` at the caret, c22 presses the arrow keys on Urdu, c23 shows the sent bubble and the sidebar title, and c24 shows coloured `@` references. The state line logs the caret, direction, mentions and title. Full tour: t46b turns the run panel's Auto-open off, t50b sets Settings › Speech › Dictation language, and t50c streams mocked dictated phrases in between `hello` and `world` through the mic's own path, the caret following. The Linux tour focuses the window with `xdotool`, so its frames show the caret.
+
 ### Changed (PR #67): search quality and GPU speech
 
 From the Windows `tern.log` of #66: every search went to the keyless Wikipedia; `harness2 by Google AI model or project` found nothing after 5 tries and `SubQ Snap 1.1 AI model definition or meaning` came back with six off-topic pages (Japanese, medical); Whisper small took 19–30 s for an 11.7 s Urdu clip on a 4-core, 8-thread laptop with 6 threads.

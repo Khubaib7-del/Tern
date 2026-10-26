@@ -283,6 +283,20 @@ enum Act {
     /// Composer tour: a scene-log line with the GPU probe, the speech
     /// choice in effect and what the last transcription ran on.
     CSpeechState(&'static str),
+    /// Composer tour: types text key by key at the caret, as a keyboard
+    /// does (not the whole value replaced, as `Type` does).
+    CKeys(&'static str),
+    /// Composer tour: the Left (`true`) or Right arrow key in the composer.
+    CArrow(bool),
+    /// Settings › Speech › Dictation language (`auto`, `en`, `ur`, ...).
+    DictationLanguage(&'static str),
+    /// Sets the composer's text with the caret at this byte offset, and
+    /// starts a mocked recording there (#68: dictation at the caret).
+    DictateFrom(&'static str, usize),
+    /// A mocked dictated phrase, through the same path as the mic's.
+    Dictate(&'static str),
+    /// The run panel's Auto-open switch.
+    RunAutoOpen(bool),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -778,6 +792,16 @@ fn script() -> Vec<Beat> {
             2000,
         ),
         b(Act::RightPanel(true), 1200),
+        // #68: the run panel opens by itself only for deep research and
+        // only with Auto-open on; the switch is in its header.
+        scene(
+            "t46b-run-auto-open-off",
+            "tern-only",
+            "Run panel header: Auto-open off (it stays closed until opened)",
+            Act::RunAutoOpen(false),
+            2500,
+        ),
+        b(Act::RunAutoOpen(true), 800),
         scene(
             "t47-model-picker",
             "tern-only",
@@ -804,6 +828,29 @@ fn script() -> Vec<Beat> {
             3000,
         ),
         b(Act::DictationEnd, 300),
+        // #68: Settings › Speech › Dictation language, then dictated
+        // phrases go in at the caret and the caret follows them.
+        b(Act::Settings(Section::Speech), 1200),
+        scene(
+            "t50b-dictation-language",
+            "tern-only",
+            "Settings › Speech › Dictation language: Urdu",
+            Act::DictationLanguage("ur"),
+            2500,
+        ),
+        b(Act::DictationLanguage("auto"), 600),
+        b(Act::CloseSettings, 800),
+        scene(
+            "t50c-dictation-caret",
+            "tern-only",
+            "Dictation at the caret: phrases go in between hello and world, the caret follows",
+            Act::DictateFrom("hello world", 5),
+            1500,
+        ),
+        b(Act::Dictate("compare retrieval"), 900),
+        b(Act::Dictate("policies by cost"), 900),
+        b(Act::Dictate("per question"), 2500),
+        b(Act::ClearComposer, 300),
         scene(
             "t51-context-ring",
             "tern-only",
@@ -1243,8 +1290,9 @@ impl Workspace {
 
     fn set_composer(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = text.to_owned();
-        self.composer
-            .update(cx, |c, cx| c.set_value(text.clone(), window, cx));
+        self.composer.update(cx, |c, cx| {
+            crate::view::set_end(c, text.clone(), window, cx)
+        });
         self.model.chat_here = self.current;
         self.model.on_composer_text(&text);
     }
@@ -1765,6 +1813,27 @@ impl Workspace {
                 }
             }
             Act::CState(what) => self.log_composer_state(what, cx),
+            Act::CKeys(text) => {
+                use gpui_kit::EntityInputHandler as _;
+                self.composer.update(cx, |c, cx| {
+                    c.focus(window, cx);
+                    for ch in text.chars() {
+                        c.replace_text_in_range(None, &ch.to_string(), window, cx);
+                    }
+                });
+                let value = self.composer.read(cx).value().to_string();
+                self.model.chat_here = self.current;
+                self.model.on_composer_text(&value);
+            }
+            Act::CArrow(left) => {
+                use gpui_kit::component::input::{MoveLeft, MoveRight};
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+                if left {
+                    window.dispatch_action(Box::new(MoveLeft), cx);
+                } else {
+                    window.dispatch_action(Box::new(MoveRight), cx);
+                }
+            }
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -1788,6 +1857,38 @@ impl Workspace {
                     speech::threads(),
                     speech::gpu_failed_before(),
                     speech::last_device()
+                ));
+                cx.notify();
+            }
+            Act::DictationLanguage(code) => {
+                self.save_dictation_language(code);
+                log(&format!(
+                    "TOUR note dictation language {:?}",
+                    self.model.providers.prefs.dictation_language
+                ));
+                cx.notify();
+            }
+            Act::DictateFrom(text, at) => {
+                self.composer.update(cx, |c, cx| {
+                    c.set_value(text, window, cx);
+                    c.set_selected_range(at..at, cx);
+                    c.focus(window, cx);
+                });
+                self.dictation_caret = crate::dictation::Caret::start(at);
+                self.log_dictation("caret placed");
+                self.log_caret(cx);
+            }
+            Act::Dictate(phrase) => {
+                self.insert_dictated(phrase, window, cx);
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+                self.log_caret(cx);
+            }
+            Act::RunAutoOpen(on) => {
+                self.set_run_panel_auto(on);
+                log(&format!(
+                    "TOUR note run panel auto-open {} (opens itself: {})",
+                    self.model.run_panel_auto,
+                    self.model.run_panel_opens_itself()
                 ));
                 cx.notify();
             }
@@ -1862,6 +1963,22 @@ impl Workspace {
     /// A scene-log line with the composer's text, chips, audio in flight,
     /// the open @ rows, the chat's last answer, and the toasts, so a
     /// recording's frames can be checked against what the app held.
+    fn log_dictation(&self, what: &str) {
+        log(&format!(
+            "TOUR dictation {what}: language={:?}",
+            self.model.providers.prefs.dictation_language
+        ));
+    }
+
+    /// A scene-log line with the composer's text and caret.
+    fn log_caret(&self, cx: &mut Context<Self>) {
+        let c = self.composer.read(cx);
+        let text = c.value().to_string();
+        let at = c.cursor();
+        let (head, tail) = text.split_at(at.min(text.len()));
+        log(&format!("TOUR caret {head}|{tail} (at {at})"));
+    }
+
     fn log_composer_state(&self, what: &str, cx: &mut Context<Self>) {
         use crate::model::Entry;
         let text = self.composer.read(cx).value().to_string();
@@ -1904,6 +2021,20 @@ impl Workspace {
             .iter()
             .map(|t| t.text.as_str())
             .collect();
+        let (caret, rtl) = {
+            let c = self.composer.read(cx);
+            (c.selected_range(), c.is_right_to_left())
+        };
+        let title = self
+            .model
+            .sessions
+            .iter()
+            .find(|s| Some(s.id) == self.current)
+            .map(|s| s.title.clone());
+        log(&format!(
+            "TOUR state {what}: caret={caret:?} rtl={rtl} mentions={:?} title={title:?}",
+            crate::composer::mention_spans(&text)
+        ));
         log(&format!(
             "TOUR state {what}: chat={:?} status={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?} notices={:?} wiki_empty={:?}",
             self.current,
@@ -2043,6 +2174,9 @@ const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پ�
 /// Typed into the composer by the tour (#67): Urdu ending in the Urdu
 /// question mark, and a mixed Urdu and English line.
 const URDU_TYPED: &str = "کیا آپ اردو بولتے ہیں؟";
+/// "How are you?" without its question mark, typed key by key before the
+/// tour types `??` at the caret (#68: they landed between the words).
+const URDU_HOW_ARE_YOU: &str = "آپ کیسے ہیں";
 const MIXED_TYPED: &str = "Tern میں Whisper small کتنا تیز ہے؟ (GPU)";
 /// The same Urdu question ending in an ASCII `?` (an English keyboard
 /// layout): a neutral character, which lands at the sentence's end (the
@@ -2284,6 +2418,49 @@ fn composer_script() -> Vec<Beat> {
         b(Act::CState("mixed typed"), 300),
         b(Act::Type(URDU_ASCII_TYPED), 3000),
         b(Act::CState("urdu ascii typed"), 300),
+        b(Act::ClearComposer, 500),
+        // #68: "آپ کیسے ہیں" typed key by key, then "??" at the caret: the
+        // marks belong at the left end (the text's end), not between words;
+        // the line is right-aligned and the arrow keys follow the text.
+        b(Act::CNewChat, 1500),
+        scene(
+            "c21-urdu-caret",
+            "tern-only",
+            "Urdu typed key by key, then ?? at the caret: ?? at the left end, line right-aligned",
+            Act::CKeys(URDU_HOW_ARE_YOU),
+            1500,
+        ),
+        b(Act::CKeys("??"), 2500),
+        b(Act::CState("urdu ?? typed"), 300),
+        scene(
+            "c22-urdu-arrows",
+            "tern-only",
+            "Right arrow moves towards the start of Urdu text, Left towards its end",
+            Act::CArrow(false),
+            700,
+        ),
+        b(Act::CArrow(false), 1500),
+        b(Act::CState("two Right presses (towards the start)"), 300),
+        b(Act::CArrow(true), 700),
+        b(Act::CArrow(true), 1500),
+        b(Act::CState("two Left presses (back to the end)"), 300),
+        scene(
+            "c23-urdu-sent",
+            "tern-only",
+            "Sent: the bubble and the sidebar title keep ?? at the left end",
+            Act::CSend,
+            5000,
+        ),
+        b(Act::CState("urdu ?? answered"), 300),
+        b(Act::CNewChat, 1500),
+        scene(
+            "c24-mention-colour",
+            "tern-only",
+            "@ references in the accent colour, the caret after the text",
+            Act::CTypePath("Compare @tour-notes.md with @tour-plan.md and "),
+            3000,
+        ),
+        b(Act::CState("mentions coloured"), 300),
         b(Act::ClearComposer, 500),
         scene(
             "c12-toasts",

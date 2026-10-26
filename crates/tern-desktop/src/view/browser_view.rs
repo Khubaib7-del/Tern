@@ -47,9 +47,6 @@ fn stopped_is_none(web: &crate::webview::Shared) -> bool {
 use crate::browser::{PaneView, engine_address};
 use crate::theme::Palette;
 
-/// The browser pane's width beside the chat.
-pub(super) const BROWSER_W: f32 = 460.;
-
 impl Workspace {
     /// Opens an address (typed or clicked) in the pane.
     pub(super) fn browse(&mut self, input: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -216,7 +213,7 @@ impl Workspace {
             self.model.browser.view = PaneView::Split;
         }
         self.composer
-            .update(cx, |c, cx| c.set_value(msg, window, cx));
+            .update(cx, |c, cx| crate::view::set_end(c, msg, window, cx));
         self.submit(window, cx);
     }
 
