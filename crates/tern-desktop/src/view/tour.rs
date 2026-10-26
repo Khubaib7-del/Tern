@@ -283,6 +283,11 @@ enum Act {
     /// Composer tour: a scene-log line with the GPU probe, the speech
     /// choice in effect and what the last transcription ran on.
     CSpeechState(&'static str),
+    /// Composer tour: types text key by key at the caret, as a keyboard
+    /// does (not the whole value replaced, as `Type` does).
+    CKeys(&'static str),
+    /// Composer tour: the Left (`true`) or Right arrow key in the composer.
+    CArrow(bool),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1766,6 +1771,27 @@ impl Workspace {
                 }
             }
             Act::CState(what) => self.log_composer_state(what, cx),
+            Act::CKeys(text) => {
+                use gpui_kit::EntityInputHandler as _;
+                self.composer.update(cx, |c, cx| {
+                    c.focus(window, cx);
+                    for ch in text.chars() {
+                        c.replace_text_in_range(None, &ch.to_string(), window, cx);
+                    }
+                });
+                let value = self.composer.read(cx).value().to_string();
+                self.model.chat_here = self.current;
+                self.model.on_composer_text(&value);
+            }
+            Act::CArrow(left) => {
+                use gpui_kit::component::input::{MoveLeft, MoveRight};
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+                if left {
+                    window.dispatch_action(Box::new(MoveLeft), cx);
+                } else {
+                    window.dispatch_action(Box::new(MoveRight), cx);
+                }
+            }
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -1905,6 +1931,20 @@ impl Workspace {
             .iter()
             .map(|t| t.text.as_str())
             .collect();
+        let (caret, rtl) = {
+            let c = self.composer.read(cx);
+            (c.selected_range(), c.is_right_to_left())
+        };
+        let title = self
+            .model
+            .sessions
+            .iter()
+            .find(|s| Some(s.id) == self.current)
+            .map(|s| s.title.clone());
+        log(&format!(
+            "TOUR state {what}: caret={caret:?} rtl={rtl} mentions={:?} title={title:?}",
+            crate::composer::mention_spans(&text)
+        ));
         log(&format!(
             "TOUR state {what}: chat={:?} status={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?} notices={:?} wiki_empty={:?}",
             self.current,
@@ -2044,6 +2084,9 @@ const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پ�
 /// Typed into the composer by the tour (#67): Urdu ending in the Urdu
 /// question mark, and a mixed Urdu and English line.
 const URDU_TYPED: &str = "کیا آپ اردو بولتے ہیں؟";
+/// "How are you?" without its question mark, typed key by key before the
+/// tour types `??` at the caret (#68: they landed between the words).
+const URDU_HOW_ARE_YOU: &str = "آپ کیسے ہیں";
 const MIXED_TYPED: &str = "Tern میں Whisper small کتنا تیز ہے؟ (GPU)";
 /// The same Urdu question ending in an ASCII `?` (an English keyboard
 /// layout): a neutral character, which lands at the sentence's end (the
@@ -2285,6 +2328,49 @@ fn composer_script() -> Vec<Beat> {
         b(Act::CState("mixed typed"), 300),
         b(Act::Type(URDU_ASCII_TYPED), 3000),
         b(Act::CState("urdu ascii typed"), 300),
+        b(Act::ClearComposer, 500),
+        // #68: "آپ کیسے ہیں" typed key by key, then "??" at the caret: the
+        // marks belong at the left end (the text's end), not between words;
+        // the line is right-aligned and the arrow keys follow the text.
+        b(Act::CNewChat, 1500),
+        scene(
+            "c21-urdu-caret",
+            "tern-only",
+            "Urdu typed key by key, then ?? at the caret: ?? at the left end, line right-aligned",
+            Act::CKeys(URDU_HOW_ARE_YOU),
+            1500,
+        ),
+        b(Act::CKeys("??"), 2500),
+        b(Act::CState("urdu ?? typed"), 300),
+        scene(
+            "c22-urdu-arrows",
+            "tern-only",
+            "Right arrow moves towards the start of Urdu text, Left towards its end",
+            Act::CArrow(false),
+            700,
+        ),
+        b(Act::CArrow(false), 1500),
+        b(Act::CState("two Right presses (towards the start)"), 300),
+        b(Act::CArrow(true), 700),
+        b(Act::CArrow(true), 1500),
+        b(Act::CState("two Left presses (back to the end)"), 300),
+        scene(
+            "c23-urdu-sent",
+            "tern-only",
+            "Sent: the bubble and the sidebar title keep ?? at the left end",
+            Act::CSend,
+            5000,
+        ),
+        b(Act::CState("urdu ?? answered"), 300),
+        b(Act::CNewChat, 1500),
+        scene(
+            "c24-mention-colour",
+            "tern-only",
+            "@ references in the accent colour, the caret after the text",
+            Act::CTypePath("Compare @tour-notes.md with @tour-plan.md and "),
+            3000,
+        ),
+        b(Act::CState("mentions coloured"), 300),
         b(Act::ClearComposer, 500),
         scene(
             "c12-toasts",
