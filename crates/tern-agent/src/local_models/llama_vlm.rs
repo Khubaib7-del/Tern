@@ -366,12 +366,15 @@ impl LocalEngine for LlamaVlm {
 }
 
 /// Granite-Docling's DocTags as Markdown: headings, paragraphs, list
-/// items, captions, code, and OTSL tables (`<fcel>`/`<ecel>`/`<nl>`);
-/// location tags are dropped.
+/// items, captions, code, formulas, and OTSL tables (`<fcel>`/`<ecel>`/
+/// `<nl>`); location tags, page headers and footers are dropped.
 pub fn doctags_to_markdown(doctags: &str) -> String {
     let loc = regex::Regex::new(r"<loc_\d+>").expect("static regex");
     let s = loc.replace_all(doctags, "");
-    let block = regex::Regex::new(r"(?s)<([a-z_0-9]+)>(.*?)</([a-z_0-9]+)>").expect("static regex");
+    let block = regex::Regex::new(
+        r"(?s)<(title|section_header_level_\d|text|paragraph|list_item|caption|footnote|code|formula|otsl|page_header|page_footer)>(.*?)</(?:title|section_header_level_\d|text|paragraph|list_item|caption|footnote|code|formula|otsl|page_header|page_footer)>",
+    )
+    .expect("static regex");
     let mut out: Vec<String> = Vec::new();
     for c in block.captures_iter(&s) {
         let (tag, body) = (&c[1], c[2].trim());
@@ -379,14 +382,6 @@ pub fn doctags_to_markdown(doctags: &str) -> String {
             continue;
         }
         let line = match tag {
-            "doctag" | "page" => {
-                // A wrapper: convert what is inside.
-                let inner = doctags_to_markdown(body);
-                if !inner.is_empty() {
-                    out.push(inner);
-                }
-                continue;
-            }
             "title" => format!("# {}", strip_tags(body)),
             t if t.starts_with("section_header") => {
                 let level = t
@@ -398,13 +393,6 @@ pub fn doctags_to_markdown(doctags: &str) -> String {
                 format!("{} {}", "#".repeat(level + 1), strip_tags(body))
             }
             "list_item" => format!("- {}", strip_tags(body)),
-            "unordered_list" | "ordered_list" => {
-                let inner = doctags_to_markdown(body);
-                if !inner.is_empty() {
-                    out.push(inner);
-                }
-                continue;
-            }
             "code" => format!("```\n{}\n```", strip_tags(body)),
             "formula" => format!("$$ {} $$", strip_tags(body)),
             "otsl" => otsl_table(body),
@@ -412,7 +400,9 @@ pub fn doctags_to_markdown(doctags: &str) -> String {
             "page_header" | "page_footer" => continue,
             _ => strip_tags(body),
         };
-        out.push(line);
+        if !line.trim().is_empty() {
+            out.push(line);
+        }
     }
     if out.is_empty() {
         return strip_tags(&s).trim().to_owned();
