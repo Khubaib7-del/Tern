@@ -519,6 +519,9 @@ pub struct Model {
     pub copied: Option<usize>,
     /// Attachments still being read from disk.
     pub attaching: usize,
+    /// The document being converted to Markdown while it is the only
+    /// item attaching (#69), for "Converting report.pdf to Markdown…".
+    pub attaching_doc: Option<String>,
     /// The composer's Deep research mode: the next message is planned
     /// and researched by parallel workers.
     pub deep_mode: bool,
@@ -716,6 +719,7 @@ impl Model {
             reply_to: None,
             copied: None,
             attaching: 0,
+            attaching_doc: None,
             deep_mode: false,
             steering: None,
             resume_offer: None,
@@ -1531,6 +1535,9 @@ impl Model {
     /// A file, folder, or archive finished reading.
     pub fn attached(&mut self, result: Result<Attachment, String>) {
         self.attaching = self.attaching.saturating_sub(1);
+        if self.attaching == 0 {
+            self.attaching_doc = None;
+        }
         match result {
             Ok(a) => self.attachments.push(a),
             Err(e) => self.toast_error(e, None),

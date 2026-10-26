@@ -1573,6 +1573,13 @@ impl Workspace {
             cx.notify();
             return;
         }
+        self.model.attaching_doc = match paths.as_slice() {
+            [one] if self.model.attaching == 0 => one
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| tern_agent::docs::converts(n)),
+            _ => None,
+        };
         self.model.attaching += paths.len();
         self.bridge.attach(paths);
         cx.notify();
@@ -3918,7 +3925,9 @@ impl Workspace {
                 .text_xs()
                 .text_color(p.muted)
                 .child(Spinner::new().xsmall())
-                .child(if self.model.attaching == 1 {
+                .child(if let Some(doc) = &self.model.attaching_doc {
+                    format!("Converting {doc} to Markdown…")
+                } else if self.model.attaching == 1 {
                     "Reading 1 item".to_owned()
                 } else {
                     format!("Reading {} items", self.model.attaching)
