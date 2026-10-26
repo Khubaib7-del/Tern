@@ -264,6 +264,31 @@
       "licence_note": "SmolVLM by Hugging Face, Apache-2.0."
     },
     {
+      "id": "smolvlm-256m",
+      "task": "vision",
+      "role": "alternative",
+      "name": "SmolVLM 256M Instruct (Q8)",
+      "hf_repo": "ggml-org/SmolVLM-256M-Instruct-GGUF",
+      "revision": "b9e4379657e1450d04d02eec8e345667265b0a00",
+      "licence": "Apache-2.0",
+      "runtime": "llama_cpp",
+      "note": "The smallest picture model: half the size of SmolVLM 500M and faster on an older laptop, with shorter descriptions.",
+      "files": [
+        {
+          "name": "SmolVLM-256M-Instruct-Q8_0.gguf",
+          "size": 175054528,
+          "sha256": "2a31195d3769c0b0fd0a4906201666108834848db768af11de1d2cef7cd35e65"
+        },
+        {
+          "name": "mmproj-SmolVLM-256M-Instruct-Q8_0.gguf",
+          "size": 103769856,
+          "sha256": "7e943f7c53f0382a6fc41b6ee0c2def63ba4fded9ab8ed039cc9e2ab905e0edd"
+        }
+      ],
+      "logo": "huggingface",
+      "licence_note": "SmolVLM by Hugging Face, Apache-2.0."
+    },
+    {
       "id": "qwen3-vl-2b",
       "task": "vision",
       "role": "alternative",
@@ -272,7 +297,7 @@
       "revision": "52d6c8ffea26cc873ac5ad116f8631268d7eb503",
       "licence": "Apache-2.0",
       "runtime": "llama_cpp",
-      "note": "Larger and more capable at reading charts and dense pictures; slower.",
+      "note": "Larger and more capable at reading charts and dense pictures; slower (a second alternative, for a computer with a GPU or time to spare).",
       "files": [
         {
           "name": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",

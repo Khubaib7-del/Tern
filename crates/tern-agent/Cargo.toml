@@ -46,6 +46,8 @@ whisper-rs = { workspace = true, optional = true }
 num_cpus = { version = "1", optional = true }
 symphonia = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
+loqui-kokoro = { workspace = true, optional = true }
+loqui-g2p = { workspace = true, optional = true }
 
 [features]
 # The microphone, through tern-platform (cpal). The desktop app turns it on.
@@ -67,6 +69,10 @@ whisper-metal = ["whisper", "whisper-rs/metal", "whisper-rs/raw-api"]
 # Local live dictation: Moonshine Streaming on ONNX Runtime (ort, the
 # runtime OCR already links). The desktop app and the CLI turn it on.
 asr-onnx = ["audio", "dep:ort"]
+# Read aloud (#69): Kokoro-82M on ONNX Runtime (loqui-kokoro, MIT) with
+# loqui-g2p's English phonemes (no espeak-ng). The desktop app and the CLI
+# turn it on.
+tts = ["dep:loqui-kokoro", "dep:loqui-g2p", "dep:ort"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
