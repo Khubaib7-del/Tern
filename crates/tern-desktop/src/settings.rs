@@ -166,16 +166,6 @@ const fn e(section: Section, label: &'static str, keywords: &'static str) -> Ent
 /// Every setting the search finds.
 pub const ENTRIES: &[Entry] = &[
     e(
-        Section::Speech,
-        "Speech device",
-        "gpu cpu vulkan metal graphics card whisper transcription speed auto",
-    ),
-    e(
-        Section::Speech,
-        "CPU threads",
-        "threads cores whisper speed slow transcription",
-    ),
-    e(
         Section::Providers,
         "API keys",
         "key token secret keychain add replace remove",
@@ -240,6 +230,16 @@ pub const ENTRIES: &[Entry] = &[
         Section::LocalModels,
         "Default local model",
         "default per task ocr speech vision enable disable delete",
+    ),
+    e(
+        Section::Speech,
+        "Speech device",
+        "gpu cpu vulkan metal graphics card whisper transcription speed auto",
+    ),
+    e(
+        Section::Speech,
+        "CPU threads",
+        "threads cores whisper speed slow transcription",
     ),
     e(
         Section::Tools,
@@ -802,6 +802,9 @@ mod tests {
         // A keyword finds the setting.
         let hits = search("whisper");
         assert_eq!(hits[0].label, "Speech-to-text model");
+        // Speech settings sit in list order, after Local models.
+        assert_eq!(search("gpu")[0].label, "Speech device");
+        assert_eq!(search("cpu threads")[0].label, "CPU threads");
         // Every word must match somewhere.
         assert!(
             search("searxng address")
