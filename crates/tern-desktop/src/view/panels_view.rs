@@ -59,6 +59,18 @@ impl Workspace {
             return;
         };
         let window_w = f32::from(window.viewport_size().width);
+        // Beside the browser the divider sets its share, not a width.
+        if edge == Edge::Right && self.model.browser.visible {
+            let left = self.centre_x
+                + if self.centre_x > RAIL_W {
+                    crate::panels::HANDLE_W
+                } else {
+                    0.
+                };
+            self.browser_share = crate::browser::split_share(x, left, window_w);
+            cx.notify();
+            return;
+        }
         // The width the other side panel takes, 0 when it is closed.
         let other = match edge {
             Edge::Sidebar if self.model.run_panel_open => self.model.panels.right,

@@ -270,6 +270,12 @@ pub struct Workspace {
     window_w: f32,
     /// The right pane's width at the last render, for its header.
     side_w: f32,
+    /// The browser's share of the room beside the sidebar (#68: half),
+    /// whether opening it closed the sidebar (to reopen on close), and
+    /// whether it showed last frame.
+    browser_share: f32,
+    browser_hid_sidebar: bool,
+    browser_was_open: bool,
     /// The run panel's ⋯ menu of views that do not fit is open.
     run_more_open: bool,
     /// Sliding highlights and knobs, by control, and whether one moved
@@ -712,6 +718,9 @@ impl Workspace {
             centre_x: 0.,
             window_w: 0.,
             side_w: crate::panels::RIGHT_DEFAULT,
+            browser_share: crate::browser::SPLIT_DEFAULT,
+            browser_hid_sidebar: false,
+            browser_was_open: false,
             run_more_open: false,
             glides: Default::default(),
             perf_strip: 0,
@@ -5499,6 +5508,24 @@ impl Render for Workspace {
             Some(w) => w.palette(now),
             None => Palette::get(self.model.dark),
         };
+        // A page opening shows chat | page half and half with the sidebar
+        // folded away (back when the page closes), on the Page tab (#68).
+        let browser_open = self.model.browser.visible
+            && self.model.run_panel_open
+            && self.model.screen != Screen::Settings;
+        if browser_open != self.browser_was_open {
+            if browser_open {
+                self.browser_share = crate::browser::SPLIT_DEFAULT;
+                self.model.browser.view = crate::browser::PaneView::Page;
+                if self.model.sidebar_open {
+                    self.model.sidebar_open = false;
+                    self.browser_hid_sidebar = true;
+                }
+            } else if std::mem::take(&mut self.browser_hid_sidebar) {
+                self.model.sidebar_open = true;
+            }
+            self.browser_was_open = browser_open;
+        }
         // Settings has its own section list: the chat list slides away
         // while it shows and comes back after.
         let sidebar = self.sidebar_slide.frame(
@@ -5534,7 +5561,17 @@ impl Render for Workspace {
             0.
         };
         let want = if self.model.browser.visible {
-            browser_view::BROWSER_W.max(right_w)
+            // Half of what is right of the rail and the sidebar: with the
+            // sidebar open, chat and page still get equal halves.
+            let handle = if beside_sidebar > 0. {
+                crate::panels::HANDLE_W
+            } else {
+                0.
+            };
+            crate::browser::split_width(
+                viewport_w - RAIL_W - beside_sidebar - handle,
+                self.browser_share,
+            )
         } else if side_docked {
             continuity_view::SIDE_W.max(right_w)
         } else if self.model.run_panel.view == RunView::Graph && self.model.screen != Screen::Study
