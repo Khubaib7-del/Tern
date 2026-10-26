@@ -13,6 +13,9 @@ tern="$1"; vlm_dir="$2"; label="${3:-$(uname -s)}"
 export TERN_HOME="${RUNNER_TEMP:-/tmp}/tern-runtimes-home"
 exe=""; case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe";; esac
 export TERN_VLM="$vlm_dir/tern-vlm$exe"
+# Git Bash on Windows: a POSIX path for find, python3 may be "python".
+home_posix="$TERN_HOME"; command -v cygpath >/dev/null && home_posix=$(cygpath -u "$TERN_HOME")
+py=python3; python3 -c "" 2>/dev/null || py=python
 mkdir -p runtimes-smoke && cd runtimes-smoke
 sum() { echo "$1" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
 infra() { echo "::warning::runtimes smoke ($label): $1 (infrastructure, not Tern)"; sum "> $1 (infrastructure)"; }
@@ -30,7 +33,7 @@ download() {
 }
 
 # A 256x256 PNG: a red square with a white bar (pure Python, no Pillow).
-python3 - <<'EOF'
+"$py" - <<'EOF'
 import struct, zlib
 w = h = 256
 rows = []
@@ -52,7 +55,7 @@ EOF
 if [ ! -x "$TERN_VLM" ] && [ ! -f "$TERN_VLM" ]; then
   echo "::error::tern-vlm is missing at $TERN_VLM"; fail=1
 elif download smolvlm-256m; then
-  dir=$(dirname "$(find "$TERN_HOME" -name 'SmolVLM-256M-Instruct-Q8_0.gguf' | head -1)")
+  dir=$(dirname "$(find "$home_posix" -name 'SmolVLM-256M-Instruct-Q8_0.gguf' | head -1)")
   # The helper alone, for its device lines.
   timeout 300 "$TERN_VLM" -m "$dir/SmolVLM-256M-Instruct-Q8_0.gguf" --mmproj "$dir/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" \
     --image red-tern.png -p "What colour is this picture?" -n 32 --temp 0 -t 4 > helper.txt 2> helper.log
@@ -98,7 +101,7 @@ else
 fi
 
 # 3. Documents.
-python3 - <<'EOF'
+"$py" - <<'EOF'
 import zipfile
 doc = """<w:document xmlns:w="w"><w:body>
 <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Quarterly report</w:t></w:r></w:p>

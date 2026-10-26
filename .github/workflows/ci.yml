@@ -161,7 +161,8 @@ jobs:
           if ($p.HasExited) { "tern-desktop.exe exited early with code $($p.ExitCode)"; exit 1 }
           "tern-desktop.exe is running after 15 s"
           Stop-Process -Id $p.Id
-      - name: tern-vlm.exe starts with no Vulkan driver (lists the CPU)
+      # llama.cpp lists GPUs only, so "(none)" is right with no driver.
+      - name: tern-vlm.exe starts with no Vulkan driver (no GPU listed)
         shell: pwsh
         run: |
           .\target\release\vlm\tern-vlm.exe --list-devices
@@ -177,6 +178,24 @@ jobs:
             target/release/vlm/
             target/release/NOTICE.txt
           retention-days: 14
+      # The same smoke test as Linux, here with no Vulkan driver: tern-vlm
+      # must load ggml's CPU backend and describe the picture on the CPU.
+      - name: Local models for the runtimes smoke test (cached)
+        id: models-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/tern-runtimes-home/models
+          key: runtimes-models-windows-smolvlm-256m-kokoro-82m-v1
+      - name: Local runtimes smoke test (tern-vlm.exe + SmolVLM on the CPU, Kokoro read aloud, DOCX to Markdown)
+        timeout-minutes: 20
+        shell: bash
+        run: .github/scripts/local-runtimes-smoke.sh "$PWD/target/release/tern.exe" "$PWD/target/release/vlm" "Windows"
+      - name: Save the smoke test models
+        if: always() && steps.models-cache.outputs.cache-hit != 'true' && hashFiles(format('{0}/tern-runtimes-home/models/**', runner.temp)) != ''
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/tern-runtimes-home/models
+          key: runtimes-models-windows-smolvlm-256m-kokoro-82m-v1
       - name: ffmpeg for the speech benchmark
         shell: pwsh
         run: choco install ffmpeg -y --no-progress | Out-Null
