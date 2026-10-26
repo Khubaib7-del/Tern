@@ -216,7 +216,7 @@ impl Workspace {
             self.model.browser.view = PaneView::Split;
         }
         self.composer
-            .update(cx, |c, cx| c.set_value(msg, window, cx));
+            .update(cx, |c, cx| crate::view::set_end(c, msg, window, cx));
         self.submit(window, cx);
     }
 

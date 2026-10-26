@@ -329,7 +329,10 @@ impl Caret {
         } else {
             cursor
         };
-        let at = (0..=at).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
+        let at = (0..=at)
+            .rev()
+            .find(|i| text.is_char_boundary(*i))
+            .unwrap_or(0);
         let (head, tail) = text.split_at(at);
         let mut piece = String::new();
         if head.chars().last().is_some_and(|c| !c.is_whitespace()) {
@@ -364,7 +367,11 @@ pub enum Route {
 impl Route {
     /// The route for the saved language (`None` = Auto) and the models
     /// there are, with a note when the choice cannot be honoured.
-    pub fn pick(language: Option<&str>, fast: bool, whisper: bool) -> Option<(Route, Option<String>)> {
+    pub fn pick(
+        language: Option<&str>,
+        fast: bool,
+        whisper: bool,
+    ) -> Option<(Route, Option<String>)> {
         match language {
             Some("en") if fast => Some((Route::Fast, None)),
             Some(l) if whisper => Some((Route::Whisper(Some(l.to_owned())), None)),
@@ -510,11 +517,17 @@ mod tests {
         assert!(r.quiet);
         d.on_result(
             r.seq,
-            Err("moonshine-streaming-small (on this computer) heard no speech in the recording.".into()),
+            Err(
+                "moonshine-streaming-small (on this computer) heard no speech in the recording."
+                    .into(),
+            ),
         );
         assert_eq!(d.error, None, "no toast for a pause");
         assert_eq!(d.empty_windows, 1);
-        assert!(nothing_heard_note(&d, &silence).is_none(), "silence: no note");
+        assert!(
+            nothing_heard_note(&d, &silence).is_none(),
+            "silence: no note"
+        );
         // Whisper's "Thank you." on silence is dropped.
         let mut d = Dictation::new();
         d.stop();
@@ -548,7 +561,10 @@ mod tests {
         assert!(note.unwrap().contains("Urdu"));
         assert_eq!(Route::pick(None, true, true).unwrap().0, Route::Detect);
         assert_eq!(Route::pick(None, true, false).unwrap().0, Route::Fast);
-        assert_eq!(Route::pick(None, false, true).unwrap().0, Route::Whisper(None));
+        assert_eq!(
+            Route::pick(None, false, true).unwrap().0,
+            Route::Whisper(None)
+        );
         assert!(Route::pick(None, false, false).is_none());
         // Auto hears the first window.
         assert_eq!(Route::Detect.heard(Some("en"), true), Route::Fast);

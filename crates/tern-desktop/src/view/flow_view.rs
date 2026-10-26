@@ -986,7 +986,7 @@ impl Workspace {
         }
         if let Some(text) = r.follow_up() {
             self.composer.update(cx, |c, cx| {
-                c.set_value(text, window, cx);
+                crate::view::set_end(c, text, window, cx);
                 c.focus(window, cx);
             });
         }

@@ -213,7 +213,7 @@ impl Workspace {
                 });
                 if let Some(text) = last {
                     self.composer
-                        .update(cx, |c, cx| c.set_value(text, window, cx));
+                        .update(cx, |c, cx| crate::view::set_end(c, text, window, cx));
                     self.submit(window, cx);
                 }
             }

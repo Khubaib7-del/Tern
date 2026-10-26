@@ -67,7 +67,7 @@ impl Workspace {
         };
         let set = |this: &mut Self, text: String, window: &mut Window, cx: &mut Context<Self>| {
             this.composer.update(cx, |c, cx| {
-                c.set_value(text, window, cx);
+                crate::view::set_end(c, text, window, cx);
                 c.focus(window, cx);
             });
         };
@@ -407,7 +407,7 @@ impl Workspace {
     ) {
         if let Some(text) = self.model.prompt_ready(r) {
             self.composer.update(cx, |c, cx| {
-                c.set_value(text, window, cx);
+                crate::view::set_end(c, text, window, cx);
                 c.focus(window, cx);
             });
             self.model.slash = None;

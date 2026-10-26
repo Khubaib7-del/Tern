@@ -85,6 +85,22 @@ pub const NO_VOICE_MODEL: &str = "No voice model available — download one in S
 /// How much of an event's payload the Raw view shows when opened.
 const RAW_PAYLOAD_CHARS: usize = 4_000;
 
+/// Sets the composer's text with the caret at its end (#68). The input's
+/// own `set_value` puts a multi-line input's caret at the start, so `@`
+/// from the button, a picked mention or command, or a restored draft
+/// left the caret before the text.
+pub(crate) fn set_end(
+    c: &mut TextareaState,
+    text: impl AsRef<str>,
+    window: &mut Window,
+    cx: &mut Context<TextareaState>,
+) {
+    let text: String = text.as_ref().to_owned();
+    let end = text.len();
+    c.set_value(text, window, cx);
+    c.set_selected_range(end..end, cx);
+}
+
 /// The one window of the app.
 pub struct Workspace {
     model: Model,
@@ -296,6 +312,14 @@ pub struct Workspace {
     /// timer that sends windows.
     dictation: Option<crate::dictation::Dictation>,
     dictation_model: Option<tern_agent::media::ModelRef>,
+    /// The fast English model and the Whisper one for this recording,
+    /// and which takes the next window (#68: Settings › Speech ›
+    /// Dictation language).
+    dictation_fast: Option<tern_agent::media::ModelRef>,
+    dictation_whisper: Option<tern_agent::media::ModelRef>,
+    dictation_route: crate::dictation::Route,
+    /// Where dictated text goes in the composer (follows the text).
+    dictation_caret: crate::dictation::Caret,
     dictation_samples: Vec<f32>,
     dictation_pos: usize,
     dictation_task: Option<Task<()>>,
@@ -705,6 +729,10 @@ impl Workspace {
             pending_pick: None,
             dictation: None,
             dictation_model: None,
+            dictation_fast: None,
+            dictation_whisper: None,
+            dictation_route: crate::dictation::Route::Fast,
+            dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
             dictation_task: None,
@@ -803,7 +831,7 @@ impl Workspace {
                     );
                 }
             }
-            Msg::Dictated(seq, result) => self.dictated(seq, result, window, cx),
+            Msg::Dictated(seq, result, heard) => self.dictated(seq, result, heard, window, cx),
             Msg::Resumed(s, turns, recent) => {
                 self.resume_retry = None;
                 self.model.switching_to = None;
@@ -971,7 +999,8 @@ impl Workspace {
                 self.apply_pending_pick();
                 // A message queued with Tab goes now.
                 if let Some(q) = self.queued.take() {
-                    self.composer.update(cx, |c, cx| c.set_value(q, window, cx));
+                    self.composer
+                        .update(cx, |c, cx| crate::view::set_end(c, q, window, cx));
                     self.submit(window, cx);
                 }
             }
@@ -1254,7 +1283,7 @@ impl Workspace {
         let deep = self.model.deep_mode;
         self.model.deep_mode = false;
         self.composer.update(cx, |c, cx| {
-            c.set_value(tern_agent::CONTINUE_PROMPT, window, cx)
+            crate::view::set_end(c, tern_agent::CONTINUE_PROMPT, window, cx)
         });
         self.submit(window, cx);
         self.model.deep_mode = deep;
@@ -1270,7 +1299,7 @@ impl Workspace {
         let text = self.composer.read(cx).value().to_string();
         if let Some(chosen) = self.model.choose_mention(&text, index) {
             self.composer.update(cx, |c, cx| {
-                c.set_value(chosen.text, window, cx);
+                crate::view::set_end(c, chosen.text, window, cx);
                 c.focus(window, cx);
             });
             if chosen.browse {
@@ -2039,7 +2068,7 @@ impl Workspace {
                 self.new_chat(window, cx);
                 let draft = tab.place.draft.clone();
                 self.composer
-                    .update(cx, |c, cx| c.set_value(draft, window, cx));
+                    .update(cx, |c, cx| crate::view::set_end(c, draft, window, cx));
             }
         }
         self.persist_tabs();
@@ -2162,7 +2191,7 @@ impl Workspace {
         }
         let text = self.model.restore_draft(self.current);
         self.composer.update(cx, |c, cx| {
-            c.set_value(text, window, cx);
+            crate::view::set_end(c, text, window, cx);
             c.focus(window, cx);
         });
         cx.notify();
@@ -2250,6 +2279,19 @@ impl Workspace {
             .or_else(|| local.transcriber(Task::SpeechToText))
     }
 
+    /// The Whisper model dictation uses for languages other than English
+    /// (#68): a local Whisper model when one is installed and on, else
+    /// the provider speech-to-text model (they take a language too).
+    fn whisper_model(&self) -> Option<tern_agent::media::ModelRef> {
+        use tern_agent::local_models::Task;
+        self.model
+            .settings
+            .local
+            .transcriber(Task::SpeechToText)
+            .filter(|m| m.model.starts_with("whisper"))
+            .or_else(|| self.remote_stt_model())
+    }
+
     /// The model that transcribes attached audio files: a local
     /// transcription model when one is installed and on (it runs on this
     /// computer), else the provider model the mic would use.
@@ -2283,16 +2325,70 @@ impl Workspace {
             self.stop_mic(window, cx);
             return;
         }
-        let Some(via) = self.stt_model() else {
+        use tern_agent::local_models::{Task, speech};
+        let fast = self.model.settings.local.transcriber(Task::Dictation);
+        let whisper = self.whisper_model();
+        let language =
+            speech::dictation_language(self.model.providers.prefs.dictation_language.as_deref());
+        let Some((route, note)) =
+            crate::dictation::Route::pick(language, fast.is_some(), whisper.is_some())
+        else {
+            // Nothing for the language rule: the old order (a provider
+            // model, a local transcription model), else no voice model.
+            let Some(via) = self.stt_model() else {
+                self.model.toast_error(NO_VOICE_MODEL, None);
+                cx.notify();
+                return;
+            };
+            self.start_recording(
+                via.clone(),
+                None,
+                Some(via),
+                crate::dictation::Route::Fast,
+                window,
+                cx,
+            );
+            return;
+        };
+        if let Some(n) = note {
+            self.model.toast_info(n);
+        }
+        let via = match route {
+            crate::dictation::Route::Fast => fast.clone(),
+            _ => whisper.clone(),
+        };
+        let Some(via) = via else {
             self.model.toast_error(NO_VOICE_MODEL, None);
             cx.notify();
             return;
         };
+        tern_agent::diag::note(&format!(
+            "dictation: language={} route={route:?} via={via}",
+            speech::language_name(language)
+        ));
+        self.start_recording(via, fast, whisper, route, window, cx);
+    }
+
+    /// Opens the mic and starts streaming windows to `via`.
+    fn start_recording(
+        &mut self,
+        via: tern_agent::media::ModelRef,
+        fast: Option<tern_agent::media::ModelRef>,
+        whisper: Option<tern_agent::media::ModelRef>,
+        route: crate::dictation::Route,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match tern_agent::platform::mic::Recording::start() {
             Ok(r) => {
                 self.recording = Some(r);
-                self.dictation = Some(crate::dictation::Dictation::new());
+                self.dictation = Some(crate::dictation::Dictation::with_pace(route.pace()));
                 self.dictation_model = Some(via);
+                self.dictation_fast = fast;
+                self.dictation_whisper = whisper;
+                self.dictation_route = route;
+                let cursor = self.composer.read(cx).cursor();
+                self.dictation_caret = crate::dictation::Caret::start(cursor);
                 self.dictation_samples.clear();
                 self.dictation_pos = 0;
                 self.start_dictation_timer(window, cx);
@@ -2361,7 +2457,11 @@ impl Workspace {
                 &self.dictation_samples[start..end],
                 tern_agent::platform::audio::SPEECH_RATE,
             );
-            self.bridge.dictate(via, req.seq, wav);
+            let language = match &self.dictation_route {
+                crate::dictation::Route::Whisper(l) => l.clone(),
+                crate::dictation::Route::Fast | crate::dictation::Route::Detect => None,
+            };
+            self.bridge.dictate(via, req.seq, wav, language);
         }
         self.commit_dictation(window, cx);
         let finished = self
@@ -2369,9 +2469,17 @@ impl Workspace {
             .as_ref()
             .is_some_and(|d| d.done(self.dictation_samples.len()));
         if finished {
+            // One note per recording at most (#68: "heard no speech"
+            // toasts kept popping for every pause).
             if let Some(e) = self.dictation.as_mut().and_then(|d| d.error.take()) {
                 self.model
                     .toast_error(format!("Some speech could not be transcribed: {e}"), None);
+            } else if let Some(n) = self
+                .dictation
+                .as_ref()
+                .and_then(|d| crate::dictation::nothing_heard_note(d, &self.dictation_samples))
+            {
+                self.model.toast_info(n);
             }
             self.dictation = None;
             self.dictation_model = None;
@@ -2388,16 +2496,19 @@ impl Workspace {
         let Some(text) = self.dictation.as_mut().and_then(|d| d.take_committed()) else {
             return;
         };
-        let now = self.composer.read(cx).value().to_string();
-        let joined = if now.trim().is_empty() {
-            text
-        } else {
-            format!("{} {text}", now.trim_end())
+        // At the end of what was dictated so far (the caret follows it),
+        // or where the user put the caret during dictation (#68).
+        let (now, cursor) = {
+            let c = self.composer.read(cx);
+            (c.value().to_string(), c.cursor())
         };
+        let (joined, at) = self.dictation_caret.place(&now, cursor, &text);
         self.model.chat_here = self.current;
         self.model.on_composer_text(&joined);
-        self.composer
-            .update(cx, |c, cx| c.set_value(joined, window, cx));
+        self.composer.update(cx, |c, cx| {
+            c.set_value(joined, window, cx);
+            c.set_selected_range(at..at, cx);
+        });
         cx.notify();
     }
 
@@ -2406,11 +2517,29 @@ impl Workspace {
         &mut self,
         seq: u64,
         result: Result<String, String>,
+        heard: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(d) = self.dictation.as_mut() {
             d.on_result(seq, result);
+            // Auto: the first window told which language it is.
+            if self.dictation_route == crate::dictation::Route::Detect {
+                let next = self
+                    .dictation_route
+                    .heard(heard.as_deref(), self.dictation_fast.is_some());
+                tern_agent::diag::note(&format!(
+                    "dictation: heard {} -> {next:?}",
+                    heard.as_deref().unwrap_or("?")
+                ));
+                d.set_pace(next.pace());
+                self.dictation_model = match next {
+                    crate::dictation::Route::Fast => self.dictation_fast.clone(),
+                    _ => self.dictation_whisper.clone(),
+                }
+                .or(self.dictation_model.take());
+                self.dictation_route = next;
+            }
         }
         self.pump_dictation(window, cx);
     }
@@ -3483,7 +3612,7 @@ impl Workspace {
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.composer.update(cx, |c, cx| {
-                                c.set_value(prompt.to_owned(), window, cx);
+                                crate::view::set_end(c, prompt.to_owned(), window, cx);
                                 c.focus(window, cx);
                             });
                             cx.notify();
@@ -5279,7 +5408,7 @@ impl Render for Workspace {
         let build_from = Instant::now();
         if let Some(text) = self.composer_restore.take() {
             self.composer
-                .update(cx, |c, cx| c.set_value(text, window, cx));
+                .update(cx, |c, cx| crate::view::set_end(c, text, window, cx));
         }
         self.save_session_soon(cx);
         self.tick_scout(window, cx);

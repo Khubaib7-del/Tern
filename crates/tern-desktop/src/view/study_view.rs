@@ -205,7 +205,7 @@ impl Workspace {
         }
         let draft = last.draft.clone();
         self.composer
-            .update(cx, |c, cx| c.set_value(draft, window, cx));
+            .update(cx, |c, cx| crate::view::set_end(c, draft, window, cx));
         if last.scroll > 0 {
             self.scroll
                 .set_offset(gpui_kit::point(px(0.), px(-(last.scroll as f32))));
