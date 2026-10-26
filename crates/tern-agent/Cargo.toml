@@ -52,6 +52,11 @@ audio = ["dep:symphonia"]
 # Local transcription: Whisper models on whisper.cpp (whisper-rs, built
 # statically, CPU). The desktop app and the CLI turn it on.
 whisper = ["audio", "dep:whisper-rs", "dep:num_cpus"]
+# Whisper on the GPU: whisper.cpp's Vulkan backend (Windows, Linux; needs
+# the Vulkan SDK or headers and glslc to build) or Metal (macOS). Without
+# a usable GPU at run time Whisper runs on the CPU (local_models::gpu).
+whisper-vulkan = ["whisper", "whisper-rs/vulkan", "whisper-rs/raw-api"]
+whisper-metal = ["whisper", "whisper-rs/metal", "whisper-rs/raw-api"]
 # Local live dictation: Moonshine Streaming on ONNX Runtime (ort, the
 # runtime OCR already links). The desktop app and the CLI turn it on.
 asr-onnx = ["audio", "dep:ort"]

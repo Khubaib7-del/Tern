@@ -21,6 +21,8 @@ pub enum Section {
     /// Models that run on this computer: download, switch on, default per
     /// task (`crate::localmodels`).
     LocalModels,
+    /// Where local speech runs: Auto/GPU/CPU and CPU threads (#67).
+    Speech,
     /// Tern's own tools: on or off, and when each asks first.
     Tools,
     /// The decision model: off, local, Jev, SubQ Snap, Voyage.
@@ -46,10 +48,11 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Providers,
         Self::Models,
         Self::LocalModels,
+        Self::Speech,
         Self::Tools,
         Self::Decision,
         Self::Evaluation,
@@ -68,6 +71,7 @@ impl Section {
             Self::Providers => "Providers",
             Self::Models => "Models",
             Self::LocalModels => "Local models",
+            Self::Speech => "Speech",
             Self::Tools => "Tools",
             Self::Decision => "Decision model",
             Self::Evaluation => "Evaluation",
@@ -93,6 +97,9 @@ impl Section {
             }
             Self::LocalModels => {
                 "OCR, speech, and vision models that run on this computer. Nothing is bundled: download only what you want."
+            }
+            Self::Speech => {
+                "Where local speech-to-text runs: the GPU when there is one, or the CPU, and how many CPU threads."
             }
             Self::Tools => "Tern's own tools: turn one off, or choose whether it asks you first.",
             Self::Decision => {
@@ -124,6 +131,7 @@ impl Section {
             Self::Providers => "providers",
             Self::Models => "models",
             Self::LocalModels => "local-models",
+            Self::Speech => "speech",
             Self::Tools => "tools",
             Self::Decision => "decision",
             Self::Evaluation => "evaluation",
@@ -157,6 +165,16 @@ const fn e(section: Section, label: &'static str, keywords: &'static str) -> Ent
 
 /// Every setting the search finds.
 pub const ENTRIES: &[Entry] = &[
+    e(
+        Section::Speech,
+        "Speech device",
+        "gpu cpu vulkan metal graphics card whisper transcription speed auto",
+    ),
+    e(
+        Section::Speech,
+        "CPU threads",
+        "threads cores whisper speed slow transcription",
+    ),
     e(
         Section::Providers,
         "API keys",

@@ -6,6 +6,16 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // whisper.cpp's Vulkan backend links the Vulkan loader, vulkan-1.dll,
+    // which comes with a GPU driver. Delay-loaded, so Tern starts on a
+    // machine without it; tern_agent::local_models::gpu keeps the speech
+    // engine on the CPU there (#67).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:vulkan-1.dll");
+        println!("cargo:rustc-link-arg=delayimp.lib");
+    }
     embed_dir("assets/scout", "SCOUT_FILES", "scout_assets.rs");
     embed_dir("assets/mark", "MARK_FILES", "mark_assets.rs");
     // An 8 MB main-thread stack on Windows, as on Linux and macOS. Windows

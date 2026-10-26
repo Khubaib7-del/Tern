@@ -21,7 +21,9 @@
 //! demand ([`skills`]); `TERN.md` project rules and the effective
 //! instructions ([`rules`]); and project folders ([`projects`]).
 
-#![forbid(unsafe_code)]
+// Denied, not forbidden: `local_models::gpu` asks ggml for its devices
+// and holds the Windows delay-load hook (the only unsafe code).
+#![deny(unsafe_code)]
 
 pub mod acp;
 pub mod ask;

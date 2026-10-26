@@ -38,3 +38,11 @@ winresource = "0.1"
 # GPUI's test app (TestAppContext, simulated frames) for the frame tests.
 gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
 tempfile.workspace = true
+
+# Whisper on the GPU (#67): Vulkan on Windows and Linux, Metal on macOS.
+# With no usable GPU at run time it runs on the CPU.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tern-agent = { workspace = true, features = ["whisper-vulkan"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tern-agent = { workspace = true, features = ["whisper-metal"] }
