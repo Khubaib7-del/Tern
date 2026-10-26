@@ -60,6 +60,7 @@ elif download smolvlm-256m; then
   timeout 300 "$TERN_VLM" -m "$dir/SmolVLM-256M-Instruct-Q8_0.gguf" --mmproj "$dir/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" \
     --image red-tern.png -p "What colour is this picture?" -n 32 --temp 0 -t 4 > helper.txt 2> helper.log
   echo "helper exit $?: $(head -c 300 helper.txt)"
+  [ -s helper.txt ] || { echo "(the helper printed nothing on stdout; the end of its log:)"; tail -8 helper.log; }
   grep -iE "using device|ggml_vulkan|CPU backend|Metal|offloaded|error" helper.log | head -12
   s=$(date +%s)
   # On the CPU: the runner's only Vulkan device is Mesa's software one.
