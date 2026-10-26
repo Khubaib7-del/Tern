@@ -4782,8 +4782,11 @@ impl Workspace {
         let titles: Vec<String> = RailTab::ALL.iter().map(|t| t.title(run)).collect();
         let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
         let active = RailTab::ALL.iter().position(|&t| t == tab).unwrap_or(0);
-        let (show_label, shown, hidden) =
-            crate::panels::run_header_fit(&labels, self.side_w, active);
+        let (show_label, shown, hidden) = crate::panels::run_header_fit(
+            &labels,
+            self.side_w - crate::panels::AUTO_OPEN_W,
+            active,
+        );
         let segs: Vec<segmented::Segment> = shown
             .iter()
             .map(|&i| segmented::Segment::text(titles[i].clone()))

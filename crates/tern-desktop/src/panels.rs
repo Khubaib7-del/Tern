@@ -254,6 +254,9 @@ pub const SEGMENT_PAD: f32 = 2.;
 pub const RUN_LABEL_W: f32 = 36.;
 /// The ⋯ button for tabs that do not fit.
 pub const MORE_W: f32 = 28.;
+/// The header's Auto-open switch and its gap (#68): the tabs fit in what
+/// is left, so the switch never runs past the pane's edge.
+pub const AUTO_OPEN_W: f32 = 84.;
 
 /// How many tabs of `widths` fit in `room` px with an overflow button of
 /// `more_w` px; the active tab is always among those shown. Returns the
