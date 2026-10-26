@@ -38,6 +38,7 @@ pub mod crawlers;
 pub mod decide;
 pub mod deep;
 pub mod diag;
+pub mod docs;
 pub mod doctor;
 pub mod engine;
 pub mod eval;

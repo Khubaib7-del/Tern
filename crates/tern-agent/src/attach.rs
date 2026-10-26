@@ -255,6 +255,7 @@ impl Attachment {
             }
             let bytes =
                 std::fs::read(path).map_err(|e| format!("Tern could not read {name}: {e}"))?;
+            acc.single = true;
             acc.add(&name, &bytes);
             if acc.files.is_empty() {
                 let why = acc
@@ -299,7 +300,18 @@ impl Attachment {
             };
         }
         let mut parts = Vec::new();
-        if self.files.len() == 1 && self.files[0].text.starts_with("[page 1]") {
+        if let Some((how, pages)) = self
+            .files
+            .first()
+            .filter(|_| self.files.len() == 1)
+            .and_then(|f| crate::docs::parse_header(&f.text))
+        {
+            // "DOCX → Markdown · 3 pages" (#69).
+            parts.push(format!("{how} → Markdown"));
+            if let Some(n) = pages {
+                parts.push(plural(n, "page"));
+            }
+        } else if self.files.len() == 1 && self.files[0].text.starts_with("[page 1]") {
             let pages = self.files[0].text.matches("\n[page ").count() + 1;
             parts.push(plural(pages, "page"));
         }
@@ -470,6 +482,8 @@ struct Acc {
     files: Vec<FileText>,
     skipped: Vec<(String, String)>,
     chars: usize,
+    /// One file attached on its own (not in a folder or archive).
+    single: bool,
 }
 
 impl Acc {
@@ -483,15 +497,29 @@ impl Acc {
                 .push((path.to_owned(), "over the attachment limit".into()));
             return;
         }
-        let pdf;
-        let text = if is_pdf_name(path) || tern_crawl::pdf::is_pdf(bytes) {
-            match tern_crawl::pdf::read(bytes) {
-                Ok(t) => {
-                    pdf = t.joined();
-                    Some(pdf)
-                }
+        let is_pdf = is_pdf_name(path) || tern_crawl::pdf::is_pdf(bytes);
+        // Documents become Markdown (#69): PDF (scanned pages through the
+        // local models for a file attached on its own), Word, PowerPoint,
+        // Excel, and an HTML file attached on its own.
+        let convert = is_pdf
+            || matches!(
+                path.rsplit_once('.')
+                    .map(|(_, e)| e.to_ascii_lowercase())
+                    .as_deref(),
+                Some("docx" | "pptx" | "xlsx")
+            )
+            || (self.single && crate::docs::converts(path));
+        let text = if convert {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let name = if is_pdf && !is_pdf_name(name) {
+                format!("{name}.pdf")
+            } else {
+                name.to_owned()
+            };
+            match crate::docs::convert_with(&name, bytes, self.single) {
+                Ok(c) => Some(c.with_header(&name)),
                 Err(e) => {
-                    self.skipped.push((path.to_owned(), e.to_string()));
+                    self.skipped.push((path.to_owned(), e));
                     return;
                 }
             }
@@ -703,9 +731,7 @@ fn kind_of(path: &str) -> &'static str {
             "image"
         }
         "pdf" => "PDF",
-        "doc" | "docx" | "ppt" | "pptx" | "xls" | "xlsx" | "odt" | "epub" => {
-            "document format not read yet"
-        }
+        "doc" | "ppt" | "xls" | "odt" | "epub" => "document format not read yet",
         "mp3" | "wav" | "m4a" | "ogg" | "flac" | "mp4" | "mov" | "mkv" | "webm" => "audio or video",
         "exe" | "dll" | "so" | "dylib" | "bin" | "o" | "class" | "jar" | "wasm" => "program file",
         "7z" | "rar" | "tar" | "gz" | "tgz" | "bz2" | "xz" => "archive format not read yet",
@@ -864,12 +890,19 @@ mod tests {
         )
         .unwrap();
         let a = Attachment::load(&good).unwrap();
+        // Converted to Markdown with a header line (#69).
         assert!(
-            a.files[0]
-                .text
-                .starts_with("[page 1]\nSurvey of Retrieval Methods")
+            a.files[0].text.starts_with(
+                "<!-- Tern: good.pdf → Markdown (PDF text, 2 pages) -->\n[page 1]\nSurvey of Retrieval Methods"
+            ),
+            "{}",
+            a.files[0].text
         );
-        assert!(a.detail().starts_with("2 pages"), "{}", a.detail());
+        assert!(
+            a.detail().starts_with("PDF text → Markdown · 2 pages"),
+            "{}",
+            a.detail()
+        );
         let png = dir.path().join("chart.png");
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
         bytes.extend_from_slice(&[0; 64]);

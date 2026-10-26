@@ -9596,6 +9596,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "image",
+ "lopdf",
  "loqui-g2p",
  "loqui-kokoro",
  "num_cpus",

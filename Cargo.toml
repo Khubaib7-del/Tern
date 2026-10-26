@@ -51,6 +51,9 @@ unicode-width = "0.2"
 scraper = "0.29"
 ego-tree = "0.11"
 pdf-extract = "0.9"
+# Scanned PDF pages (#69): the page pictures, for local OCR. Already in the
+# tree through pdf-extract.
+lopdf = { version = "0.36", default-features = false }
 base64 = "0.22"
 futures = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
