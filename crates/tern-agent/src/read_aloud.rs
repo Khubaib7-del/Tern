@@ -171,7 +171,20 @@ impl ReadAloud {
         let worker = inner.clone();
         std::thread::Builder::new()
             .name("tern-read-aloud".into())
-            .spawn(move || make(worker, model, sentences, voice, speed))
+            .spawn(move || {
+                // A panic in the voice model ends this reading with a
+                // reason, never the app.
+                let guard = worker.clone();
+                let run =
+                    std::panic::AssertUnwindSafe(|| make(worker, model, sentences, voice, speed));
+                if std::panic::catch_unwind(run).is_err() {
+                    crate::diag::note("tts: the voice model panicked");
+                    if let Ok(mut slot) = guard.error.lock() {
+                        *slot = Some("the voice model stopped unexpectedly".into());
+                    }
+                    guard.made_all.store(true, Ordering::Relaxed);
+                }
+            })
             .map_err(|e| format!("Could not start reading: {e}"))?;
         Ok(Self { inner })
     }

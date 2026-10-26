@@ -147,8 +147,18 @@ pub fn convert(name: &str, bytes: &[u8]) -> Result<Converted, String> {
 /// unread (inside a folder or archive, where a model run per page would
 /// be too slow).
 pub fn convert_with(name: &str, bytes: &[u8], scanned: bool) -> Result<Converted, String> {
+    // A malformed file can make a parser panic; that is an error for
+    // this attachment, never a crash.
+    let guarded = |f: &dyn Fn() -> Result<Converted, String>| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+            crate::diag::note(&format!("docs: {name}: the parser panicked"));
+            Err(format!(
+                "Tern could not read {name}: the file looks damaged"
+            ))
+        })
+    };
     if !scanned && ext(name) == "pdf" {
-        return pdf_text_only(bytes);
+        return guarded(&|| pdf_text_only(bytes));
     }
     let h = hash(bytes);
     if let Some(c) = cached(&h) {
@@ -156,7 +166,7 @@ pub fn convert_with(name: &str, bytes: &[u8], scanned: bool) -> Result<Converted
         return Ok(c);
     }
     let t0 = std::time::Instant::now();
-    let c = convert_fresh(name, bytes)?;
+    let c = guarded(&|| convert_fresh(name, bytes))?;
     crate::diag::note(&format!(
         "docs: {name} -> Markdown via {} ({} pages, {} chars) in {:.1}s",
         c.how,
