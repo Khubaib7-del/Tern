@@ -116,6 +116,10 @@ pub struct ToolDelta {
     pub args: String,
     /// Arguments sent whole as an object.
     pub whole: Option<Value>,
+    /// The call's id, when the provider sends one. Mistral streams each
+    /// parallel call whole under `index` 0 with its own id; a new id at
+    /// an index already in use starts a new call.
+    pub id: Option<String>,
 }
 
 /// Decodes one event for a wire format. Events that carry nothing useful
@@ -201,6 +205,11 @@ fn openai(v: &Value) -> Piece {
                         .map(str::to_owned),
                     args,
                     whole,
+                    id: c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|i| !i.is_empty())
+                        .map(str::to_owned),
                 }
             })
             .collect(),
@@ -315,6 +324,7 @@ fn gemini(v: &Value) -> Piece {
                 name: Some(name),
                 args: String::new(),
                 whole: Some(args),
+                id: None,
             })
             .collect(),
     }
@@ -329,8 +339,10 @@ pub struct Assembler {
     output: Option<u64>,
     finish: Option<String>,
     model: Option<String>,
-    /// Native tool calls by index: name, argument text, whole arguments.
+    /// Native tool calls by slot: name, argument text, whole arguments.
     tools: std::collections::BTreeMap<usize, (String, String, Option<Value>)>,
+    /// The slot each wire index writes to now, and the id seen there.
+    slots: std::collections::HashMap<usize, (usize, Option<String>)>,
 }
 
 impl Assembler {
@@ -352,9 +364,28 @@ impl Assembler {
             self.model.clone_from(&p.model);
         }
         for t in &p.tools {
-            let i = t
-                .index
-                .unwrap_or_else(|| self.tools.keys().next_back().map_or(0, |k| k + 1));
+            let next = self.tools.keys().next_back().map_or(0, |k| k + 1);
+            let i = match t.index {
+                None => next,
+                Some(wire) => match self.slots.get(&wire) {
+                    // Another call under the same index (Mistral's
+                    // parallel calls all say index 0): a new slot.
+                    Some((_, Some(seen))) if t.id.as_ref().is_some_and(|id| id != seen) => {
+                        self.slots.insert(wire, (next, t.id.clone()));
+                        next
+                    }
+                    Some((slot, _)) => *slot,
+                    None => {
+                        let slot = if self.tools.contains_key(&wire) {
+                            next
+                        } else {
+                            wire
+                        };
+                        self.slots.insert(wire, (slot, t.id.clone()));
+                        slot
+                    }
+                },
+            };
             let e = self.tools.entry(i).or_default();
             if let Some(n) = &t.name {
                 e.0.push_str(n);

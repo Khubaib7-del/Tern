@@ -62,3 +62,18 @@ Tern says what went wrong instead of "found nothing":
 Deep research runs one test search **before** the plan. If search is down, the run stops at once with "Web search isn't working, so deep research did not start: …", and no plan call is spent. If search fails during a run, each worker card says "search failed: …" with the service's own error, and the run ends with "No search service answered: …". Once search works again, **Retry failed workers** reruns only the workers that failed and keeps the ones that finished.
 
 "Found nothing" now means only that a search succeeded and returned no results.
+
+## Keyword fallback
+
+Wikipedia and SearXNG are keyword indexes: a whole typed sentence, typos included ("can you provide me infor about how langchain erupted and who was the developre"), matches nothing, while "LangChain" matches thousands of pages. When a search comes back empty, `web_search` tries shorter queries in turn before it reports nothing, and stops at the first that finds results:
+
+1. the question's keywords, filler and asking words removed (at most six: `langchain erupted developre creator`),
+2. its first three, two and one keywords,
+3. its longest word alone (a name usually is).
+
+A query is never tried twice. The results say which query found them, and `tern.log` gets one line per search (`web_search: service=… query=… used=… tried=N results=N`). When every query finds nothing, the model is told the search found nothing and not to claim it cannot reach the web.
+
+## When the model will not use the results
+
+Messages that plainly ask for the web ("use the web tool", "search online", "google it", "look it up", "browse about that", typos and quotes included) are searched before the first model call; one that only points back ("browse about that") searches the previous question. Results reach the model framed as live results retrieved just now. If a model still answers that it cannot browse or does not know, or repeats its previous reply word for word (40 characters or more), Tern searches the question itself once, gives the model the results and asks again (`web.safety_net` in the run's events). A copied reply is never shown twice.
+

@@ -57,11 +57,37 @@ pub fn parse(text: &str) -> Reply {
     }
 }
 
+/// Every tool block in a reply, in order, as `(name, args)`: a provider's
+/// parallel tool calls come back as one block each. Blocks Tern cannot
+/// read are left out (the first one is reported by [`parse`]).
+pub fn parse_calls(text: &str) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(FENCE) {
+        let body = &rest[start + FENCE.len()..];
+        let Some(end) = body.find("```") else {
+            break;
+        };
+        if let Ok(json) = serde_json::from_str::<Value>(body[..end].trim())
+            && let Some(name) = json.get("tool").and_then(Value::as_str)
+        {
+            out.push((
+                name.to_owned(),
+                json.get("args")
+                    .cloned()
+                    .unwrap_or(Value::Object(Default::default())),
+            ));
+        }
+        rest = &body[end + 3..];
+    }
+    out
+}
+
 /// Tern's opening line in every system prompt.
 pub const BASE: &str = "You are Tern, a careful research and study assistant. Answer plainly and say when you are unsure.";
 
 /// How to ask for a tool, after the tool list.
-pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and nothing else:\n```tool\n{\"tool\": \"<name>\", \"args\": {...}}\n```\nYou will get the result in the next message. Ask for one tool at a time. When you have enough, reply with the final answer and no tool block.";
+pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and nothing else:\n```tool\n{\"tool\": \"<name>\", \"args\": {...}}\n```\nYou will get the result in the next message. To run several independent calls at once (for example two searches), put one block after another in the same reply; all the results come back together. When you have enough, reply with the final answer and no tool block.";
 
 /// The system prompt for one turn. The effective instructions view
 /// ([`crate::rules::effective`]) is built from this same function.
@@ -84,6 +110,23 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_block_in_a_reply_is_a_call() {
+        let text = format!(
+            "{}\n{}\n```tool\nnot json\n```",
+            tern_providers::tool_block("web_search", &json!({"query": "a"})),
+            tern_providers::tool_block("read_url", &json!({"url": "https://x.org"}))
+        );
+        assert_eq!(
+            parse_calls(&text),
+            vec![
+                ("web_search".to_owned(), json!({"query": "a"})),
+                ("read_url".to_owned(), json!({"url": "https://x.org"}))
+            ]
+        );
+        assert!(parse_calls("no tools").is_empty());
+    }
 
     #[test]
     fn plain_text_is_an_answer() {

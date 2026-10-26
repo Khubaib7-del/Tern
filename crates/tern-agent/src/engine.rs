@@ -366,8 +366,14 @@ pub struct RunHooks<'a> {
 
 /// What a message plainly asks Tern to read before the model answers: the
 /// file at a full path it names (when that file exists), and a web search
-/// when it says to use the web. Returns `(tool, args)` pairs.
-pub fn prefetch_calls(text: &str, tools: &ToolRegistry) -> Vec<(&'static str, Value)> {
+/// when it says to use the web. `previous` is the user's previous
+/// question, searched for when the message only points back ("browse
+/// about that"). Returns `(tool, args)` pairs.
+pub fn prefetch_calls(
+    text: &str,
+    previous: Option<&str>,
+    tools: &ToolRegistry,
+) -> Vec<(&'static str, Value)> {
     let mut out = Vec::new();
     if tools.get("file_read").is_some()
         && let Some(raw) = crate::paths::find_in_text(text)
@@ -376,34 +382,41 @@ pub fn prefetch_calls(text: &str, tools: &ToolRegistry) -> Vec<(&'static str, Va
         out.push(("file_read", json!({"path": raw})));
     }
     if tools.get("web_search").is_some()
-        && let Some(query) = web_query(text)
+        && let Some(query) = crate::webintent::web_query_with(text, previous)
     {
         out.push(("web_search", json!({"query": query})));
     }
     out
 }
 
-/// The search a message asks for with "use the web (tool)", "search the
-/// web (for)", "look it up online", or "web search": the message without
-/// that phrase. `None` when it asks for no search.
+/// The search a message asks for ("use the web tool", "search the web
+/// for", "look it up", "google it", "browse"): the message without that
+/// phrase. See [`crate::webintent`].
 pub fn web_query(text: &str) -> Option<String> {
-    static ASK: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(
-            r"(?i)\b(?:(?:please\s+)?(?:use|using)\s+(?:the\s+)?(?:web|internet|online)(?:\s+(?:search\s+)?tool|\s+search)?|search\s+(?:the\s+)?(?:web|internet|online)(?:\s+for)?|look\s+(?:it\s+|this\s+)?up\s+online|web\s+search(?:\s+for)?)\b[:,]?",
-        )
-        .expect("valid pattern")
-    });
-    if !ASK.is_match(text) {
-        return None;
-    }
-    let q = ASK.replace_all(text, " ");
-    let q = q
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_matches(|c: char| c.is_whitespace() || ",.;:!?".contains(c))
-        .to_owned();
-    (q.chars().count() >= 3).then_some(q)
+    crate::webintent::web_query(text)
+}
+
+/// A short human detail of a call for status lines: the query, the file's
+/// name, the site.
+pub fn call_detail(name: &str, args: &Value) -> Option<String> {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim);
+    let d = match name {
+        "web_search" | "vault_search" => s("query").map(str::to_owned),
+        "read_url" => s("url").map(|u| {
+            let rest = u.split("://").nth(1).unwrap_or(u);
+            rest.split('/')
+                .next()
+                .unwrap_or(rest)
+                .trim_start_matches("www.")
+                .to_owned()
+        }),
+        _ => s("path")
+            .or_else(|| s("name"))
+            .or_else(|| s("file"))
+            .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned()),
+    }?;
+    let d: String = d.chars().take(80).collect();
+    (!d.is_empty()).then_some(d)
 }
 
 /// Models that refused native tools this session, as `provider/model`.
@@ -705,8 +718,23 @@ impl Run<'_, '_> {
             }
         }
         self.save(&messages[base..], &seen);
+        // Whether the web was searched this turn, and whether Tern's own
+        // search after a refusal (or a copied reply) was used up.
+        let mut searched = false;
+        let mut net_used = false;
+        let mut repeat_nudged = false;
+        let previous_answer = messages[..base]
+            .iter()
+            .rev()
+            .find(|m| m.role == tern_providers::Role::Assistant)
+            .map(|m| m.content.clone());
         if self.cfg.hooks.prefetch && resume.is_none() {
-            for (name, args) in prefetch_calls(&message_text, self.cfg.tools) {
+            let previous = messages[..base]
+                .iter()
+                .rev()
+                .find(|m| m.role == tern_providers::Role::User)
+                .map(|m| m.content.clone());
+            for (name, args) in prefetch_calls(&message_text, previous.as_deref(), self.cfg.tools) {
                 self.check_cancel()?;
                 self.go(TurnState::ToolRequested)?;
                 self.called.push(name.to_owned());
@@ -715,9 +743,18 @@ impl Run<'_, '_> {
                 messages.push(ChatMessage::assistant(tern_providers::tool_block(
                     name, &args,
                 )));
-                messages.push(ChatMessage::user(format!(
-                    "{result}\n\n(Tern ran this because the message asked for it. Answer the message using it.)"
-                )));
+                let note = if name == "web_search" {
+                    "(Tern searched the web just now because the message asked for it. These results are current: answer the user's question from them and cite the links as [n]. Do not say you cannot access the internet.)"
+                } else {
+                    "(Tern ran this because the message asked for it. Answer the message using it.)"
+                };
+                crate::diag::note(&format!(
+                    "prefetch: tool={name} detail={:?} injected_chars={}",
+                    call_detail(name, &args).unwrap_or_default(),
+                    result.len()
+                ));
+                messages.push(ChatMessage::user(format!("{result}\n\n{note}")));
+                searched |= name == "web_search";
                 self.save(&messages[base..], &seen);
             }
         }
@@ -863,6 +900,88 @@ impl Run<'_, '_> {
                     self.go(TurnState::Verifying)?;
                 }
                 Reply::Answer(text) => {
+                    let refused = crate::webintent::is_refusal(&text);
+                    let copied = previous_answer
+                        .as_deref()
+                        .is_some_and(|p| crate::webintent::same_reply(&text, p));
+                    // The model says it cannot reach the web, or copies its
+                    // last reply word for word, while web search is on: Tern
+                    // searches the question itself once and asks again.
+                    if (refused || copied)
+                        && !net_used
+                        && self.cfg.tools.get("web_search").is_some()
+                    {
+                        net_used = true;
+                        let question = crate::webintent::web_query_with(
+                            &message_text,
+                            messages[..base]
+                                .iter()
+                                .rev()
+                                .find(|m| m.role == tern_providers::Role::User)
+                                .map(|m| m.content.as_str()),
+                        )
+                        .or_else(|| {
+                            let (_, q) = crate::reply::split(&message_text);
+                            let q = q.split("<attachments>").next().unwrap_or(q).trim();
+                            (!crate::webintent::keywords(q).is_empty()).then(|| q.to_owned())
+                        });
+                        if let Some(query) = question {
+                            let args = json!({"query": query});
+                            self.record(self.event(
+                                "web.safety_net",
+                                EffectClass::Analysis,
+                                if refused {
+                                    "The model said it could not look this up; Tern searched the web for it"
+                                } else {
+                                    "The model repeated its last reply; Tern searched the web for the question"
+                                },
+                                json!({"query": query, "refused": refused, "copied": copied, "searched_before": searched}),
+                            ))?;
+                            crate::diag::note(&format!(
+                                "safety_net: refused={refused} copied={copied} query={query:?}"
+                            ));
+                            self.go(TurnState::ToolRequested)?;
+                            self.called.push("web_search".to_owned());
+                            let result = self.tool_step("web_search", &args).await?;
+                            searched = true;
+                            messages.push(ChatMessage::assistant(tern_providers::tool_block(
+                                "web_search",
+                                &args,
+                            )));
+                            messages.push(ChatMessage::user(format!(
+                                "{result}\n\n(Tern searched the web just now. You do have these live results: answer the user's question from them, cite the links as [n], and do not say you cannot access the internet or repeat an earlier reply.)"
+                            )));
+                            self.save(&messages[base..], &seen);
+                            continue;
+                        }
+                    }
+                    // A copy of the last reply is never shown again: asked
+                    // once more, then the turn ends with a gap.
+                    if copied {
+                        if !repeat_nudged {
+                            repeat_nudged = true;
+                            self.record(self.event(
+                                "model.repeated",
+                                EffectClass::Analysis,
+                                format!(
+                                    "{} repeated its last reply; Tern asked again",
+                                    self.cfg.model_name
+                                ),
+                                json!({"chars": text.len()}),
+                            ))?;
+                            messages.push(ChatMessage::assistant(reply.text));
+                            messages.push(ChatMessage::user(
+                                "That reply is word for word the same as your previous one. Answer the latest message itself, with something new.".to_owned(),
+                            ));
+                            self.go(TurnState::Verifying)?;
+                            continue;
+                        }
+                        self.go(TurnState::Verifying)?;
+                        return Err(Stop {
+                            state: TurnState::CompletedWithGaps,
+                            reason: "The model gave the same reply as before, twice, so Tern did not show it again.".into(),
+                        });
+                    }
                     self.go(TurnState::Verifying)?;
                     return Ok(if text.is_empty() {
                         (TurnState::CompletedWithGaps, text)
@@ -885,32 +1004,44 @@ impl Run<'_, '_> {
                     )));
                     self.save(&messages[base..], &seen);
                 }
-                Reply::Tool { name, args } => {
+                Reply::Tool { .. } => {
                     self.go(TurnState::ToolRequested)?;
-                    let key = format!("{name}:{args}");
-                    let n = seen.entry(key).or_default();
-                    *n += 1;
-                    if *n >= REPEAT_LIMIT {
-                        self.record(self.event(
-                            "loop.suspected",
-                            EffectClass::Analysis,
-                            format!(
-                                "The model asked for the same `{name}` call {REPEAT_LIMIT} times"
-                            ),
-                            json!({"tool": name, "args": args}),
-                        ))?;
-                        return Err(Stop {
-                            state: TurnState::Failed,
-                            reason: format!(
-                                "The model kept repeating the same `{name}` call, so Tern stopped the turn."
-                            ),
-                        });
+                    // Every call in the reply runs in this one round (a
+                    // provider's parallel tool calls, or several blocks),
+                    // and all the results go back together.
+                    let calls = protocol::parse_calls(&reply.text);
+                    let mut results = Vec::with_capacity(calls.len());
+                    for (i, (name, args)) in calls.iter().enumerate() {
+                        let key = format!("{name}:{args}");
+                        let n = seen.entry(key).or_default();
+                        *n += 1;
+                        if *n >= REPEAT_LIMIT {
+                            self.record(self.event(
+                                "loop.suspected",
+                                EffectClass::Analysis,
+                                format!(
+                                    "The model asked for the same `{name}` call {REPEAT_LIMIT} times"
+                                ),
+                                json!({"tool": name, "args": args}),
+                            ))?;
+                            return Err(Stop {
+                                state: TurnState::Failed,
+                                reason: format!(
+                                    "The model kept repeating the same `{name}` call, so Tern stopped the turn."
+                                ),
+                            });
+                        }
+                        if i > 0 {
+                            self.check_cancel()?;
+                            self.go(TurnState::ToolRequested)?;
+                        }
+                        self.called.push(name.clone());
+                        searched |= name == "web_search";
+                        results.push(self.tool_step(name, args).await?);
                     }
-                    self.called.push(name.clone());
-                    let result = self.tool_step(&name, &args).await?;
                     messages.push(ChatMessage::assistant(reply.text));
-                    messages.push(ChatMessage::user(result));
-                    // Safe point: the tool's result is in the conversation.
+                    messages.push(ChatMessage::user(results.join("\n\n")));
+                    // Safe point: the tools' results are in the conversation.
                     self.save(&messages[base..], &seen);
                 }
             }
@@ -1086,7 +1217,8 @@ impl Run<'_, '_> {
                 (Decision::Ask, None) => format!("`{name}` needs your approval"),
                 (Decision::Deny { reason }, _) => reason.clone(),
             },
-            json!({"tool": name, "target": target, "decision": decision, "flag": why}),
+            json!({"tool": name, "target": target, "decision": decision, "flag": why,
+                   "detail": call_detail(name, args)}),
         ))?;
         match decision {
             Decision::Allow { .. } => {}

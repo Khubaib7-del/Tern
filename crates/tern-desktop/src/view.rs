@@ -3221,7 +3221,17 @@ impl Workspace {
                         .py_2()
                         .rounded_xl()
                         .bg(p.raised)
-                        .child(SharedString::from(text.clone())),
+                        .child({
+                            // An Urdu or Arabic message reads right to left,
+                            // as rows of words from the right edge.
+                            if crate::bidi::has_rtl(text) && crate::bidi::is_rtl(text) {
+                                rtl_flow(crate::bidi::rtl_lines(text, false), false)
+                            } else {
+                                div()
+                                    .child(SharedString::from(text.clone()))
+                                    .into_any_element()
+                            }
+                        }),
                 )
                 .child(
                     div()
@@ -3260,12 +3270,15 @@ impl Workspace {
                                 this.answer_mouse_up(i, e, window, cx)
                             }),
                         )
-                        .child(
-                            TextView::markdown(("answer", i), with_badges(i, shown, run))
-                                .on_link_click(self.link_opener(cx))
-                                .selectable(true)
-                                .motion(stream_motion()),
-                        )
+                        .child({
+                            let open = std::sync::Arc::new(self.link_opener(cx));
+                            bidi_markdown("answer", i, with_badges(i, shown, run), move |t| {
+                                let open = open.clone();
+                                t.on_link_click(move |u, e, w, a| open(u, e, w, a))
+                                    .selectable(true)
+                                    .motion(stream_motion())
+                            })
+                        })
                         .into_any_element()
                 };
                 let fold = div()
@@ -3583,8 +3596,18 @@ impl Workspace {
             items.push(wrap(self.empty_state(p, cx)));
         }
         self.rail_base.set(items.len());
+        // Entries far outside the viewport are boxes of their last height
+        // (`crate::cull`): a long chat lays out only what is near the
+        // window on every frame, not every message it ever had.
+        let chat = self
+            .current
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "new".to_owned());
         for (i, e) in self.model.entries.iter().enumerate() {
-            items.push(wrap(self.entry(i, e, p, cx)));
+            let key = format!("chat-{chat}-{i}");
+            items.push(wrap(
+                self.culled(key, &self.scroll, || self.entry(i, e, p, cx)),
+            ));
         }
         // Thinking, the working rollup, and the answer so far, revealed at
         // reading pace.
@@ -5689,6 +5712,72 @@ pub(crate) fn mono_ink(p: Palette) -> gpui_kit::Hsla {
     } else {
         gpui_kit::hsla(0., 0., 0.07, 1.)
     }
+}
+
+/// A message's Markdown as one text view; with right-to-left paragraphs
+/// (Urdu, Arabic), a column of views by direction, the right-to-left ones
+/// right-aligned (`crate::bidi`). `style` sets each view up the same way.
+pub(crate) fn bidi_markdown(
+    key: &'static str,
+    i: usize,
+    markdown: String,
+    style: impl Fn(TextView) -> TextView,
+) -> AnyElement {
+    let blocks = crate::bidi::blocks(&markdown);
+    if blocks.len() == 1 && !blocks[0].rtl {
+        return style(TextView::markdown((key, i), markdown)).into_any_element();
+    }
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .children(blocks.into_iter().enumerate().map(|(k, b)| {
+            if b.rtl {
+                rtl_flow(crate::bidi::rtl_lines(&b.text, true), true)
+            } else {
+                style(TextView::markdown(
+                    SharedString::from(format!("{key}-{i}-{k}")),
+                    b.text,
+                ))
+                .into_any_element()
+            }
+        }))
+        .into_any_element()
+}
+
+/// Right-to-left lines as rows of words flowing from the right edge and
+/// wrapping there (`crate::bidi::RtlLine` says why GPUI's own wrapping
+/// cannot). `fill`: each row spans the column, so a short line still sits
+/// at its right edge; off in a bubble, which takes the width of its text.
+pub(crate) fn rtl_flow(lines: Vec<crate::bidi::RtlLine>, fill: bool) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .when(fill, |d| d.w_full())
+        .gap_1()
+        .children(lines.into_iter().map(move |l| {
+            div()
+                .when(fill, |d| d.w_full())
+                .when(l.starts_paragraph, |d| d.mt_2())
+                .when(l.heading > 0, |d| {
+                    d.font_weight(FontWeight::SEMIBOLD)
+                        .when(l.heading <= 2, |d| d.text_lg())
+                })
+                .flex()
+                .flex_row_reverse()
+                .flex_wrap()
+                .gap_x(px(5.))
+                .children(
+                    l.marker
+                        .map(|m| div().flex_none().child(SharedString::from(m))),
+                )
+                .children(l.words.into_iter().map(|w| {
+                    div()
+                        .flex_none()
+                        .child(SharedString::from(crate::bidi::rtl_word(&w)))
+                }))
+        }))
+        .into_any_element()
 }
 
 /// New words fade in as they stream, a few milliseconds apart.

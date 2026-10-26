@@ -42,10 +42,34 @@ pub fn fits(entry: &ModelEntry) -> bool {
 /// The last run's load and inference times, for the timings line.
 static LAST: Mutex<String> = Mutex::new(String::new());
 
+/// Threads for whisper.cpp: `TERN_WHISPER_THREADS` when set, else one
+/// per logical core, at most twice the physical cores and at most six.
+/// Measured on CI (#66, a 12 s clip, whisper small, 4-vCPU runners):
+/// Linux 8.3 s with 2 threads, 7.8 s with 4, 61 s with 6 and 93 s with 8;
+/// Windows 11.7 s, 9.6 s, 295 s and 575 s. The user's 4-core, 8-thread
+/// laptop needed 37.3 s for an 11.7 s clip with 8, so ggml's thread
+/// barriers cost far more than they gain once threads fill every core.
 fn threads() -> i32 {
-    std::thread::available_parallelism()
-        .map(|n| n.get().clamp(1, 8) as i32)
-        .unwrap_or(4)
+    if let Some(n) = std::env::var("TERN_WHISPER_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|n| *n > 0)
+    {
+        return n.min(64);
+    }
+    pick_threads(num_cpus::get_physical(), num_cpus::get())
+}
+
+fn pick_threads(physical: usize, logical: usize) -> i32 {
+    let cap = if physical > 0 { physical * 2 } else { logical };
+    logical.min(cap).clamp(1, 6) as i32
+}
+
+/// Flash attention: off unless `TERN_WHISPER_FLASH=1`. On the CI runners
+/// whisper small was slower with it (4 threads: Linux 10.1 s on, 7.8 s
+/// off; Windows 12.1 s on, 9.6 s off).
+fn flash_attn() -> bool {
+    std::env::var("TERN_WHISPER_FLASH").as_deref() == Ok("1")
 }
 
 impl WhisperCpp {
@@ -61,7 +85,9 @@ impl WhisperCpp {
         }
         // whisper.cpp logs to stderr unless hooked; this silences it.
         whisper_rs::install_logging_hooks();
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
+        let mut params = WhisperContextParameters::default();
+        params.flash_attn(flash_attn());
+        let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| format!("cannot load the Whisper model: {e}"))?;
         let ctx = Arc::new(ctx);
         *slot = Some((path.to_owned(), ctx.clone()));
@@ -128,6 +154,13 @@ impl LocalEngine for WhisperCpp {
         p.set_print_realtime(false);
         p.set_print_special(false);
         p.set_print_timestamps(false);
+        // One clip at a time: no text carried from an earlier window, and
+        // a short clip (up to 30 s) decoded as one segment without
+        // timestamps, which skips the timestamp tokens.
+        p.set_no_context(true);
+        let short = audio.len() <= 30 * super::resample::RATE as usize;
+        p.set_single_segment(short);
+        p.set_no_timestamps(short);
         // Progress for the chip (whisper.cpp reports 0–100 as it goes);
         // the first 5% was decoding the file.
         let progress = ctl.clone();
@@ -161,6 +194,15 @@ impl LocalEngine for WhisperCpp {
         }
         ran.map_err(|e| format!("Whisper failed: {e}"))?;
         ctl.set_progress(100);
+        // The language whisper heard (auto-detect unless one was given).
+        let heard = whisper_rs::get_lang_str(state.full_lang_id_from_state()).unwrap_or("?");
+        if let Ok(mut t) = LAST.lock() {
+            t.push_str(&format!(", language {heard} (asked {lang})"));
+        }
+        crate::diag::note(&format!(
+            "whisper: language detected={heard} asked={lang} threads={}",
+            threads()
+        ));
         let text = state
             .as_iter()
             .filter_map(|s| s.to_str_lossy().ok().map(|t| t.trim().to_owned()))
@@ -175,6 +217,20 @@ impl LocalEngine for WhisperCpp {
 mod tests {
     use super::*;
     use crate::local_models::Manifest;
+
+    #[test]
+    fn threads_follow_logical_cores_up_to_six() {
+        // The user's laptop: 4 cores, 8 threads.
+        assert_eq!(pick_threads(4, 8), 6);
+        // A 4-vCPU CI runner (2 cores, 4 threads).
+        assert_eq!(pick_threads(2, 4), 4);
+        assert_eq!(pick_threads(16, 32), 6);
+        assert_eq!(pick_threads(1, 2), 2);
+        assert_eq!(pick_threads(4, 4), 4);
+        // Physical count unknown: the logical ones, at most six.
+        assert_eq!(pick_threads(0, 8), 6);
+        assert_eq!(pick_threads(0, 1), 1);
+    }
 
     #[test]
     fn runs_the_whisper_models() {

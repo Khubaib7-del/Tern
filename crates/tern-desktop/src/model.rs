@@ -133,6 +133,39 @@ pub struct WorkingLine {
     pub beat: usize,
 }
 
+/// What the working line shows while `tool` runs.
+fn tool_activity(tool: &str) -> Activity {
+    match tool {
+        "web_search" => Activity::Searching,
+        "read_url" | "file_read" | "vault_read" => Activity::Reading,
+        _ => Activity::Tool,
+    }
+}
+
+/// The working line's words while a quick turn's tool runs: "Searching
+/// the web…", "Reading notes.md…", "Fetching en.wikipedia.org…".
+pub fn tool_phrase(tool: &str, detail: Option<&str>) -> String {
+    let detail = detail.map(str::trim).filter(|d| !d.is_empty());
+    let clip = |d: &str| {
+        if d.chars().count() > 40 {
+            format!("{}…", d.chars().take(39).collect::<String>())
+        } else {
+            d.to_owned()
+        }
+    };
+    match (tool, detail) {
+        ("web_search", _) => "Searching the web…".to_owned(),
+        ("read_url", Some(site)) => format!("Fetching {}…", clip(site)),
+        ("read_url", None) => "Fetching a page…".to_owned(),
+        ("file_read" | "vault_read", Some(file)) => format!("Reading {}…", clip(file)),
+        ("file_read" | "vault_read", None) => "Reading a file…".to_owned(),
+        ("vault_search", _) => "Searching your notes…".to_owned(),
+        ("vault_write", _) => "Writing a note…".to_owned(),
+        (t, _) if t.contains("transcri") || t.contains("whisper") => "Transcribing…".to_owned(),
+        (t, _) => format!("Running {t}…"),
+    }
+}
+
 /// A question, its answer, and the answer's sources as (title, url).
 pub type AnswerNote = (String, String, Vec<(String, String)>);
 
@@ -485,6 +518,10 @@ pub struct Model {
     pub resume_offer: Option<ResumeOffer>,
     /// The running turn's last model reply hit the output limit.
     pub cut_off: bool,
+    /// The quick turn's tool call in flight: its name and a short detail
+    /// (the query, the file, the site), for "Searching the web…" and
+    /// Scout's bubble.
+    pub tool_doing: Option<(String, Option<String>)>,
     /// The last answer was cut off: the composer offers Continue.
     pub continue_offer: bool,
     /// Web search failed the last deep run's check: the stop reason. The
@@ -662,6 +699,7 @@ impl Model {
             steering: None,
             resume_offer: None,
             cut_off: false,
+            tool_doing: None,
             continue_offer: false,
             search_down: None,
             watches: Vec::new(),
@@ -1641,7 +1679,30 @@ impl Model {
         {
             push_unique(&mut self.turn_pages, p);
         }
+        // A quick turn's call: what it does, from the policy check that
+        // comes right before it runs (or the approval that lets it run).
+        let tool = e.payload["tool"].as_str().unwrap_or_default();
+        let mut doing = None;
+        match e.kind.as_str() {
+            "policy.decided" if !tool.is_empty() && e.payload.get("worker").is_none() => {
+                self.tool_doing = Some((
+                    tool.to_owned(),
+                    e.payload["detail"].as_str().map(str::to_owned),
+                ));
+                if e.payload["decision"]["decision"] == "allow" {
+                    doing = Some(tool_activity(tool));
+                }
+            }
+            "approval.answered" if matches!(e.payload["answer"].as_str(), Some(a) if a.starts_with("allow")) =>
+            {
+                doing = self.tool_doing.as_ref().map(|(t, _)| tool_activity(t));
+            }
+            "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
+            | "model.replied" => self.tool_doing = None,
+            _ => {}
+        }
         let next = match e.kind.as_str() {
+            _ if doing.is_some() => doing,
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
             | "model.replied" | "approval.answered" => Some(Activity::Thinking),
             "claims.checking" => Some(Activity::Checking),
@@ -1655,7 +1716,19 @@ impl Model {
             _ => None,
         };
         match &mut self.phase {
-            Phase::Working { activity, run, .. } => {
+            Phase::Working {
+                activity,
+                run,
+                draft,
+                ..
+            } => {
+                // The reply that said it could not look this up (or copied
+                // the last one) is not the answer: Tern searches and asks
+                // again, so it leaves the screen while the search runs.
+                if e.kind == "web.safety_net" {
+                    draft.clear();
+                    self.draft_pacer = Default::default();
+                }
                 let next = match (e.kind.as_str(), e.payload.get("worker")) {
                     ("tool.executed", Some(_)) if e.payload["tool"] == "read_url" => {
                         Some(Activity::Reading)
@@ -2314,6 +2387,15 @@ impl Model {
             }
             Activity::NeedsYou => "Needs your approval".to_owned(),
             Activity::Stopping => "Stopping".to_owned(),
+        };
+        // A quick turn's tool says what it is doing.
+        let phrase = match (&self.tool_doing, activity) {
+            (Some((tool, detail)), Activity::Searching | Activity::Reading | Activity::Tool)
+                if run.deep.is_none() =>
+            {
+                tool_phrase(tool, detail.as_deref())
+            }
+            _ => phrase,
         };
         // A deep run's workers say how far along they are.
         let phrase = match (&run.deep, activity) {
@@ -2978,6 +3060,46 @@ mod tests {
         assert_eq!(m.panel_run().summary().searches, 1);
         assert_eq!(m.context_label(), "1.2k of 128k tokens");
         assert!((m.context_fraction().unwrap() - 1234.0 / 128_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_quick_turns_tool_says_what_it_is_doing() {
+        let mut m = ready();
+        m.start_turn("who made langchain? use the web tool");
+        m.on_event(&ev("turn.started", "Turn started", json!({})));
+        let allow = |tool: &str, detail: &str| {
+            ev(
+                "policy.decided",
+                "allowed",
+                json!({"tool": tool, "detail": detail, "decision": {"decision": "allow", "because": "read-only"}}),
+            )
+        };
+        m.on_event(&allow("web_search", "who made langchain"));
+        let line = m.working_line().unwrap();
+        assert_eq!(line.activity, Activity::Searching);
+        assert_eq!(line.phrase, "Searching the web…");
+        assert_eq!(m.scout_mood(), crate::scout::Mood::Searching);
+        m.on_event(&ev("tool.executed", "Ran", json!({"tool": "web_search"})));
+        assert_eq!(m.working_line().unwrap().phrase, "Thinking");
+        m.on_event(&allow("read_url", "en.wikipedia.org"));
+        assert_eq!(
+            m.working_line().unwrap().phrase,
+            "Fetching en.wikipedia.org…"
+        );
+        m.on_event(&ev("tool.executed", "Ran", json!({"tool": "read_url"})));
+        // A file outside the workspace: asked, then allowed.
+        m.on_event(&ev(
+            "policy.decided",
+            "needs approval",
+            json!({"tool": "file_read", "detail": "notes.md", "decision": {"decision": "ask"}}),
+        ));
+        m.on_event(&ev(
+            "approval.answered",
+            "approved",
+            json!({"tool": "file_read", "answer": "allow_once"}),
+        ));
+        assert_eq!(m.working_line().unwrap().phrase, "Reading notes.md…");
+        assert_eq!(tool_phrase("whisper_transcribe", None), "Transcribing…");
     }
 
     #[test]
@@ -3814,6 +3936,20 @@ mod tests {
         }
         m.set_resume_offer(Some(&done), Some((TurnState::Failed, Some("x"))));
         assert!(m.resume_offer.is_none());
+    }
+
+    #[test]
+    fn a_refusal_leaves_the_screen_while_the_safety_net_searches() {
+        let mut m = ready();
+        assert!(m.start_turn("Who created LangChain?").is_some());
+        m.on_text(1, "I don't have real-time access to the internet.");
+        assert!(matches!(&m.phase, Phase::Working { draft, .. } if !draft.is_empty()));
+        m.on_event(&ev(
+            "web.safety_net",
+            "searched",
+            serde_json::json!({"query": "LangChain", "refused": true}),
+        ));
+        assert!(matches!(&m.phase, Phase::Working { draft, .. } if draft.is_empty()));
     }
 
     #[test]

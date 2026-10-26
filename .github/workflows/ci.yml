@@ -100,18 +100,6 @@ jobs:
       - name: ffmpeg for the speech benchmark
         shell: pwsh
         run: choco install ffmpeg -y --no-progress | Out-Null
-      - name: The #64 build (what was tested on Windows), for comparison
-        uses: actions/download-artifact@v5
-        continue-on-error: true
-        with:
-          name: tern-windows-x64
-          path: pr64
-          run-id: 40208545129
-          github-token: ${{ github.token }}
-      - name: Speech benchmark, the #64 build
-        continue-on-error: true
-        shell: bash
-        run: .github/scripts/speech-bench.sh "$PWD/pr64/tern.exe" "Windows, #64 build"
       - name: Speech benchmark, this build (local Whisper and Moonshine, release tern.exe)
         shell: bash
         run: .github/scripts/speech-bench.sh "$PWD/target/release/tern.exe" "Windows, this PR"

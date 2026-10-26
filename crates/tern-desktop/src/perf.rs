@@ -16,9 +16,9 @@
 //! Every [`WINDOW`] the frames so far are summed up in one line
 //! (`perf settings/providers: 61 frames in 2.0 s, 61 workspace renders,
 //! frame mean 9.1 ms p95 14.0 ms max 21.3 ms, build mean 2.2 ms`) and
-//! written to `tern.log` when a frame was slow or the workspace kept
-//! redrawing with nothing moving; with `TERN_PERF=1` every line also goes
-//! to stderr, and the UI tour prints them as `PERF` lines. A screen that
+//! with `TERN_PERF=1` written to stderr, and to `tern.log` when a frame
+//! was slow or the workspace kept redrawing with nothing moving (a normal
+//! run writes nothing); the UI tour prints them as `PERF` lines. A screen that
 //! redraws the whole workspace 60 times a second while idle, or whose
 //! frames take far longer than another's, shows up here.
 //!
@@ -199,8 +199,8 @@ thread_local! {
     static METER: std::cell::RefCell<Meter> = std::cell::RefCell::new(Meter::default());
 }
 
-/// Writes a summary down: `tern.log` when notable, stderr under
-/// `TERN_PERF`, stdout as a `PERF` line in the UI tour.
+/// Writes a summary down: stderr, and `tern.log` when notable, under
+/// `TERN_PERF`; stdout as a `PERF` line in the UI tour.
 fn report(s: Option<Summary>) {
     let Some(s) = s else {
         return;
@@ -214,7 +214,9 @@ fn report(s: Option<Summary>) {
         println!("PERF {line}");
         let _ = std::io::stdout().flush();
     }
-    if s.notable() {
+    // Only a profile (`TERN_PERF=1`) writes to `tern.log`: a normal run's
+    // log stays about what the user did, not about frame times.
+    if verbose() && s.notable() {
         crate::crashlog::log_line(&line);
     }
 }

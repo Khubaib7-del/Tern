@@ -1866,8 +1866,9 @@ impl Workspace {
             .map(|t| t.text.as_str())
             .collect();
         log(&format!(
-            "TOUR state {what}: chat={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?}",
+            "TOUR state {what}: chat={:?} status={:?} phase={:?} composer={text:?} chips={chips:?} audio={audio:?} at_rows={rows:?} entries={} answer={answer:?} toasts={toasts:?}",
             self.current,
+            self.model.working_line().map(|w| w.phrase),
             self.model.phase,
             self.model.entries.len(),
         ));
@@ -1984,6 +1985,26 @@ const TOUR_NOTES: &str = "# Tour notes\n\nThe FYP demo is on 14 November in Lab 
 const TOUR_PLAN: &str =
     "# Plan\n\nWeek 1: retrieval baseline. Week 2: FLARE policy. Week 3: evaluation.\n";
 
+/// The Urdu question the composer tour sends ("What is the difference
+/// between Urdu and Arabic?").
+const URDU_QUESTION: &str = "اردو اور عربی میں کیا فرق ہے؟";
+/// The mock's Urdu answer: a right-to-left paragraph, an English line, and
+/// a short mixed line.
+const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پاکستان کی قومی زبان ہے۔ اردو اور عربی میں بنیادی فرق یہ ہے کہ اردو ایک ہند آریائی زبان ہے جبکہ عربی ایک سامی زبان ہے، اگرچہ دونوں کا رسم الخط ملتا جلتا ہے۔\n\nIn English: Urdu is an Indo-Aryan language and Pakistan's national language; Arabic is a Semitic language.\n\nمختصر جملہ: سلام پاکستان، Tern 2026";
+/// What the mock's web search finds for any query.
+const WEB_HITS: [(&str, &str, &str); 2] = [
+    (
+        "LangChain - Wikipedia",
+        "https://en.wikipedia.org/wiki/LangChain",
+        "LangChain was launched in October 2022 as an open-source project by Harrison Chase.",
+    ),
+    (
+        "Arctic tern - Wikipedia",
+        "https://en.wikipedia.org/wiki/Arctic_tern",
+        "Arctic terns fly about 70,000 km a year between the Arctic and the Antarctic.",
+    ),
+];
+
 /// The composer scenes.
 fn composer_script() -> Vec<Beat> {
     vec![
@@ -2091,6 +2112,50 @@ fn composer_script() -> Vec<Beat> {
         b(Act::CApprove, 2500),
         b(Act::CApprove, 2000),
         b(Act::CState("typed path answered"), 200),
+        b(Act::CNewChat, 1500),
+        b(Act::Type("Who created LangChain?"), 1200),
+        scene(
+            "c13-web-native",
+            "tern-only",
+            "Web search on: the model calls web_search, the status says so",
+            Act::CSend,
+            1200,
+        ),
+        b(Act::CState("web searching"), 3800),
+        b(Act::CState("web answered"), 300),
+        b(
+            Act::Type("How far do Arctic terns migrate each year?"),
+            1200,
+        ),
+        scene(
+            "c14-safety-net",
+            "tern-only",
+            "A 'no internet access' reply is searched and answered again",
+            Act::CSend,
+            1500,
+        ),
+        b(Act::CState("safety net searching"), 4000),
+        b(Act::CState("safety net answered"), 300),
+        b(Act::Type("browse about that"), 1000),
+        scene(
+            "c15-browse-follow-up",
+            "tern-only",
+            "'browse about that' searches the previous question",
+            Act::CSend,
+            1500,
+        ),
+        b(Act::CState("follow-up searching"), 4000),
+        b(Act::CState("follow-up answered"), 300),
+        b(Act::CNewChat, 1500),
+        b(Act::Type(URDU_QUESTION), 1000),
+        scene(
+            "c16-urdu-rtl",
+            "tern-only",
+            "Urdu question and answer render right to left",
+            Act::CSend,
+            5000,
+        ),
+        b(Act::CState("urdu answered"), 300),
         scene(
             "c12-toasts",
             "tern-only",
@@ -2120,6 +2185,9 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     match mock::start() {
         Ok(port) => {
             log(&format!("TOUR mock model on 127.0.0.1:{port}"));
+            // The same mock answers web searches the SearXNG way.
+            prefs.search = Some("searxng".into());
+            prefs.search_url = Some(format!("http://127.0.0.1:{port}"));
             prefs.custom_providers = vec![tern_agent::providers::CustomProvider {
                 id: "tourmock".into(),
                 name: "Tour mock".into(),
@@ -2229,6 +2297,22 @@ mod mock {
                 json!({"object": "list", "data": data}).to_string(),
             );
         }
+        if method == "GET" && (path == "/search" || path.starts_with("/search?")) {
+            // Slow enough for the recording to show the status line.
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let q = query_param(path, "q").unwrap_or_default();
+            super::log(&format!("TOUR mock search q={q:?}"));
+            let results: Vec<Value> = super::WEB_HITS
+                .iter()
+                .map(
+                    |(title, url, content)| json!({"title": title, "url": url, "content": content}),
+                )
+                .collect();
+            return (
+                "application/json",
+                json!({"query": q, "results": results}).to_string(),
+            );
+        }
         if path.ends_with("/audio/transcriptions") {
             return (
                 "application/json",
@@ -2257,6 +2341,36 @@ mod mock {
         }
     }
 
+    /// A query parameter of a request path, decoded.
+    pub(super) fn query_param(path: &str, key: &str) -> Option<String> {
+        let query = path.split_once('?')?.1;
+        query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == key).then(|| decode(v))
+        })
+    }
+
+    fn decode(v: &str) -> String {
+        let bytes = v.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'+' => out.push(b' '),
+                b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&v[i + 1..i + 3], 16) {
+                    Ok(b) => {
+                        out.push(b);
+                        i += 2;
+                    }
+                    Err(_) => out.push(b'%'),
+                },
+                b => out.push(b),
+            }
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
     /// The text of a message's content (a string, or text parts).
     fn text_of(m: &Value) -> String {
         match &m["content"] {
@@ -2273,10 +2387,7 @@ mod mock {
     /// The reply: text, or a tool call (name, arguments).
     fn decide(req: &Value) -> (String, Option<(String, Value)>) {
         let msgs = req["messages"].as_array().cloned().unwrap_or_default();
-        let has_tools = req["tools"].as_array().is_some_and(|t| {
-            t.iter()
-                .any(|t| t["function"]["name"].as_str() == Some("file_read"))
-        });
+        let has_tools = req["tools"].as_array().is_some_and(|t| !t.is_empty());
         let Some(last_user) = msgs.iter().rposition(|m| m["role"] == "user") else {
             return ("Tour chat".into(), None);
         };
@@ -2290,6 +2401,43 @@ mod mock {
             );
         }
         let user = text_of(&msgs[last_user]);
+        // Web results Tern sent back (its own search, or the model's call):
+        // a cited answer. The follow-up says it searched again.
+        if user.starts_with("Result of `web_search`") {
+            let asked = msgs[..last_user]
+                .iter()
+                .rev()
+                .filter(|m| m["role"] == "user")
+                .map(text_of)
+                .find(|t| !t.starts_with("Result of `"))
+                .unwrap_or_default();
+            let (title, url, content) = if asked.contains("tern") || asked.contains("browse") {
+                super::WEB_HITS[1]
+            } else {
+                super::WEB_HITS[0]
+            };
+            let lead = if asked.contains("browse") {
+                "Searched again for your earlier question:"
+            } else {
+                "From the web:"
+            };
+            return (format!("{lead} {content} [1]\n\n[1] {title} — {url}"), None);
+        }
+        if has_tools && user.contains("Who created LangChain") {
+            return (
+                String::new(),
+                Some(("web_search".into(), json!({"query": "LangChain creator"}))),
+            );
+        }
+        if has_tools && user.contains("Arctic terns migrate") {
+            return (
+                "I'm not sure. I don't have real-time access to the internet, so I can't look that up.".into(),
+                None,
+            );
+        }
+        if has_tools && user.contains(super::URDU_QUESTION) {
+            return (super::URDU_ANSWER.into(), None);
+        }
         if !has_tools {
             // A title or other side request.
             return ("Tour chat".into(), None);
@@ -2468,6 +2616,25 @@ mod mock {
                 "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": ""},
                     {"role": "tool", "content": "# Plan\n\nWeek 1"}]});
             assert!(decide(&req).0.contains("“Plan”"));
+        }
+
+        #[test]
+        fn the_mock_searches_refuses_and_answers_from_web_results() {
+            assert_eq!(
+                query_param("/search?q=Who+created%20LangChain%3F&format=json", "q").as_deref(),
+                Some("Who created LangChain?")
+            );
+            let tools = json!([{"type": "function", "function": {"name": "web_search"}}]);
+            let req = json!({"tools": tools, "messages": [{"role": "user", "content": "Who created LangChain?"}]});
+            assert_eq!(decide(&req).1.unwrap().0, "web_search");
+            let req = json!({"tools": tools, "messages": [{"role": "user", "content": "How far do Arctic terns migrate each year?"}]});
+            assert!(decide(&req).0.contains("real-time access"));
+            let req = json!({"tools": tools, "messages": [
+                {"role": "user", "content": "browse about that"},
+                {"role": "assistant", "content": "```tool\n{}\n```"},
+                {"role": "user", "content": "Result of `web_search`:\nWeb search results"}]});
+            let (text, call) = decide(&req);
+            assert!(call.is_none() && text.starts_with("Searched again") && text.contains("[1]"));
         }
 
         #[test]

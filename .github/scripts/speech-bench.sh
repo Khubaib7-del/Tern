@@ -49,4 +49,23 @@ for m in whisper-small-q5_1 moonshine-streaming-small; do
     if [ $rc -ne 0 ] || ! echo "$out" | grep -qi "country"; then echo "   MISSING WORDS"; fail=1; fi
   done
 done
+# Whisper small on the 12 s memo with 2 and 4 threads, flash attention on
+# and off (TERN_WHISPER_THREADS / TERN_WHISPER_FLASH), for the thread and
+# attention defaults (#66).
+if [ -f memo-44k.m4a ]; then
+  echo "| whisper threads / flash | file | wall s | tern's timings |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  # 6 and 8 threads on these 4-vCPU runners (more threads than logical
+  # cores) took 54-93 s on Linux and 266-575 s on Windows in #66, so they
+  # are no longer timed.
+  for th in 2 4; do
+    for fa in 1 0; do
+      s=$(date +%s%N)
+      out=$(TERN_WHISPER_THREADS=$th TERN_WHISPER_FLASH=$fa timeout 600 "$tern" models transcribe memo-44k.m4a --model whisper-small-q5_1 --language en 2> err.txt); rc=$?
+      ms=$(( ($(date +%s%N) - s) / 1000000 ))
+      info=$(tr '\n' ' ' < err.txt)
+      echo "== threads=$th flash=$fa rc=$rc wall=${ms}ms"; echo "   $info"
+      echo "| $th / $fa | memo-44k.m4a | $(awk "BEGIN{printf \"%.1f\", $ms/1000}") | ${info//|//} |" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+    done
+  done
+fi
 exit $fail

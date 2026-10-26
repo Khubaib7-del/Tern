@@ -79,6 +79,7 @@ pub mod vault;
 pub mod verify;
 pub mod watch;
 pub mod web;
+pub mod webintent;
 pub mod workspace;
 
 pub use ask::{AskOptions, AskReport, Source};
