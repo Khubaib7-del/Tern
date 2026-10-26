@@ -421,10 +421,10 @@ fn strip_tags(s: &str) -> String {
 /// An OTSL table body as a Markdown table.
 fn otsl_table(body: &str) -> String {
     let mut rows: Vec<Vec<String>> = Vec::new();
+    let cell = regex::Regex::new(r"<(fcel|ecel|ched|rhed|srow|lcel|ucel|xcel)>([^<]*)")
+        .expect("static regex");
     for row in body.split("<nl>") {
         let mut cells = Vec::new();
-        let cell = regex::Regex::new(r"<(fcel|ecel|ched|rhed|srow|lcel|ucel|xcel)>([^<]*)")
-            .expect("static regex");
         for c in cell.captures_iter(row) {
             match &c[1] {
                 "lcel" | "ucel" | "xcel" => cells.push(String::new()),

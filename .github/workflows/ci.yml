@@ -100,6 +100,22 @@ jobs:
           install_runtime: false
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
+      # The local vision helper (#69): llama.cpp's llama-mtmd-cli as
+      # tern-vlm, with ggml's CPU and Vulkan backends loaded at run time.
+      # Rebuilt only when build-vlm.sh (the pinned llama.cpp tag) changes.
+      - name: tern-vlm (cached)
+        id: vlm-cache
+        uses: actions/cache@v5
+        with:
+          path: vlm-out
+          key: tern-vlm-windows-x64-${{ hashFiles('.github/scripts/build-vlm.sh') }}
+      - name: Build tern-vlm (llama.cpp llama-mtmd-cli; CPU + Vulkan backends)
+        if: steps.vlm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: .github/scripts/build-vlm.sh "$PWD/vlm-out"
+      - name: Put tern-vlm beside tern-desktop.exe (target/release/vlm)
+        shell: bash
+        run: rm -rf target/release/vlm && cp -r vlm-out target/release/vlm && ls -la target/release/vlm
       - name: whisper.cpp's compiler flags (must hold /O2)
         shell: bash
         run: |
@@ -138,6 +154,11 @@ jobs:
           if ($p.HasExited) { "tern-desktop.exe exited early with code $($p.ExitCode)"; exit 1 }
           "tern-desktop.exe is running after 15 s"
           Stop-Process -Id $p.Id
+      - name: tern-vlm.exe starts with no Vulkan driver (lists the CPU)
+        shell: pwsh
+        run: |
+          .\target\release\vlm\tern-vlm.exe --list-devices
+          if ($LASTEXITCODE -ne 0) { "tern-vlm.exe --list-devices exited with $LASTEXITCODE"; exit 1 }
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -146,6 +167,7 @@ jobs:
             target/release/tern-desktop.exe
             target/release/tern.exe
             target/release/tern-browser.exe
+            target/release/vlm/
           retention-days: 14
       - name: ffmpeg for the speech benchmark
         shell: pwsh
@@ -221,6 +243,27 @@ jobs:
           cat "$TERN_HOME"/evals/runs/*.md >> "$GITHUB_STEP_SUMMARY"
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
+      - name: tern-vlm (cached)
+        id: vlm-cache
+        uses: actions/cache@v5
+        with:
+          path: vlm-out
+          key: tern-vlm-linux-x64-${{ hashFiles('.github/scripts/build-vlm.sh') }}
+      - name: Build tern-vlm (llama.cpp llama-mtmd-cli; CPU + Vulkan backends)
+        if: steps.vlm-cache.outputs.cache-hit != 'true'
+        run: .github/scripts/build-vlm.sh "$PWD/vlm-out"
+      - name: Put tern-vlm beside tern-desktop (target/release/vlm)
+        run: rm -rf target/release/vlm && cp -a vlm-out target/release/vlm && ls -la target/release/vlm
+      # SmolVLM 256M (GGUF + projector) and Kokoro 82M (ONNX + voices),
+      # about 450 MB, kept between runs.
+      - name: Local models for the runtimes smoke test (cached)
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/tern-runtimes-home/models
+          key: runtimes-models-smolvlm-256m-kokoro-82m-v1
+      - name: Local runtimes smoke test (tern-vlm + SmolVLM, Kokoro read aloud, DOCX to Markdown)
+        timeout-minutes: 20
+        run: .github/scripts/local-runtimes-smoke.sh "$PWD/target/release/tern" "$PWD/target/release/vlm" "Linux"
       - name: Speech benchmark (local Whisper and Moonshine, release tern)
         run: .github/scripts/speech-bench.sh "$PWD/target/release/tern" "Linux"
       - name: Package tern-linux-x64.tar.gz
@@ -229,6 +272,7 @@ jobs:
           out=tern-linux-x64
           mkdir -p "$out/share/applications" "$out/share/icons/hicolor/512x512/apps"
           cp target/release/tern target/release/tern-desktop target/release/tern-browser "$out/"
+          cp -a target/release/vlm "$out/vlm"
           cp crates/tern-desktop/packaging/linux/io.github.khubaib7_del.Tern.desktop "$out/share/applications/"
           cp assets/brand/tern-app-icon.png "$out/share/icons/hicolor/512x512/apps/io.github.khubaib7_del.Tern.png"
           cp LICENSE "$out/"
@@ -236,6 +280,7 @@ jobs:
             'Tern (pre-alpha, not released). Linux x64 build from CI.' \
             'Run ./tern-desktop for the app or ./tern for the CLI.' \
             'The browser pane uses ./tern-browser (needs WebKitGTK 4.1: libwebkit2gtk-4.1-0).' \
+            'Local picture models use ./vlm/tern-vlm (llama.cpp; Vulkan when a driver is present, else the CPU).' \
             'To add Tern to your app menu: copy share/ into ~/.local/share/ and tern-desktop onto your PATH.' \
             'See docs/linux.md in the repository.' > "$out/README.txt"
           tar -czf tern-linux-x64.tar.gz "$out"
@@ -277,6 +322,15 @@ jobs:
         run: cargo run --locked -p tern-tui -- eval run --level synthetic --trials 3 --check-baseline
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
+      - name: tern-vlm (cached)
+        id: vlm-cache
+        uses: actions/cache@v5
+        with:
+          path: vlm-out
+          key: tern-vlm-macos-arm64-${{ hashFiles('.github/scripts/build-vlm.sh') }}
+      - name: Build tern-vlm (llama.cpp llama-mtmd-cli; Metal, static)
+        if: steps.vlm-cache.outputs.cache-hit != 'true'
+        run: .github/scripts/build-vlm.sh "$PWD/vlm-out"
       - name: Bundle Tern.app (unsigned) and zip
         run: |
           set -eu
@@ -284,6 +338,7 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           cp target/release/tern-desktop target/release/tern-browser "$app/Contents/MacOS/"
           cp crates/tern-desktop/packaging/macos/Info.plist "$app/Contents/"
+          cp -a vlm-out "$app/Contents/Resources/vlm"
           iconset=Tern.iconset
           mkdir -p "$iconset"
           for s in 16 32 128 256 512; do
@@ -296,6 +351,7 @@ jobs:
           mkdir -p tern-macos-arm64
           mv "$app" tern-macos-arm64/
           cp target/release/tern target/release/tern-browser tern-macos-arm64/
+          cp -a vlm-out tern-macos-arm64/vlm
           cp LICENSE tern-macos-arm64/
           printf '%s\n' \
             'Tern (pre-alpha, not released). macOS arm64 build from CI, unsigned.' \

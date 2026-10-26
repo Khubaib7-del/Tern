@@ -257,7 +257,7 @@ pub fn page_pictures(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
                     None
                 }
             } else {
-                raw_picture(&s, w, h)
+                raw_picture(s, w, h)
             };
             if let Some(p) = picture {
                 best = Some((area, p));

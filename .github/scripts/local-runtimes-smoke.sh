@@ -54,12 +54,13 @@ if [ ! -x "$TERN_VLM" ] && [ ! -f "$TERN_VLM" ]; then
 elif download smolvlm-256m; then
   dir=$(dirname "$(find "$TERN_HOME" -name 'SmolVLM-256M-Instruct-Q8_0.gguf' | head -1)")
   # The helper alone, for its device lines.
-  "$TERN_VLM" -m "$dir/SmolVLM-256M-Instruct-Q8_0.gguf" --mmproj "$dir/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" \
+  timeout 300 "$TERN_VLM" -m "$dir/SmolVLM-256M-Instruct-Q8_0.gguf" --mmproj "$dir/mmproj-SmolVLM-256M-Instruct-Q8_0.gguf" \
     --image red-tern.png -p "What colour is this picture?" -n 32 --temp 0 -t 4 > helper.txt 2> helper.log
   echo "helper exit $?: $(head -c 300 helper.txt)"
   grep -iE "using device|ggml_vulkan|CPU backend|Metal|offloaded|error" helper.log | head -12
   s=$(date +%s)
-  if "$tern" models describe red-tern.png --model smolvlm-256m > describe.txt 2> describe.err; then
+  # On the CPU: the runner's only Vulkan device is Mesa's software one.
+  if TERN_SPEECH_DEVICE=cpu "$tern" models describe red-tern.png --model smolvlm-256m > describe.txt 2> describe.err; then
     t=$(( $(date +%s) - s ))
     cat describe.txt; cat describe.err
     if grep -qiE "red|square|white|rectangle|flag|colou?r" describe.txt; then

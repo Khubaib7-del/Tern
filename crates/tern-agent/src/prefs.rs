@@ -595,6 +595,8 @@ mod tests {
             speech_device: Some("cpu".into()),
             speech_threads: Some(4),
             dictation_language: Some("ur".into()),
+            read_aloud_voice: Some("bf_emma".into()),
+            read_aloud_speed: Some(110),
             run_panel_auto: Some(false),
             study_offline: true,
             study_quiz_count: Some(10),

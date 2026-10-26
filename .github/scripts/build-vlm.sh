@@ -28,6 +28,9 @@ common=(
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
   -DGGML_NATIVE=OFF
 )
+if [ "$(uname -m)" = x86_64 ] || [ "$(uname -m)" = AMD64 ] || [ "$(uname -s | cut -c1-5)" = MINGW ]; then
+  common+=(-DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_AVX512=OFF)
+fi
 targets=(llama-mtmd-cli)
 case "$(uname -s)" in
   Darwin)
