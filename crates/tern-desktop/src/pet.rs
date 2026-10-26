@@ -604,6 +604,16 @@ pub fn clamp_pos(pos: (f32, f32), size: (f32, f32), window: (f32, f32)) -> (f32,
     (pos.0.clamp(4., max_x), pos.1.clamp(40., max_y))
 }
 
+/// Scout kept left of `edge` (the browser pane's left side, #68: Scout sat
+/// over the page's address bar). Where it was dragged is kept; only the
+/// drawn spot moves while the page is open.
+pub fn keep_left_of(pos: (f32, f32), size: (f32, f32), edge: Option<f32>) -> (f32, f32) {
+    match edge {
+        Some(e) if pos.0 + size.0 > e - 8. => (((e - size.0 - 8.).max(4.)), pos.1),
+        _ => pos,
+    }
+}
+
 /// How long the hover toolbar stays after the pointer leaves Scout and
 /// the toolbar, so it survives the trip across the gap between them.
 pub const TOOLBAR_GRACE: std::time::Duration = std::time::Duration::from_millis(280);
@@ -730,6 +740,21 @@ pub fn toolbar_pos(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scout_stays_out_of_the_browser_pane() {
+        // Dragged over the page's address bar: drawn just left of it.
+        assert_eq!(
+            keep_left_of((900., 60.), (60., 70.), Some(640.)),
+            (572., 60.)
+        );
+        // Already in the chat column, or no page open: where it was.
+        assert_eq!(
+            keep_left_of((100., 600.), (60., 70.), Some(640.)),
+            (100., 600.)
+        );
+        assert_eq!(keep_left_of((900., 60.), (60., 70.), None), (900., 60.));
+    }
 
     #[test]
     fn the_embedded_manifest_has_every_state() {
