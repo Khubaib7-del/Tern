@@ -99,7 +99,7 @@ impl Section {
                 "OCR, speech, and vision models that run on this computer. Nothing is bundled: download only what you want."
             }
             Self::Speech => {
-                "Where local speech-to-text runs: the GPU when there is one, or the CPU, and how many CPU threads."
+                "The language the mic listens for, and where local speech-to-text runs: the GPU or the CPU, and how many CPU threads."
             }
             Self::Tools => "Tern's own tools: turn one off, or choose whether it asks you first.",
             Self::Decision => {
