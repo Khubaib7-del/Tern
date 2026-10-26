@@ -68,11 +68,22 @@ enum Incoming {
 
 impl Process {
     fn spawn(exe: &std::path::Path, args: &[String]) -> Result<Self, String> {
-        let mut child = std::process::Command::new(exe)
-            .args(args)
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // The helper is a console program (so `tern-browser --help` and
+        // standalone runs print). Started from the windowed app it would
+        // open a console window of its own (#68: a black terminal window
+        // over Tern in the Windows tour while the page started).
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", exe.display()))?;
         let mut stdin = child.stdin.take().ok_or("no stdin")?;
