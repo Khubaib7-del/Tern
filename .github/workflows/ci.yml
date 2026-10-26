@@ -187,11 +187,12 @@ jobs:
           path: ${{ runner.temp }}/tern-runtimes-home/models
           key: runtimes-models-windows-smolvlm-256m-kokoro-82m-v1
       - name: Local runtimes smoke test (tern-vlm.exe + SmolVLM on the CPU, Kokoro read aloud, DOCX to Markdown)
+        id: runtimes-smoke
         timeout-minutes: 20
         shell: bash
         run: .github/scripts/local-runtimes-smoke.sh "$PWD/target/release/tern.exe" "$PWD/target/release/vlm" "Windows"
       - name: Save the smoke test models
-        if: always() && steps.models-cache.outputs.cache-hit != 'true' && hashFiles(format('{0}/tern-runtimes-home/models/**', runner.temp)) != ''
+        if: always() && steps.models-cache.outputs.cache-hit != 'true' && steps.runtimes-smoke.outcome != 'skipped'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/tern-runtimes-home/models
@@ -302,7 +303,7 @@ jobs:
         run: .github/scripts/local-runtimes-smoke.sh "$PWD/target/release/tern" "$PWD/target/release/vlm" "Linux"
       # Saved even when the smoke test fails, once the models downloaded.
       - name: Save the smoke test models
-        if: always() && steps.models-cache.outputs.cache-hit != 'true' && hashFiles(format('{0}/tern-runtimes-home/models/**', runner.temp)) != ''
+        if: always() && steps.models-cache.outputs.cache-hit != 'true' && steps.runtimes-smoke.outcome != 'skipped'
         uses: actions/cache/save@v5
         with:
           path: ${{ runner.temp }}/tern-runtimes-home/models
