@@ -40,6 +40,9 @@ pub enum Msg {
     /// A note that is information, never an error, whatever its words
     /// ("codestral can't see pictures, so Tern read …").
     Info(String),
+    /// What the turn is doing before the model is asked ("Looking at
+    /// image…", "Reading report.pdf…"; #69), or `None` when done.
+    Doing(Option<String>),
     /// Every configured provider's listing, for routing.
     Catalog(Box<tern_agent::media::Catalog>),
     /// An attached audio file's transcript (file name, seconds it plays
@@ -1917,7 +1920,14 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
 async fn read_pictures(tx: &mpsc::UnboundedSender<Msg>, p: &Pictures, text: &str) -> String {
     let keychain = setup::keychain();
     let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    let doing = match p.readers.first() {
+        Some(tern_agent::media::Reader::Local { describe: true, .. }) => "Looking at image…",
+        Some(tern_agent::media::Reader::Local { .. }) => "Reading the text in the image…",
+        _ => "Reading the image…",
+    };
+    let _ = tx.send(Msg::Doing(Some(doing.to_owned())));
     let out = tern_agent::media::read_with(secrets, &p.readers, &p.images, &p.chat_model).await;
+    let _ = tx.send(Msg::Doing(None));
     for (r, e) in &out.failures {
         if let tern_agent::media::Reader::Local { model, .. } = r {
             let _ = tx.send(Msg::Setup(Box::new(SetupMsg::LocalRunFailed(

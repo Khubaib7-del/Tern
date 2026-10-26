@@ -305,10 +305,14 @@ impl Workspace {
                 }
                 self.reload_local_models();
             }
-            SetupMsg::LocalRunFailed(id, e) => st.local.run_failed(
-                &id,
-                format!("Could not run this model: {e}. Try the alternative."),
-            ),
+            SetupMsg::LocalRunFailed(id, e) => {
+                // The chat says so too, with the way out (#69).
+                self.model.local_failed = st.local.failure(&id, &e);
+                st.local.run_failed(
+                    &id,
+                    format!("Could not run this model: {e}. Try the alternative."),
+                );
+            }
             SetupMsg::LocalRemoved(id, r) => match r {
                 Ok(()) => {
                     st.local.errors.remove(&id);

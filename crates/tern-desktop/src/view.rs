@@ -893,6 +893,7 @@ impl Workspace {
                 other => self.on_ext(other, cx),
             },
             Msg::Info(text) => self.model.toast_info(text),
+            Msg::Doing(what) => self.model.doing = what,
             Msg::Notice(text) => {
                 self.model.notice_line(text);
                 // A chat that would not reopen leaves no session; open a

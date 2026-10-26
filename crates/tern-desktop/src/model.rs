@@ -541,6 +541,12 @@ pub struct Model {
     /// it had nothing on the question once off-topic pages were dropped:
     /// the banner suggests a Tavily or Brave key. Holds the query.
     pub wiki_empty: Option<String>,
+    /// A local model that failed or is missing (#69): the banner with
+    /// "Use the alternative" / "Download".
+    pub local_failed: Option<crate::chatflow::LocalFailure>,
+    /// What the turn does before the model is asked ("Looking at
+    /// image…"; #69): it leads the working line while it lasts.
+    pub doing: Option<String>,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -718,6 +724,8 @@ impl Model {
             continue_offer: false,
             search_down: None,
             wiki_empty: None,
+            local_failed: None,
+            doing: None,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -2007,6 +2015,9 @@ impl Model {
         if self.inserted.is_some() {
             v.push(Notice::Inserted);
         }
+        if self.local_failed.is_some() {
+            v.push(Notice::Local);
+        }
         v
     }
 
@@ -2455,6 +2466,11 @@ impl Model {
                     d.workers.len()
                 )
             }
+            _ => phrase,
+        };
+        // Pictures or a document read before the model is asked (#69).
+        let phrase = match &self.doing {
+            Some(d) if activity == Activity::Thinking => d.clone(),
             _ => phrase,
         };
         Some(WorkingLine {

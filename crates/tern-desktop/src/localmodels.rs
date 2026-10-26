@@ -228,6 +228,29 @@ impl LocalModelsPage {
     pub fn run_failed(&mut self, id: &str, error: String) {
         self.errors.insert(id.to_owned(), error);
     }
+
+    /// The chat banner for local model `id` failing with `error` (#69):
+    /// its task's backup, when this build runs it, and whether it is
+    /// downloaded. `None` for a model the page does not know.
+    pub fn failure(&self, id: &str, error: &str) -> Option<crate::chatflow::LocalFailure> {
+        let s = self.find(id)?;
+        let alternative =
+            self.alternative
+                .get(id)
+                .filter(|(_, _, runs)| *runs)
+                .map(|(aid, name, _)| {
+                    let installed = self.find(aid).is_some_and(|a| a.installed());
+                    (aid.clone(), name.clone(), installed)
+                });
+        Some(crate::chatflow::LocalFailure {
+            id: id.to_owned(),
+            name: s.entry.name.clone(),
+            task: s.entry.task,
+            error: error.to_owned(),
+            alternative,
+            missing: !s.installed(),
+        })
+    }
 }
 
 /// The brand key for a model's logo (its manifest `logo`, else the repo
