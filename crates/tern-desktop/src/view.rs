@@ -51,6 +51,7 @@ mod palette_view;
 mod panels_view;
 mod pet_view;
 mod press;
+mod read_aloud_view;
 mod runmap_view;
 mod runs_view;
 mod scout_view;
@@ -329,6 +330,9 @@ pub struct Workspace {
     dictation_samples: Vec<f32>,
     dictation_pos: usize,
     dictation_task: Option<Task<()>>,
+    /// The answer read aloud (#69) and the timer that follows it.
+    read_aloud: Option<read_aloud_view::ReadingNow>,
+    read_aloud_task: Option<Task<()>>,
     /// Wakes the window when a toast should come, go, or fade.
     toast_wake: Option<Task<()>>,
     /// The timeline tick under the pointer, and a smooth scroll in flight
@@ -748,6 +752,8 @@ impl Workspace {
             dictation_samples: Vec::new(),
             dictation_pos: 0,
             dictation_task: None,
+            read_aloud: None,
+            read_aloud_task: None,
             toast_wake: None,
             rail_hover: None,
             rail_auto: false,

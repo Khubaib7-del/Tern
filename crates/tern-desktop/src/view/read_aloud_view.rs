@@ -9,12 +9,15 @@
 
 use std::time::Duration;
 
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_agent::local_models::Task as ModelTask;
 use tern_agent::read_aloud::{Missing, Phase, Status};
 
-use super::{AssetIcon, Workspace};
+use gpui_kit::assets::IconName as AssetIcon;
+
+use super::Workspace;
 use crate::theme::Palette;
 
 /// The answer being read.
@@ -52,7 +55,12 @@ pub(crate) fn status_label(s: &Status) -> String {
 
 impl Workspace {
     /// Starts reading answer `i` aloud, or stops the reading of it.
-    pub(super) fn toggle_read_aloud(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn toggle_read_aloud(
+        &mut self,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.read_aloud.as_ref().is_some_and(|r| r.entry == i) {
             self.stop_read_aloud();
             cx.notify();
@@ -226,7 +234,12 @@ impl Workspace {
 
     /// The read-aloud control under answer `i`: a speaker button, or
     /// Pause/Play · Stop · "Reading 2 of 5" while it is read.
-    pub(super) fn read_aloud_action(&self, i: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn read_aloud_action(
+        &self,
+        i: usize,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let button = move |id: &'static str, icon: AssetIcon, tip: &'static str| {
             div()
                 .id((id, i))
@@ -244,11 +257,15 @@ impl Workspace {
                 .child(gpui_kit::component::Icon::new(icon).xsmall())
         };
         let Some(r) = self.read_aloud.as_ref().filter(|r| r.entry == i) else {
-            return button("read-aloud", AssetIcon::Volume2, "Read aloud (on this computer)")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.toggle_read_aloud(i, window, cx);
-                }))
-                .into_any_element();
+            return button(
+                "read-aloud",
+                AssetIcon::Volume2,
+                "Read aloud (on this computer)",
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.toggle_read_aloud(i, window, cx);
+            }))
+            .into_any_element();
         };
         let paused = r.status.phase == Phase::Paused;
         let label: SharedString = status_label(&r.status).into();
@@ -263,7 +280,11 @@ impl Workspace {
             .child(
                 button(
                     "read-aloud-pause",
-                    if paused { AssetIcon::Play } else { AssetIcon::Pause },
+                    if paused {
+                        AssetIcon::Play
+                    } else {
+                        AssetIcon::Pause
+                    },
                     if paused { "Play" } else { "Pause" },
                 )
                 .text_color(p.text)
@@ -277,13 +298,7 @@ impl Workspace {
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(p.muted)
-                    .pr_1()
-                    .child(label),
-            )
+            .child(div().text_xs().text_color(p.muted).pr_1().child(label))
             .into_any_element()
     }
 }

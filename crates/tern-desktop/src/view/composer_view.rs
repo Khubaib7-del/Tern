@@ -2364,6 +2364,7 @@ impl Workspace {
             );
         if answer {
             row = row
+                .child(self.read_aloud_action(i, p, cx))
                 .when(!busy, |d| {
                     d.child(
                         action(
