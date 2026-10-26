@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ui-tour-${{ github.ref }}
+  group: ui-tour-${{ github.ref }}-${{ inputs.only }}
   cancel-in-progress: true
 
 env:
