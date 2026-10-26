@@ -71,6 +71,7 @@ pub mod side;
 pub mod skill_author;
 pub mod skills;
 pub mod sources;
+pub mod speech_guard;
 pub mod steer;
 pub mod study;
 pub mod sub;

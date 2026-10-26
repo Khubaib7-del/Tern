@@ -60,10 +60,11 @@ pub fn fits(entry: &ModelEntry) -> bool {
         && has("config.json")
 }
 
+/// The same rule as Whisper (Settings › Speech › CPU threads; Auto is
+/// one per logical core, at most four): the user's laptop ran Moonshine
+/// on 8 threads (#68), more than helps.
 fn threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get().clamp(1, 8))
-        .unwrap_or(4)
+    super::speech::threads().clamp(1, 64) as usize
 }
 
 fn err(e: impl std::fmt::Display) -> String {

@@ -175,6 +175,8 @@ pub const CANCELLED: &str = "transcription cancelled";
 pub struct TranscribeCtl {
     progress: std::sync::Arc<std::sync::atomic::AtomicU8>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The language the model heard (Whisper says; Moonshine does not).
+    heard: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl TranscribeCtl {
@@ -195,6 +197,16 @@ impl TranscribeCtl {
     }
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// Records the language the model heard (`ur`, `en`).
+    pub fn set_heard(&self, language: &str) {
+        if let Ok(mut h) = self.heard.lock() {
+            *h = Some(language.to_owned());
+        }
+    }
+    /// The language the model heard, when it said.
+    pub fn heard(&self) -> Option<String> {
+        self.heard.lock().ok().and_then(|h| h.clone())
     }
 }
 

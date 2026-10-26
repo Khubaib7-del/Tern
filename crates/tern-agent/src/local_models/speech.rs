@@ -69,6 +69,106 @@ pub struct Choice {
 
 static CHOICE: RwLock<Option<Choice>> = RwLock::new(None);
 static LAST: RwLock<String> = RwLock::new(String::new());
+static LAST_RUN: RwLock<Option<LastRun>> = RwLock::new(None);
+
+/// The languages Settings › Speech offers for dictation (#68): Whisper
+/// codes and names. `auto` first, English second (the fast Moonshine
+/// model); every other one runs on Whisper.
+pub const DICTATION_LANGUAGES: [(&str, &str); 19] = [
+    ("auto", "Auto"),
+    ("en", "English"),
+    ("ur", "Urdu"),
+    ("hi", "Hindi"),
+    ("pa", "Punjabi"),
+    ("ar", "Arabic"),
+    ("fa", "Persian"),
+    ("bn", "Bengali"),
+    ("tr", "Turkish"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("zh", "Chinese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("id", "Indonesian"),
+];
+
+/// The saved dictation language as a Whisper code, `None` for Auto.
+pub fn dictation_language(saved: Option<&str>) -> Option<&'static str> {
+    let s = saved?.trim();
+    DICTATION_LANGUAGES
+        .iter()
+        .find(|(code, _)| *code != "auto" && code.eq_ignore_ascii_case(s))
+        .map(|(code, _)| *code)
+}
+
+/// "Urdu" for `ur`, "Auto" for `None`, the code itself when unknown.
+pub fn language_name(code: Option<&str>) -> String {
+    match code {
+        None => "Auto".into(),
+        Some(c) => DICTATION_LANGUAGES
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(c))
+            .map_or_else(|| c.to_owned(), |(_, n)| (*n).to_owned()),
+    }
+}
+
+/// One finished local or provider transcription, for Settings › Speech
+/// › Last transcription.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LastRun {
+    /// The model (`moonshine-streaming-small`, `groq/whisper-large-v3`).
+    pub model: String,
+    /// Where it ran ("CPU · 4 threads", "GPU · Vulkan · Intel(R) UHD
+    /// Graphics", "Groq (online)").
+    pub device: String,
+    /// When it finished, seconds since 1970 (UTC).
+    pub at_unix: i64,
+    pub audio_secs: Option<f64>,
+    pub ms: u128,
+    /// The language Whisper heard, when it says.
+    pub language: Option<String>,
+}
+
+impl LastRun {
+    /// "moonshine-streaming-small · CPU · 4 threads · 18:42 · 3.0 s of
+    /// audio in 1.9 s", in the local time `offset` seconds from UTC.
+    pub fn line(&self, offset: i64) -> String {
+        let day = (self.at_unix + offset).rem_euclid(86_400);
+        let mut s = format!(
+            "{} · {} · {:02}:{:02}",
+            self.model,
+            self.device,
+            day / 3600,
+            (day / 60) % 60
+        );
+        match self.audio_secs {
+            Some(a) => s.push_str(&format!(
+                " · {a:.1} s of audio in {:.1} s",
+                self.ms as f64 / 1000.0
+            )),
+            None => s.push_str(&format!(" · {:.1} s", self.ms as f64 / 1000.0)),
+        }
+        if let Some(l) = &self.language {
+            s.push_str(&format!(" · heard {}", language_name(Some(l))));
+        }
+        s
+    }
+}
+
+pub fn set_last_run(run: LastRun) {
+    if let Ok(mut r) = LAST_RUN.write() {
+        *r = Some(run);
+    }
+}
+
+/// The last transcription this window ran, any engine.
+pub fn last_run() -> Option<LastRun> {
+    LAST_RUN.read().ok().and_then(|r| r.clone())
+}
 
 /// Puts the saved choice into effect (from `Preferences::apply_runtime`).
 pub fn set(choice: Choice) {
@@ -197,6 +297,28 @@ mod tests {
         assert_eq!(pick_threads(Some(0), Some(8), 4, 8), 8);
         assert_eq!(pick_threads(None, Some(-1), 4, 8), 4);
         assert_eq!(pick_threads(Some(200), None, 4, 8), 64);
+    }
+
+    #[test]
+    fn dictation_languages_and_the_last_run_line() {
+        assert_eq!(dictation_language(None), None);
+        assert_eq!(dictation_language(Some("auto")), None);
+        assert_eq!(dictation_language(Some("UR")), Some("ur"));
+        assert_eq!(dictation_language(Some("xx")), None);
+        assert_eq!(language_name(Some("ur")), "Urdu");
+        assert_eq!(language_name(None), "Auto");
+        let r = LastRun {
+            model: "moonshine-streaming-small".into(),
+            device: "CPU · 4 threads".into(),
+            at_unix: 1_761_486_120, // 13:42 UTC
+            audio_secs: Some(3.0),
+            ms: 1_900,
+            language: Some("ur".into()),
+        };
+        assert_eq!(
+            r.line(5 * 3600),
+            "moonshine-streaming-small · CPU · 4 threads · 18:42 · 3.0 s of audio in 1.9 s · heard Urdu"
+        );
     }
 
     #[test]
