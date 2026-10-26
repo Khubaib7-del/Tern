@@ -579,6 +579,8 @@ mod tests {
             git_email: None,
             git_credit_tern: true,
             deep_workers: Some(4),
+            speech_device: Some("cpu".into()),
+            speech_threads: Some(4),
             study_offline: true,
             study_quiz_count: Some(10),
             study_difficulty: Some("hard".into()),
