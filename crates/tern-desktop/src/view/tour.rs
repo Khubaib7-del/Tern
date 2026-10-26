@@ -2045,8 +2045,8 @@ const URDU_ANSWER: &str = "اردو ایک خوبصورت زبان ہے جو پ�
 const URDU_TYPED: &str = "کیا آپ اردو بولتے ہیں؟";
 const MIXED_TYPED: &str = "Tern میں Whisper small کتنا تیز ہے؟ (GPU)";
 /// The same Urdu question ending in an ASCII `?` (an English keyboard
-/// layout): a neutral character, which the composer's left-to-right line
-/// puts on the right (known gap, see CHANGELOG #67).
+/// layout): a neutral character, which lands at the sentence's end (the
+/// left) only when the line is laid out right to left (#67, Windows patch).
 const URDU_ASCII_TYPED: &str = "کیا آپ اردو بولتے ہیں?";
 /// What Wikipedia (the mock) finds for "SubQ Snap 1.1": the user's log
 /// had six Japanese and medical pages, none about SubQ.
