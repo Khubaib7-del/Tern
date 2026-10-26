@@ -113,6 +113,21 @@ jobs:
           "System32 vulkan-1.dll present: $(Test-Path C:\Windows\System32\vulkan-1.dll)"
           (Get-Command vulkan-1.dll -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source) ?? "vulkan-1.dll not on PATH"
           python .github/scripts/check-delayload.py target/release/tern-desktop.exe target/release/tern.exe
+      # The runner image ships the Vulkan loader in System32 (no GPU behind
+      # it). Hide it so the start test and the speech benchmark below run
+      # the way a PC without a Vulkan driver does: the delay-load fails and
+      # the failure hook hands ggml a loader that registers no device.
+      - name: Hide System32 vulkan-1.dll (a PC without a Vulkan driver)
+        shell: pwsh
+        run: |
+          $dll = "C:\Windows\System32\vulkan-1.dll"
+          if (Test-Path $dll) {
+            takeown /f $dll | Out-Null
+            icacls $dll /grant "*S-1-5-32-544:F" | Out-Null
+            Rename-Item $dll "vulkan-1.dll.hidden-by-tern-ci"
+          }
+          $left = (Get-Command vulkan-1.dll -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
+          if ($left) { "::warning::vulkan-1.dll still found at $left; the no-driver path is not exercised" } else { "vulkan-1.dll is not found anywhere on this runner now" }
       - name: tern-desktop.exe starts with no Vulkan driver (the window opens, then it is closed)
         shell: pwsh
         run: |
