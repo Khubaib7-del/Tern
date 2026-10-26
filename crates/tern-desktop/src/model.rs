@@ -145,6 +145,16 @@ fn tool_activity(tool: &str) -> Activity {
 /// The working line's words while a quick turn's tool runs: "Searching
 /// the web…", "Reading notes.md…", "Fetching en.wikipedia.org…".
 pub fn tool_phrase(tool: &str, detail: Option<&str>) -> String {
+    tool_phrase_via(tool, detail, None)
+}
+
+/// [`tool_phrase`], naming the search service: "Searching Wikipedia…".
+pub fn tool_phrase_via(tool: &str, detail: Option<&str>, service: Option<&str>) -> String {
+    if tool == "web_search"
+        && let Some(s) = service.map(str::trim).filter(|s| !s.is_empty())
+    {
+        return format!("Searching {s}…");
+    }
     let detail = detail.map(str::trim).filter(|d| !d.is_empty());
     let clip = |d: &str| {
         if d.chars().count() > 40 {
@@ -527,6 +537,10 @@ pub struct Model {
     /// Web search failed the last deep run's check: the stop reason. The
     /// banner offers Wikipedia or the address field.
     pub search_down: Option<String>,
+    /// The last quick turn searched Wikipedia (the keyless default) and
+    /// it had nothing on the question once off-topic pages were dropped:
+    /// the banner suggests a Tavily or Brave key. Holds the query.
+    pub wiki_empty: Option<String>,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -702,6 +716,7 @@ impl Model {
             tool_doing: None,
             continue_offer: false,
             search_down: None,
+            wiki_empty: None,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -940,6 +955,7 @@ impl Model {
         self.cut_off = false;
         self.continue_offer = false;
         self.search_down = None;
+        self.wiki_empty = None;
         let chips = attachments
             .iter()
             .map(|a| Chip {
@@ -1679,6 +1695,19 @@ impl Model {
         {
             push_unique(&mut self.turn_pages, p);
         }
+        // Wikipedia had nothing on the question: the banner offers a key
+        // for a full-web search once the turn ends.
+        if e.kind == "tool.executed"
+            && e.payload["tool"] == "web_search"
+            && e.payload["meta"]["notice"] == "wikipedia_empty"
+        {
+            self.wiki_empty = Some(
+                e.payload["meta"]["query"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
         // A quick turn's call: what it does, from the policy check that
         // comes right before it runs (or the approval that lets it run).
         let tool = e.payload["tool"].as_str().unwrap_or_default();
@@ -1964,6 +1993,9 @@ impl Model {
         let mut v = Vec::new();
         if self.search_down.is_some() && !self.is_busy() {
             v.push(Notice::SearchDown);
+        }
+        if self.wiki_empty.is_some() && !self.is_busy() {
+            v.push(Notice::WikiEmpty);
         }
         if self.resume_offer.is_some() && !self.is_busy() {
             v.push(Notice::Resume);
@@ -2393,7 +2425,11 @@ impl Model {
             (Some((tool, detail)), Activity::Searching | Activity::Reading | Activity::Tool)
                 if run.deep.is_none() =>
             {
-                tool_phrase(tool, detail.as_deref())
+                tool_phrase_via(
+                    tool,
+                    detail.as_deref(),
+                    self.connection.as_ref().and_then(|c| c.search.as_deref()),
+                )
             }
             _ => phrase,
         };
@@ -3100,6 +3136,14 @@ mod tests {
         ));
         assert_eq!(m.working_line().unwrap().phrase, "Reading notes.md…");
         assert_eq!(tool_phrase("whisper_transcribe", None), "Transcribing…");
+        assert_eq!(
+            tool_phrase_via("web_search", Some("q"), Some("Wikipedia")),
+            "Searching Wikipedia…"
+        );
+        assert_eq!(
+            tool_phrase_via("read_url", Some("a.org"), Some("Wikipedia")),
+            "Fetching a.org…"
+        );
     }
 
     #[test]

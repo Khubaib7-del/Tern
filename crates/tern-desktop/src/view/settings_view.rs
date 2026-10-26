@@ -223,6 +223,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Settings › Search & Crawlers with `id`'s key field open (the
+    /// Wikipedia banner's "Add a Tavily key").
+    pub(super) fn open_search_key(
+        &mut self,
+        id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(Section::Search, window, cx);
+        self.edit_key(crate::providers::Kind::Search, id, window, cx);
+    }
+
     /// Back (or Esc): the screen Settings was opened from, the chat
     /// otherwise.
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1458,6 +1470,41 @@ impl Workspace {
     fn search_page(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
         let st = &self.model.providers;
         let mut body: Vec<AnyElement> = Vec::new();
+        if st.only_wikipedia() {
+            body.push(
+                div()
+                    .id("search-nudge")
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(p.accent)
+                    .bg(p.canvas)
+                    .child(super::brand_logo("tavily", 18., p))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(200.))
+                            .text_sm()
+                            .text_color(p.text)
+                            .child(crate::chatflow::TAVILY_NUDGE),
+                    )
+                    .child(
+                        Button::new("search-nudge-tavily")
+                            .capsule()
+                            .label("Add a Tavily key")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.edit_key(crate::providers::Kind::Search, "tavily", window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
         if !st.loaded {
             body.push(loading("Reading the keychain…", p));
         } else {

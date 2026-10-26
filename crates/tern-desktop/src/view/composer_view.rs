@@ -1895,6 +1895,62 @@ impl Workspace {
         )
     }
 
+    /// Wikipedia had nothing on the question: one line suggesting a
+    /// full-web search, with a button to the Tavily row of Settings ›
+    /// Search & Crawlers (its key field open) and a close button.
+    fn wiki_empty_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let query = self.model.wiki_empty.clone()?;
+        let detail: SharedString = format!("Searched Wikipedia for “{query}”").into();
+        Some(
+            div()
+                .id("wiki-empty")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(icon(AssetIcon::GlobeOff, p.muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(160.))
+                        .text_sm()
+                        .text_color(p.text)
+                        .child(SharedString::from(chatflow::WIKI_EMPTY_LINE)),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(detail.clone()).build(window, cx)
+                })
+                .child(
+                    Button::new("wiki-empty-tavily")
+                        .capsule()
+                        .label("Add a Tavily key")
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.model.wiki_empty = None;
+                            this.open_search_key("tavily", window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("wiki-empty-close")
+                        .capsule()
+                        .label("Dismiss")
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.model.wiki_empty = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The banners over the composer, one at a time with "N more" to open
     /// the rest.
     fn notices(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1907,6 +1963,7 @@ impl Workspace {
         for n in shown {
             col = col.children(match n {
                 Notice::SearchDown => self.search_down_banner(p, cx),
+                Notice::WikiEmpty => self.wiki_empty_banner(p, cx),
                 Notice::Resume => self.resume_banner(p, cx),
                 Notice::Continue => self.continue_bar(p, cx),
                 Notice::Inserted => self.inserted_banner(p, cx),

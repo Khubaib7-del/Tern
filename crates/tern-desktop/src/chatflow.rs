@@ -135,9 +135,28 @@ pub fn rollup(run: &Run) -> Option<String> {
         .iter()
         .filter(|c| c.verdict == tern_agent::Verdict::Supported)
         .count();
+    // Which service answered, and how many off-topic pages it dropped.
+    let searches = run
+        .steps
+        .iter()
+        .filter(|s| s.event == "tool.executed" && s.payload["tool"] == "web_search");
+    let mut service: Option<&str> = None;
+    let mut dropped = 0;
+    for s in searches {
+        if let Some(n) = s.payload["meta"]["service"].as_str() {
+            service = Some(n);
+        }
+        dropped += s.payload["meta"]["filtered"].as_u64().unwrap_or(0);
+    }
     let mut parts = Vec::new();
     if searched > 0 {
-        parts.push(format!("Searched {searched}"));
+        parts.push(match service {
+            Some(n) => format!("Searched {searched} on {n}"),
+            None => format!("Searched {searched}"),
+        });
+        if dropped > 0 {
+            parts.push(format!("{dropped} off-topic dropped"));
+        }
     }
     if read > 0 {
         parts.push(format!("read {read}"));
@@ -392,6 +411,8 @@ pub enum Notice {
     /// The chat's web search did not answer, so deep research stopped
     /// before any worker started.
     SearchDown,
+    /// Wikipedia, the keyless search, had nothing on the question.
+    WikiEmpty,
     /// A run stopped and can be resumed or retried.
     Resume,
     /// The answer was cut off at the length limit.
@@ -399,6 +420,13 @@ pub enum Notice {
     /// An MCP server wrote the composer text.
     Inserted,
 }
+
+/// The nudge in Settings › Search & Crawlers and the first-run tour
+/// while only Wikipedia is set up (#67).
+pub const TAVILY_NUDGE: &str = "Recommended: add a free Tavily key (1,000 searches a month). Wikipedia only finds encyclopedia articles, so new models, products and niche topics come back empty.";
+
+/// The Wikipedia banner's line (#67).
+pub const WIKI_EMPTY_LINE: &str = "Wikipedia has nothing on this. Add a free Tavily key (1,000 searches/month) or Brave under Settings › Search & Crawlers for full-web results.";
 
 /// Whether a run's stop reason says web search is not working (the deep
 /// run's preflight, or every worker's search failing).
@@ -520,6 +548,14 @@ mod tests {
         run.push(&ev("tool.executed", json!({"tool": "read_url"})));
         run.push(&ev("tool.executed", json!({"tool": "file_read"})));
         assert_eq!(rollup(&run).unwrap(), "Searched 2 · read 1 · 1 file step");
+        run.push(&ev(
+            "tool.executed",
+            json!({"tool": "web_search", "meta": {"service": "Wikipedia", "filtered": 4}}),
+        ));
+        assert_eq!(
+            rollup(&run).unwrap(),
+            "Searched 2 on Wikipedia · 4 off-topic dropped · read 1 · 1 file step"
+        );
         let mut deep = Run::new();
         deep.push(&ev(
             "tool.executed",
