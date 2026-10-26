@@ -87,3 +87,6 @@ debug-assertions = false
 # left (third_party/gpui-pre-windows/TERN_PATCH.md).
 [patch.crates-io]
 gpui-pre-windows = { path = "third_party/gpui-pre-windows" }
+# GPUI's line layout: caret positions and clicks on right-to-left text
+# (third_party/gpui-pre/TERN_PATCH.md).
+gpui-pre = { path = "third_party/gpui-pre" }
