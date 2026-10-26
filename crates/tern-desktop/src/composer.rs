@@ -921,6 +921,45 @@ pub fn search_label(search: Option<&str>) -> String {
     }
 }
 
+/// The `@` references in the composer's text, as byte ranges to colour:
+/// a word that starts with `@` (at the start or after a space), one more
+/// character at least, without trailing punctuation; a quoted path
+/// (`@"C:\My Files\a.txt"`) runs to its closing quote or the end. An `@`
+/// inside a word (an email address) is not one.
+pub fn mention_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i < text.len() {
+        let at_word_start = i == 0
+            || text[..i]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if bytes[i] != b'@' || !at_word_start {
+            i += text[i..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        }
+        let end = if text[i + 1..].starts_with('"') {
+            match text[i + 2..].find('"') {
+                Some(q) => i + 2 + q + 1,
+                None => text.len(),
+            }
+        } else {
+            let word_end = text[i..]
+                .find(char::is_whitespace)
+                .map_or(text.len(), |w| i + w);
+            let trimmed = text[i..word_end].trim_end_matches(|c: char| ",.;!?)]}'".contains(c));
+            i + trimmed.len()
+        };
+        if end > i + 1 {
+            out.push(i..end);
+        }
+        i = end.max(i + 1);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1366,5 +1405,19 @@ mod tests {
     fn search_chip_says_off() {
         assert_eq!(search_label(None), "Web off");
         assert_eq!(search_label(Some("SearXNG")), "SearXNG");
+    }
+
+    #[test]
+    fn mentions_are_found_for_colour() {
+        let t = "read @README.md, and @prompt:style then mail a@b.c @";
+        let spans: Vec<&str> = mention_spans(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(spans, vec!["@README.md", "@prompt:style"]);
+        let t = "see @\"C:\\My Files\\a.txt\" now";
+        let spans: Vec<&str> = mention_spans(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(spans, vec!["@\"C:\\My Files\\a.txt\""]);
+        let t = "آپ @فائل? ہاں";
+        let spans: Vec<&str> = mention_spans(t).into_iter().map(|r| &t[r]).collect();
+        assert_eq!(spans, vec!["@فائل"]);
+        assert!(mention_spans("").is_empty());
     }
 }

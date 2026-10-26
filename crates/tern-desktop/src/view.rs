@@ -1299,6 +1299,27 @@ impl Workspace {
         self.model.deep_mode = deep;
     }
 
+    /// The composer follows its text: right to left (right-aligned, arrow
+    /// keys swapped) when the first strong letter is Urdu, Arabic, Persian
+    /// or Hebrew, as `dir="auto"` on the web; `@` references in the accent
+    /// (#68). Both are no-ops while nothing changed.
+    fn style_composer(&mut self, p: Palette, cx: &mut Context<Self>) {
+        let text = self.composer.read(cx).value().to_string();
+        let rtl = crate::bidi::has_rtl(&text) && crate::bidi::is_rtl(&text);
+        let style = gpui_kit::HighlightStyle {
+            color: Some(p.accent),
+            ..Default::default()
+        };
+        let spans: Vec<_> = crate::composer::mention_spans(&text)
+            .into_iter()
+            .map(|r| (r, style))
+            .collect();
+        self.composer.update(cx, |c, cx| {
+            c.set_right_to_left(rtl, cx);
+            c.set_text_highlights(spans, cx);
+        });
+    }
+
     /// Picks a row of the `@` menu (the highlighted one for `None`).
     fn choose_mention(
         &mut self,
@@ -3085,7 +3106,10 @@ impl Workspace {
                     .min_w_0()
                     .py(px(3.))
                     .truncate()
-                    .child(SharedString::from(s.title.clone())),
+                    // An Urdu title reads right to left, `??` at its left
+                    // end (#68).
+                    .when(crate::bidi::is_rtl(&s.title), |d| d.text_right())
+                    .child(SharedString::from(crate::bidi::display_line(&s.title))),
             )
             .when(running, |d| d.child(Spinner::new().xsmall()))
             // v2's one mark: ◆ when this chat is waiting on you.
@@ -5508,6 +5532,7 @@ impl Render for Workspace {
             Some(w) => w.palette(now),
             None => Palette::get(self.model.dark),
         };
+        self.style_composer(p, cx);
         // A page opening shows chat | page half and half with the sidebar
         // folded away (back when the page closes), on the Page tab (#68).
         let browser_open = self.model.browser.visible

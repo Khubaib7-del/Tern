@@ -38,6 +38,18 @@ pub fn is_rtl(paragraph: &str) -> bool {
     unicode_bidi::get_base_direction(paragraph) == Direction::Rtl
 }
 
+/// A one-line label (a chat's title in the sidebar) as drawn: a title
+/// that reads right to left goes inside a right-to-left embedding, so
+/// punctuation at its end (`??`, `۔`) sits at its left end, where an Urdu
+/// reader expects it, not after the first word. Others are unchanged.
+pub fn display_line(text: &str) -> String {
+    if has_rtl(text) && is_rtl(text) {
+        format!("{RLE}{text}{PDF}")
+    } else {
+        text.to_owned()
+    }
+}
+
 /// A run of paragraphs that share a direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
@@ -339,6 +351,16 @@ mod tests {
         assert!(l.rtl_clusters().is_none());
         assert_eq!(l.x_for_index(1), px(10.));
         assert_eq!(l.x_for_index(3), px(30.));
+    }
+
+    #[test]
+    fn an_urdu_title_reads_right_to_left_with_its_question_marks() {
+        assert_eq!(
+            display_line("آپ کیسے ہیں??"),
+            "\u{202B}آپ کیسے ہیں??\u{202C}"
+        );
+        assert_eq!(display_line("Hello??"), "Hello??");
+        assert_eq!(display_line("Tern says سلام"), "Tern says سلام");
     }
 
     const URDU: &str = "اردو ایک خوبصورت زبان ہے۔";

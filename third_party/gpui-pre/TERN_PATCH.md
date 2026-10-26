@@ -19,9 +19,8 @@ changed except below. Search for "Tern patch".
   sidebar title showed it so (#68). Left-to-right lines take GPUI's own
   code unchanged.
 
-Known gap: a selection on a right-to-left line is still highlighted from
-the lower x to the higher one per range end, so a selection that spans
-both directions can look off; the caret and the selected text are right.
+The composer's right alignment, swapped arrow keys and selection on
+right-to-left text are in `third_party/gpui-base` (its TERN_PATCH.md).
 
 Drop this copy when an upstream gpui-pre release handles right-to-left
 carets.
