@@ -741,7 +741,9 @@ impl Workspace {
             dictation_model: None,
             dictation_fast: None,
             dictation_whisper: None,
-            dictation_route: crate::dictation::Route::Fast,
+            // Auto's starting point (#69): the state before the first
+            // recording is the one every later recording starts in.
+            dictation_route: crate::dictation::Route::Detect,
             dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
@@ -2357,6 +2359,16 @@ impl Workspace {
             return;
         }
         use tern_agent::local_models::{Task, speech};
+        // The first recording after launch can come before the models
+        // folder was read in the background; read it now so the first
+        // recording routes exactly as the later ones (#69).
+        if self.model.settings.local.statuses.is_none()
+            && let Ok((lm, warning)) = tern_agent::local_models::LocalModels::discover()
+        {
+            let st = lm.statuses(&self.model.providers.prefs.local_models);
+            let root = lm.root().display().to_string();
+            self.model.settings.local.loaded(st, root, warning);
+        }
         let fast = self.model.settings.local.transcriber(Task::Dictation);
         let whisper = self.whisper_model();
         let language =
@@ -2559,16 +2571,23 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(d) = self.dictation.as_mut() {
-            d.on_result(seq, result);
-            // Auto: the first window told which language it is.
+            let spoke = d.on_result(seq, result);
+            // Auto: the first window with words tells which language it
+            // is; until then every window stays on Whisper (#69).
             if self.dictation_route == crate::dictation::Route::Detect {
-                let next = self
-                    .dictation_route
-                    .heard(heard.as_deref(), self.dictation_fast.is_some());
+                let next = self.dictation_route.after_window(
+                    heard.as_deref(),
+                    self.dictation_fast.is_some(),
+                    spoke,
+                );
                 tern_agent::diag::note(&format!(
-                    "dictation: heard {} -> {next:?}",
+                    "dictation: heard {} (words: {spoke}) -> {next:?}",
                     heard.as_deref().unwrap_or("?")
                 ));
+                if next == crate::dictation::Route::Detect {
+                    self.pump_dictation(window, cx);
+                    return;
+                }
                 d.set_pace(next.pace());
                 self.dictation_model = match next {
                     crate::dictation::Route::Fast => self.dictation_fast.clone(),
