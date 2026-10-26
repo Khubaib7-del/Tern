@@ -143,12 +143,8 @@ fn tool_activity(tool: &str) -> Activity {
 }
 
 /// The working line's words while a quick turn's tool runs: "Searching
-/// the web…", "Reading notes.md…", "Fetching en.wikipedia.org…".
-pub fn tool_phrase(tool: &str, detail: Option<&str>) -> String {
-    tool_phrase_via(tool, detail, None)
-}
-
-/// [`tool_phrase`], naming the search service: "Searching Wikipedia…".
+/// Wikipedia…" (the web without a service), "Reading notes.md…",
+/// "Fetching en.wikipedia.org…".
 pub fn tool_phrase_via(tool: &str, detail: Option<&str>, service: Option<&str>) -> String {
     if tool == "web_search"
         && let Some(s) = service.map(str::trim).filter(|s| !s.is_empty())
@@ -3113,7 +3109,7 @@ mod tests {
         m.on_event(&allow("web_search", "who made langchain"));
         let line = m.working_line().unwrap();
         assert_eq!(line.activity, Activity::Searching);
-        assert_eq!(line.phrase, "Searching the web…");
+        assert_eq!(line.phrase, "Searching Tavily…");
         assert_eq!(m.scout_mood(), crate::scout::Mood::Searching);
         m.on_event(&ev("tool.executed", "Ran", json!({"tool": "web_search"})));
         assert_eq!(m.working_line().unwrap().phrase, "Thinking");
@@ -3135,7 +3131,10 @@ mod tests {
             json!({"tool": "file_read", "answer": "allow_once"}),
         ));
         assert_eq!(m.working_line().unwrap().phrase, "Reading notes.md…");
-        assert_eq!(tool_phrase("whisper_transcribe", None), "Transcribing…");
+        assert_eq!(
+            tool_phrase_via("whisper_transcribe", None, None),
+            "Transcribing…"
+        );
         assert_eq!(
             tool_phrase_via("web_search", Some("q"), Some("Wikipedia")),
             "Searching Wikipedia…"
