@@ -1045,3 +1045,91 @@ async fn a_spend_cap_fails_the_turn_without_retrying() {
     assert_eq!(model.requests().len(), 1);
     assert!(!kinds(&sink).contains(&"provider.retry".to_owned()));
 }
+
+/// Returns a long page: a head, a long middle and a conclusion.
+#[derive(Debug)]
+struct LongPage;
+impl Tool for LongPage {
+    fn name(&self) -> &'static str {
+        "web_search"
+    }
+    fn summary(&self) -> &'static str {
+        "Search the web"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    }
+    fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async move {
+            let mut text = String::from("TITLE: a long paper\n");
+            for i in 0..3_000 {
+                text.push_str(&format!("middle line {i}\n"));
+            }
+            text.push_str("CONCLUSION: the tail is kept.\n");
+            Ok(ToolOutput::text(text))
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_long_result_keeps_its_tail_and_the_rest_can_be_read_back() {
+    let mut s = Setup::new();
+    let mut tools = ToolRegistry::new();
+    tools.register(LongPage);
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(tern_agent::results::ResultStore::at(dir.path()));
+    tools.register(tern_agent::results::ReadResultTool(store.clone()));
+    let model = Script::new(&[&tool_call("web_search", json!({"query": "long"})), "Done."]);
+    let sink = MemorySink::default();
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "m",
+        tools: &tools,
+        gate: &mut s.gate,
+        approver: &Answer::new(ApprovalAnswer::AllowOnce),
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: None,
+        hooks: tern_agent::engine::RunHooks {
+            results: Some(&store),
+            ..Default::default()
+        },
+    }
+    .run(Vec::new(), "read it")
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let reqs = model.requests();
+    let shown = &reqs[1].messages.last().unwrap().content;
+    assert!(shown.contains("TITLE: a long paper"));
+    assert!(shown.contains("CONCLUSION: the tail is kept."));
+    assert!(shown.contains("characters cut from the middle"));
+    assert!(shown.contains("read_result"));
+    let executed = sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "tool.executed")
+        .unwrap();
+    assert_eq!(executed.payload["truncated"], true);
+    let id = executed.payload["saved_as"].as_str().unwrap().to_owned();
+    // The whole text is on disk and reads back in ranges.
+    let part = store.read(&id, 0, 20).unwrap();
+    assert!(part.ends_with("TITLE: a long paper\n"), "{part}");
+    let total = std::fs::read_to_string(dir.path().join(format!("{id}.txt")))
+        .unwrap()
+        .chars()
+        .count();
+    assert!(
+        store
+            .read(&id, total - 30, 30)
+            .unwrap()
+            .contains("CONCLUSION")
+    );
+}

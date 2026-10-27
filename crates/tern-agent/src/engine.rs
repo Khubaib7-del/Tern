@@ -368,6 +368,10 @@ pub struct RunHooks<'a> {
     /// connection) are retried; `None` is the default policy. Each
     /// wait is a `provider.retry` event first (#72).
     pub retry: Option<tern_providers::RetryPolicy>,
+    /// Where full copies of long tool results go (the model sees their
+    /// head and tail and reads the rest with `read_result`). `None` keeps
+    /// no copy (#72).
+    pub results: Option<&'a crate::results::ResultStore>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -512,8 +516,9 @@ impl std::fmt::Debug for RunHooks<'_> {
     }
 }
 
-/// Longest tool result the model is shown. Errors are never cut.
-const RESULT_LIMIT: usize = 12_000;
+// Longest tool result the model is shown (head and tail, #72). Errors are
+// never cut.
+use crate::results::RESULT_LIMIT;
 /// The same call this many times in one turn is treated as a loop.
 const REPEAT_LIMIT: u32 = 3;
 
@@ -1406,21 +1411,31 @@ impl Run<'_, '_> {
         }
         Ok(match out {
             Ok(o) => {
-                let shown = truncate(&o.content, RESULT_LIMIT);
+                // A long result keeps its head and tail; the whole text is
+                // saved for `read_result` (#72). A `read_result` page is
+                // never saved again.
+                let cut = o.content.len() > RESULT_LIMIT;
+                let saved = match self.cfg.hooks.results {
+                    Some(store) if cut && name != "read_result" => {
+                        let id = result_id(&self.turn.to_string(), self.tool_calls);
+                        store.save(&id, &o.content).ok().map(|_| id)
+                    }
+                    _ => None,
+                };
+                let shown = crate::results::head_tail(&o.content, RESULT_LIMIT, saved.as_deref());
                 self.record(
                     self.event(
                         "tool.executed",
                         tool.effect(),
                         format!("Ran `{name}`"),
-                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": shown.len() < o.content.len(), "meta": o.meta}),
+                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta}),
                     )
                     .with_evidence(o.evidence_refs.clone()),
                 )?;
-                if shown.len() < o.content.len() {
+                if cut {
                     format!(
-                        "Result of `{name}` (cut to {} of {} characters):\n{shown}",
-                        shown.len(),
-                        o.content.len()
+                        "Result of `{name}` ({} characters; the middle was cut, see the note in it):\n{shown}",
+                        o.content.chars().count()
                     )
                 } else {
                     format!("Result of `{name}`:\n{shown}")
@@ -1494,19 +1509,29 @@ impl Run<'_, '_> {
     }
 }
 
-fn truncate(s: &str, limit: usize) -> &str {
-    if s.len() <= limit {
-        return s;
-    }
-    let mut end = limit;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+/// A saved result's id: the end of the turn's id and the call's number
+/// in the turn (`t3k9qz-2`), letters, digits and `-` only.
+pub fn result_id(turn: &str, call: u32) -> String {
+    let tail: String = turn
+        .chars()
+        .rev()
+        .filter(char::is_ascii_alphanumeric)
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("t{}-{call}", tail.to_ascii_lowercase())
 }
 
 #[cfg(test)]
 mod length_tests {
+    #[test]
+    fn result_ids_are_short_and_safe() {
+        assert_eq!(super::result_id("trn_01JBXK3K9QZ", 2), "tk3k9qz-2");
+        assert_eq!(super::result_id("", 1), "t-1");
+    }
+
     #[test]
     fn length_stops_are_spotted_across_providers() {
         assert!(super::is_length_stop(Some("length")));
