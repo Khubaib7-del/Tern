@@ -26,6 +26,7 @@ const END: u32 = 0xFFFF_FFFE;
 const FREE: u32 = 0xFFFF_FFFF;
 
 /// An OLE compound file opened in memory.
+#[derive(Debug)]
 pub struct Cfb<'a> {
     data: &'a [u8],
     sector: usize,
@@ -323,8 +324,11 @@ fn number(n: f64) -> String {
     }
 }
 
+/// A sheet's name and its rows of cell text.
+pub type Sheet = (String, Vec<Vec<String>>);
+
 /// An Excel 97–2003 workbook: (sheet name, rows of cells).
-pub fn xls_sheets(bytes: &[u8]) -> Result<Vec<(String, Vec<Vec<String>>)>, String> {
+pub fn xls_sheets(bytes: &[u8]) -> Result<Vec<Sheet>, String> {
     let cfb = Cfb::open(bytes)?;
     let book = cfb
         .stream("Workbook")
