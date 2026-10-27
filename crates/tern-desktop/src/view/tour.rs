@@ -2985,6 +2985,14 @@ fn composer_script() -> Vec<Beat> {
             4500,
         ),
         b(Act::CState("rich math and mermaid"), 300),
+        scene(
+            "c44b-light-theme",
+            "tern-only",
+            "Light theme: the formulas and the diagram in the light page's ink",
+            Act::Theme,
+            3000,
+        ),
+        b(Act::Theme, 1500),
         b(Act::CNewChat, 1200),
         b(Act::CTypePath(RETRY_Q), 200),
         scene(
