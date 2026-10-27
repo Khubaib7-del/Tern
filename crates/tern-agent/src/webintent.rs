@@ -370,6 +370,54 @@ pub fn is_refusal(reply: &str) -> bool {
     SIGNS.iter().any(|s| r.contains(s))
 }
 
+/// Whether `reply` says the model cannot open or read files ("I don't
+/// have the capability to access or analyze files") (#70). With the file
+/// already in the message as text, Tern points the model at it.
+pub fn is_file_refusal(reply: &str) -> bool {
+    let r = reply.to_lowercase().replace(['’', '‘'], "'");
+    if r.chars().count() > 900 {
+        return false;
+    }
+    let cannot = [
+        "can't",
+        "cannot",
+        "can not",
+        "unable to",
+        "don't have the",
+        "do not have the",
+        "not able to",
+        "no way to",
+    ]
+    .iter()
+    .any(|w| r.contains(w));
+    let files = [
+        "access files",
+        "access the file",
+        "access file",
+        "analyze files",
+        "analyse files",
+        "open files",
+        "open the file",
+        "read files",
+        "read the file",
+        "view the file",
+        "view files",
+        "see the file",
+        "see attachments",
+        "see the attachment",
+        "access attachments",
+        "access the attachment",
+        "open attachments",
+        "the document you",
+        "access or analyze",
+        "access documents",
+        "access the document",
+    ]
+    .iter()
+    .any(|w| r.contains(w));
+    cannot && files
+}
+
 /// Whether `reply` is the same text as `previous` (ignoring case, spaces
 /// and punctuation at the edges). Short replies ("Yes.", "Done.") can
 /// rightly repeat, so only a reply of 40 characters or more counts.
@@ -388,6 +436,15 @@ pub fn same_reply(reply: &str, previous: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_that_says_it_cannot_open_files() {
+        assert!(is_file_refusal(
+            "I'm sorry, but I currently don't have the capability to access or analyze files, including the one you mentioned."
+        ));
+        assert!(is_file_refusal("I cannot open the file you sent."));
+        assert!(!is_file_refusal("The file lists six team members."));
+    }
 
     #[test]
     fn questions_about_an_attachment_never_search_the_web() {
