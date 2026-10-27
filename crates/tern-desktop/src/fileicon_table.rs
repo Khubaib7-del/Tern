@@ -223,7 +223,7 @@ pub static ICONS: &[(&str, &str, &[u8], bool)] = &[
         "latex",
         "LaTeX",
         include_bytes!("../assets/file-icons/latex.png"),
-        false,
+        true,
     ),
     (
         "bibtex-biblatex",
