@@ -239,6 +239,10 @@ impl std::fmt::Debug for Msg {
                 write!(f, "FileTranscribed({id}, ok: {})", r.is_ok())
             }
             Self::Dictated(seq, r, _) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
+            Self::LanguageChecked(rec, from, r) => {
+                write!(f, "LanguageChecked({rec}, {from}, ok: {})", r.is_ok())
+            }
+            Self::ReadAgain(name, r) => write!(f, "ReadAgain({name}, ok: {})", r.is_ok()),
             Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
             Self::ResumeFailed(id, e) => write!(f, "ResumeFailed({id}, {e})"),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
