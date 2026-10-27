@@ -745,9 +745,6 @@ impl Workspace {
     fn menu_action(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
         let slash = self.model.slash.is_some() && !self.model.slash_rows().is_empty();
         let mention = self.model.mention.is_some();
-        if std::env::var_os("TERN_TOUR").is_some() {
-            eprintln!("TOUR menu_action {key:?} slash={slash} mention={mention}");
-        }
         if !slash && !mention {
             return;
         }

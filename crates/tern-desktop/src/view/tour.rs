@@ -335,6 +335,9 @@ enum Act {
     CClick(&'static str, &'static str),
     /// #73: the Down arrow in the composer (the @ menu's next row).
     CDown,
+    /// #73: the Up arrow in the composer (the @ menu's previous row,
+    /// wrapping to the last).
+    CUp,
     /// #73: copies the files the tour saved from blocks into `exports/`
     /// beside the scene log, so the workflow uploads them.
     CCollectExports,
@@ -1884,16 +1887,22 @@ impl Workspace {
                 }
                 window.refresh();
             }),
-            Act::CDown => {
-                use gpui_kit::component::input::MoveDown;
+            Act::CDown | Act::CUp => {
+                use gpui_kit::component::input::{MoveDown, MoveUp};
+                let down = matches!(act, Act::CDown);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
-                window.dispatch_action(Box::new(MoveDown), cx);
+                if down {
+                    window.dispatch_action(Box::new(MoveDown), cx);
+                } else {
+                    window.dispatch_action(Box::new(MoveUp), cx);
+                }
                 // The action runs after this update; read the row then.
                 let focused = window.focused(cx).is_some();
                 cx.defer_in(window, move |this, _, _| {
                     let selected = this.model.mention.as_ref().map(|m| m.selected);
                     log(&format!(
-                        "TOUR note Down; @ row selected {selected:?} (something focused: {focused})"
+                        "TOUR note {}; @ row selected {selected:?} (something focused: {focused})",
+                        if down { "Down" } else { "Up" }
                     ));
                 });
             }
@@ -3183,6 +3192,9 @@ fn composer_script() -> Vec<Beat> {
             Act::CClick("table-", "-save-2"),
             3000,
         ),
+        // A second save never replaces the first: table-1.xlsx.
+        b(Act::CClick("table-", "-export"), 800),
+        b(Act::CClick("table-", "-save-2"), 1500),
         scene(
             "c48c-code-export-menu",
             "tern-only",
@@ -3202,6 +3214,15 @@ fn composer_script() -> Vec<Beat> {
             "tern-only",
             "@ menu driven by the keys: Down twice lights the third row; folders show their logos",
             Act::CDown,
+            2500,
+        ),
+        b(Act::CUp, 400),
+        b(Act::CUp, 400),
+        scene(
+            "c49b-mention-wrap",
+            "tern-only",
+            "@ menu: Up past the first row wraps to the last (Browse…)",
+            Act::CUp,
             2500,
         ),
         b(Act::ClearComposer, 400),
