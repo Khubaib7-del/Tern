@@ -960,6 +960,19 @@ impl Workspace {
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
+            Msg::ReadAgain(name, result) => {
+                let ok = self.model.read_again_done(&name, result);
+                // A held "read it again with Granite-Docling" goes now,
+                // with the new reading attached (#70); after an error it
+                // waits in the composer.
+                if let Some(text) = self.model.reread_send.take() {
+                    self.composer
+                        .update(cx, |c, cx| crate::view::set_end(c, &text, window, cx));
+                    if ok && self.model.attaching == 0 {
+                        self.submit(window, cx);
+                    }
+                }
+            }
             Msg::Git(snapshot, result) => {
                 if self.model.git.status().is_none() && snapshot.status.is_repo {
                     let remote = snapshot.status.remote.clone().unwrap_or_default();
@@ -1178,6 +1191,23 @@ impl Workspace {
             return;
         }
         let text = self.composer.read(cx).value().to_string();
+        // "Try local model granite docling" with nothing attached: the
+        // newest PDF of the chat is read again as scanned first, and the
+        // message goes with that reading (#70).
+        if self.model.attachments.is_empty()
+            && self.model.attaching == 0
+            && self.model.reread_send.is_none()
+            && tern_agent::docs::asks_reread(&text)
+            && let Some(name) = self.model.last_sent_pdf()
+            && let Some(path) = self.model.read_again_started(&name)
+        {
+            self.model.reread_send = Some(text);
+            self.bridge.read_again(name, path);
+            self.composer
+                .update(cx, |c, cx| c.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
         let Some(text) = self.model.start_turn(&text) else {
             return;
         };
@@ -4079,6 +4109,33 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
+                    .when(a.rereadable(), |d| {
+                        let name = a.name.clone();
+                        d.child(
+                            div()
+                                .id(("attach-reread", i))
+                                .flex_none()
+                                .px_1()
+                                .rounded_sm()
+                                .text_xs()
+                                .cursor_pointer()
+                                .text_color(p.faint)
+                                .hover(|d| d.text_color(p.text).bg(p.hover))
+                                .child("Read as scanned")
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "Read again with Granite-Docling (or the local OCR model) as scanned pages, for a scan whose text layer is empty or only a watermark.",
+                                    )
+                                    .build(window, cx)
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(path) = this.model.read_again_started(&name) {
+                                        this.bridge.read_again(name.clone(), path);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(chip_remove(
                         ("attach-remove", i),
                         "Remove",

@@ -213,6 +213,42 @@ impl Attachment {
         !self.images.is_empty()
     }
 
+    /// Reads a PDF again with every page that has a picture read as a
+    /// scan (Granite-Docling, else the OCR model): the chip's "Read again
+    /// as scanned" (#70).
+    pub fn load_as_scanned(path: &Path) -> Result<Self, String> {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let bytes = std::fs::read(path).map_err(|e| format!("Tern could not read {name}: {e}"))?;
+        let c = crate::docs::convert_as_scanned(&name, &bytes)
+            .map_err(|e| format!("Tern could not read {name} as scanned: {e}"))?;
+        let (text, cut) = cut_chars(&c.with_header(&name), MAX_FILE_CHARS);
+        Ok(Self {
+            name: name.clone(),
+            source: Source::File,
+            role: Role::Context,
+            files: vec![FileText {
+                path: name,
+                text,
+                cut,
+            }],
+            skipped: Vec::new(),
+            images: Vec::new(),
+        })
+    }
+
+    /// Whether the chip offers "Read again as scanned": a PDF read from
+    /// its text layer (all or partly) whose file Tern can open again.
+    pub fn rereadable(&self) -> bool {
+        self.source == Source::File
+            && self.files.len() == 1
+            && origin(&self.name).is_some()
+            && crate::docs::parse_header(&self.files[0].text)
+                .is_some_and(|(how, _)| how.starts_with("PDF text"))
+    }
+
     /// Reads a file, folder, or `.zip` from disk.
     pub fn load(path: &Path) -> Result<Self, String> {
         let name = path
@@ -257,6 +293,9 @@ impl Attachment {
                 std::fs::read(path).map_err(|e| format!("Tern could not read {name}: {e}"))?;
             acc.single = true;
             acc.add(&name, &bytes);
+            if is_pdf_name(&name) {
+                remember_origin(&name, path);
+            }
             if acc.files.is_empty() {
                 let why = acc
                     .skipped
@@ -342,6 +381,22 @@ impl Attachment {
         }
         parts.join(" · ")
     }
+}
+
+/// Where files attached this session came from, by name, so a PDF can
+/// be read again as scanned from its chip or when the user asks (#70).
+static ORIGINS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn remember_origin(name: &str, path: &Path) {
+    if let Ok(mut m) = ORIGINS.lock() {
+        m.insert(name.to_owned(), path.to_path_buf());
+    }
+}
+
+/// The path a file attached this session under `name` was read from.
+pub fn origin(name: &str) -> Option<PathBuf> {
+    ORIGINS.lock().ok()?.get(name).cloned()
 }
 
 /// Adds attachments to a message that may already carry a block (the

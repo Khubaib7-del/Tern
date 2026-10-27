@@ -63,6 +63,9 @@ pub enum Msg {
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
     Attached(Result<tern_agent::Attachment, String>),
+    /// A PDF read again as scanned (#70): its name, and the new reading
+    /// or why not.
+    ReadAgain(String, Result<tern_agent::Attachment, String>),
     /// A page for the built-in browser: the load's number and the page.
     Browsed(u64, Result<tern_agent::browse::BrowsedPage, String>),
     /// A git operation finished: the repository as it now is, and what
@@ -589,6 +592,18 @@ impl Bridge {
                 let _ = tx.send(Msg::Attached(result));
             });
         }
+    }
+
+    /// Reads a PDF again with its pictured pages as scans (#70).
+    pub fn read_again(&self, name: String, path: std::path::PathBuf) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || tern_agent::Attachment::load_as_scanned(&path))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Tern could not read that file: {e}")));
+            let _ = tx.send(Msg::ReadAgain(name, result));
+        });
     }
 
     /// Folds the chat's older turns into a summary now.
