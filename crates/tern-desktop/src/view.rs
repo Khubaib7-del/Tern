@@ -1117,6 +1117,10 @@ impl Workspace {
                     s.checkpoint().filter(|_| out.answer.is_none()).as_ref(),
                     Some((out.state, out.reason.as_deref())),
                 );
+                // A new chat's tab takes the title its first answer gave it.
+                for r in &recent {
+                    self.tabs.retitle(r.id, &r.title);
+                }
                 self.model.set_sessions(recent);
                 if !s.is_draft() {
                     self.bridge.remember(s.harness(), s.session_id());
@@ -1938,6 +1942,9 @@ impl Workspace {
                         Some((out.state, out.reason.as_deref())),
                     );
                 });
+                for r in &recent {
+                    self.tabs.retitle(r.id, &r.title);
+                }
                 self.model.set_sessions(recent);
                 if !s.is_draft() {
                     self.model.composer.remember(&s.session_id().to_string());
