@@ -2879,6 +2879,32 @@ fn composer_script() -> Vec<Beat> {
             4000,
         ),
         b(Act::CState("sent cards"), 300),
+        // #72: the file-type logos on eight kinds of attachment, dark and
+        // light.
+        b(Act::CNewChat, 1200),
+        b(Act::CAttach("notes.docx"), 500),
+        b(Act::CAttach("marks.xlsx"), 500),
+        b(Act::CAttach("report.pdf"), 500),
+        b(Act::CAttach("train.py"), 500),
+        b(Act::CAttach("main.cpp"), 500),
+        b(Act::CAttach("photo.png"), 500),
+        b(Act::CAttach("archive.zip"), 500),
+        b(Act::CAttach("mystery.qqq"), 2500),
+        scene(
+            "c37b-file-logos",
+            "tern-only",
+            "Eight attachments, each with its file-type logo: Word, Excel, PDF, Python, C++, picture, zip and an unknown kind (blank page)",
+            Act::CState("file logos"),
+            2500,
+        ),
+        scene(
+            "c37c-file-logos-light",
+            "tern-only",
+            "The same logos in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 1500),
         b(Act::CNewChat, 1200),
         b(Act::CTypePath("Hello"), 200),
         b(Act::CSend, 2500),
@@ -3059,6 +3085,15 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
         dir.join("data.csv"),
         "city,students\nLahore,120\nIslamabad,80\n",
     );
+    // #72: files for the file-type logos (a workbook, C++, an archive and
+    // a kind Tern has no logo for).
+    let _ = std::fs::write(dir.join("marks.xlsx"), tern_agent::docs::sample_xlsx());
+    let _ = std::fs::write(
+        dir.join("main.cpp"),
+        "#include <iostream>\n\nint main() {\n    std::cout << \"tern\\n\";\n}\n",
+    );
+    let _ = std::fs::write(dir.join("archive.zip"), tern_agent::docs::sample_docx());
+    let _ = std::fs::write(dir.join("mystery.qqq"), "no one knows what this is\n");
     // #70: a scan with only a watermark, a text page plus a scan, and old
     // Office files (one damaged).
     let _ = std::fs::write(
