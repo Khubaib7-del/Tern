@@ -382,10 +382,8 @@ pub fn prefetch_calls(
     // Only the user's own words: never the attachments block, the text
     // Tern read from a picture, or a quoted reply (#70: a picture's
     // description once became a web search for "Tron Legacy").
-    let (own, chips) = crate::attach::split(text);
+    let (own, _) = crate::attach::split(text);
     let (_, own) = crate::reply::split(own);
-    let has_attachments = !chips.is_empty() || own.len() < text.len();
-    let previous = previous.map(|p| crate::reply::split(crate::attach::split(p).0).1);
     if tools.get("file_read").is_some()
         && let Some(raw) = crate::paths::find_in_text(own)
         && crate::paths::user_path(&raw).is_file()
@@ -393,12 +391,25 @@ pub fn prefetch_calls(
         out.push(("file_read", json!({"path": raw})));
     }
     if tools.get("web_search").is_some()
-        && !(has_attachments && crate::webintent::about_attachment(own))
-        && let Some(query) = crate::webintent::web_query_with(own, previous)
+        && let Some(query) = web_prefetch(text, previous)
     {
         out.push(("web_search", json!({"query": query})));
     }
     out
+}
+
+/// The web search Tern runs before the model answers `text`, if any
+/// ([`prefetch_calls`] with web search on): from the user's own words
+/// only, never for a question about an attachment (#70).
+pub fn web_prefetch(text: &str, previous: Option<&str>) -> Option<String> {
+    let (own, chips) = crate::attach::split(text);
+    let (_, own) = crate::reply::split(own);
+    let has_attachments = !chips.is_empty() || own.len() < text.len();
+    if has_attachments && crate::webintent::about_attachment(own) {
+        return None;
+    }
+    let previous = previous.map(|p| crate::reply::split(crate::attach::split(p).0).1);
+    crate::webintent::web_query_with(own, previous)
 }
 
 /// The search a message asks for ("use the web tool", "search the web

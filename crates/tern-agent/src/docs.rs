@@ -569,6 +569,18 @@ fn read_scanned(
 /// page, and a text layer holding only `watermark` ("Scanned with
 /// CamScanner"), as scanning apps make them (tests, the UI tour).
 pub fn sample_scanned_pdf(pages: usize, watermark: &str) -> Vec<u8> {
+    sample_pages(&vec![None; pages], watermark)
+}
+
+/// A PDF with a text page (`text`) and then a scanned page that has only
+/// a "Scanned with CamScanner" watermark as text (the UI tour, tests).
+pub fn sample_mixed_pdf(text: &str) -> Vec<u8> {
+    sample_pages(&[Some(text), None], "Scanned with CamScanner")
+}
+
+/// Pages: `Some(text)` a text page, `None` a scan with `watermark`.
+fn sample_pages(kinds: &[Option<&str>], watermark: &str) -> Vec<u8> {
+    let pages = kinds.len();
     let (w, h) = (240usize, 240usize);
     let mut pixels = vec![235u8; w * h];
     for y in 100..140 {
@@ -594,13 +606,27 @@ pub fn sample_scanned_pdf(pages: usize, watermark: &str) -> Vec<u8> {
         .replace('\\', "\\\\")
         .replace('(', "\\(")
         .replace(')', "\\)");
-    for i in 0..pages {
+    let pdf_esc = |t: &str| {
+        t.replace('\\', "\\\\")
+            .replace('(', "\\(")
+            .replace(')', "\\)")
+    };
+    for (i, kind) in kinds.iter().enumerate() {
         let (content, image) = (5 + i * 3, 6 + i * 3);
+        let xobject = if kind.is_none() {
+            format!(" /XObject << /Im1 {image} 0 R >>")
+        } else {
+            String::new()
+        };
         objs.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 {image} 0 R >> >> /Contents {content} 0 R >>"
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >>{xobject} >> /Contents {content} 0 R >>"
         ).into_bytes());
-        let stream =
-            format!("q 480 0 0 480 66 200 cm /Im1 Do Q BT /F1 8 Tf 72 40 Td ({esc}) Tj ET");
+        let stream = match kind {
+            Some(text) => format!("BT /F1 12 Tf 72 720 Td ({}) Tj ET", pdf_esc(text)),
+            None => {
+                format!("q 480 0 0 480 66 200 cm /Im1 Do Q BT /F1 8 Tf 72 40 Td ({esc}) Tj ET")
+            }
+        };
         objs.push(
             format!(
                 "<< /Length {} >>\nstream\n{stream}\nendstream",
@@ -1102,6 +1128,26 @@ mod tests {
             "CamScanner\nScanned with CamScanner\n3",
             true
         ));
+    }
+
+    #[test]
+    fn a_text_page_and_a_scanned_page() {
+        let long = "Lecture 3: the memory hierarchy, registers, caches, main memory and disk, each larger and slower than the one before it.";
+        let bytes = sample_mixed_pdf(long);
+        let pics = page_pictures_each(&bytes).unwrap();
+        assert_eq!(pics.len(), 2);
+        assert!(pics[0].is_none() && pics[1].is_some());
+        let c = convert_fresh("mixed.pdf", &bytes).unwrap();
+        assert!(c.markdown.contains("memory hierarchy"), "{}", c.markdown);
+        // Without a local model the scanned page says what to download.
+        if c.how == "PDF text · scanned pages not read" {
+            assert!(
+                c.markdown.contains("Settings › Local models"),
+                "{}",
+                c.markdown
+            );
+        }
+        assert_eq!(c.pages, Some(2));
     }
 
     #[test]
