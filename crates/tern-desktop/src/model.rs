@@ -3669,7 +3669,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(notices, ["You stopped this turn."]);
+        // #71: a user's stop reads "Stopped" under what was streamed.
+        assert_eq!(notices, [STOPPED]);
     }
 
     #[test]
@@ -3682,10 +3683,7 @@ mod tests {
             &outcome(TurnState::Cancelled, None, Some("You stopped this turn.")),
             ctx(0, 0),
         );
-        assert_eq!(
-            m.entries.last(),
-            Some(&Entry::Notice("You stopped this turn.".into()))
-        );
+        assert_eq!(m.entries.last(), Some(&Entry::Notice(STOPPED.into())));
         assert!(m.can_send());
     }
 

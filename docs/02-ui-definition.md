@@ -45,7 +45,7 @@ Revised after the owner's review of the v2 concept video, with the ChatGPT deskt
 | Icon rail (44px) | Home, Library, Scheduled, Editor, Customize, More; account avatar at the bottom | Lucide 16px, 1.5px stroke; active = filled tile behind the icon, no colour |
 | Sidebar (260px, collapsible) | `Tern ▾` workspace switcher, notifications, search; New session; Pinned; Projects (folders → sessions → `↳` sub-sessions); Recents; Scout in the bottom corner | Status only on the row: spinner, "2m", or one ◆ when it needs you. Nothing is printed under Scout; its pose carries the run state |
 | Harness toggle | A segmented pill, **Research │ Study**, centred at the top of the chat area | Moved out of the composer; mirrors ChatGPT's Chat │ Work toggle |
-| Session tabs | Chat · Report · Sources · `+` (Graph, Editor, Browser, Subagents, Explain in 3D) | Tabs can split right or down |
+| Session tabs | Chat · Report · Sources · `+` (Graph, Editor, Browser, Subagents, Explain in 3D) | Tabs can split right or down. Chats run at the same time (#71): no tab is dimmed while one runs, and a chat running out of sight shows a small spinner on its tab and its sidebar row |
 | Centre | Transcript, max width 720px | User messages on a tinted band; agent prose unboxed; work folded to one line per turn ("Worked for 4m 12s · 14 sources") |
 | Composer | `+`, permission chip, model · effort, context ring, mic, send; under-row chips Project · Files · Sources | Becomes "Steer" while running: Enter steers, Tab queues, Esc interrupts. See §2.2 for the responsive rules |
 | Right rail (300px, only with content) | Plan · Sources · Report · Graph · Context | Plan approval, evidence quotes, verdicts, checkpoints, and budget live here |
@@ -130,7 +130,8 @@ Animation is driven by real events, never by a timer alone. Under reduced motion
 | --- | --- |
 | Reply to a message | Swipe a message right (as in WhatsApp) or use the hover Reply button; the composer shows a quoted strip with the message ID, removable with `×`. Swiping left works too. Works on streaming replies as well |
 | Copy | Hover Copy on every message, and on every query block and code block the user sent; copies the raw Markdown |
-| Branch | Hover `Branch ▾` → New sub-session from here, or Move to sub-session. Select several messages to branch them at once |
+| Branch | Hover `Branch ▾` → New sub-session from here, Branch into a new chat, Ask in side chat, or Move to sub-session. Select several messages to branch them at once. Branch ▾ stays available while the chat runs (#71); only Move waits for the run to end |
+| Stop | Stop (or Esc) during an answer keeps everything streamed up to that point, marked "Stopped" under it; nothing is generated after the stop (#71) |
 | Edit, regenerate, versions, pin, delete | As in the product spec |
 
 Hover buttons are 16px Lucide icons in a 1px-bordered pill that appears at the message's top-right, muted until hovered.
@@ -139,11 +140,14 @@ Hover buttons are 16px Lucide icons in a 1px-bordered pill that appears at the m
 
 | Element | Behaviour |
 | --- | --- |
-| Attach (`+` or paperclip) | Pick files, images, folders, or `.zip` archives; drag and drop and paste work too. Attachments show as 1px-bordered chips above the input |
+| Attach (`+` or paperclip) | Pick files, images, folders, or `.zip` archives; drag and drop and paste work too. Attachments show as **preview cards** above the input and in the sent message (#71): the picture's thumbnail, a scanned PDF's first page, or the first lines of a text, code, Markdown, CSV or notebook file; the name and size under it; a small coloured badge for the kind (PDF, IMG, DOC, XLS, PPT, PY, IPYNB, MD…) in the bottom corner; `×` on hover |
+| Converting | While a local model reads a scanned PDF the card says "Converting report.pdf… page 3/6 · 50%" (#71) |
+| Per chat | Each chat (main chat, sub-session, branch, new chat) has its own composer: draft, attachments, conversions in flight and dictation stay with it when another chat opens (#71) |
 | Long paste | Text above about 4,000 characters (setting) is turned into a `.txt` attachment chip ("Pasted text · 312 lines") instead of filling the box |
 | Role of an attachment | Each chip has a role: **Context** (read as material, the default) or **Prompt** (treated as instructions). Type `@` to reference an attachment, file, or source; mark one as a prompt with `@prompt:name` or from the chip menu |
 | Mic | Shown but locked until a speech-to-text model is configured. Hover: "Voice input needs a transcription model. Set one in Settings › Voice." |
 | Steering | While a run is going: Enter steers, Tab queues, Esc interrupts |
+| Dictation | Auto shows "Switching to Urdu…" while the phrase moves to Whisper (#71) |
 
 Settings › Voice: choose a local transcription model or a transcription API key. A first-party Tern transcription model is planned for later.
 
