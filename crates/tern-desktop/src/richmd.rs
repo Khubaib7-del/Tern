@@ -575,9 +575,12 @@ impl MarkdownPlugin for Mermaid {
 /// The title a citation link carries, so the chip plugin knows it.
 pub const CITE_TITLE: &str = "tern-cite";
 
+/// What a chip's click calls with its page's URL.
+type CiteOpener = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
 thread_local! {
     /// Opens a chip's page: the main window sets it to its browser.
-    static OPEN: RefCell<Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>> =
+    static OPEN: RefCell<Option<CiteOpener>> =
         const { RefCell::new(None) };
 }
 
