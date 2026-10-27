@@ -86,7 +86,7 @@ pub(crate) enum ModelsCmd {
         #[arg(long, default_value_t = 1.0)]
         speed: f32,
     },
-    /// Convert a document (PDF, DOCX, PPTX, XLSX, HTML) to Markdown, as
+    /// Convert a document (PDF, DOCX, PPTX, XLSX, HTML, and old XLS, PPT, DOC) to Markdown, as
     /// the app does for attachments.
     Convert { file: std::path::PathBuf },
     /// Switch an installed model on or off without deleting it.
