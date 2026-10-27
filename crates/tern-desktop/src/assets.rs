@@ -173,7 +173,15 @@ pub fn service_path(name: &str) -> SharedString {
     format!("tern/service/{name}.svg").into()
 }
 
+/// Where GPUI's SVG renderer looks for its sans face. Served from the
+/// bundled IBM Plex Sans, so text inside an SVG (Mermaid labels) is set
+/// in the app's font rather than a system fallback (which was italic).
+const SVG_SANS_FONT: &str = "fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf";
+
 fn lookup(path: &str) -> Option<&'static [u8]> {
+    if path == SVG_SANS_FONT {
+        return Some(FONTS[0]);
+    }
     if path == MARK {
         return Some(MARK_SVG);
     }
@@ -229,6 +237,12 @@ impl AssetSource for TernAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_svg_renderer_finds_the_app_font() {
+        let bytes = TernAssets.load(SVG_SANS_FONT).unwrap().expect("served");
+        assert_eq!(bytes.as_ref(), FONTS[0]);
+    }
 
     #[test]
     fn every_asset_resolves() {

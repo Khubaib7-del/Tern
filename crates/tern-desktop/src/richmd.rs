@@ -389,7 +389,9 @@ pub fn draw_mermaid(source: &str) -> Option<Art> {
     cached("mermaid", source, || {
         let dark = mermaid_svg(source, true)?;
         let light = mermaid_svg(source, false)?;
-        let (w, h) = svg_size(&dark)?;
+        // Drawn at the size it is shown: the image is rasterised at its own
+        // size and the GPU's downscale of a wider raster drops thin lines.
+        let (w, h) = shown_size(svg_size(&dark)?);
         Some(Art {
             dark: svg_image(dark),
             light: svg_image(light),
@@ -433,7 +435,14 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
         let theme = if dark { "dark" } else { "light" };
         let _ = std::fs::write(dir.join(format!("mermaid-{theme}.svg")), svg.svg());
     }
-    Some(sized(&solid_edges(svg.svg())))
+    Some(sized(&solid_edges(svg.svg()), DIAGRAM_MAX_W))
+}
+
+/// The size a diagram of view-box size `(w, h)` is shown at: as drawn,
+/// or scaled down to [`DIAGRAM_MAX_W`].
+fn shown_size((w, h): (f32, f32)) -> (f32, f32) {
+    let shown = w.min(DIAGRAM_MAX_W);
+    (shown, h * shown / w)
 }
 
 /// Drops the `stroke-dasharray:0 0 L G` Mermaid puts on edges for its
@@ -460,8 +469,11 @@ pub fn solid_edges(svg: &str) -> String {
 }
 
 /// Gives the root `<svg>` a pixel width and height from its view box
-/// (Mermaid writes `width="100%"`, which an image cannot use).
-pub fn sized(svg: &str) -> String {
+/// (Mermaid writes `width="100%"`, which an image cannot use), at most
+/// `max_w` wide. A diagram scaled down gets its edge and node strokes
+/// thickened by the same factor, so a 1 px line stays about 1 px on
+/// screen instead of fading out.
+pub fn sized(svg: &str, max_w: f32) -> String {
     let Some(start) = svg.find("<svg") else {
         return svg.to_owned();
     };
@@ -469,9 +481,11 @@ pub fn sized(svg: &str) -> String {
         return svg.to_owned();
     };
     let tag = &svg[start..end];
-    let Some((w, h)) = view_box(tag) else {
+    let Some((vw, vh)) = view_box(tag) else {
         return svg.to_owned();
     };
+    let w = vw.min(max_w);
+    let h = vh * w / vw;
     let mut new_tag = String::with_capacity(tag.len() + 32);
     let mut rest = tag;
     // Drop the root's own width, height and style (max-width), keep the rest.
@@ -481,7 +495,41 @@ pub fn sized(svg: &str) -> String {
     }
     new_tag.push_str(rest);
     let new_tag = format!("{new_tag} width=\"{w}\" height=\"{h}\"");
-    format!("{}{}{}", &svg[..start], new_tag, &svg[end..])
+    let out = format!("{}{}{}", &svg[..start], new_tag, &svg[end..]);
+    if w >= vw {
+        return out;
+    }
+    thicken(&out, (vw / w).min(3.0))
+}
+
+/// Appends stroke widths `k` times Mermaid's 1 px to the diagram's style
+/// sheet (same selectors, later, so they win).
+fn thicken(svg: &str, k: f32) -> String {
+    let Some(at) = svg.find("</style>") else {
+        return svg.to_owned();
+    };
+    let id = svg_id(svg).unwrap_or_default();
+    let scope = if id.is_empty() {
+        String::new()
+    } else {
+        format!("#{id} ")
+    };
+    let rule = format!(
+        "{scope}.edge-thickness-normal{{stroke-width:{k:.2}px;}}\
+         {scope}.node rect,{scope}.node circle,{scope}.node ellipse,\
+         {scope}.node polygon,{scope}.node path{{stroke-width:{k:.2}px;}}"
+    );
+    format!("{}{}{}", &svg[..at], rule, &svg[at..])
+}
+
+/// The root `<svg>`'s `id`, which Mermaid's style sheet scopes rules to.
+fn svg_id(svg: &str) -> Option<&str> {
+    let start = svg.find("<svg")?;
+    let end = svg[start..].find('>')? + start;
+    let tag = &svg[start..end];
+    let i = tag.find(" id=\"")? + " id=\"".len();
+    let len = tag[i..].find('"')?;
+    Some(&tag[i..i + len])
 }
 
 /// The next ` width="…"`, ` height="…"` or ` style="…"` in a tag, as the
@@ -855,12 +903,42 @@ mod tests {
     #[test]
     fn the_root_svg_gets_a_pixel_size() {
         let s = sized(
-            r#"<svg id="m" width="100%" style="max-width: 300px;" viewBox="0 0 300 120" xmlns="http://www.w3.org/2000/svg"><g/></svg>"#,
+            r#"<svg id="m" width="100%" style="max-width: 300px;" viewBox="0 0 300 120" xmlns="http://www.w3.org/2000/svg"><style>#m .x{}</style><g/></svg>"#,
+            720.0,
         );
         assert!(s.starts_with(r#"<svg id="m" viewBox="0 0 300 120""#), "{s}");
         assert!(s.contains(r#"width="300" height="120">"#), "{s}");
         assert!(!s.contains("100%") && !s.contains("max-width"));
         assert_eq!(svg_size(&s), Some((300.0, 120.0)));
+        assert!(!s.contains("stroke-width"), "not scaled, not thickened");
+    }
+
+    #[test]
+    fn a_wide_diagram_is_drawn_at_its_shown_size_with_thicker_lines() {
+        let s = sized(
+            r#"<svg id="m" width="100%" viewBox="0 0 1440 100"><style>#m .x{}</style><g/></svg>"#,
+            720.0,
+        );
+        assert!(s.contains(r#"width="720" height="50">"#), "{s}");
+        assert!(
+            s.contains("#m .edge-thickness-normal{stroke-width:2.00px;}"),
+            "{s}"
+        );
+        assert!(s.contains("#m .node rect,"), "{s}");
+        assert!(s.find("#m .x{}").unwrap() < s.find("edge-thickness").unwrap());
+        assert_eq!(shown_size((1440.0, 100.0)), (720.0, 50.0));
+        assert_eq!(shown_size((300.0, 120.0)), (300.0, 120.0));
+        // A real diagram: its art is the shown size, its strokes thickened.
+        let art = draw_mermaid(
+            "flowchart LR\n  A[Tokens] --> B[Embedding and position] --> C[Multi-head attention] --> D[Add and norm] --> E[Feed-forward] --> F[Add and norm]",
+        )
+        .expect("drawn");
+        assert!(art.width <= DIAGRAM_MAX_W, "{}", art.width);
+        let svg = String::from_utf8(art.dark.bytes().to_vec()).unwrap();
+        assert!(
+            svg.contains("edge-thickness-normal{stroke-width:"),
+            "thickened"
+        );
     }
 
     #[test]
