@@ -41,11 +41,16 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell
           df -h /
       - uses: actions/checkout@v7
+      - name: Cached apt debs
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-debs
+          key: apt-tour-linux-${{ hashFiles('.github/workflows/ui-tour.yml', '.github/scripts/apt-install.sh') }}
+          restore-keys: apt-tour-linux-
       - name: System libraries, Xvfb, lavapipe (software Vulkan), fonts, ffmpeg
+        timeout-minutes: 40
         run: |
-          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
-          sudo apt-get $APT update
-          sudo apt-get $APT install -y --no-install-recommends \
+          .github/scripts/apt-install.sh ~/apt-debs \
             build-essential pkg-config libfontconfig-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-xcb-dev libxcb1-dev libvulkan-dev libvulkan1 libssl-dev libasound2-dev \

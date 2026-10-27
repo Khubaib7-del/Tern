@@ -228,14 +228,20 @@ jobs:
             /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/powershell
           df -h /
       - uses: actions/checkout@v7
+      # Debs from earlier runs, so a slow mirror only costs what changed
+      # (#72: this step timed out at 15 minutes twice on main pushes).
+      - name: Cached apt debs
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-debs
+          key: apt-ci-linux-${{ hashFiles('.github/workflows/ci.yml', '.github/scripts/apt-install.sh') }}
+          restore-keys: apt-ci-linux-
       - name: System libraries for the desktop app (X11, Wayland, Vulkan, fonts) and the browser helper (WebKitGTK)
-        # A stalled mirror once held this step for over 50 minutes: time
-        # out each download and the step instead.
-        timeout-minutes: 15
+        # Each apt attempt has its own time limit (5 min update, 10 min
+        # install), three attempts on two mirrors (apt-install.sh).
+        timeout-minutes: 40
         run: |
-          APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
-          sudo apt-get $APT update
-          sudo apt-get $APT install -y --no-install-recommends \
+          .github/scripts/apt-install.sh ~/apt-debs \
             build-essential pkg-config libfontconfig-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libx11-xcb-dev libxcb1-dev libvulkan-dev libssl-dev libasound2-dev \
