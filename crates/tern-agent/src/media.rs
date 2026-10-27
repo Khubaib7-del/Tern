@@ -1044,8 +1044,10 @@ fn ocr_with_description(lm: &crate::local_models::LocalModels, image: &[u8]) -> 
 }
 
 /// What a small local vision model is asked.
-const LOCAL_DESCRIBE: &str =
-    "Describe this picture in detail. Transcribe any visible text exactly.";
+/// Short and plain (#70): small models ramble and repeat themselves when
+/// asked for detail (SmolVLM 256M wrote 2,000+ characters per picture).
+pub const LOCAL_DESCRIBE: &str =
+    "Describe this image in 3-5 sentences. Include any visible text exactly.";
 /// Decides how pictures reach a chat with `model` on `provider`.
 pub fn plan_images(
     catalog: &Catalog,
