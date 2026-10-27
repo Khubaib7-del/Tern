@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted |
+| Status | Accepted (amended 2026-10-27, #72: visible retries, no silent retry) |
 | Date | 2026-10-21 |
 | Decider | Khubaib Nazeer |
 
@@ -20,7 +20,7 @@ Phase 3 needs a turn loop that every surface (TUI, desktop, `tern ask`) can shar
 | Approvals | An `Approver` puts the request in front of the user. `approval.requested` and `approval.answered` are both recorded. A refusal ends the turn as `Blocked` |
 | Tools | A typed registry: name, version, one-line summary, effect class, target, JSON Schema input, timeout, idempotency. Input is checked before the gate. Unknown tools and bad input go back to the model as text, not as failures |
 | Tool protocol | For now the model asks for a tool with a fenced `tool` JSON block. It works on every provider and local model. Native tool calls can replace it later; the loop only sees the parsed reply |
-| Errors | A provider error fails the turn with its plain message. No silent retry, no fallback provider |
+| Errors | A provider error fails the turn with its plain message. No silent retry, no fallback provider. Amended by #72: rate limits, overload and dropped connections are retried with backoff (honouring `Retry-After`, never shorter), and every retry shows in the status line as "Retrying in N s (attempt k/n)". Spend caps and other errors are never retried. Still no fallback provider |
 
 ## Consequences
 
