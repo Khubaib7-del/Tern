@@ -652,7 +652,7 @@ mod tests {
         assert!(!spoke);
         route = route.after_window(Some("en"), true, spoke);
         assert_eq!(route, Route::Detect, "a quiet window decides nothing");
-        assert_eq!(route.pace(), Pace::CHUNKED);
+        assert_eq!(route.pace(), Pace::STREAMING);
         samples.extend(tone(RATE * 5));
         let r = d.next_request(&samples).expect("a window with speech");
         assert!(!r.quiet);

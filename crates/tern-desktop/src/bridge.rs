@@ -63,6 +63,9 @@ pub enum Msg {
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
     Attached(Result<tern_agent::Attachment, String>),
+    /// Auto dictation's language check came back (#70): the recording,
+    /// where the phrase starts, and (language, how sure, model) or why not.
+    LanguageChecked(u64, usize, Result<(String, f32, String), String>),
     /// A PDF read again as scanned (#70): its name, and the new reading
     /// or why not.
     ReadAgain(String, Result<tern_agent::Attachment, String>),
@@ -1306,6 +1309,16 @@ impl Bridge {
                 )),
             };
             let _ = tx.send(Msg::Models(id, result));
+        });
+    }
+
+    /// Auto dictation's language check on the first seconds of a phrase
+    /// (#70): recording `rec`, the phrase starting at sample `from`.
+    pub fn check_language(&self, rec: u64, from: usize, audio: Vec<f32>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = tern_agent::media::detect_language(audio).await;
+            let _ = tx.send(Msg::LanguageChecked(rec, from, r));
         });
     }
 

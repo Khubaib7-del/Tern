@@ -325,6 +325,17 @@ pub struct Workspace {
     dictation_fast: Option<tern_agent::media::ModelRef>,
     dictation_whisper: Option<tern_agent::media::ModelRef>,
     dictation_route: crate::dictation::Route,
+    /// Auto dictation (#70): the dictation language is Auto, a language
+    /// check is on its way, the phrase start it checked last, when, the
+    /// recording's number (stale checks are dropped), and the last
+    /// language heard (kept two minutes, so the next recording starts on
+    /// the right model).
+    dictation_auto: bool,
+    dictation_checking: bool,
+    dictation_check_from: Option<usize>,
+    dictation_last_check: Option<Instant>,
+    dictation_rec: u64,
+    dictation_lang_memo: Option<(String, f32, Instant)>,
     /// Where dictated text goes in the composer (follows the text).
     dictation_caret: crate::dictation::Caret,
     dictation_samples: Vec<f32>,
@@ -377,6 +388,12 @@ impl std::fmt::Debug for Workspace {
             .finish_non_exhaustive()
     }
 }
+
+/// How long Auto dictation keeps the language it heard for the next
+/// recording (#70).
+const LANG_MEMO: Duration = Duration::from_secs(120);
+/// Auto checks a new phrase's language at most this often (#70).
+const RECHECK_EVERY: Duration = Duration::from_secs(10);
 
 impl Workspace {
     /// What is on screen, for the frame meter (`crate::perf`).
@@ -748,6 +765,12 @@ impl Workspace {
             // Auto's starting point (#69): the state before the first
             // recording is the one every later recording starts in.
             dictation_route: crate::dictation::Route::Detect,
+            dictation_auto: false,
+            dictation_checking: false,
+            dictation_check_from: None,
+            dictation_last_check: None,
+            dictation_rec: 0,
+            dictation_lang_memo: None,
             dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
@@ -850,6 +873,9 @@ impl Workspace {
                 }
             }
             Msg::Dictated(seq, result, heard) => self.dictated(seq, result, heard, window, cx),
+            Msg::LanguageChecked(rec, from, result) => {
+                self.language_checked(rec, from, result, window, cx)
+            }
             Msg::Resumed(s, turns, recent) => {
                 self.resume_retry = None;
                 self.model.switching_to = None;
@@ -2440,8 +2466,23 @@ impl Workspace {
         if let Some(n) = note {
             self.model.toast_info(n);
         }
+        // Auto: a language heard with confidence in the last two minutes
+        // picks the model at once; the check still runs again later.
+        let remembered = match (&route, &self.dictation_lang_memo) {
+            (crate::dictation::Route::Detect, Some((l, p, at)))
+                if at.elapsed() < LANG_MEMO && *p >= 0.8 =>
+            {
+                Some(l.clone())
+            }
+            _ => None,
+        };
+        let route = match &remembered {
+            Some(l) => crate::dictation::Route::checked(l, fast.is_some()),
+            None => route,
+        };
+        // Auto streams with the fast model while the language is checked.
         let via = match route {
-            crate::dictation::Route::Fast => fast.clone(),
+            crate::dictation::Route::Fast | crate::dictation::Route::Detect => fast.clone(),
             _ => whisper.clone(),
         };
         let Some(via) = via else {
@@ -2450,10 +2491,19 @@ impl Workspace {
             return;
         };
         tern_agent::diag::note(&format!(
-            "dictation: language={} route={route:?} via={via}",
-            speech::language_name(language)
+            "dictation: language={} route={route:?} via={via}{}",
+            speech::language_name(language),
+            remembered
+                .as_deref()
+                .map(|l| format!(" (kept {l} from the last recording)"))
+                .unwrap_or_default()
         ));
+        let auto = language.is_none();
         self.start_recording(via, fast, whisper, route, window, cx);
+        self.dictation_auto = auto;
+        if remembered.is_some() {
+            self.dictation_last_check = Some(Instant::now());
+        }
     }
 
     /// Opens the mic and starts streaming windows to `via`.
@@ -2474,6 +2524,11 @@ impl Workspace {
                 self.dictation_fast = fast;
                 self.dictation_whisper = whisper;
                 self.dictation_route = route;
+                self.dictation_auto = false;
+                self.dictation_checking = false;
+                self.dictation_check_from = None;
+                self.dictation_last_check = None;
+                self.dictation_rec += 1;
                 let cursor = self.composer.read(cx).cursor();
                 self.dictation_caret = crate::dictation::Caret::start(cursor);
                 self.dictation_samples.clear();
@@ -2532,10 +2587,16 @@ impl Workspace {
     /// composer, and finishes a stopped dictation whose last window is
     /// back. Returns whether dictation goes on.
     fn pump_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.maybe_check_language();
         let Some(d) = self.dictation.as_mut() else {
             return false;
         };
-        if let Some(req) = d.next_request(&self.dictation_samples)
+        let req = d.next_request(&self.dictation_samples);
+        if let Some(r) = req.filter(|r| r.quiet) {
+            // No speech in the window: nothing is sent, so a model never
+            // writes words for silence or noise (#70).
+            d.on_result(r.seq, Ok(String::new()));
+        } else if let Some(req) = req
             && let Some(via) = self.dictation_model.clone()
         {
             let end = req.end.min(self.dictation_samples.len());
@@ -2550,12 +2611,22 @@ impl Workspace {
             };
             self.bridge.dictate(via, req.seq, wav, language);
         }
-        self.commit_dictation(window, cx);
-        let finished = self
-            .dictation
-            .as_ref()
-            .is_some_and(|d| d.done(self.dictation_samples.len()));
+        // While Auto checks the language, the fast model's text shows grey
+        // and is held: Urdu heard starts the recording over on Whisper.
+        let detecting = self.dictation_route == crate::dictation::Route::Detect;
+        if !detecting {
+            self.commit_dictation(window, cx);
+        }
+        let finished = !self.dictation_checking
+            && self
+                .dictation
+                .as_ref()
+                .is_some_and(|d| d.done(self.dictation_samples.len()));
         if finished {
+            if detecting {
+                // Too short to check: the fast model's text stands.
+                self.commit_dictation(window, cx);
+            }
             // One note per recording at most (#68: "heard no speech"
             // toasts kept popping for every pause).
             if let Some(e) = self.dictation.as_mut().and_then(|d| d.error.take()) {
@@ -2614,34 +2685,114 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let _ = heard;
         if let Some(d) = self.dictation.as_mut() {
-            let spoke = d.on_result(seq, result);
-            // Auto: the first window with words tells which language it
-            // is; until then every window stays on Whisper (#69).
-            if self.dictation_route == crate::dictation::Route::Detect {
-                let next = self.dictation_route.after_window(
-                    heard.as_deref(),
-                    self.dictation_fast.is_some(),
-                    spoke,
-                );
-                tern_agent::diag::note(&format!(
-                    "dictation: heard {} (words: {spoke}) -> {next:?}",
-                    heard.as_deref().unwrap_or("?")
-                ));
-                if next == crate::dictation::Route::Detect {
-                    self.pump_dictation(window, cx);
-                    return;
-                }
-                d.set_pace(next.pace());
-                self.dictation_model = match next {
-                    crate::dictation::Route::Fast => self.dictation_fast.clone(),
-                    _ => self.dictation_whisper.clone(),
-                }
-                .or(self.dictation_model.take());
-                self.dictation_route = next;
-            }
+            // Auto's language comes from its own check (#70), not from
+            // the windows' transcription.
+            d.on_result(seq, result);
         }
         self.pump_dictation(window, cx);
+    }
+
+    /// Starts Auto's language check when it is due (#70): once on the
+    /// first seconds of a recording, and again on a new phrase after a
+    /// pause, at most every [`RECHECK_EVERY`], while it is on English.
+    fn maybe_check_language(&mut self) {
+        if self.dictation_checking || !self.dictation_auto {
+            return;
+        }
+        let Some(d) = self.dictation.as_ref() else {
+            return;
+        };
+        let from = match &self.dictation_route {
+            crate::dictation::Route::Detect => 0,
+            crate::dictation::Route::Fast
+                if self
+                    .dictation_last_check
+                    .is_some_and(|t| t.elapsed() >= RECHECK_EVERY) =>
+            {
+                d.open_start()
+            }
+            _ => return,
+        };
+        if self.dictation_check_from == Some(from) {
+            return;
+        }
+        let Some((a, b)) =
+            crate::dictation::language_window(&self.dictation_samples, from, d.stopped())
+        else {
+            return;
+        };
+        self.dictation_checking = true;
+        self.dictation_check_from = Some(from);
+        self.dictation_last_check = Some(Instant::now());
+        self.bridge.check_language(
+            self.dictation_rec,
+            from,
+            self.dictation_samples[a..b].to_vec(),
+        );
+    }
+
+    /// Auto's language check came back (#70). English keeps the fast
+    /// model (and the text it held); another language goes to Whisper:
+    /// from the start of the recording on the first check, or from the
+    /// open phrase when the speaker switched language later.
+    fn language_checked(
+        &mut self,
+        rec: u64,
+        from: usize,
+        result: Result<(String, f32, String), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if rec != self.dictation_rec {
+            return;
+        }
+        self.dictation_checking = false;
+        let fast = self.dictation_fast.is_some();
+        let next = match &result {
+            Ok((lang, p, model)) => {
+                if *p >= 0.5 {
+                    self.dictation_lang_memo = Some((lang.clone(), *p, Instant::now()));
+                }
+                let next = crate::dictation::Route::checked(lang, fast);
+                tern_agent::diag::note(&format!(
+                    "dictation: language check heard {lang} (p={p:.2}, {model}) from {:.1}s -> {next:?}",
+                    from as f64 / crate::dictation::RATE as f64
+                ));
+                // A later phrase switches only when the check is sure.
+                if self.dictation_route != crate::dictation::Route::Detect && *p < 0.6 {
+                    self.dictation_route.clone()
+                } else {
+                    next
+                }
+            }
+            Err(e) => {
+                tern_agent::diag::note(&format!(
+                    "dictation: language check failed ({e}); staying on the fast model"
+                ));
+                crate::dictation::Route::Fast
+            }
+        };
+        let was = self.dictation_route.clone();
+        if next != was
+            && let Some(d) = self.dictation.as_mut()
+        {
+            match (&was, &next) {
+                (crate::dictation::Route::Detect, crate::dictation::Route::Fast) => {}
+                (crate::dictation::Route::Detect, _) => d.restart(next.pace()),
+                _ => d.redo_open_window(next.pace()),
+            }
+            if next != crate::dictation::Route::Fast {
+                self.dictation_model = self
+                    .dictation_whisper
+                    .clone()
+                    .or(self.dictation_model.take());
+            }
+        }
+        self.dictation_route = next;
+        self.pump_dictation(window, cx);
+        cx.notify();
     }
 
     /// The open phrase's interim text, grey with a trailing ellipsis.
