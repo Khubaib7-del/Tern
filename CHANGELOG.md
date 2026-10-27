@@ -4,6 +4,14 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #72): rich answers, visible retries, long tool output
+
+- **Rich answers** (`richmd.rs`, three Markdown plugins on the answer view): `$…$` and `$$…$$` formulas are typeset by RaTeX (a Rust port of KaTeX's layout, MIT, with the KaTeX fonts, OFL-1.1) in the answer's ink for dark and light pages; a formula RaTeX cannot read stays as its source in the code font, and dollar amounts ("$5 and $10") stay text. ```` ```mermaid ```` blocks are drawn by merman (MIT OR Apache-2.0, built without its EPL-2.0 ELK layout: flowchart, sequence, class, state, ER, Gantt, pie, mindmap, timeline, journey, git graph, quadrant and XY charts); while the block streams, or when merman cannot read it, it stays a code block. Code blocks get syntax colours (syntect with two-face's grammars). `[n]` in a finished answer becomes a small chip that opens the cited page in Tern's browser; while the answer streams, `[n]` stays text so only the last block is re-parsed. Drawings are cached by source, so a block re-parsed during streaming is drawn once. Tables wrap long cells inside their columns.
+- **Visible retries** (`tern-providers::retry`): HTTP 429 rate limits, 5xx and Anthropic's 529 "overloaded", dropped connections and timeouts are tried again up to 4 times with exponential backoff and jitter (1 s doubling, at most 32 s per wait); a provider's `Retry-After` is a floor, and one over 120 s gives up at once and says so. Every wait shows in the status line, on desktop and in the TUI: "Retrying in 8 s (attempt 2/4)". Spending caps and exhausted quotas (Anthropic's usage limits, OpenAI's `insufficient_quota`) are never retried (`ProviderError::SpendCap`), nor are wrong keys, bad requests, missing models, DNS or TLS failures, or a local server that is not running. Deep research workers and the final write-up retry the same way. ADR 0004 now reads "no silent retry" instead of "no retry".
+- **Long tool output** (`tern-agent::results`): a tool result over 12,000 bytes keeps its first 70 % and last 30 % (cut on line ends) with a line saying how many characters were left out; the full text is saved per chat under `<data>/runs/<session>/results/` and the model can read any range of it with the new `read_result` tool. Before, everything after the first 12,000 characters (a page's conclusion, a PDF's references) was lost.
+- **CI**: apt packages come from a cached folder of `.deb` files, with time-limited attempts on two mirrors (`.github/scripts/apt-install.sh`); the Linux job's timeout is 40 minutes.
+- **UI tour** (composer): c13b a citation chip on a landed web answer, c43 a wide table and a highlighted Rust block, c44 inline and display math and a Mermaid flowchart, c45 the retry status line after a mock 429 with `Retry-After: 4`.
+
 ### Fixed (PR #71): every chat on its own, stopped replies kept, preview cards
 
 From the Windows test of #70.

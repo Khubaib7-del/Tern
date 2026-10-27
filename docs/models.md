@@ -93,6 +93,10 @@ When a picture is attached and the chat model cannot see:
 
 PDFs are read page by page by Tern Crawl as before.
 
+## Retries
+
+A call that fails for a passing reason is tried again, and the status line says so (#72): "Retrying in 8 s (attempt 2/4)", on desktop and in the TUI. That covers HTTP 429 rate limits, 5xx errors and Anthropic's 529 "overloaded", dropped connections and timeouts: up to 4 retries, waiting 1 s and doubling with jitter, at most 32 s a wait. A provider's `Retry-After` is a floor, never shortened; one longer than 120 s ends the call at once with the provider's message. Spending caps and exhausted quotas (Anthropic's usage limits, OpenAI's `insufficient_quota`), wrong keys, bad requests, missing models, DNS or TLS failures and a local server that is not running are never retried. There is no fallback to another provider ([ADR 0004](decisions/0004-turn-loop-and-policy-gate.md)).
+
 ## Not yet
 
 - Per-role defaults in Settings (the keys exist; the picker sets them).

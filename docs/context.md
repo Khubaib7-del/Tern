@@ -43,3 +43,7 @@ In `preferences.json`:
 | `compact_keep_turns` | `4` | Turns kept word for word (1 to 20) |
 
 The code is `tern_agent::compact` and `ChatSession::compact`.
+
+## Long tool results
+
+A tool result over 12,000 bytes (a long page, a PDF, a big file) is not cut off at the end any more (#72). The model sees its first 70 % and last 30 %, cut on line ends, with a line in between saying how many characters were left out. The whole text is saved for the chat as `<data>/runs/<session>/results/<id>.txt`, and the model can read any range of it, up to 12,000 characters a call, with the `read_result` tool. Errors are never cut.
