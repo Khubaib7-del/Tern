@@ -1620,10 +1620,9 @@ impl Workspace {
                             16.,
                             p.text.l > 0.5,
                         ),
-                        Pick::Folder(_) => div()
-                            .text_color(p.muted)
-                            .child(gpui_kit::component::Icon::new(AssetIcon::Folder).small())
-                            .into_any_element(),
+                        Pick::Folder(path) => {
+                            crate::fileicon::folder_logo(&path.to_string_lossy(), 16.)
+                        }
                         Pick::Chat(_) => div()
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::MessageSquare).small())
@@ -6958,8 +6957,8 @@ fn card_preview(
 }
 
 /// The file-type logo for an attachment named `name` of kind `kind`,
-/// `size` px: its real logo by name (#72); a folder or a web page keeps
-/// its outline icon; a name with no known kind falls back to its kind's
+/// `size` px: its real logo by name (#72); a folder its folder logo by
+/// name (#73: `.git`, `src`, `docs`, …); a web page keeps its outline icon; a name with no known kind falls back to its kind's
 /// logo (a pasted picture, a recording, pasted text).
 fn kind_logo(kind: crate::filetype::FileKind, name: &str, size: f32, p: Palette) -> AnyElement {
     use crate::fileicon::{FileIcon, logo};
@@ -6976,7 +6975,7 @@ fn kind_logo(kind: crate::filetype::FileKind, name: &str, size: f32, p: Palette)
             .into_any_element()
     };
     match kind {
-        FileKind::Folder => outline(AssetIcon::Folder),
+        FileKind::Folder => crate::fileicon::folder_logo(name, size),
         FileKind::Link => outline(AssetIcon::Globe),
         _ => {
             let by_name = FileIcon::of(name);
