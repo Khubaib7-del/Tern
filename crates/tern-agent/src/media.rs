@@ -310,6 +310,25 @@ pub async fn dictate(
     (r, ctl.heard())
 }
 
+/// Auto dictation's language check (#70): which language `audio` (16
+/// kHz mono, the first seconds of speech) is in, how sure, and the model
+/// that said so. Whisper tiny when it is downloaded, else the Whisper
+/// that transcribes; only the language is worked out, nothing is
+/// transcribed.
+pub async fn detect_language(audio: Vec<f32>) -> Result<(String, f32, String), String> {
+    tokio::task::spawn_blocking(move || {
+        let (lm, _) = crate::local_models::LocalModels::discover()?;
+        let prefs = crate::prefs::Preferences::load();
+        let id = lm
+            .language_checker(&prefs.local_models)
+            .ok_or("no Whisper model is downloaded and on")?;
+        let (code, p) = lm.detect_language(&id, &audio)?;
+        Ok((code, p, id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The end of the "heard no speech" error.
 pub const NO_SPEECH: &str = "heard no speech in the recording";
 

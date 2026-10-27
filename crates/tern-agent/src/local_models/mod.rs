@@ -262,6 +262,18 @@ pub trait LocalEngine: Send + Sync {
         let _ = (dir, audio, language);
         Err(format!("{} cannot transcribe speech", entry.name))
     }
+    /// Which language the speech is in (a Whisper code such as `en` or
+    /// `ur`) and how sure the model is (0–1), without transcribing it:
+    /// Auto dictation's language check (#70).
+    fn detect_language(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        audio: &[f32],
+    ) -> Result<(String, f32), String> {
+        let _ = (dir, audio);
+        Err(format!("{} cannot tell languages apart", entry.name))
+    }
     /// [`LocalEngine::transcribe`] that reports how far it got and stops
     /// when `ctl` is cancelled. Engines that cannot report run whole.
     fn transcribe_with(
@@ -1001,6 +1013,35 @@ impl LocalModels {
         let engine = self.engine(id)?;
         let entry = self.manifest.find(id).expect("engine() found it");
         engine.describe(&self.dir(id), entry, image, prompt)
+    }
+
+    /// The language of `audio` (16 kHz mono) and how sure, with installed
+    /// Whisper model `id` (#70).
+    pub fn detect_language(&self, id: &str, audio: &[f32]) -> Result<(String, f32), String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.detect_language(&self.dir(id), entry, audio)
+    }
+
+    /// The model for Auto dictation's language check: Whisper tiny (the
+    /// optional add-on, about ten times faster) when it is downloaded and
+    /// on, else the Whisper that transcribes (#70).
+    pub fn language_checker(&self, prefs: &LocalModelPrefs) -> Option<String> {
+        let runnable = |e: &ModelEntry| {
+            e.runtime == Runtime::WhisperCpp
+                && prefs.is_enabled(&e.id)
+                && self.installed(&e.id).is_some()
+                && can_run(e)
+        };
+        self.manifest
+            .models
+            .iter()
+            .find(|e| e.id.starts_with("whisper-tiny") && runnable(e))
+            .or_else(|| {
+                self.usable(prefs, Task::SpeechToText)
+                    .filter(|e| runnable(e))
+            })
+            .map(|e| e.id.clone())
     }
 
     /// Reads one page image to Markdown with installed document model `id`.

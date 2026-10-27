@@ -116,11 +116,26 @@ fn collapse_runs(words: Vec<&str>) -> Vec<&str> {
     out
 }
 
+/// Without the sound tags models write instead of words (#70: Moonshine
+/// began a dictation with "[inaudible]"): `[inaudible]`, `[Music]`,
+/// `(laughs)`, `[BLANK_AUDIO]`, `*cough*`.
+pub fn drop_tags(text: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\[[^\]]{1,40}\]|\((?i:inaudible|laughs?|laughter|music|applause|silence|cough(?:s|ing)?|sighs?|noise|unintelligible|crosstalk|background noise)\)|\*[a-zA-Z ]{1,20}\*")
+            .expect("static regex")
+    });
+    RE.replace_all(text, " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `text` (one dictation window's transcript) without repeats and
 /// silence phrases. `before` is the dictated text just before it (a
 /// sentence it repeats is dropped); `quiet` says the window held little
 /// sound, so a lone silence phrase in it is dropped too.
 pub fn clean(text: &str, before: &str, quiet: bool) -> String {
+    let text = drop_tags(text);
     let words: Vec<&str> = text.split_whitespace().collect();
     let total = words.len();
     let words = collapse_runs(words);
@@ -190,6 +205,23 @@ mod tests {
         assert_eq!(
             clean("Thank you for the help with my code.", "", true),
             "Thank you for the help with my code."
+        );
+    }
+
+    #[test]
+    fn sound_tags_are_not_words() {
+        assert_eq!(
+            clean(
+                "[inaudible] for the hill missions and things like that.",
+                "",
+                false
+            ),
+            "for the hill missions and things like that."
+        );
+        assert_eq!(clean("[BLANK_AUDIO]", "", true), "");
+        assert_eq!(
+            clean("(laughs) okay so the demo is ready", "", false),
+            "okay so the demo is ready"
         );
     }
 

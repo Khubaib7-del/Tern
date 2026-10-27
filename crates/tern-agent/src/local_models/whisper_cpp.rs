@@ -16,7 +16,12 @@ pub struct WhisperCpp {
     /// The last model loaded (and whether on the GPU), kept so a second
     /// file does not load it again.
     loaded: Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>,
+    /// The language-check model (Whisper tiny), kept apart so checking
+    /// does not unload the model that transcribes (#70).
+    checker: Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>,
 }
+
+type Slot = Mutex<Option<(PathBuf, bool, Arc<WhisperContext>)>>;
 
 impl std::fmt::Debug for WhisperCpp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,10 +125,16 @@ impl WhisperCpp {
         path: &Path,
         gpu: Option<&super::gpu::Gpu>,
     ) -> Result<Arc<WhisperContext>, String> {
-        let mut slot = self
-            .loaded
-            .lock()
-            .map_err(|_| "the Whisper engine is unusable")?;
+        self.context_in(&self.loaded, path, gpu)
+    }
+
+    fn context_in(
+        &self,
+        slot: &Slot,
+        path: &Path,
+        gpu: Option<&super::gpu::Gpu>,
+    ) -> Result<Arc<WhisperContext>, String> {
+        let mut slot = slot.lock().map_err(|_| "the Whisper engine is unusable")?;
         if let Some((p, on_gpu, ctx)) = slot.as_ref()
             && p == path
             && *on_gpu == gpu.is_some()
@@ -177,6 +188,63 @@ impl LocalEngine for WhisperCpp {
             LAST.lock().map(|t| t.clone()).unwrap_or_default(),
             whisper_rs::print_system_info().trim()
         )
+    }
+
+    fn detect_language(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        audio: &[f32],
+    ) -> Result<(String, f32), String> {
+        let file = model_file(entry).ok_or_else(|| format!("{} has no .bin file", entry.name))?;
+        let n_threads = threads();
+        let place = placement();
+        let gpu = match &place {
+            Placement::Gpu(g) => Some(g.clone()),
+            Placement::Cpu(_) => None,
+        };
+        let slot = if entry.id.starts_with("whisper-tiny") {
+            &self.checker
+        } else {
+            &self.loaded
+        };
+        let path = dir.join(file);
+        let t0 = std::time::Instant::now();
+        let ctx = match self.context_in(slot, &path, gpu.as_ref()) {
+            Ok(c) => c,
+            Err(_) if gpu.is_some() => self.context_in(slot, &path, None)?,
+            Err(e) => return Err(e),
+        };
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| format!("cannot start Whisper: {e}"))?;
+        // The encoder and one decoder step: no transcription (#70: the
+        // full transcription Auto used took 9-21 s on the user's laptop).
+        let min = super::resample::RATE as usize + 1_600;
+        let mut pcm = audio.to_vec();
+        if pcm.len() < min {
+            pcm.resize(min, 0.0);
+        }
+        let threads = usize::try_from(n_threads.max(1)).unwrap_or(1);
+        state
+            .pcm_to_mel(&pcm, threads)
+            .map_err(|e| format!("Whisper could not read the audio: {e}"))?;
+        let (id, probs) = state
+            .lang_detect(0, threads)
+            .map_err(|e| format!("Whisper could not tell the language: {e}"))?;
+        let code = whisper_rs::get_lang_str(id).unwrap_or("?").to_owned();
+        let p = usize::try_from(id)
+            .ok()
+            .and_then(|i| probs.get(i).copied())
+            .unwrap_or(0.0);
+        crate::diag::note(&format!(
+            "whisper: language check {code} p={p:.2} model={} audio={:.1}s took={}ms {}",
+            entry.id,
+            audio.len() as f64 / f64::from(super::resample::RATE),
+            t0.elapsed().as_millis(),
+            place.line(n_threads)
+        ));
+        Ok((code, p))
     }
 
     fn transcribe_with(
@@ -314,7 +382,14 @@ mod tests {
             .filter(|e| fits(e))
             .map(|e| e.id.as_str())
             .collect();
-        assert_eq!(runs, ["whisper-small-q5_1", "whisper-large-v3-turbo-q5_0"]);
+        assert_eq!(
+            runs,
+            [
+                "whisper-small-q5_1",
+                "whisper-large-v3-turbo-q5_0",
+                "whisper-tiny-q5_1"
+            ]
+        );
     }
 
     /// Transcribes a real file with a downloaded Whisper model. Needs
