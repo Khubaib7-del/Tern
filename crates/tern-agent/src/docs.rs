@@ -100,7 +100,7 @@ pub fn parse_header(text: &str) -> Option<(String, Option<usize>)> {
 pub fn converts(name: &str) -> bool {
     matches!(
         ext(name).as_str(),
-        "docx" | "pptx" | "xlsx" | "html" | "htm" | "pdf"
+        "docx" | "pptx" | "xlsx" | "html" | "htm" | "pdf" | "xls" | "ppt" | "doc"
     )
 }
 
@@ -184,6 +184,12 @@ fn convert_fresh(name: &str, bytes: &[u8]) -> Result<Converted, String> {
         "pptx" => pptx(bytes),
         "xlsx" => xlsx(bytes),
         "html" | "htm" => Ok(html(bytes)),
+        "xls" | "ppt" | "doc" => legacy(&ext(name), bytes).map_err(|e| {
+            let modern = format!("{}x", ext(name));
+            format!(
+                "{e}. Tern reads old Office files on a best-effort basis: open it in Office and use File › Save As › .{modern}, then attach that"
+            )
+        }),
         _ if tern_crawl::pdf::is_pdf(bytes) => pdf(bytes),
         e => Err(format!("Tern does not convert .{e} files yet")),
     }
@@ -199,12 +205,12 @@ pub const MIN_PAGE_CHARS: usize = 100;
 /// Lines scanning apps stamp on every page ("Scanned with CamScanner").
 const WATERMARKS: [&str; 12] = [
     "camscanner",
-    "scanned with",
-    "scanned by",
-    "adobe scan",
-    "genius scan",
-    "microsoft lens",
-    "office lens",
+    "scannedwith",
+    "scannedby",
+    "adobescan",
+    "geniusscan",
+    "microsoftlens",
+    "officelens",
     "tapscanner",
     "clearscanner",
     "turboscan",
@@ -214,7 +220,12 @@ const WATERMARKS: [&str; 12] = [
 
 /// Whether a line is a scanning app's watermark.
 fn is_watermark(line: &str) -> bool {
-    let l = line.to_lowercase();
+    // Without spaces: some PDFs space out every letter.
+    let l: String = line
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
     WATERMARKS.iter().any(|w| l.contains(w))
         && l.chars().filter(|c| c.is_alphanumeric()).count() < 60
 }
@@ -875,6 +886,70 @@ pub fn xlsx(bytes: &[u8]) -> Result<Converted, String> {
     })
 }
 
+/// Office 97–2003 files (#70): `.xls` sheets as tables, `.ppt` slides
+/// text, `.doc` text. See [`crate::office_legacy`].
+fn legacy(ext: &str, bytes: &[u8]) -> Result<Converted, String> {
+    use crate::office_legacy as ol;
+    if !ol::is_cfb(bytes) {
+        // A newer file renamed to the old name.
+        if bytes.starts_with(b"PK") {
+            return match ext {
+                "xls" => xlsx(bytes),
+                "ppt" => pptx(bytes),
+                _ => docx(bytes),
+            };
+        }
+        return Err("it is not an Office 97–2003 file".into());
+    }
+    match ext {
+        "xls" => {
+            let sheets = ol::xls_sheets(bytes)?;
+            let md: Vec<String> = sheets
+                .iter()
+                .map(|(name, rows)| format!("## {name}\n\n{}", table_md(rows)))
+                .collect();
+            Ok(Converted {
+                markdown: md.join("\n\n"),
+                pages: Some(sheets.len()),
+                how: "XLS".into(),
+            })
+        }
+        "ppt" => {
+            let slides = ol::ppt_slides(bytes)?;
+            let md: Vec<String> = slides
+                .iter()
+                .enumerate()
+                .map(|(i, lines)| {
+                    let mut sec = format!("## Slide {}", i + 1);
+                    if let Some((first, rest)) = lines.split_first() {
+                        sec = format!("## Slide {}: {first}", i + 1);
+                        for l in rest {
+                            sec.push_str(&format!("\n- {l}"));
+                        }
+                    }
+                    sec
+                })
+                .collect();
+            Ok(Converted {
+                markdown: md.join("\n\n"),
+                pages: Some(slides.len()),
+                how: "PPT text".into(),
+            })
+        }
+        _ => {
+            let text = ol::doc_text(bytes)?;
+            if text.trim().is_empty() {
+                return Err("Tern found no text in it".into());
+            }
+            Ok(Converted {
+                markdown: text,
+                pages: None,
+                how: "DOC text".into(),
+            })
+        }
+    }
+}
+
 /// `A` → 0, `Z` → 25, `AA` → 26.
 fn col_index(letters: &str) -> usize {
     letters
@@ -1038,6 +1113,33 @@ mod tests {
         assert!(asks_reread("use OCR on it"));
         assert!(asks_reread("read it again"));
         assert!(!asks_reread("summarise the document"));
+    }
+
+    #[test]
+    fn old_office_files_become_markdown() {
+        let x = convert_fresh("costs.xls", &crate::office_legacy::sample_xls()).unwrap();
+        assert_eq!(x.how, "XLS");
+        assert_eq!(
+            x.markdown,
+            "## Costs\n\n| Item | Total |\n| --- | --- |\n| Tea | 4250 |"
+        );
+        let p = convert_fresh("deck.ppt", &crate::office_legacy::sample_ppt()).unwrap();
+        assert_eq!(p.pages, Some(2));
+        assert!(
+            p.markdown
+                .starts_with("## Slide 1: Intro\n- Hello from Lahore"),
+            "{}",
+            p.markdown
+        );
+        let d = convert_fresh(
+            "notes.doc",
+            &crate::office_legacy::sample_doc("Hello\rWorld\r"),
+        )
+        .unwrap();
+        assert_eq!(d.markdown, "Hello\nWorld");
+        let e = convert_fresh("broken.ppt", b"junk").unwrap_err();
+        assert!(e.contains("Save As") && e.contains(".pptx"), "{e}");
+        assert!(converts("a.XLS") && converts("b.ppt") && converts("c.doc"));
     }
 
     #[test]

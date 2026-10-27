@@ -533,7 +533,7 @@ impl Acc {
                 path.rsplit_once('.')
                     .map(|(_, e)| e.to_ascii_lowercase())
                     .as_deref(),
-                Some("docx" | "pptx" | "xlsx")
+                Some("docx" | "pptx" | "xlsx" | "xls" | "ppt" | "doc")
             )
             || (self.single && crate::docs::converts(path));
         let text = if convert {
@@ -758,7 +758,7 @@ fn kind_of(path: &str) -> &'static str {
             "image"
         }
         "pdf" => "PDF",
-        "doc" | "ppt" | "xls" | "odt" | "epub" => "document format not read yet",
+        "odt" | "epub" => "document format not read yet: save it as .docx or PDF",
         "mp3" | "wav" | "m4a" | "ogg" | "flac" | "mp4" | "mov" | "mkv" | "webm" => "audio or video",
         "exe" | "dll" | "so" | "dylib" | "bin" | "o" | "class" | "jar" | "wasm" => "program file",
         "7z" | "rar" | "tar" | "gz" | "tgz" | "bz2" | "xz" => "archive format not read yet",
