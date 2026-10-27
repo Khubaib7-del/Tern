@@ -95,6 +95,51 @@ thread_local! {
     static SAVER: RefCell<Option<Saver>> = const { RefCell::new(None) };
 }
 
+/// A control's click as the UI tour presses it (`TERN_TOUR=1` only): the
+/// element id ("math-…-b", "table-…-export", "code-…-save-2") and what its
+/// click does.
+type TourClick = (String, Rc<dyn Fn(&mut Window, &mut App)>);
+
+thread_local! {
+    static TOUR_CLICKS: RefCell<Vec<TourClick>> = const { RefCell::new(Vec::new()) };
+}
+
+fn tour_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TERN_TOUR").is_some())
+}
+
+/// Keeps `f` as what clicking element `id` does, for the UI tour; nothing
+/// outside the tour.
+pub fn tour_hook(id: String, f: impl Fn(&mut Window, &mut App) + 'static) {
+    if !tour_on() {
+        return;
+    }
+    TOUR_CLICKS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|(k, _)| *k != id);
+        c.push((id, Rc::new(f)));
+        if c.len() > 400 {
+            c.drain(..100);
+        }
+    });
+}
+
+/// The UI tour clicks the most recently drawn control whose id starts
+/// with `prefix` and ends with `suffix`; returns its id.
+pub fn tour_click(prefix: &str, suffix: &str, window: &mut Window, cx: &mut App) -> Option<String> {
+    let hit = TOUR_CLICKS.with(|c| {
+        c.borrow()
+            .iter()
+            .rev()
+            .find(|(k, _)| k.starts_with(prefix) && k.ends_with(suffix))
+            .map(|(k, f)| (k.clone(), f.clone()))
+    });
+    let (id, f) = hit?;
+    f(window, cx);
+    Some(id)
+}
+
 /// Registers the window's saver (it knows the working folder and shows
 /// the toast).
 pub fn set_saver(f: impl Fn(Job, &mut Window, &mut App) + 'static) {
@@ -444,6 +489,15 @@ pub fn segmented(
             .when(!lit, |d| d.hover(move |d| d.text_color(p.muted)))
             .child(label)
     };
+    for (k, v) in [("a", false), ("b", true)] {
+        let st = state.clone();
+        tour_hook(format!("{id}-{k}"), move |_, cx| {
+            st.update(cx, |s, cx| {
+                *s = v;
+                cx.notify();
+            })
+        });
+    }
     let (s1, s2) = (state.clone(), state);
     div()
         .flex()
@@ -491,6 +545,31 @@ pub fn toolbar(
         .read(cx)
         .is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
     let formats = Arc::new(formats);
+    if !formats.is_empty() {
+        let open = open.clone();
+        tour_hook(format!("{id}-export"), move |_, cx| {
+            open.update(cx, |o, cx| {
+                *o = !*o;
+                cx.notify();
+            })
+        });
+        for i in 0..formats.len() {
+            let job = Job {
+                stem: stem.clone(),
+                formats: formats.clone(),
+                pick: i,
+                save_as: false,
+            };
+            let open = open.clone();
+            tour_hook(format!("{id}-save-{i}"), move |window, cx| {
+                open.update(cx, |o, cx| {
+                    *o = false;
+                    cx.notify();
+                });
+                request(job.clone(), window, cx);
+            });
+        }
+    }
     let row = div()
         .flex()
         .items_center()

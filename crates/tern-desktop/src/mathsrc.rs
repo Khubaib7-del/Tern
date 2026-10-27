@@ -135,9 +135,9 @@ fn rewrite_from(lines: &[&str], start: usize, out: &mut String) -> usize {
             k += 2;
             continue;
         }
-        if rest.starts_with("\\(") {
-            if let Some(end) = rest[2..].find("\\)") {
-                let inner = rest[2..2 + end].trim();
+        if let Some(after_open) = rest.strip_prefix("\\(") {
+            if let Some(end) = after_open.find("\\)") {
+                let inner = after_open[..end].trim();
                 if !inner.is_empty() && !inner.contains('$') {
                     out.push_str(&line[seg_start..k]);
                     out.push_str("$$");
@@ -153,11 +153,9 @@ fn rewrite_from(lines: &[&str], start: usize, out: &mut String) -> usize {
         }
         let display = if rest.starts_with("\\[") {
             Some(("\\]", 2usize, false))
-        } else if let Some(env) = begun_env(rest) {
-            // The `\begin` stays part of the formula.
-            Some((leak_end(env), 0usize, true))
         } else {
-            None
+            // The `\begin` stays part of the formula.
+            begun_env(rest).map(|e| (leak_end(e), 0usize, true))
         };
         if let Some((close, open_len, keep)) = display {
             if let Some((body, next_line, after)) = find_close(lines, start, k + open_len, close) {

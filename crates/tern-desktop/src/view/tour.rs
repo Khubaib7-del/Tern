@@ -329,6 +329,15 @@ enum Act {
     /// #71: a converting chip for `name` at page `done` of `total` (0
     /// clears it), as Granite-Docling reading a scan reports it.
     CProgress(&'static str, usize, usize),
+    /// #73: clicks the newest block control whose id starts with the first
+    /// text and ends with the second (`blockexport::tour_click`): a
+    /// Rendered | LaTeX or Diagram | Code half, Export ▾, a Save row.
+    CClick(&'static str, &'static str),
+    /// #73: the Down arrow in the composer (the @ menu's next row).
+    CDown,
+    /// #73: copies the files the tour saved from blocks into `exports/`
+    /// beside the scene log, so the workflow uploads them.
+    CCollectExports,
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1866,6 +1875,21 @@ impl Workspace {
                     window.dispatch_action(Box::new(MoveRight), cx);
                 }
             }
+            Act::CClick(prefix, suffix) => {
+                match crate::blockexport::tour_click(prefix, suffix, window, cx) {
+                    Some(id) => log(&format!("TOUR note clicked {id}")),
+                    None => log(&format!("TOUR error no control {prefix}…{suffix}")),
+                }
+                cx.notify();
+            }
+            Act::CDown => {
+                use gpui_kit::component::input::MoveDown;
+                self.composer.update(cx, |c, cx| c.focus(window, cx));
+                window.dispatch_action(Box::new(MoveDown), cx);
+                let selected = self.model.mention.as_ref().map(|m| m.selected);
+                log(&format!("TOUR note Down; @ row selected {selected:?}"));
+            }
+            Act::CCollectExports => self.tour_collect_exports(),
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -2189,6 +2213,43 @@ impl Workspace {
         let at = c.cursor();
         let (head, tail) = text.split_at(at.min(text.len()));
         log(&format!("TOUR caret {head}|{tail} (at {at})"));
+    }
+
+    /// Copies what the tour saved from blocks (formula, diagram, table and
+    /// code files in the save folder) next to the scene log, and logs each
+    /// file's name and size.
+    fn tour_collect_exports(&self) {
+        let dir = self.export_dir();
+        let Some(out) = std::env::var_os("TERN_TOUR_LOG")
+            .map(std::path::PathBuf::from)
+            .and_then(|l| l.parent().map(|p| p.join("exports")))
+        else {
+            log("TOUR error no TERN_TOUR_LOG for exports");
+            return;
+        };
+        let _ = std::fs::create_dir_all(&out);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            log(&format!("TOUR error can't list {}", dir.display()));
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let ours = [
+                "formula", "diagram", "table", "answer", "code", "snippet", "sort",
+            ]
+            .iter()
+            .any(|s| name.starts_with(s))
+                || name.ends_with(".rs");
+            if !ours || !e.path().is_file() {
+                continue;
+            }
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::copy(e.path(), out.join(&name));
+            log(&format!(
+                "TOUR note exported {} ({size} bytes)",
+                dir.join(&name).display()
+            ));
+        }
     }
 
     fn log_composer_state(&self, what: &str, cx: &mut Context<Self>) {
@@ -3019,6 +3080,147 @@ fn composer_script() -> Vec<Beat> {
             3000,
         ),
         b(Act::Theme, 1500),
+        // #73: Math and Mermaid blocks, block export, the @ menu's keys,
+        // folder logos.
+        b(Act::CNewChat, 1200),
+        b(
+            Act::CTypePath(
+                "Write the attention formula in LaTeX, inline and as a display equation",
+            ),
+            200,
+        ),
+        scene(
+            "c46-math-block",
+            "tern-only",
+            "gpt-oss's \\( \\) and \\[ \\begin{align*} \\] answer typed as Math blocks: Rendered | LaTeX, Copy, Export",
+            Act::CSend,
+            4500,
+        ),
+        b(Act::CState("math block"), 300),
+        scene(
+            "c46b-math-latex",
+            "tern-only",
+            "The align Math block toggled to LaTeX: its source",
+            Act::CClick("math-", "-b"),
+            2500,
+        ),
+        b(Act::CClick("math-", "-a"), 1200),
+        scene(
+            "c46c-math-export-menu",
+            "tern-only",
+            "Export ▾ on the formula: LaTeX, SVG, PNG and Save as…",
+            Act::CClick("math-", "-export"),
+            2500,
+        ),
+        scene(
+            "c46d-math-png-saved",
+            "tern-only",
+            "Saved the formula as PNG into the folder: toast with Open folder",
+            Act::CClick("math-", "-save-2"),
+            3000,
+        ),
+        b(Act::CCollectExports, 300),
+        b(Act::ToastsClear, 400),
+        b(Act::CNewChat, 1200),
+        b(
+            Act::CTypePath(
+                "Draw the transformer encoder as a Mermaid flowchart with subgraphs, left to right",
+            ),
+            200,
+        ),
+        scene(
+            "c47-mermaid-block",
+            "tern-only",
+            "gpt-oss's Transformer diagram (unquoted labels, %% comments) drawn in a Mermaid block",
+            Act::CSend,
+            5000,
+        ),
+        b(Act::CState("mermaid block"), 300),
+        scene(
+            "c47b-mermaid-code",
+            "tern-only",
+            "The Mermaid block toggled to Code",
+            Act::CClick("mermaid-", "-b"),
+            2500,
+        ),
+        b(Act::CClick("mermaid-", "-a"), 1500),
+        b(Act::CClick("mermaid-", "-export"), 800),
+        scene(
+            "c47c-mermaid-png-saved",
+            "tern-only",
+            "Saved the diagram as PNG",
+            Act::CClick("mermaid-", "-save-2"),
+            3000,
+        ),
+        b(Act::CCollectExports, 300),
+        b(Act::ToastsClear, 400),
+        b(Act::CNewChat, 1200),
+        b(
+            Act::CTypePath("Compare quicksort, merge sort and heapsort"),
+            200,
+        ),
+        b(Act::CSend, 4000),
+        b(Act::Nothing, 6000),
+        scene(
+            "c48-table-export-menu",
+            "tern-only",
+            "Export ▾ open under the table: CSV, Markdown, Excel, Save as…",
+            Act::CClick("table-", "-export"),
+            2500,
+        ),
+        scene(
+            "c48b-table-xlsx-saved",
+            "tern-only",
+            "Saved the table as an Excel workbook: toast with Open folder",
+            Act::CClick("table-", "-save-2"),
+            3000,
+        ),
+        scene(
+            "c48c-code-export-menu",
+            "tern-only",
+            "Export ▾ open in the code block's corner, over the code",
+            Act::CClick("code-", "-export"),
+            2500,
+        ),
+        b(Act::CClick("code-", "-save-0"), 2000),
+        b(Act::CCollectExports, 300),
+        b(Act::ToastsClear, 400),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath("Summarise @{dir}"), 1500),
+        b(Act::CState("mention rows"), 200),
+        b(Act::CDown, 500),
+        scene(
+            "c49-mention-keys",
+            "tern-only",
+            "@ menu driven by the keys: Down twice lights the third row; folders show their logos",
+            Act::CDown,
+            2500,
+        ),
+        b(Act::ClearComposer, 400),
+        b(Act::CAttach("src"), 500),
+        b(Act::CAttach("docs"), 500),
+        b(Act::CAttach("tests"), 500),
+        b(Act::CAttach("assets"), 500),
+        b(Act::CAttach("server.go"), 400),
+        b(Act::CAttach("report.pl"), 400),
+        b(Act::CAttach("CMakeLists.txt"), 400),
+        b(Act::CAttach("lexer.ml"), 400),
+        b(Act::CAttach("chat.erl"), 2500),
+        scene(
+            "c50-folder-logos",
+            "tern-only",
+            "Folder chips with their logos (src, docs, tests, assets) and Go, Perl, CMake, OCaml, Erlang logos without white squares, dark theme",
+            Act::CState("folder logos"),
+            2500,
+        ),
+        scene(
+            "c50b-folder-logos-light",
+            "tern-only",
+            "The same chips in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 1500),
         b(Act::CNewChat, 1200),
         b(Act::CTypePath(RETRY_Q), 200),
         scene(
@@ -3094,6 +3296,26 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     );
     let _ = std::fs::write(dir.join("archive.zip"), tern_agent::docs::sample_docx());
     let _ = std::fs::write(dir.join("mystery.qqq"), "no one knows what this is\n");
+    // #73: folders with their own logos, and logos whose white squares
+    // were cleared.
+    for (folder, file, text) in [
+        ("src", "main.rs", "fn main() {}\n"),
+        ("docs", "guide.md", "# Guide\n"),
+        ("tests", "smoke.py", "def test_smoke():\n    assert True\n"),
+        ("assets", "readme.txt", "logos\n"),
+    ] {
+        let _ = std::fs::create_dir_all(dir.join(folder));
+        let _ = std::fs::write(dir.join(folder).join(file), text);
+    }
+    for (file, text) in [
+        ("server.go", "package main\n\nfunc main() {}\n"),
+        ("report.pl", "print \"tern\\n\";\n"),
+        ("CMakeLists.txt", "project(tern)\n"),
+        ("lexer.ml", "let () = print_endline \"tern\"\n"),
+        ("chat.erl", "-module(chat).\n"),
+    ] {
+        let _ = std::fs::write(dir.join(file), text);
+    }
     // #70: a scan with only a watermark, a text page plus a scan, and old
     // Office files (one damaged).
     let _ = std::fs::write(
@@ -3424,6 +3646,19 @@ mod mock {
         }
         if has_tools && user.contains("Explain attention with the formula") {
             return (super::RICH_MATH_A.into(), None);
+        }
+        // #73: gpt-oss's answers that showed raw LaTeX and failed to draw.
+        if has_tools && user.contains("attention formula in LaTeX") {
+            return (crate::mathsrc::SAMPLE.into(), None);
+        }
+        if has_tools && user.contains("as a Mermaid flowchart") {
+            return (
+                format!(
+                    "Here is the encoder:\n\n```mermaid\n{}\n```\n",
+                    crate::mermaidsrc::SAMPLE.trim_end()
+                ),
+                None,
+            );
         }
         if has_tools && user.contains(super::RETRY_Q) {
             return (super::RETRY_A.into(), None);
