@@ -32,6 +32,42 @@ ONNX Runtime (linked through ort)
   https://github.com/microsoft/onnxruntime
   MIT License, Copyright (c) Microsoft Corporation.
 
+RaTeX (math in answers, linked, #72)
+  https://github.com/erweixin/RaTeX (ratex-parser, ratex-layout,
+  ratex-types, ratex-svg 0.1.15)
+  MIT License. A Rust port of KaTeX's parser and layout.
+
+KaTeX fonts (embedded in the app through ratex-katex-fonts, #72)
+  https://github.com/KaTeX/KaTeX
+  SIL Open Font License 1.1, Copyright (c) 2009-2010 Design Science, Inc.,
+  Copyright (c) 2014-2018 Khan Academy. Used unmodified, never sold on
+  their own.
+
+merman (Mermaid diagrams in answers, linked, #72)
+  https://github.com/Latias94/merman (0.9.2)
+  MIT License or Apache License 2.0, at your option. Built without its
+  default features: no ELK layout (EPL-2.0) and no math labels.
+
+syntect (code colours in answers, linked through gpui-component, #72)
+  https://github.com/trishume/syntect
+  MIT License, Copyright (c) 2016 Tristan Hume, Keith Hall, Google Inc
+  and other contributors.
+
+two-face (extra syntax and theme definitions for syntect, #72)
+  https://github.com/CosmicHorrorDev/two-face
+  MIT License or Apache License 2.0, at your option. Its bundled
+  grammars and themes keep their own (permissive) licences, listed in its
+  sources.
+
+File-type logos (attachment cards, sent messages and the @ menu, #72)
+  crates/tern-desktop/assets/file-icons/ (180 PNGs, 64 px; catalog.csv
+  says which source each comes from). Sources: Microsoft 365 product
+  icons; Devicon (MIT License); Simple Icons (CC0 1.0); vscode-icons
+  (MIT License); Material Icon Theme (MIT License); and logos supplied by
+  the project's author. The logos are trademarks of their respective
+  owners. Tern uses them only to show what kind a file is; this implies
+  no endorsement by, or affiliation with, those owners.
+
 -------------------------------------------------------------------------
 Models Tern downloads on request (never bundled)
 -------------------------------------------------------------------------

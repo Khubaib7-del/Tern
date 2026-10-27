@@ -18,13 +18,40 @@ workspace = true
 [dependencies]
 tern-core.workspace = true
 tern-agent = { workspace = true, features = ["mic", "ocr-onnx", "whisper", "asr-onnx", "tts"] }
-gpui-kit = "0.8"
+# `syntect`: syntax colours in answers' code blocks (#72; syntect and
+# two-face, MIT / MIT OR Apache-2.0).
+gpui-kit = { version = "0.8", features = ["syntect"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 raw-window-handle = "0.6"
 # The UI tour builds its scripted events' payloads (`view::tour`).
 serde_json.workspace = true
 # Which paragraphs of a message read right to left (`bidi.rs`).
 unicode-bidi = "0.3"
+# Rich answers (#72, `richmd.rs`). Math: RaTeX (MIT), a Rust port of
+# KaTeX's layout; `embed-fonts` bundles the KaTeX fonts (OFL-1.1, NOTICE).
+ratex-parser = "=0.1.15"
+ratex-layout = "=0.1.15"
+ratex-types = "=0.1.15"
+ratex-svg = { version = "=0.1.15", features = ["embed-fonts"] }
+# Mermaid diagrams: merman (MIT OR Apache-2.0), headless, SVG out. Built
+# without its default features: no EPL-2.0 ELK layout, no math labels.
+merman = { version = "=0.9.2", default-features = false, features = [
+    "svg",
+    "layout-cytoscape",
+    "diagram-flowchart",
+    "diagram-sequence",
+    "diagram-class",
+    "diagram-state",
+    "diagram-er",
+    "diagram-gantt",
+    "diagram-pie",
+    "diagram-mindmap",
+    "diagram-timeline",
+    "diagram-journey",
+    "diagram-git-graph",
+    "diagram-quadrant-chart",
+    "diagram-xychart",
+] }
 
 # The built-in browser's page engine runs in its own process, the
 # `tern-browser` helper, so no engine crate links into the app

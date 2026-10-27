@@ -1,0 +1,181 @@
+category,type,extensions,icon,file
+Documents,Word document,doc docx docm dot dotx rtf,vscode-icons:word,final/word-document.png
+Documents,Excel workbook,xls xlsx xlsm xlsb xlt xltx,vscode-icons:excel,final/excel-workbook.png
+Documents,PowerPoint deck,ppt pptx pptm pps ppsx pot potx,vscode-icons:powerpoint,final/powerpoint-deck.png
+Documents,OneNote,one onetoc2,vscode-icons:onenote,final/onenote.png
+Documents,Access database,accdb mdb,vscode-icons:access,final/access-database.png
+Documents,Outlook mail,msg pst,vscode-icons:outlook,final/outlook-mail.png
+Documents,Publisher,pub,vscode-icons:publisher,final/publisher.png
+Documents,LibreOffice Writer,odt ott,vscode-icons:libreoffice_writer,final/libreoffice-writer.png
+Documents,LibreOffice Calc,ods ots,vscode-icons:libreoffice_calc,final/libreoffice-calc.png
+Documents,LibreOffice Impress,odp otp,vscode-icons:libreoffice_impress,final/libreoffice-impress.png
+Documents,LibreOffice Draw,odg,vscode-icons:libreoffice_draw,final/libreoffice-draw.png
+Documents,LibreOffice Math,odf,vscode-icons:libreoffice_math,final/libreoffice-math.png
+Documents,PDF,pdf,material:pdf,final/pdf.png
+Documents,Plain text,txt text,vscode-icons:text,final/plain-text.png
+Documents,Markdown,md markdown mdx,devicon:markdown-original,final/markdown.png
+Documents,reStructuredText,rst,vscode-icons:rest,final/restructuredtext.png
+Documents,AsciiDoc,adoc asciidoc,vscode-icons:asciidoc,final/asciidoc.png
+Documents,Org mode,org,vscode-icons:org,final/org-mode.png
+Documents,EPUB e-book,epub,vscode-icons:epub,final/epub-e-book.png
+Documents,Kindle / other e-book,mobi azw azw3 fb2 djvu,material:epub,final/kindle-other-e-book.png
+Documents,Apple Pages,pages,generic,final/apple-pages.png
+Documents,Apple Numbers,numbers,generic,final/apple-numbers.png
+Documents,Apple Keynote,key,generic,final/apple-keynote.png
+Documents,Log file,log,vscode-icons:log,final/log-file.png
+Data,CSV / TSV,csv tsv,vscode-icons:csv,final/csv-tsv.png
+Data,JSON,json jsonc json5 jsonl ndjson,devicon:json-original,final/json.png
+Data,XML,xml xsd xsl xslt,devicon:xml-original,final/xml.png
+Data,YAML,yaml yml,devicon:yaml-original,final/yaml.png
+Data,TOML,toml,devicon:toml-original,final/toml.png
+Data,INI / config,ini cfg conf properties,vscode-icons:ini,final/ini-config.png
+Data,SQL,sql,vscode-icons:sql,final/sql.png
+Data,SQLite,sqlite sqlite3 db,devicon:sqlite-original,final/sqlite.png
+Data,Parquet / Arrow,parquet arrow feather,material:table,final/parquet-arrow.png
+Data,HDF5 / NetCDF,h5 hdf5 nc,material:database,final/hdf5-netcdf.png
+Data,GraphQL,graphql gql,devicon:graphql-plain,final/graphql.png
+Data,Protocol Buffers,proto,vscode-icons:protobuf,final/protocol-buffers.png
+Research,LaTeX,tex ltx sty cls,devicon:latex-original,final/latex.png
+Research,BibTeX / BibLaTeX,bib,material:bibliography,final/bibtex-biblatex.png
+Research,RIS / EndNote citations,ris enw,material:bibliography,final/ris-endnote-citations.png
+Research,Jupyter notebook,ipynb,devicon:jupyter-original,final/jupyter-notebook.png
+Research,R / R Markdown,r rmd,devicon:r-original,final/r-r-markdown.png
+Research,Quarto,qmd,simple-icons:quarto,final/quarto.png
+Research,MATLAB,m mat mlx,devicon:matlab-original,final/matlab.png
+Research,Simulink,slx mdl,material:simulink,final/simulink.png
+Research,Stata,do ado dta,vscode-icons:stata,final/stata.png
+Research,SAS,sas sas7bdat,vscode-icons:sas,final/sas.png
+Research,SPSS,sav sps,devicon:spss-original,final/spss.png
+Research,Julia,jl,devicon:julia-original,final/julia.png
+Research,Mathematica / Wolfram,nb wl wls,devicon:wolfram-original,final/mathematica-wolfram.png
+Research,Octave,oct,material:matlab,final/octave.png
+Research,Gnuplot,gp gnuplot plt,material:gnuplot,final/gnuplot.png
+Research,Mermaid,mmd mermaid,simple-icons:mermaid,final/mermaid.png
+Research,PlantUML,puml plantuml,vscode-icons:plantuml,final/plantuml.png
+Research,Draw.io,drawio dio,simple-icons:diagramsdotnet,final/draw-io.png
+Research,Excalidraw,excalidraw,simple-icons:excalidraw,final/excalidraw.png
+Research,Typst,typ,simple-icons:typst,final/typst.png
+Research,Subtitles / captions,srt vtt ass sub,material:subtitles,final/subtitles-captions.png
+Images,Image (raster),png jpg jpeg gif webp bmp tif tiff heic heif avif ico,vscode-icons:image,final/image-raster.png
+Images,SVG,svg,vscode-icons:svg,final/svg.png
+Images,Photoshop,psd psb,devicon:photoshop-original,final/photoshop.png
+Images,Illustrator,ai,devicon:illustrator-original,final/illustrator.png
+Images,Figma,fig,devicon:figma-original,final/figma.png
+Images,Sketch,sketch,devicon:sketch-original,final/sketch.png
+Images,Camera RAW,raw cr2 cr3 nef arw dng orf,material:image,final/camera-raw.png
+Images,Krita / GIMP,kra xcf,devicon:gimp-original,final/krita-gimp.png
+Media,Audio,mp3 wav flac aac m4a ogg opus wma aiff mid midi,vscode-icons:audio,final/audio.png
+Media,Video,mp4 mkv mov avi webm wmv flv m4v mpeg,vscode-icons:video,final/video.png
+3D/CAD,3D model,obj fbx gltf glb stl ply 3ds usd usdz,material:3d,final/3d-model.png
+3D/CAD,Blender,blend,devicon:blender-original,final/blender.png
+3D/CAD,AutoCAD,dwg dxf,simple-icons:autocad,final/autocad.png
+3D/CAD,KiCad,kicad_pcb kicad_sch,simple-icons:kicad,final/kicad.png
+3D/CAD,G-code,gcode nc,vscode-icons:gcode,final/g-code.png
+Web,HTML,html htm xhtml,devicon:html5-original,final/html.png
+Web,CSS,css,devicon:css-original,final/css.png
+Web,Sass / SCSS,scss sass,devicon:sass-original,final/sass-scss.png
+Web,Less,less,simple-icons:less,final/less.png
+Web,JavaScript,js mjs cjs,devicon:javascript-original,final/javascript.png
+Web,TypeScript,ts mts cts,devicon:typescript-original,final/typescript.png
+Web,React (JSX/TSX),jsx tsx,devicon:react-original,final/react-jsx-tsx.png
+Web,Vue,vue,devicon:vuejs-original,final/vue.png
+Web,Svelte,svelte,devicon:svelte-original,final/svelte.png
+Web,Astro,astro,devicon:astro-original,final/astro.png
+Web,Angular component,component.ts,devicon:angular-original,final/angular-component.png
+Web,PHP,php,devicon:php-original,final/php.png
+Web,WebAssembly,wasm wat,devicon:wasm-original,final/webassembly.png
+Systems,C,c,devicon:c-original,final/c.png
+Systems,C header,h,vscode-icons:cheader,final/c-header.png
+Systems,C++,cpp cc cxx c++,devicon:cplusplus-original,final/cpp.png
+Systems,C++ header,hpp hh hxx,vscode-icons:cppheader,final/cpp-header.png
+Systems,C#,cs csx,devicon:csharp-original,final/csharp.png
+Systems,Rust,rs,devicon:rust-original,final/rust.png
+Systems,Go,go,devicon:go-original,final/go.png
+Systems,Zig,zig,devicon:zig-original,final/zig.png
+Systems,Nim,nim,devicon:nim-original,final/nim.png
+Systems,D,d,vscode-icons:dlang,final/d.png
+Systems,Odin,odin,devicon:odin-original,final/odin.png
+Systems,V,v,devicon:vlang-original,final/v.png
+Systems,Objective-C,m mm,devicon:objectivec-plain,final/objective-c.png
+Systems,Assembly,asm s nasm,vscode-icons:assembly,final/assembly.png
+Systems,CUDA,cu cuh,simple-icons:nvidia,final/cuda.png
+Systems,Verilog,v vh,vscode-icons:verilog,final/verilog.png
+Systems,SystemVerilog,sv svh,vscode-icons:systemverilog,final/systemverilog.png
+Systems,VHDL,vhd vhdl,vscode-icons:vhdl,final/vhdl.png
+Systems,Mojo,mojo,vscode-icons:mojo,final/mojo.png
+JVM/.NET,Java,java,devicon:java-original,final/java.png
+JVM/.NET,Kotlin,kt kts,devicon:kotlin-original,final/kotlin.png
+JVM/.NET,Scala,scala sc,devicon:scala-original,final/scala.png
+JVM/.NET,Groovy,groovy gradle,simple-icons:apachegroovy,final/groovy.png
+JVM/.NET,Clojure,clj cljs edn,devicon:clojure-original,final/clojure.png
+JVM/.NET,JAR archive,jar war,vscode-icons:jar,final/jar-archive.png
+JVM/.NET,F#,fs fsx fsi,vscode-icons:fsharp,final/fsharp.png
+JVM/.NET,Visual Basic,vb vbs,devicon:visualbasic-original,final/visual-basic.png
+JVM/.NET,VBA,bas cls frm,vscode-icons:vba,final/vba.png
+JVM/.NET,XAML,xaml,vscode-icons:xaml,final/xaml.png
+JVM/.NET,Razor,cshtml razor,vscode-icons:razor,final/razor.png
+Scripting,Python,py pyw pyi,devicon:python-original,final/python.png
+Scripting,Ruby,rb,devicon:ruby-original,final/ruby.png
+Scripting,Perl,pl pm,devicon:perl-original,final/perl.png
+Scripting,Raku,raku p6,vscode-icons:raku,final/raku.png
+Scripting,Lua,lua,devicon:lua-original,final/lua.png
+Scripting,Shell,sh bash zsh fish,devicon:bash-original,final/shell.png
+Scripting,PowerShell,ps1 psm1 psd1,devicon:powershell-original,final/powershell.png
+Scripting,Batch,bat cmd,vscode-icons:bat,final/batch.png
+Scripting,AppleScript,applescript scpt,vscode-icons:applescript,final/applescript.png
+Scripting,Tcl,tcl,vscode-icons:tcl,final/tcl.png
+Scripting,AutoHotkey,ahk,vscode-icons:autohotkey,final/autohotkey.png
+Scripting,Dart,dart,devicon:dart-original,final/dart.png
+Scripting,Swift,swift,devicon:swift-original,final/swift.png
+Scripting,Elixir,ex exs,devicon:elixir-original,final/elixir.png
+Scripting,Erlang,erl hrl,devicon:erlang-original,final/erlang.png
+Scripting,Gleam,gleam,vscode-icons:gleam,final/gleam.png
+Functional,Haskell,hs lhs,devicon:haskell-original,final/haskell.png
+Functional,OCaml,ml mli,devicon:ocaml-original,final/ocaml.png
+Functional,Elm,elm,devicon:elm-original,final/elm.png
+Functional,PureScript,purs,devicon:purescript-original,final/purescript.png
+Functional,Racket,rkt,devicon:racket-original,final/racket.png
+Functional,Scheme,scm ss,material:scheme,final/scheme.png
+Functional,Common Lisp,lisp lsp cl,vscode-icons:lisp,final/common-lisp.png
+Functional,Idris,idr,devicon:idris-original,final/idris.png
+Functional,Lean,lean,vscode-icons:lean,final/lean.png
+Functional,Coq / Rocq,v,generic,final/coq-rocq.png
+Functional,Agda,agda,vscode-icons:agda,final/agda.png
+Classic,COBOL,cob cbl cpy,devicon:cobol-original,final/cobol.png
+Classic,Fortran,f f77 f90 f95 f03 f08,devicon:fortran-original,final/fortran.png
+Classic,Ada,ada adb ads,vscode-icons:ada,final/ada.png
+Classic,Pascal,pas pp,material:pascal,final/pascal.png
+Classic,Delphi,dpr dfm,devicon:delphi-original,final/delphi.png
+Classic,Prolog,pro,devicon:prolog-original,final/prolog.png
+Classic,Smalltalk,st,generic,final/smalltalk.png
+Classic,APL,apl,devicon:apl-original,final/apl.png
+Classic,ABAP,abap,material:abap,final/abap.png
+Classic,PL/SQL,pls pks pkb,devicon:oracle-original,final/pl-sql.png
+Classic,Forth,fth 4th,material:forth,final/forth.png
+Classic,BASIC,bas,generic,final/basic.png
+Classic,Haxe,hx,devicon:haxe-original,final/haxe.png
+Blockchain/Quantum,Solidity,sol,devicon:solidity-original,final/solidity.png
+Blockchain/Quantum,Cairo,cairo,devicon:cairo-original,final/cairo.png
+Blockchain/Quantum,Q#,qs,vscode-icons:qsharp,final/qsharp.png
+Build/Config,Dockerfile,Dockerfile,devicon:docker-original,final/dockerfile.png
+Build/Config,Makefile,Makefile mk,material:makefile,final/makefile.png
+Build/Config,CMake,CMakeLists.txt cmake,devicon:cmake-original,final/cmake.png
+Build/Config,Nix,nix,devicon:nixos-original,final/nix.png
+Build/Config,Env file,env,simple-icons:dotenv,final/env-file.png
+Build/Config,Lock file,lock,material:lock,final/lock-file.png
+Build/Config,Git files,.gitignore .gitattributes,devicon:git-original,final/git-files.png
+Build/Config,Vim script,vim,devicon:vim-original,final/vim-script.png
+Archives,ZIP / archive,zip 7z rar tar gz tgz bz2 xz zst,vscode-icons:zip,final/zip-archive.png
+Archives,Disk image,iso img dmg vhd vhdx,generic,final/disk-image.png
+Binaries,Windows executable,exe msi,devicon:windows11-original,final/windows-executable.png
+Binaries,DLL / shared lib,dll so dylib,material:dll,final/dll-shared-lib.png
+Binaries,Binary / object,bin o obj a lib,vscode-icons:binary,final/binary-object.png
+Binaries,Android package,apk aab,simple-icons:android,final/android-package.png
+Fonts,Font,ttf otf woff woff2 eot,vscode-icons:font,final/font.png
+Security,Certificate / key,pem crt cer key p12 pfx,vscode-icons:cert,final/certificate-key.png
+Security,GPG,gpg asc sig,material:key,final/gpg.png
+Other,Email,eml mbox,material:email,final/email.png
+Other,Calendar,ics,generic,final/calendar.png
+Other,Contact card,vcf,generic,final/contact-card.png
+Other,Torrent,torrent,simple-icons:bittorrent,final/torrent.png
+Other,Unknown,(anything else),generic,final/unknown.png

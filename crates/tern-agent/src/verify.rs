@@ -218,6 +218,23 @@ pub fn numbered(answer: &str, pages: &[PageRef]) -> Vec<(usize, PageRef)> {
     out
 }
 
+/// Where each citation number in `answer` leads when clicked (#72): the
+/// page [`numbered`] matches it with, else the URL the answer's own closing
+/// link list gives it, even for a page Tern did not read (a search hit).
+pub fn cite_targets(answer: &str, pages: &[PageRef]) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = numbered(answer, pages)
+        .into_iter()
+        .map(|(n, p)| (n, p.url))
+        .collect();
+    for (n, url) in tern_research::claims::link_list(answer) {
+        if !out.iter().any(|(m, _)| *m == n) {
+            out.push((n, url));
+        }
+    }
+    out.sort_by_key(|(n, _)| *n);
+    out
+}
+
 /// The cited pages' text, read through `fetcher` (a cache hit for pages
 /// the turn just read). A page that cannot be read again has empty text.
 pub async fn source_texts(numbered: &[(usize, PageRef)], fetcher: &Fetcher) -> Vec<SourceText> {
@@ -401,6 +418,20 @@ mod tests {
         );
         let plain = numbered("A [1]. B [2].", &pages);
         assert_eq!(plain[0].1.url, "https://a.test/x");
+    }
+
+    #[test]
+    fn chips_lead_to_listed_pages_tern_did_not_read() {
+        let pages = [page("https://a.test/x"), page("https://b.test/y")];
+        let answer = "From the web: X [1]. Y [2].\n\n[1] LangChain - Wikipedia — https://en.wikipedia.org/wiki/LangChain\n";
+        assert_eq!(
+            cite_targets(answer, &pages),
+            [
+                (1, "https://en.wikipedia.org/wiki/LangChain".to_owned()),
+                (2, "https://b.test/y".to_owned()),
+            ],
+            "[1] from the link list though unread; [2] the second page read"
+        );
     }
 
     #[test]

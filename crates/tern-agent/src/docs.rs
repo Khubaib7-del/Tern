@@ -68,6 +68,38 @@ pub fn sample_docx() -> Vec<u8> {
     out.into_inner()
 }
 
+/// A small Excel workbook: one sheet with a header row and two rows
+/// (the UI tour).
+pub fn sample_xlsx() -> Vec<u8> {
+    use std::io::Write as _;
+    let parts = [
+        (
+            "xl/sharedStrings.xml",
+            "<sst><si><t>City</t></si><si><t>Students</t></si><si><t>Lahore</t></si><si><t>Islamabad</t></si></sst>",
+        ),
+        (
+            "xl/workbook.xml",
+            r#"<workbook><sheets><sheet name="Marks" sheetId="1"/></sheets></workbook>"#,
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2"><v>120</v></c></row><row r="3"><c r="A3" t="s"><v>3</v></c><c r="B3"><v>80</v></c></row></sheetData></worksheet>"#,
+        ),
+    ];
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut out);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, xml) in parts {
+            if z.start_file(name, opts).is_ok() {
+                let _ = z.write_all(xml.as_bytes());
+            }
+        }
+        let _ = z.finish();
+    }
+    out.into_inner()
+}
+
 /// `<!-- Tern: report.pdf → Markdown (PDF text, 12 pages) -->`.
 pub fn header(name: &str, how: &str, pages: Option<usize>) -> String {
     let pages = match pages {

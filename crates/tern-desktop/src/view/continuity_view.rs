@@ -847,6 +847,7 @@ impl Workspace {
                             .into_any_element(),
                         Some(a) => TextView::markdown(("side-answer", k), a.clone())
                             .selectable(true)
+                            .markdown_extensions(crate::richmd::extensions())
                             .into_any_element(),
                         None => div()
                             .flex()

@@ -441,6 +441,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // A citation chip in an answer opens its page in Tern's browser
+        // (#72).
+        {
+            let this = cx.entity().downgrade();
+            crate::richmd::set_cite_opener(move |url, window, app| {
+                let url = url.to_owned();
+                let _ = this.update(app, |w, cx| w.browse(&url, window, cx));
+            });
+        }
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
@@ -1574,23 +1583,11 @@ impl Workspace {
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).small())
                             .into_any_element(),
-                        Pick::File(path) => {
-                            let image = path.extension().is_some_and(|e| {
-                                matches!(
-                                    e.to_string_lossy().to_ascii_lowercase().as_str(),
-                                    "png" | "jpg" | "jpeg" | "gif" | "webp"
-                                )
-                            });
-                            let icon = if image {
-                                AssetIcon::FileImage
-                            } else {
-                                AssetIcon::FileText
-                            };
-                            div()
-                                .text_color(p.muted)
-                                .child(gpui_kit::component::Icon::new(icon).small())
-                                .into_any_element()
-                        }
+                        Pick::File(path) => crate::fileicon::logo(
+                            crate::fileicon::FileIcon::of(&path.to_string_lossy()),
+                            16.,
+                            p.text.l > 0.5,
+                        ),
                         Pick::Folder(_) => div()
                             .text_color(p.muted)
                             .child(gpui_kit::component::Icon::new(AssetIcon::Folder).small())
@@ -3985,11 +3982,21 @@ impl Workspace {
                         )
                         .child({
                             let open = std::sync::Arc::new(self.link_opener(cx));
-                            bidi_markdown("answer", i, with_badges(i, shown, run), move |t| {
+                            // Citation chips once the answer has landed; while
+                            // it streams, `[n]` stays text so the view only
+                            // re-parses its last block (#72).
+                            let text = with_badges(i, shown, run);
+                            let text = if revealing {
+                                text
+                            } else {
+                                crate::richmd::chips(&text, &cite_pages(&text, pages))
+                            };
+                            bidi_markdown("answer", i, text, move |t| {
                                 let open = open.clone();
                                 t.on_link_click(move |u, e, w, a| open(u, e, w, a))
                                     .selectable(true)
                                     .motion(stream_motion())
+                                    .markdown_extensions(crate::richmd::extensions())
                             })
                         })
                         .into_any_element()
@@ -4605,6 +4612,7 @@ impl Workspace {
         let preview = card_preview(
             self.preview_image(a),
             kind,
+            &a.name,
             a.files.first().map(|f| f.text.as_str()),
             p,
             PREVIEW_CARD_W,
@@ -4653,10 +4661,18 @@ impl Workspace {
                     .min_w_0()
                     .child(
                         div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(p.text)
-                            .child(SharedString::from(a.name.clone())),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
+                            .child(kind_logo(kind, &a.name, 16., p))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(p.text)
+                                    .child(SharedString::from(a.name.clone())),
+                            ),
                     )
                     .child(
                         div()
@@ -6783,7 +6799,7 @@ const PREVIEW_CARD_W: f32 = 148.;
 const SENT_CARD_W: f32 = 112.;
 
 /// A sent message's attachment as a small preview card (#71): its kept
-/// picture, else a kind tile, with the kind badge and the name.
+/// picture, else a kind tile, with the file-type logo and the name.
 fn sent_card(
     c: &tern_agent::Chip,
     image: Option<std::sync::Arc<gpui_kit::Image>>,
@@ -6799,30 +6815,46 @@ fn sent_card(
         .border_1()
         .border_color(p.border)
         .bg(p.canvas)
-        .child(card_preview(image, kind, None, p, SENT_CARD_W, 60.))
+        .child(card_preview(
+            image,
+            kind,
+            &c.name,
+            None,
+            p,
+            SENT_CARD_W,
+            60.,
+        ))
         .child(
             div()
                 .px_2()
                 .py(px(3.))
-                .truncate()
-                .text_xs()
-                .text_color(p.muted)
-                .child(SharedString::from(if c.role == Role::Prompt {
-                    format!("{} · Prompt", c.name)
-                } else {
-                    c.name.clone()
-                })),
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .child(kind_logo(kind, &c.name, 14., p))
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(p.muted)
+                        .child(SharedString::from(if c.role == Role::Prompt {
+                            format!("{} · Prompt", c.name)
+                        } else {
+                            c.name.clone()
+                        })),
+                ),
         )
         .into_any_element()
 }
 
 /// A card's preview area, `w` × `h`: the picture when there is one; the
 /// first lines of the text as a little page for a document; else a tile
-/// with the kind. The kind's coloured badge sits in the bottom-left
-/// corner.
+/// with the file-type logo (#72; it replaced the coloured kind badges).
 fn card_preview(
     image: Option<std::sync::Arc<gpui_kit::Image>>,
     kind: crate::filetype::FileKind,
+    name: &str,
     text: Option<&str>,
     p: Palette,
     w: f32,
@@ -6832,7 +6864,6 @@ fn card_preview(
         .filter(|_| kind.shows_page())
         .map(|t| crate::filetype::preview_lines(kind, t, 6))
         .filter(|l| !l.is_empty());
-    let colour: Hsla = gpui_kit::rgb(kind.color()).into();
     let body = match (image, lines) {
         (Some(img), _) => div()
             .size_full()
@@ -6866,10 +6897,7 @@ fn card_preview(
             .items_center()
             .justify_center()
             .bg(p.raised)
-            .text_color(colour)
-            .text_size(px(15.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(kind.label())
+            .child(kind_logo(kind, name, (h * 0.45).clamp(24., 40.), p))
             .into_any_element(),
     };
     div()
@@ -6880,21 +6908,47 @@ fn card_preview(
         .border_b_1()
         .border_color(p.border)
         .child(body)
-        .child(
-            div()
-                .absolute()
-                .left(px(4.))
-                .bottom(px(4.))
-                .px(px(4.))
-                .py(px(1.))
-                .rounded_sm()
-                .bg(colour)
-                .text_color(gpui_kit::rgb(0xFFFFFF))
-                .text_size(px(8.))
-                .font_weight(FontWeight::BOLD)
-                .child(kind.label()),
-        )
         .into_any_element()
+}
+
+/// The file-type logo for an attachment named `name` of kind `kind`,
+/// `size` px: its real logo by name (#72); a folder or a web page keeps
+/// its outline icon; a name with no known kind falls back to its kind's
+/// logo (a pasted picture, a recording, pasted text).
+fn kind_logo(kind: crate::filetype::FileKind, name: &str, size: f32, p: Palette) -> AnyElement {
+    use crate::fileicon::{FileIcon, logo};
+    use crate::filetype::FileKind;
+    let outline = |icon: AssetIcon| {
+        div()
+            .flex_none()
+            .size(px(size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(p.muted)
+            .child(gpui_kit::component::Icon::new(icon).size(px(size * 0.85)))
+            .into_any_element()
+    };
+    match kind {
+        FileKind::Folder => outline(AssetIcon::Folder),
+        FileKind::Link => outline(AssetIcon::Globe),
+        _ => {
+            let by_name = FileIcon::of(name);
+            let fallback = match kind {
+                FileKind::Image => "image-raster",
+                FileKind::Audio => "audio",
+                FileKind::Text => "plain-text",
+                FileKind::Archive => "zip-archive",
+                _ => "",
+            };
+            let icon = if by_name.is_unknown() {
+                FileIcon::named(fallback).unwrap_or(by_name)
+            } else {
+                by_name
+            };
+            logo(icon, size, p.text.l > 0.5)
+        }
+    }
 }
 
 /// A side panel part-way open: it keeps its full width inside a clip that
@@ -6963,6 +7017,14 @@ fn donut(size: f32, ring: f32, arcs: Vec<(f32, f32, Hsla)>, track: Hsla) -> impl
 /// shimmering phrase, and elapsed seconds (`docs/02-ui-definition.md` §2.7).
 /// The answer with a verdict badge after each checked claim; a badge
 /// opens that claim in the run panel's Report view.
+/// Which page each citation number in `text` opens: the page the claim
+/// checker matched, else the answer's own link list (#72).
+fn cite_pages(text: &str, pages: &[PageRef]) -> std::collections::HashMap<usize, String> {
+    tern_agent::verify::cite_targets(text, pages)
+        .into_iter()
+        .collect()
+}
+
 fn with_badges(entry: usize, text: &str, run: &Run) -> String {
     tern_agent::verify::annotate(text, &run.checks, |claim| {
         tern_agent::verify::claim_link(entry, claim)

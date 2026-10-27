@@ -129,6 +129,9 @@ pub struct ChatSession {
     /// Why the last compaction folded nothing (for the toast).
     compact_skip: Option<String>,
     calls_at_compaction: Option<usize>,
+    /// Full copies of long tool results, which the model sees cut in the
+    /// middle and reads in ranges with `read_result` (#72).
+    results: Option<Arc<crate::results::ResultStore>>,
 }
 
 /// Where a front end takes a reply's reasoning as it streams: the model
@@ -644,8 +647,19 @@ impl ChatSession {
                 Err(e) => mcp_notes.push(e),
             }
         }
-        let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
         let paths = AppPaths::discover().ok();
+        // Long tool results: the whole text is kept for the chat, the model
+        // reads past the cut with `read_result` (#72).
+        let results = paths.as_ref().map(|p| {
+            Arc::new(crate::results::ResultStore::for_session(
+                &p.data_dir,
+                session,
+            ))
+        });
+        if let Some(r) = &results {
+            tools.register(crate::results::ReadResultTool(r.clone()));
+        }
+        let untrusted = tools.names().any(|n| n.starts_with("mcp__"));
         let checkpoints = paths
             .as_ref()
             .map(|p| crate::checkpoint::CheckpointDir::new(p.checkpoints()));
@@ -689,6 +703,7 @@ impl ChatSession {
             compacted: None,
             compact_skip: None,
             calls_at_compaction: None,
+            results,
             ledger: UsageLedger::default(),
             tools,
             history: Vec::new(),
@@ -1204,6 +1219,8 @@ impl ChatSession {
                 on_reasoning: self.on_reasoning.as_deref(),
                 native_tools: crate::engine::native_tools_ok(self.provider.spec().id, &self.model),
                 prefetch: true,
+                retry: None,
+                results: self.results.as_deref(),
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1570,6 +1587,8 @@ impl ChatSession {
                         &self.model,
                     ),
                     prefetch: false,
+                    retry: None,
+                    results: self.results.as_deref(),
                 };
                 TurnLoop {
                     session: self.session,

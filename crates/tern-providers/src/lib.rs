@@ -11,7 +11,9 @@
 //! | Gemini | Google AI Studio |
 //!
 //! There is no silent fallback: a failed call fails with a plain reason, and
-//! switching provider is the user's choice.
+//! switching provider is the user's choice. Transient failures (rate limits,
+//! overloaded servers, dropped connections) are retried visibly with backoff
+//! (`retry`).
 
 #![forbid(unsafe_code)]
 
@@ -23,6 +25,7 @@ pub mod download;
 pub mod effort;
 pub mod error;
 pub mod model;
+pub mod retry;
 pub mod rpc_http;
 pub mod stream;
 pub mod usage;
@@ -40,4 +43,5 @@ pub use model::{
     Capability, Category, Lifecycle, ModelInfo, ModelKind, Source, known_context_window,
     known_display_name, table_capabilities, tidy_aliases,
 };
+pub use retry::{RetryNotice, RetryPolicy, with_retry};
 pub use usage::{LedgerEntry, Usage, UsageLedger};

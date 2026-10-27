@@ -11,10 +11,12 @@
 //! | Model-call, tool-call, or token limit | `BudgetExceeded` |
 //! | The policy gate or the user refuses a step | `Blocked` |
 //! | The same call three times | `Failed`, with a `loop.suspected` event |
-//! | Provider error or the event log cannot be written | `Failed` |
+//! | Provider error (after any retries) or the event log cannot be written | `Failed` |
 //! | The user cancels | `Cancelled` |
 //!
-//! There is no silent retry and no fallback to another provider.
+//! There is no silent retry and no fallback to another provider: a passing
+//! provider failure (429, 5xx, 529, a dropped connection) is retried with
+//! backoff only after a `provider.retry` event says so (#72).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -362,6 +364,28 @@ pub struct RunHooks<'a> {
     /// outside the workspace) and a web search when it says "use the web"
     /// (`web_search`). Works with models that never call tools.
     pub prefetch: bool,
+    /// How transient provider failures (429, 5xx, 529, a dropped
+    /// connection) are retried; `None` is the default policy. Each
+    /// wait is a `provider.retry` event first (#72).
+    pub retry: Option<tern_providers::RetryPolicy>,
+    /// Where full copies of long tool results go (the model sees their
+    /// head and tail and reads the rest with `read_result`). `None` keeps
+    /// no copy (#72).
+    pub results: Option<&'a crate::results::ResultStore>,
+}
+
+/// A `provider.retry` event's payload: who, which retry of how many, how
+/// long Tern waits, why, and the error it got. The window shows "Retrying
+/// in N s (attempt k/n)" from it.
+pub fn retry_payload(provider: &str, n: &tern_providers::RetryNotice) -> Value {
+    json!({
+        "provider": provider,
+        "attempt": n.attempt,
+        "of": n.of,
+        "wait_ms": n.wait.as_millis() as u64,
+        "reason": n.reason,
+        "error": n.error,
+    })
 }
 
 /// What the model is told when it says it cannot open files that are in
@@ -492,8 +516,9 @@ impl std::fmt::Debug for RunHooks<'_> {
     }
 }
 
-/// Longest tool result the model is shown. Errors are never cut.
-const RESULT_LIMIT: usize = 12_000;
+// Longest tool result the model is shown (head and tail, #72). Errors are
+// never cut.
+use crate::results::RESULT_LIMIT;
 /// The same call this many times in one turn is treated as a loop.
 const REPEAT_LIMIT: u32 = 3;
 
@@ -820,6 +845,27 @@ impl Run<'_, '_> {
             ));
             let asked = std::time::Instant::now();
             let streamed = Mutex::new(String::new());
+            // A passing failure (rate limit, overload, dropped connection)
+            // is tried again after a visible wait, but only while nothing
+            // of this reply reached the screen: a second reply would repeat
+            // it (#72).
+            let retry = self.cfg.hooks.retry.unwrap_or_default();
+            let (events, session, turn) = (self.cfg.sink, self.cfg.session, self.turn);
+            let provider = self.cfg.model.provider_id();
+            let notify = move |n: &tern_providers::RetryNotice| {
+                let _ = events.record(
+                    EventEnvelope::new(
+                        session,
+                        "provider.retry",
+                        EffectClass::Network,
+                        n.line(),
+                        retry_payload(provider, n),
+                    )
+                    .with_turn(turn),
+                );
+            };
+            let stop = &self.cfg.cancel;
+            let may_retry = || !stop.is_cancelled() && streamed.lock().is_ok_and(|s| s.is_empty());
             let reply = match self.cfg.on_text {
                 Some(sink) => {
                     let call = self.model_calls;
@@ -856,9 +902,15 @@ impl Run<'_, '_> {
                         }
                         !cancel.is_cancelled()
                     };
-                    model.complete_deltas(&req, &forward).await
+                    tern_providers::with_retry(retry, &notify, &may_retry, |_| {
+                        model.complete_deltas(&req, &forward)
+                    })
+                    .await
                 }
-                None => model.complete(&req).await,
+                None => {
+                    tern_providers::with_retry(retry, &notify, &may_retry, |_| model.complete(&req))
+                        .await
+                }
             };
             // Stopped mid-reply: what streamed up to the stop is kept with
             // the stop (#71), and nothing more is asked.
@@ -1359,21 +1411,31 @@ impl Run<'_, '_> {
         }
         Ok(match out {
             Ok(o) => {
-                let shown = truncate(&o.content, RESULT_LIMIT);
+                // A long result keeps its head and tail; the whole text is
+                // saved for `read_result` (#72). A `read_result` page is
+                // never saved again.
+                let cut = o.content.len() > RESULT_LIMIT;
+                let saved = match self.cfg.hooks.results {
+                    Some(store) if cut && name != "read_result" => {
+                        let id = result_id(&self.turn.to_string(), self.tool_calls);
+                        store.save(&id, &o.content).ok().map(|_| id)
+                    }
+                    _ => None,
+                };
+                let shown = crate::results::head_tail(&o.content, RESULT_LIMIT, saved.as_deref());
                 self.record(
                     self.event(
                         "tool.executed",
                         tool.effect(),
                         format!("Ran `{name}`"),
-                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": shown.len() < o.content.len(), "meta": o.meta}),
+                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta}),
                     )
                     .with_evidence(o.evidence_refs.clone()),
                 )?;
-                if shown.len() < o.content.len() {
+                if cut {
                     format!(
-                        "Result of `{name}` (cut to {} of {} characters):\n{shown}",
-                        shown.len(),
-                        o.content.len()
+                        "Result of `{name}` ({} characters; the middle was cut, see the note in it):\n{shown}",
+                        o.content.chars().count()
                     )
                 } else {
                     format!("Result of `{name}`:\n{shown}")
@@ -1447,19 +1509,29 @@ impl Run<'_, '_> {
     }
 }
 
-fn truncate(s: &str, limit: usize) -> &str {
-    if s.len() <= limit {
-        return s;
-    }
-    let mut end = limit;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+/// A saved result's id: the end of the turn's id and the call's number
+/// in the turn (`t3k9qz-2`), letters, digits and `-` only.
+pub fn result_id(turn: &str, call: u32) -> String {
+    let tail: String = turn
+        .chars()
+        .rev()
+        .filter(char::is_ascii_alphanumeric)
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("t{}-{call}", tail.to_ascii_lowercase())
 }
 
 #[cfg(test)]
 mod length_tests {
+    #[test]
+    fn result_ids_are_short_and_safe() {
+        assert_eq!(super::result_id("trn_01JBXK3K9QZ", 2), "tk3k9qz-2");
+        assert_eq!(super::result_id("", 1), "t-1");
+    }
+
     #[test]
     fn length_stops_are_spotted_across_providers() {
         assert!(super::is_length_stop(Some("length")));

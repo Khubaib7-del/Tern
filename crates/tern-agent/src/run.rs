@@ -908,6 +908,23 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                 .unwrap_or_else(|| e.user_summary.clone());
             step.ok = false;
         }
+        "provider.retry" => {
+            // A passing provider failure and the wait before trying again
+            // (#72): "Retrying OpenAI · rate limited · 8 s · attempt 2/4".
+            step.kind = StepKind::Problem;
+            step.verb = "Retrying";
+            step.target = str_at(p, "provider").unwrap_or_default().to_owned();
+            let wait = p["wait_ms"].as_u64().unwrap_or(0).div_ceil(1000);
+            step.note = format!(
+                "{} · waited {wait} s · attempt {}/{}",
+                str_at(p, "reason").unwrap_or("failed"),
+                p["attempt"].as_u64().unwrap_or(1),
+                p["of"].as_u64().unwrap_or(1)
+            );
+            if let Some(n) = p["worker"].as_u64() {
+                step.note = with_worker(&step.note, n);
+            }
+        }
         "tool.rejected" | "loop.suspected" => {
             step.kind = StepKind::Problem;
             step.verb = if e.kind == "loop.suspected" {
@@ -1069,6 +1086,28 @@ mod tests {
             ]
         );
         assert_eq!(run.end, Some(RunEnd::Answered));
+    }
+
+    #[test]
+    fn a_provider_retry_is_a_visible_step() {
+        let s = SessionId::new();
+        let mut run = Run::new();
+        run.push(&ev(
+            s,
+            "provider.retry",
+            "Worker 2: Retrying in 8 s (attempt 2/4)",
+            json!({"provider": "anthropic", "attempt": 2, "of": 4, "wait_ms": 7600, "reason": "overloaded", "worker": 2}),
+        ));
+        let step = run.steps.last().unwrap();
+        assert_eq!(step.kind, StepKind::Problem);
+        assert_eq!(
+            (step.verb, step.target.as_str(), step.note.as_str()),
+            (
+                "Retrying",
+                "anthropic",
+                "overloaded · waited 8 s · attempt 2/4 · worker 2"
+            )
+        );
     }
 
     #[test]

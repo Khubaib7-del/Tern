@@ -242,3 +242,75 @@ async fn stream_errors_use_the_normal_status_mapping() {
         "{e:?}"
     );
 }
+
+#[tokio::test]
+async fn anthropic_529_is_retried_after_its_retry_after_and_a_spend_cap_is_not() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use tern_providers::{RetryPolicy, with_retry};
+    let server = MockServer::start().await;
+    Mock::given(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(529)
+                .insert_header("retry-after", "1")
+                .set_body_json(serde_json::json!({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "content": [{"type": "text", "text": "Back."}], "usage": {"input_tokens": 5, "output_tokens": 1}
+        })))
+        .mount(&server)
+        .await;
+    let p = Provider::new(
+        spec("anthropic"),
+        key(),
+        Some(&format!("{}/v1", server.uri())),
+    )
+    .unwrap();
+    let req = ChatRequest::new("claude-sonnet-4-5", vec![ChatMessage::user("hi")]);
+    let policy = RetryPolicy {
+        retries: 3,
+        base: Duration::from_millis(10),
+        max_delay: Duration::from_millis(20),
+        max_wait: Duration::from_secs(5),
+    };
+    let notes = Mutex::new(Vec::new());
+    let started = Instant::now();
+    let r = with_retry(
+        policy,
+        |n| notes.lock().unwrap().push(n.line()),
+        || true,
+        |_| p.chat(&req),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.text, "Back.");
+    // Retry-After (1 s) is a floor over the 10 ms backoff.
+    assert!(started.elapsed() >= Duration::from_millis(950));
+    assert_eq!(*notes.lock().unwrap(), ["Retrying in 1 s (attempt 1/3)"]);
+
+    // A spend cap: one call, no retry, a plain message.
+    let capped = MockServer::start().await;
+    Mock::given(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "type": "error",
+            "error": {"type": "rate_limit_error", "message": "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC."}
+        })))
+        .expect(1)
+        .mount(&capped)
+        .await;
+    let p = Provider::new(
+        spec("anthropic"),
+        key(),
+        Some(&format!("{}/v1", capped.uri())),
+    )
+    .unwrap();
+    let e = with_retry(policy, |_| panic!("no retry"), || true, |_| p.chat(&req))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ProviderError::SpendCap { .. }), "{e:?}");
+    assert!(e.to_string().contains("spending limit"), "{e}");
+}

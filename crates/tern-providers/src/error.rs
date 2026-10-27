@@ -2,7 +2,7 @@ use thiserror::Error;
 
 /// Provider failures, worded for the user. Response bodies are redacted
 /// before they are kept here.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ProviderError {
     #[error("{provider} needs an API key. Add one with `tern provider add {id}`.")]
     MissingKey {
@@ -25,6 +25,30 @@ pub enum ProviderError {
         retry_after: Option<u64>,
         /// The provider's own message, redacted; may be empty.
         detail: String,
+    },
+    /// A 429 that waiting will not fix: the key's spending cap or quota
+    /// is used up (#72). Never retried.
+    #[error(
+        "{provider} says this key has reached its spending limit or quota, so Tern did not retry. Raise the limit or add credit in the provider's console, or switch to another key or provider.{}",
+        said(detail)
+    )]
+    SpendCap {
+        provider: &'static str,
+        /// The provider's own message, redacted; may be empty.
+        detail: String,
+    },
+    /// The provider is down or overloaded (HTTP 5xx, Anthropic's 529).
+    /// Retried with backoff (#72).
+    #[error(
+        "{provider} is overloaded or unavailable right now: {} (HTTP {status})",
+        plain_body(body)
+    )]
+    Unavailable {
+        provider: &'static str,
+        status: u16,
+        /// Seconds the provider asked Tern to wait, if it said.
+        retry_after: Option<u64>,
+        body: String,
     },
     #[error("{provider} does not know {what}.")]
     NotFound {
