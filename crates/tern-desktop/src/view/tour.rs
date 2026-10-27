@@ -2426,6 +2426,15 @@ const READ_ALOUD_LONG: &str = "The Transformer replaces recurrence with attentio
 const SLOW_A: &str = "Virtual memory gives every program its own address space. The operating system splits memory into pages and keeps a page table for each process that maps virtual pages to physical frames. When a program touches a page that is not in memory, the hardware raises a page fault and the operating system loads the page from disk, evicting another if memory is full. The translation lookaside buffer caches recent translations so most accesses skip the page table walk. Together these let programs use more memory than the machine has, keep processes isolated from each other, and share code pages safely.";
 const SIDE_A: &str = "TLB is the translation lookaside buffer: a small cache of recent page-table translations inside the CPU.";
 const TLB_A: &str = "A TLB (translation lookaside buffer) caches recent virtual-to-physical page translations, so most memory accesses skip the page-table walk.";
+/// #72: rich answers. A wide table with long cells (they wrap inside the
+/// column) and a highlighted code block.
+const RICH_TABLE_A: &str = "Here is how the three sorts compare:\n\n| Algorithm | Average time | Worst time | Extra memory | When to use it |\n|---|---|---|---|---|\n| Quicksort | O(n log n) | O(n²) | O(log n) stack | The usual default for arrays in memory: fast in practice thanks to cache-friendly partitioning, as long as the pivot is chosen well. |\n| Merge sort | O(n log n) | O(n log n) | O(n) buffer | When the sort must be stable or the data is a linked list or too large for memory, since it reads and writes sequentially. |\n| Heapsort | O(n log n) | O(n log n) | O(1) | When the worst case matters and no extra memory is allowed, at the cost of poorer cache behaviour. |\n\nA quicksort partition in Rust:\n\n```rust\nfn partition(v: &mut [i32]) -> usize {\n    let pivot = v[v.len() - 1];\n    let mut i = 0;\n    for j in 0..v.len() - 1 {\n        if v[j] <= pivot {\n            v.swap(i, j);\n            i += 1;\n        }\n    }\n    let last = v.len() - 1;\n    v.swap(i, last);\n    i // the pivot's final place\n}\n```";
+/// #72: inline and display math, and a Mermaid flowchart.
+const RICH_MATH_A: &str = "Scaled dot-product attention weighs each value by how well its key matches the query, $\\alpha_{ij} = \\mathrm{softmax}_j(q_i \\cdot k_j / \\sqrt{d_k})$, so the whole layer is\n\n$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}\\left(\\frac{QK^\\top}{\\sqrt{d_k}}\\right) V$$\n\nThe encoder block in order:\n\n```mermaid\nflowchart LR\n    A[Tokens] --> B[Embedding + position]\n    B --> C[Multi-head attention]\n    C --> D[Add and norm]\n    D --> E[Feed-forward]\n    E --> F[Add and norm]\n```\n\nThe paper's base model costs $3.3 \\times 10^{18}$ FLOPs to train.";
+/// #72: the answer after one rate-limited attempt.
+const RETRY_A: &str = "Answered on the second attempt: the provider asked Tern to wait, and Tern said so in the status line instead of retrying silently.";
+/// #72: the first request asking this gets HTTP 429 with `Retry-After: 4`.
+const RETRY_Q: &str = "Tour: answer after a rate limit";
 const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
 const TOUR_NOTES: &str = "# Tour notes\n\nThe FYP demo is on 14 November in Lab 3.\n";
 const TOUR_PLAN: &str =
@@ -2600,6 +2609,13 @@ fn composer_script() -> Vec<Beat> {
         ),
         b(Act::CState("web searching"), 3800),
         b(Act::CState("web answered"), 300),
+        scene(
+            "c13b-citation-chip",
+            "tern-only",
+            "The landed answer's [1] is a citation chip; it opens the page in Tern's browser",
+            Act::CState("citation chip"),
+            2500,
+        ),
         b(
             Act::Type("How far do Arctic terns migrate each year?"),
             1200,
@@ -2934,6 +2950,44 @@ fn composer_script() -> Vec<Beat> {
         ),
         b(Act::CState("stopped reply"), 300),
         b(Act::ToastsClear, 400),
+        // #72: rich answers.
+        b(Act::CNewChat, 1200),
+        b(
+            Act::CTypePath("Compare quicksort, merge sort and heapsort"),
+            200,
+        ),
+        scene(
+            "c43-rich-table-code",
+            "tern-only",
+            "A table whose long cells wrap inside their columns, and a Rust block with syntax colours",
+            Act::CSend,
+            4000,
+        ),
+        b(Act::CState("rich table and code"), 300),
+        b(Act::CNewChat, 1200),
+        b(
+            Act::CTypePath("Explain attention with the formula and a diagram"),
+            200,
+        ),
+        scene(
+            "c44-rich-math-mermaid",
+            "tern-only",
+            "Inline and display math typeset by RaTeX, and a Mermaid flowchart drawn by merman",
+            Act::CSend,
+            4500,
+        ),
+        b(Act::CState("rich math and mermaid"), 300),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath(RETRY_Q), 200),
+        scene(
+            "c45-retry-status",
+            "tern-only",
+            "The provider answers 429 with Retry-After: the status line says Retrying in N s (attempt k/n)",
+            Act::CSend,
+            1800,
+        ),
+        b(Act::CState("retry status"), 4500),
+        b(Act::CState("answered after retry"), 300),
         scene(
             "c30-settings-read-aloud",
             "tern-only",
@@ -3107,6 +3161,19 @@ mod mock {
             reader.read_exact(&mut b)?;
             b
         };
+        // #72: the first chat request for the retry scene is rate limited.
+        if rate_limit_once(&body) {
+            super::log("TOUR mock 429 Retry-After 4");
+            let reply = json!({"error": {"message": "Rate limit reached for tour-chat. Please try again in 4s.", "type": "rate_limit_error"}}).to_string();
+            let mut out = stream;
+            write!(
+                out,
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                reply.len()
+            )?;
+            out.write_all(reply.as_bytes())?;
+            return out.flush();
+        }
         let (ctype, reply) = route(&method, &path, &body);
         // #71: a slow answer streams a word every 250 ms, so a scene can
         // stop it or open another chat while it runs.
@@ -3204,6 +3271,20 @@ mod mock {
         }
     }
 
+    /// Whether this is the first chat request whose last user message is
+    /// the retry scene's question (#72).
+    fn rate_limit_once(body: &[u8]) -> bool {
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let has_tools = req["tools"].as_array().is_some_and(|t| !t.is_empty());
+        let asks = has_tools
+            && req["messages"]
+                .as_array()
+                .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
+                .is_some_and(|m| text_of(m).contains(super::RETRY_Q));
+        asks && !DONE.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Whether the request's last user message asks for a slow answer.
     fn slow(body: &[u8]) -> bool {
         let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
@@ -3285,6 +3366,16 @@ mod mock {
         }
         if has_tools && user.contains("What is a TLB?") {
             return (super::TLB_A.into(), None);
+        }
+        // #72: rich answers.
+        if has_tools && user.contains("Compare quicksort") {
+            return (super::RICH_TABLE_A.into(), None);
+        }
+        if has_tools && user.contains("Explain attention with the formula") {
+            return (super::RICH_MATH_A.into(), None);
+        }
+        if has_tools && user.contains(super::RETRY_Q) {
+            return (super::RETRY_A.into(), None);
         }
         // Web results Tern sent back (its own search, or the model's call):
         // a cited answer. The follow-up says it searched again.
