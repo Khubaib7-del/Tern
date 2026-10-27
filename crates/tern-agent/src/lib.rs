@@ -117,7 +117,8 @@ pub use run::{
 pub use sources::PageRef;
 pub use steer::Steering;
 pub use tern_providers::{
-    Delta, Effort, ImageInput, Thinking, known_context_window, thinking_support,
+    Delta, Effort, ImageInput, ProviderSpec, Thinking, find as find_provider, known_context_window,
+    thinking_support,
 };
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, ProjectSummary, SessionSummary, Store};

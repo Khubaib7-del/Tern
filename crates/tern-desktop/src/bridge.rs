@@ -1279,6 +1279,18 @@ impl Bridge {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let base = Preferences::load().base_url(id).map(str::to_owned);
+            // A local server (Ollama, LM Studio) that is not running is
+            // said in about 2 s, not after the whole wait (#70).
+            if let Some(spec) = tern_agent::find_provider(id).filter(|s| s.local) {
+                let url = base.clone().unwrap_or_else(|| spec.base_url.to_owned());
+                let up = tokio::task::spawn_blocking(move || local_server_up(&url))
+                    .await
+                    .unwrap_or(true);
+                if !up {
+                    let _ = tx.send(Msg::Models(id, Err(not_running(spec.name))));
+                    return;
+                }
+            }
             let fetch = async {
                 if fresh {
                     setup::models_fresh(id, secrets, base.as_deref()).await
@@ -1929,6 +1941,41 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
     )
 }
 
+/// How long a local model server gets to answer a connection (#70).
+const LOCAL_CONNECT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// "Not running — start Ollama, then Retry." The picker shows it as is.
+pub fn not_running(name: &str) -> String {
+    format!("Not running — start {name}, then Retry.")
+}
+
+/// Whether something listens at the host and port of `url`
+/// (`http://localhost:11434/v1`), trying each address for
+/// [`LOCAL_CONNECT`]. An address Tern cannot work out counts as up, so
+/// the normal listing (and its error) decides.
+pub fn local_server_up(url: &str) -> bool {
+    use std::net::ToSocketAddrs as _;
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    let host_port = if host_port.contains(':') {
+        host_port.to_owned()
+    } else if url.starts_with("https") {
+        format!("{host_port}:443")
+    } else {
+        format!("{host_port}:80")
+    };
+    let Ok(addrs) = host_port.to_socket_addrs() else {
+        return true;
+    };
+    let addrs: Vec<_> = addrs.collect();
+    if addrs.is_empty() {
+        return true;
+    }
+    addrs
+        .iter()
+        .any(|a| std::net::TcpStream::connect_timeout(a, LOCAL_CONNECT).is_ok())
+}
+
 /// Has `p.readers` read the pictures (first that works) and returns the
 /// message with their text, or with a note for each picture none could
 /// read. Says which reader did it in an info toast, and records a local
@@ -1967,6 +2014,18 @@ async fn read_pictures(tx: &mpsc::UnboundedSender<Msg>, p: &Pictures, text: &str
 #[cfg(test)]
 mod tests {
     use super::model_report;
+
+    #[test]
+    fn a_local_server_that_is_not_running_is_said_quickly() {
+        // Port 9 (discard) has nothing listening on CI runners.
+        let t0 = std::time::Instant::now();
+        assert!(!super::local_server_up("http://127.0.0.1:9/v1"));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(4));
+        assert_eq!(
+            super::not_running("Ollama"),
+            "Not running — start Ollama, then Retry."
+        );
+    }
 
     #[test]
     fn reports_read_plainly() {
