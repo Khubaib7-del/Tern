@@ -26,8 +26,167 @@ use super::{LocalEngine, ModelEntry, Runtime, Task};
 /// The longest one picture may take (model load included).
 pub const TIME_LIMIT: Duration = Duration::from_secs(240);
 
-/// The longest answer, in tokens.
-const MAX_TOKENS: &str = "512";
+/// The longest answer, in tokens, for a model: short for the small
+/// SmolVLMs (they repeat themselves past ~200 tokens, #70), longer for a
+/// page of Granite-Docling's DocTags.
+pub fn max_tokens(entry: &ModelEntry, page: bool) -> u32 {
+    let id = entry.id.to_ascii_lowercase();
+    if page {
+        1536
+    } else if id.contains("256m") {
+        200
+    } else if id.contains("500m") {
+        256
+    } else {
+        512
+    }
+}
+
+/// The longest side of a picture handed to a vision model; larger ones
+/// are scaled down first (the models work at 384–512 px tiles, and a
+/// phone photo only costs time to encode).
+pub const MAX_SIDE: u32 = 1024;
+
+/// What the helper reported about GPUs, once per run of Tern: the device
+/// lines of `tern-vlm --list-devices` (empty: no GPU), or why it could
+/// not tell.
+static GPU_DEVICES: std::sync::OnceLock<Result<Vec<String>, String>> = std::sync::OnceLock::new();
+
+/// The GPU devices the helper can use (`--list-devices`), asked once.
+pub fn gpu_devices(helper: &Path) -> Result<Vec<String>, String> {
+    GPU_DEVICES
+        .get_or_init(|| {
+            let mut cmd = Command::new(helper);
+            cmd.arg("--list-devices");
+            let (_, out, log) = run_limited(cmd, Duration::from_secs(30))?;
+            let devices = parse_devices(&format!("{out}\n{log}"));
+            crate::diag::note(&format!(
+                "vlm: tern-vlm --list-devices: {}{}",
+                if devices.is_empty() {
+                    "(no GPU)".to_owned()
+                } else {
+                    devices.join("; ")
+                },
+                backend_note(helper)
+            ));
+            Ok(devices)
+        })
+        .clone()
+}
+
+/// The device lines of `--list-devices` output ("Vulkan0: Intel(R) UHD
+/// Graphics (…)"), the CPU and "(none)" left out.
+pub fn parse_devices(text: &str) -> Vec<String> {
+    let mut on = false;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let l = line.trim();
+        if l.to_ascii_lowercase().starts_with("available devices") {
+            on = true;
+            continue;
+        }
+        if !on || l.is_empty() || l == "(none)" {
+            continue;
+        }
+        if let Some((name, _)) = l.split_once(':')
+            && !name.contains(' ')
+            && !name.to_ascii_lowercase().starts_with("cpu")
+        {
+            out.push(l.chars().take(120).collect());
+        }
+    }
+    out
+}
+
+/// " (ggml-vulkan missing beside tern-vlm)" when the Vulkan backend
+/// library is not next to the helper (Windows and Linux builds load it
+/// at run time), else "".
+fn backend_note(helper: &Path) -> String {
+    if cfg!(target_os = "macos") {
+        return String::new();
+    }
+    let Some(dir) = helper.parent() else {
+        return String::new();
+    };
+    let found = std::fs::read_dir(dir).ok().is_some_and(|rd| {
+        rd.flatten().any(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("ggml-vulkan")
+        })
+    });
+    if found {
+        String::new()
+    } else {
+        " (ggml-vulkan is missing beside tern-vlm, so it cannot use a GPU)".into()
+    }
+}
+
+/// The helper's log lines about devices and backends, for tern.log when
+/// a GPU run ended on the CPU.
+pub fn device_lines(log: &str) -> String {
+    log.lines()
+        .map(str::trim)
+        .filter(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("vulkan")
+                || l.contains("using device")
+                || l.contains("offloaded")
+                || l.contains("backend")
+                || l.contains("no usable gpu")
+        })
+        .take(6)
+        .map(|l| l.chars().take(160).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// Drops sentences a small model repeated: each sentence is kept once.
+pub fn drop_repeats(text: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    for para in text.split("\n") {
+        let mut kept = String::new();
+        for sentence in para.split_inclusive(['.', '!', '?']) {
+            let key: String = sentence
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase();
+            if key.len() >= 12 && !seen.insert(key) {
+                continue;
+            }
+            kept.push_str(sentence);
+        }
+        if !kept.trim().is_empty() || para.trim().is_empty() {
+            out.push_str(kept.trim_end());
+            out.push('\n');
+        }
+    }
+    let mut t = out.trim().to_owned();
+    while t.contains("\n\n\n") {
+        t = t.replace("\n\n\n", "\n\n");
+    }
+    t
+}
+
+/// A picture no larger than [`MAX_SIDE`] (PNG), or the bytes as they
+/// are when they already fit or cannot be decoded.
+fn scaled(image: &[u8]) -> Vec<u8> {
+    let Ok(img) = image::load_from_memory(image) else {
+        return image.to_vec();
+    };
+    if img.width().max(img.height()) <= MAX_SIDE {
+        return image.to_vec();
+    }
+    let small = img.resize(MAX_SIDE, MAX_SIDE, image::imageops::FilterType::Triangle);
+    let mut png = std::io::Cursor::new(Vec::new());
+    match small.write_to(&mut png, image::ImageFormat::Png) {
+        Ok(()) => png.into_inner(),
+        Err(_) => image.to_vec(),
+    }
+}
 
 /// What Granite-Docling is asked (its own instruction).
 pub const DOCLING_PROMPT: &str = "Convert this page to docling.";
@@ -240,6 +399,19 @@ impl LlamaVlm {
         image: &[u8],
         prompt: &str,
     ) -> Result<Run, String> {
+        self.run_with(dir, entry, image, prompt, false)
+    }
+
+    /// [`LlamaVlm::run`]; `page` for a document page (longer answer, the
+    /// picture at full size, no repeat penalty: DocTags repeat by design).
+    pub fn run_with(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+        prompt: &str,
+        page: bool,
+    ) -> Result<Run, String> {
         let helper = helper().ok_or_else(helper_missing)?;
         let (model, proj) = model_files_of(entry)
             .ok_or_else(|| format!("{} has no vision projector file", entry.name))?;
@@ -249,12 +421,30 @@ impl LlamaVlm {
                 return Err(format!("{} is missing {}", entry.name, f.display()));
             }
         }
-        let pic = picture_file(image)?;
+        let image = if page { image.to_vec() } else { scaled(image) };
+        let pic = picture_file(&image)?;
         let threads = super::speech::threads();
         let device = super::speech::choice().device;
+        let tokens = max_tokens(entry, page).to_string();
+        // Auto and GPU try the GPU first when the helper lists one; with
+        // none listed the run goes straight to the CPU, and tern.log says
+        // why (#70: every run said CPU with no reason).
         let tries: &[bool] = match device {
             super::speech::Device::Cpu => &[false],
-            _ => &[true, false],
+            _ => match gpu_devices(&helper) {
+                Ok(d) if !d.is_empty() => &[true, false],
+                Ok(_) => {
+                    crate::diag::note(&format!(
+                        "vlm: GPU skipped: tern-vlm lists no GPU device{} -> CPU",
+                        backend_note(&helper)
+                    ));
+                    &[false]
+                }
+                Err(e) => {
+                    crate::diag::note(&format!("vlm: GPU check failed: {e} -> CPU"));
+                    &[false]
+                }
+            },
         };
         let mut last_err = String::new();
         for &gpu in tries {
@@ -267,8 +457,11 @@ impl LlamaVlm {
                 .arg(&pic)
                 .arg("-p")
                 .arg(prompt)
-                .args(["-n", MAX_TOKENS, "--temp", "0", "-c", "8192"])
+                .args(["-n", &tokens, "--temp", "0", "-c", "8192"])
                 .args(["-t", &threads.to_string()]);
+            if !page {
+                cmd.args(["--repeat-penalty", "1.15", "--repeat-last-n", "128"]);
+            }
             if gpu {
                 cmd.args(["-ngl", "99"]);
             } else {
@@ -280,11 +473,18 @@ impl LlamaVlm {
             match got {
                 Ok((true, out, log)) => {
                     let text = clean_answer(&out);
+                    let text = if page { text } else { drop_repeats(&text) };
                     let device = if gpu {
                         device_from_log(&log)
                     } else {
                         "CPU".into()
                     };
+                    if gpu && device == "CPU" {
+                        crate::diag::note(&format!(
+                            "vlm: GPU asked but tern-vlm ran on the CPU; its log: {}",
+                            device_lines(&log)
+                        ));
+                    }
                     crate::diag::note(&format!(
                         "vlm: model={} device={device} threads={threads} took={secs:.1}s chars={}",
                         entry.id,
@@ -299,8 +499,10 @@ impl LlamaVlm {
                 Ok((false, _, log)) => {
                     last_err = error_from_log(&log);
                     crate::diag::note(&format!(
-                        "vlm: model={} gpu={gpu} failed after {secs:.1}s: {last_err}",
-                        entry.id
+                        "vlm: model={} {} failed after {secs:.1}s: {last_err}{}",
+                        entry.id,
+                        if gpu { "GPU" } else { "CPU" },
+                        if gpu { " -> CPU" } else { "" }
                     ));
                 }
                 Err(e) => {
@@ -356,7 +558,7 @@ impl LocalEngine for LlamaVlm {
         } else {
             "Convert this page to Markdown. Keep headings, lists and tables; transcribe the text exactly."
         };
-        let r = self.run(dir, entry, image, prompt)?;
+        let r = self.run_with(dir, entry, image, prompt, true)?;
         Ok(if r.text.contains("<loc_") || r.text.contains("<doctag>") {
             doctags_to_markdown(&r.text)
         } else {
@@ -474,6 +676,31 @@ mod tests {
             assert!(ids.contains(&want), "{want} missing from {ids:?}");
         }
         assert!(!ids.contains(&"embeddinggemma-2-q8"));
+    }
+
+    #[test]
+    fn gpu_devices_are_read_from_the_listing() {
+        let out =
+            "Available devices:\n  Vulkan0: Intel(R) UHD Graphics (7000 MiB, 6500 MiB free)\n";
+        assert_eq!(
+            parse_devices(out),
+            vec!["Vulkan0: Intel(R) UHD Graphics (7000 MiB, 6500 MiB free)".to_owned()]
+        );
+        assert!(parse_devices("Available devices:\n  (none)\n").is_empty());
+        assert!(parse_devices("load_backend: loaded CPU backend from ggml-cpu.dll").is_empty());
+    }
+
+    #[test]
+    fn small_models_answer_briefly_once() {
+        let m = Manifest::builtin();
+        let e = |id: &str| m.find(id).expect("built-in model").clone();
+        assert_eq!(max_tokens(&e("smolvlm-256m"), false), 200);
+        assert!(max_tokens(&e("granite-docling-258m"), true) > 1000);
+        let rambling = "A robot stands in a dark room. It has glowing blue lines. A robot stands in a dark room. The text reads TRON.";
+        assert_eq!(
+            drop_repeats(rambling),
+            "A robot stands in a dark room. It has glowing blue lines. The text reads TRON."
+        );
     }
 
     #[test]

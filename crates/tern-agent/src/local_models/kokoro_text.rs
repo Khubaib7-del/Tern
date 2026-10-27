@@ -118,6 +118,41 @@ pub fn sentences(text: &str) -> Vec<String> {
     out
 }
 
+/// The most words in one piece of a long sentence (#70): Kokoro takes
+/// about twice as long as the audio on a busy 4-core laptop, so a long
+/// sentence is spoken in clause-sized pieces and the first one starts
+/// sooner.
+pub const CHUNK_WORDS: usize = 12;
+
+/// A sentence in pieces of at most about [`CHUNK_WORDS`] words, split
+/// after commas, semicolons, colons and dashes where it can, else between
+/// words. A short sentence is one piece.
+pub fn chunks(sentence: &str) -> Vec<String> {
+    let words: Vec<&str> = sentence.split_whitespace().collect();
+    if words.len() <= CHUNK_WORDS + 4 {
+        return vec![sentence.trim().to_owned()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        cur.push(w);
+        let left = words.len() - i - 1;
+        let clause_end = w.ends_with([',', ';', ':']) || *w == "-" || *w == "—";
+        let full = cur.len() >= CHUNK_WORDS;
+        // A clause of at least 5 words ends a piece, and so does the
+        // CHUNK_WORDS-th word; a piece never leaves fewer than 4 words
+        // behind, so no piece is longer than CHUNK_WORDS + 3.
+        if left >= 4 && ((clause_end && cur.len() >= 5) || full) {
+            out.push(cur.join(" "));
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur.join(" "));
+    }
+    out
+}
+
 fn ends_with_abbreviation(s: &str) -> bool {
     let last = s
         .trim_end_matches('.')
@@ -175,5 +210,20 @@ mod tests {
         assert_eq!(voice_or_default(Some("bm_george")), "bm_george");
         assert_eq!(voice_or_default(Some("zz_none")), DEFAULT_VOICE);
         assert_eq!(voice_or_default(None), DEFAULT_VOICE);
+    }
+
+    #[test]
+    fn long_sentences_are_spoken_in_pieces() {
+        assert_eq!(chunks("Hello there."), ["Hello there."]);
+        let long = "The Transformer replaces recurrence with attention, which lets every token look at every other token at once, and that is why it trains so much faster on modern hardware than older recurrent networks did.";
+        let c = chunks(long);
+        assert!(c.len() >= 3, "{c:?}");
+        assert!(
+            c.iter()
+                .all(|p| p.split_whitespace().count() <= CHUNK_WORDS + 4),
+            "{c:?}"
+        );
+        assert_eq!(c.join(" "), long);
+        assert!(c[0].ends_with(','), "{c:?}");
     }
 }

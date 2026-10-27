@@ -1625,7 +1625,11 @@ impl Workspace {
                     .gap_2()
                     .text_xs()
                     .text_color(p.muted)
-                    .child(SharedString::from(format!("Could not list models: {e}")))
+                    .child(SharedString::from(if e.starts_with("Not running") {
+                        e.clone()
+                    } else {
+                        format!("Could not list models: {e}")
+                    }))
                     .child(
                         Button::new("picker-retry")
                             .capsule()

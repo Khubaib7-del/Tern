@@ -4,6 +4,21 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #70): local runtimes, round 1
+
+From the Windows test of #69.
+
+- **Scanned PDFs are read as scans** (`docs.rs`): a page with a picture and under 100 letters, or only a scanning app's watermark ("Scanned with CamScanner" and the like), is read by Granite-Docling or the local OCR model, page by page, so a PDF with a text page and a scanned page keeps both. A PDF chip offers **Read as scanned**, and "try local model granite docling" (or "read it again as scanned") reads the chat's last PDF again as scanned before sending.
+- **Old Office files** (`office_legacy.rs`, an in-house compound-file reader, no new crates): `.xls` (BIFF8 cells, a table per sheet), `.ppt` (slide text) and `.doc` (the piece table's text) become Markdown on this computer. A file Tern cannot read names Save As `.xlsx`/`.pptx`/`.docx`.
+- **Attachments are text Tern read**: text read from pictures goes inside the attachments block, so the user's bubble never shows it or a stray `</untrusted-data>`; the model is told the attachment is text Tern read, and a reply saying it cannot access files gets one nudge back to that text.
+- **No web search for a question about an attachment**: the prefetch looks only at the user's own words, and "what is in this picture" goes to the picture, not the web.
+- **Pictures on SmolVLM** (`llama_vlm.rs`): `tern-vlm` is asked for its GPUs once and `tern.log`'s `vlm:` line says why a run is on the CPU; SmolVLM is capped at 200 tokens with a repeat penalty and a brief prompt, repeated lines are dropped, and pictures are scaled to 1024 px first.
+- **Read aloud**: long sentences are spoken in clause-sized pieces, so the first audio comes sooner and slow CPUs leave short pauses; `tern.log` says how fast synthesis ran against real time.
+- **Auto dictation**: live text shows at once on the fast model; the language is checked once (and again on a new phrase every 10 s) without transcribing, by Whisper's language detection, or by the optional **Whisper tiny** add-on (Settings › Local models › Transcribe audio files, **Add**, 31 MB) when it is downloaded; Urdu restarts the phrase on Whisper; windows with no speech are never sent; the language is kept for 2 minutes; sound tags like `[inaudible]` are dropped.
+- **Ollama or LM Studio not running**: the model picker says "Not running — start Ollama, then Retry." within about 2 s, instead of "Loading models…".
+- **UI tour** (composer): c31–c35 show a scanned PDF and its chip, **Read as scanned**, old Office files, a clean bubble with no web prefetch on a picture question, and the Ollama message.
+- **CI**: the Linux smoke test converts a scanned (watermarked) PDF through the OCR/Granite path, reads `.xls` and `.ppt` files, and checks SmolVLM's capped output.
+
 ### Added (PR #69): local pictures, documents to Markdown, read aloud
 
 - **Pictures described on this computer**: SmolVLM 500M (default), SmolVLM 256M (new, the first alternative: half the size, faster on an older laptop) and Qwen3-VL 2B run on llama.cpp through `tern-vlm`, a helper program shipped in `vlm/` beside the app (llama.cpp `b11900` `llama-mtmd-cli`, built by CI with `.github/scripts/build-vlm.sh`: ggml's CPU and Vulkan backends loaded at run time on Windows and Linux, Metal on macOS). A helper keeps a crash in the C++ runtime or a GPU driver out of Tern. Settings › Speech › Device applies: Auto and GPU offload every layer and run again on the CPU when that fails; at most four CPU threads; a 240 s limit; no console window on Windows. Each run logs model, device, threads and time. The status line says "Looking at image…" while a local model reads a picture, and the local OCR text goes with the description.

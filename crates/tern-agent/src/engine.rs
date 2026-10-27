@@ -364,6 +364,10 @@ pub struct RunHooks<'a> {
     pub prefetch: bool,
 }
 
+/// What the model is told when it says it cannot open files that are in
+/// the conversation as text (#70).
+pub const FILE_NUDGE: &str = "(Tern note: the attached files are already in this conversation as text. Tern converted them on this computer and put their full contents inside the <attachments> block of the user's message above. Read them there and answer the question; do not say you cannot access, open or analyze files. If the text there is empty or only says a page is scanned, say what is missing and tell the user to press \"Read again as scanned\" on the file's chip to read it with the local document or OCR model.)";
+
 /// What a message plainly asks Tern to read before the model answers: the
 /// file at a full path it names (when that file exists), and a web search
 /// when it says to use the web. `previous` is the user's previous
@@ -375,18 +379,37 @@ pub fn prefetch_calls(
     tools: &ToolRegistry,
 ) -> Vec<(&'static str, Value)> {
     let mut out = Vec::new();
+    // Only the user's own words: never the attachments block, the text
+    // Tern read from a picture, or a quoted reply (#70: a picture's
+    // description once became a web search for "Tron Legacy").
+    let (own, _) = crate::attach::split(text);
+    let (_, own) = crate::reply::split(own);
     if tools.get("file_read").is_some()
-        && let Some(raw) = crate::paths::find_in_text(text)
+        && let Some(raw) = crate::paths::find_in_text(own)
         && crate::paths::user_path(&raw).is_file()
     {
         out.push(("file_read", json!({"path": raw})));
     }
     if tools.get("web_search").is_some()
-        && let Some(query) = crate::webintent::web_query_with(text, previous)
+        && let Some(query) = web_prefetch(text, previous)
     {
         out.push(("web_search", json!({"query": query})));
     }
     out
+}
+
+/// The web search Tern runs before the model answers `text`, if any
+/// ([`prefetch_calls`] with web search on): from the user's own words
+/// only, never for a question about an attachment (#70).
+pub fn web_prefetch(text: &str, previous: Option<&str>) -> Option<String> {
+    let (own, chips) = crate::attach::split(text);
+    let (_, own) = crate::reply::split(own);
+    let has_attachments = !chips.is_empty() || own.len() < text.len();
+    if has_attachments && crate::webintent::about_attachment(own) {
+        return None;
+    }
+    let previous = previous.map(|p| crate::reply::split(crate::attach::split(p).0).1);
+    crate::webintent::web_query_with(own, previous)
 }
 
 /// The search a message asks for ("use the web tool", "search the web
@@ -764,6 +787,7 @@ impl Run<'_, '_> {
             }
         }
         let mut empty_retried = false;
+        let mut file_nudged = false;
 
         loop {
             self.check_cancel()?;
@@ -902,6 +926,30 @@ impl Run<'_, '_> {
                         ),
                         json!({"finish_reason": reply.finish_reason}),
                     ))?;
+                    self.go(TurnState::Verifying)?;
+                }
+                Reply::Answer(text)
+                    if !file_nudged
+                        && crate::webintent::is_file_refusal(&text)
+                        && messages.iter().any(|m| {
+                            m.role == tern_providers::Role::User
+                                && m.content.contains("<attachments>")
+                        }) =>
+                {
+                    // "I can't access files" while the file is right there
+                    // as text (#70): said once, the model is pointed at it.
+                    file_nudged = true;
+                    self.record(self.event(
+                        "model.file_refusal",
+                        EffectClass::Analysis,
+                        "The model said it could not open the attached file; Tern pointed it at the file's text",
+                        json!({}),
+                    ))?;
+                    crate::diag::note(
+                        "turn: the model said it cannot open files; pointed at the attachment text",
+                    );
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(FILE_NUDGE.to_owned()));
                     self.go(TurnState::Verifying)?;
                 }
                 Reply::Answer(text) => {

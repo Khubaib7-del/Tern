@@ -310,6 +310,25 @@ pub async fn dictate(
     (r, ctl.heard())
 }
 
+/// Auto dictation's language check (#70): which language `audio` (16
+/// kHz mono, the first seconds of speech) is in, how sure, and the model
+/// that said so. Whisper tiny when it is downloaded, else the Whisper
+/// that transcribes; only the language is worked out, nothing is
+/// transcribed.
+pub async fn detect_language(audio: Vec<f32>) -> Result<(String, f32, String), String> {
+    tokio::task::spawn_blocking(move || {
+        let (lm, _) = crate::local_models::LocalModels::discover()?;
+        let prefs = crate::prefs::Preferences::load();
+        let id = lm
+            .language_checker(&prefs.local_models)
+            .ok_or("no Whisper model is downloaded and on")?;
+        let (code, p) = lm.detect_language(&id, &audio)?;
+        Ok((code, p, id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The end of the "heard no speech" error.
 pub const NO_SPEECH: &str = "heard no speech in the recording";
 
@@ -1044,8 +1063,10 @@ fn ocr_with_description(lm: &crate::local_models::LocalModels, image: &[u8]) -> 
 }
 
 /// What a small local vision model is asked.
-const LOCAL_DESCRIBE: &str =
-    "Describe this picture in detail. Transcribe any visible text exactly.";
+/// Short and plain (#70): small models ramble and repeat themselves when
+/// asked for detail (SmolVLM 256M wrote 2,000+ characters per picture).
+pub const LOCAL_DESCRIBE: &str =
+    "Describe this image in 3-5 sentences. Include any visible text exactly.";
 /// Decides how pictures reach a chat with `model` on `provider`.
 pub fn plan_images(
     catalog: &Catalog,

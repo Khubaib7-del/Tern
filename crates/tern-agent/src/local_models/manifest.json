@@ -455,6 +455,26 @@
       "licence_note": "Whisper by OpenAI, MIT; ggml conversion by the whisper.cpp project."
     },
     {
+      "id": "whisper-tiny-q5_1",
+      "task": "speech_to_text",
+      "role": "addon",
+      "name": "Whisper tiny (q5_1), language check",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "licence": "MIT",
+      "runtime": "whisper_cpp",
+      "note": "Optional: tells which language you speak when Dictation language is Auto, in about a second, before English goes to the fast model.",
+      "files": [
+        {
+          "name": "ggml-tiny-q5_1.bin",
+          "size": 32152673,
+          "sha256": "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7"
+        }
+      ],
+      "logo": "whisper",
+      "licence_note": "Whisper by OpenAI, MIT; ggml conversion by the whisper.cpp project."
+    },
+    {
       "id": "kokoro-82m-int8",
       "task": "text_to_speech",
       "role": "default",

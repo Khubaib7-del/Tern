@@ -52,6 +52,7 @@ pub mod local_models;
 pub mod mcp;
 pub mod media;
 pub mod mention;
+pub mod office_legacy;
 pub mod paths;
 pub mod pictures;
 pub mod policy;
@@ -116,7 +117,8 @@ pub use run::{
 pub use sources::PageRef;
 pub use steer::Steering;
 pub use tern_providers::{
-    Delta, Effort, ImageInput, Thinking, known_context_window, thinking_support,
+    Delta, Effort, ImageInput, ProviderSpec, Thinking, find as find_provider, known_context_window,
+    thinking_support,
 };
 pub use tern_research::deep::WorkerStatus;
 pub use tern_store::{Harness, ProjectSummary, SessionSummary, Store};

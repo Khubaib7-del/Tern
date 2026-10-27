@@ -64,6 +64,7 @@ Notes on the picks:
 - **The helper.** llama.cpp's multimodal CLI (`llama-mtmd-cli`, MIT) at a pinned release (`b11900`), built by CI with `.github/scripts/build-vlm.sh` and renamed `tern-vlm`. It ships in a `vlm/` folder beside the app: `vlm/tern-vlm.exe` with `ggml-cpu.dll`, `ggml-vulkan.dll` and friends on Windows, `vlm/tern-vlm` with its `.so` files on Linux, `Tern.app/Contents/Resources/vlm/tern-vlm` on macOS (one static program with Metal). `TERN_VLM` points Tern at another copy. Without it, the vision rows say the build does not include the helper and pictures go to the next reader.
 - **Why a separate program**: a crash in the C++ runtime or a GPU driver ends the helper, never Tern. A failed run is a banner over the composer with **Use the alternative** or **Download**.
 - **Device**: Settings › Speech › Device applies. Auto and GPU offload every layer (`-ngl 99`; Vulkan on Windows and Linux, Metal on macOS) and run again on the CPU (`--device none`) when that fails; a PC without a Vulkan driver loads no Vulkan backend and runs on the CPU. CPU threads follow Whisper's rule (Auto, at most four). A run stops after 240 s. Each run logs the model, device, threads and time in `tern.log` (`vlm: model=… device=… threads=… took=…`).
+- **GPU reason and short answers** (#70): Tern asks `tern-vlm` for its GPUs once, and the `vlm:` line says why a run is on the CPU (no GPU listed, `ggml-vulkan` missing beside it, or the GPU run failed, with the helper's device lines). SmolVLM is capped at 200 tokens with a repeat penalty and a brief prompt, repeated lines are dropped, and pictures are scaled to 1024 px on the long edge first.
 - **In the chat**: a picture for a chat model that cannot see is described by the installed vision model first (the status line says "Looking at image…"); the local OCR text goes with the description. SmolVLM 256M is the first alternative (half the size of 500M, faster on an older laptop), Qwen3-VL 2B the second.
 - `tern models describe <picture> [--model <id>] [--prompt "…"]` prints the description and the device.
 
@@ -71,7 +72,9 @@ Notes on the picks:
 
 Attached documents become Markdown before the model sees them (`tern_agent::docs`):
 
-- **PDF**: the text layer, page by page. Pages with no text (scans) are read by Granite-Docling (DocTags → Markdown: headings, lists, tables, captions, code, formulas) when it is installed and runnable, else by the local OCR model; at most 30 scanned pages.
+- **PDF**: the text layer, page by page. A page counts as scanned when it has a picture and under 100 letters of text, or only a scanning app's watermark ("Scanned with CamScanner" and the like) (#70); scanned pages are read by Granite-Docling (DocTags → Markdown: headings, lists, tables, captions, code, formulas) when it is installed and runnable, else by the local OCR model; at most 30 scanned pages. A PDF with text pages and scanned pages keeps both, in page order.
+- **Read as scanned** (#70): a PDF chip offers it to read every page as a scan. Typing "try local model granite docling" (or "read it again as scanned") reads the chat's last PDF again as scanned, then sends.
+- **Old Office files** (#70): `.xls` (Excel 97–2003, BIFF8 cells, a table per sheet), `.ppt` (slide text) and `.doc` (the document's text) through `office_legacy.rs`, Tern's own compound-file reader (no extra crates). A file it cannot read says to Save As `.xlsx`, `.pptx` or `.docx`.
 - **DOCX** (headings, lists, tables), **PPTX** (a section per slide), **XLSX** (a table per sheet, at most 300 rows and 40 columns), and an **HTML** file attached on its own (its main text).
 - The result is cached by the file's SHA-256, so attaching the same file again is instant.
 - The chip says how it was read: "PDF text → Markdown · 12 pages", "DOCX → Markdown", "Granite-Docling 258M (Q8) → Markdown · 3 pages", "OCR (PP-OCRv6 small) → Markdown · 2 pages". While a single document converts, the composer says "Converting report.pdf to Markdown…".
@@ -80,7 +83,7 @@ Attached documents become Markdown before the model sees them (`tern_agent::docs
 ### Read aloud: Kokoro
 
 - **Kokoro 82M (int8)** on ONNX Runtime through [`loqui-kokoro`](https://crates.io/crates/loqui-kokoro) (MIT) with [`loqui-g2p`](https://crates.io/crates/loqui-g2p) (MIT) for the phonemes: misaki's English lexicons and a small neural model for unknown words. No espeak-ng (GPL-3.0) is linked or downloaded.
-- **The speaker button** under an answer reads it sentence by sentence: the first sentence plays as soon as it is made, the next ones are made behind it. While it reads the button becomes **Pause**/**Play** and **Stop** with "Reading 2 of 5". Leaving the chat or starting another reading stops it. Code blocks are not read out (they are announced as "code block"), and link addresses are left out.
+- **The speaker button** under an answer reads it sentence by sentence (long sentences in clause-sized pieces since #70, so the first audio comes sooner; `tern.log` says how fast synthesis ran against real time): the first sentence plays as soon as it is made, the next ones are made behind it. While it reads the button becomes **Pause**/**Play** and **Stop** with "Reading 2 of 5". Leaving the chat or starting another reading stops it. Code blocks are not read out (they are announced as "code block"), and link addresses are left out.
 - **English only**: an Urdu answer gets the note "Read aloud supports English for now." instead of garbled phonemes; English sentences in a mixed answer are read.
 - **Settings › Speech › Read aloud**: Voice (Heart, Michael, Emma, George), Speed (0.8× to 1.3×), and the voice model in use. Saved as `read_aloud_voice` and `read_aloud_speed` in `preferences.json`.
 - With no voice model downloaded, the button shows the banner with **Download** (Kokoro 82M).
@@ -88,7 +91,7 @@ Attached documents become Markdown before the model sees them (`tern_agent::docs
 
 ### CI
 
-Every pull request builds `tern-vlm` on Windows, Linux and macOS (cached by the hash of `build-vlm.sh`) and puts `vlm/` in the test builds. On Windows, CI checks that `tern-vlm.exe --list-devices` runs with the runner's Vulkan loader hidden. On Linux, `.github/scripts/local-runtimes-smoke.sh` downloads SmolVLM 256M and Kokoro (cached) and runs `tern models describe` on a test picture, `tern models speak` to a WAV and `tern models convert` on a DOCX.
+Every pull request builds `tern-vlm` on Windows, Linux and macOS (cached by the hash of `build-vlm.sh`) and puts `vlm/` in the test builds. On Windows, CI checks that `tern-vlm.exe --list-devices` runs with the runner's Vulkan loader hidden. On Linux, `.github/scripts/local-runtimes-smoke.sh` downloads SmolVLM 256M and Kokoro (cached) and runs `tern models describe` on a test picture (checking SmolVLM's capped output), `tern models speak` to a WAV and `tern models convert` on a DOCX, a scanned PDF with a watermark (the OCR/Granite path), an `.xls` and a `.ppt`.
 
 ## Not yet
 

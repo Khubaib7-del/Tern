@@ -9,7 +9,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::local_models::kokoro_text::{CODE_BLOCK, ENGLISH_ONLY, readable, sentences, speakable};
+use crate::local_models::kokoro_text::{
+    CODE_BLOCK, ENGLISH_ONLY, chunks, readable, sentences, speakable,
+};
 use crate::local_models::{LocalModelPrefs, LocalModels, Task, can_run};
 use crate::platform::speaker::Player;
 
@@ -120,7 +122,13 @@ pub fn prepare(text: &str) -> Result<Vec<String>, Missing> {
     if !words.iter().any(|s| readable(s)) {
         return Err(Missing::NotEnglish);
     }
-    Ok(all.into_iter().filter(|s| readable(s)).collect())
+    // Long sentences go in clause-sized pieces (#70), so the first audio
+    // starts sooner and a slow computer leaves short gaps, not long ones.
+    Ok(all
+        .into_iter()
+        .filter(|s| readable(s))
+        .flat_map(|s| chunks(&s))
+        .collect())
 }
 
 struct Inner {
@@ -245,14 +253,22 @@ fn make(inner: Arc<Inner>, model: String, sentences: Vec<String>, voice: String,
         }
     };
     let gap = vec![0.0_f32; (VOICE_RATE as f32 * GAP) as usize];
+    let short_gap = vec![0.0_f32; (VOICE_RATE as f32 * GAP / 3.0) as usize];
+    let t0 = std::time::Instant::now();
+    let mut audio_secs = 0.0_f64;
     for s in &sentences {
         if inner.cancel.load(Ordering::Relaxed) {
             break;
         }
         match lm.speak(&model, s, &voice, speed) {
             Ok(audio) => {
+                audio_secs += audio.len() as f64 / f64::from(VOICE_RATE);
                 let at = inner.player.push(&audio, VOICE_RATE);
-                inner.player.push(&gap, VOICE_RATE);
+                // A piece of a sentence runs on after a shorter pause.
+                let sentence_end = s.ends_with(['.', '!', '?', '…', ':']);
+                inner
+                    .player
+                    .push(if sentence_end { &gap } else { &short_gap }, VOICE_RATE);
                 if let Ok(mut st) = inner.starts.lock() {
                     st.push(at);
                 }
@@ -265,6 +281,19 @@ fn make(inner: Arc<Inner>, model: String, sentences: Vec<String>, voice: String,
                 break;
             }
         }
+    }
+    let took = t0.elapsed().as_secs_f64();
+    if audio_secs > 0.0 {
+        crate::diag::note(&format!(
+            "tts: made {} pieces, {audio_secs:.1}s of audio in {took:.1}s ({:.1}x real time{})",
+            sentences.len(),
+            took / audio_secs,
+            if took > audio_secs {
+                "; slower than speech, so short pauses between pieces"
+            } else {
+                ""
+            }
+        ));
     }
     inner.made_all.store(true, Ordering::Relaxed);
 }

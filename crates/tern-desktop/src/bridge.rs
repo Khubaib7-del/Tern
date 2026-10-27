@@ -63,6 +63,12 @@ pub enum Msg {
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
     Attached(Result<tern_agent::Attachment, String>),
+    /// Auto dictation's language check came back (#70): the recording,
+    /// where the phrase starts, and (language, how sure, model) or why not.
+    LanguageChecked(u64, usize, Result<(String, f32, String), String>),
+    /// A PDF read again as scanned (#70): its name, and the new reading
+    /// or why not.
+    ReadAgain(String, Result<tern_agent::Attachment, String>),
     /// A page for the built-in browser: the load's number and the page.
     Browsed(u64, Result<tern_agent::browse::BrowsedPage, String>),
     /// A git operation finished: the repository as it now is, and what
@@ -233,6 +239,10 @@ impl std::fmt::Debug for Msg {
                 write!(f, "FileTranscribed({id}, ok: {})", r.is_ok())
             }
             Self::Dictated(seq, r, _) => write!(f, "Dictated({seq}, ok: {})", r.is_ok()),
+            Self::LanguageChecked(rec, from, r) => {
+                write!(f, "LanguageChecked({rec}, {from}, ok: {})", r.is_ok())
+            }
+            Self::ReadAgain(name, r) => write!(f, "ReadAgain({name}, ok: {})", r.is_ok()),
             Self::Opening(id, turns) => write!(f, "Opening({id}, {} turns)", turns.len()),
             Self::ResumeFailed(id, e) => write!(f, "ResumeFailed({id}, {e})"),
             Self::Git(s, r) => write!(f, "Git(repo: {}, ok: {})", s.status.is_repo, r.is_ok()),
@@ -589,6 +599,18 @@ impl Bridge {
                 let _ = tx.send(Msg::Attached(result));
             });
         }
+    }
+
+    /// Reads a PDF again with its pictured pages as scans (#70).
+    pub fn read_again(&self, name: String, path: std::path::PathBuf) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let result =
+                tokio::task::spawn_blocking(move || tern_agent::Attachment::load_as_scanned(&path))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("Tern could not read that file: {e}")));
+            let _ = tx.send(Msg::ReadAgain(name, result));
+        });
     }
 
     /// Folds the chat's older turns into a summary now.
@@ -1264,6 +1286,18 @@ impl Bridge {
             let keychain = setup::keychain();
             let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
             let base = Preferences::load().base_url(id).map(str::to_owned);
+            // A local server (Ollama, LM Studio) that is not running is
+            // said in about 2 s, not after the whole wait (#70).
+            if let Some(spec) = tern_agent::find_provider(id).filter(|s| s.local) {
+                let url = base.clone().unwrap_or_else(|| spec.base_url.to_owned());
+                let up = tokio::task::spawn_blocking(move || local_server_up(&url))
+                    .await
+                    .unwrap_or(true);
+                if !up {
+                    let _ = tx.send(Msg::Models(id, Err(not_running(spec.name))));
+                    return;
+                }
+            }
             let fetch = async {
                 if fresh {
                     setup::models_fresh(id, secrets, base.as_deref()).await
@@ -1279,6 +1313,16 @@ impl Bridge {
                 )),
             };
             let _ = tx.send(Msg::Models(id, result));
+        });
+    }
+
+    /// Auto dictation's language check on the first seconds of a phrase
+    /// (#70): recording `rec`, the phrase starting at sample `from`.
+    pub fn check_language(&self, rec: u64, from: usize, audio: Vec<f32>) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = tern_agent::media::detect_language(audio).await;
+            let _ = tx.send(Msg::LanguageChecked(rec, from, r));
         });
     }
 
@@ -1914,6 +1958,41 @@ fn model_report(chat: usize, all: usize, ms: u128) -> String {
     )
 }
 
+/// How long a local model server gets to answer a connection (#70).
+const LOCAL_CONNECT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// "Not running — start Ollama, then Retry." The picker shows it as is.
+pub fn not_running(name: &str) -> String {
+    format!("Not running — start {name}, then Retry.")
+}
+
+/// Whether something listens at the host and port of `url`
+/// (`http://localhost:11434/v1`), trying each address for
+/// [`LOCAL_CONNECT`]. An address Tern cannot work out counts as up, so
+/// the normal listing (and its error) decides.
+pub fn local_server_up(url: &str) -> bool {
+    use std::net::ToSocketAddrs as _;
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    let host_port = if host_port.contains(':') {
+        host_port.to_owned()
+    } else if url.starts_with("https") {
+        format!("{host_port}:443")
+    } else {
+        format!("{host_port}:80")
+    };
+    let Ok(addrs) = host_port.to_socket_addrs() else {
+        return true;
+    };
+    let addrs: Vec<_> = addrs.collect();
+    if addrs.is_empty() {
+        return true;
+    }
+    addrs
+        .iter()
+        .any(|a| std::net::TcpStream::connect_timeout(a, LOCAL_CONNECT).is_ok())
+}
+
 /// Has `p.readers` read the pictures (first that works) and returns the
 /// message with their text, or with a note for each picture none could
 /// read. Says which reader did it in an info toast, and records a local
@@ -1944,16 +2023,26 @@ async fn read_pictures(tx: &mpsc::UnboundedSender<Msg>, p: &Pictures, text: &str
             Msg::Notice(out.notice.clone())
         });
     }
-    if out.text.is_empty() {
-        text.to_owned()
-    } else {
-        format!("{text}\n\n{}", out.text)
-    }
+    // Inside the attachments block, so the bubble shows only the user's
+    // words and chips (#70).
+    tern_agent::attach::add_to_block(text, &out.text)
 }
 
 #[cfg(test)]
 mod tests {
     use super::model_report;
+
+    #[test]
+    fn a_local_server_that_is_not_running_is_said_quickly() {
+        // Port 9 (discard) has nothing listening on CI runners.
+        let t0 = std::time::Instant::now();
+        assert!(!super::local_server_up("http://127.0.0.1:9/v1"));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(4));
+        assert_eq!(
+            super::not_running("Ollama"),
+            "Not running — start Ollama, then Retry."
+        );
+    }
 
     #[test]
     fn reports_read_plainly() {

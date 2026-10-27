@@ -522,6 +522,10 @@ pub struct Model {
     /// The document being converted to Markdown while it is the only
     /// item attaching (#69), for "Converting report.pdf to Markdown…".
     pub attaching_doc: Option<String>,
+    /// A message held while the PDF it asks about is read again as
+    /// scanned ("try local model granite docling", #70); sent when the
+    /// reading arrives.
+    pub reread_send: Option<String>,
     /// The composer's Deep research mode: the next message is planned
     /// and researched by parallel workers.
     pub deep_mode: bool,
@@ -720,6 +724,7 @@ impl Model {
             copied: None,
             attaching: 0,
             attaching_doc: None,
+            reread_send: None,
             deep_mode: false,
             steering: None,
             resume_offer: None,
@@ -1542,6 +1547,63 @@ impl Model {
             Ok(a) => self.attachments.push(a),
             Err(e) => self.toast_error(e, None),
         }
+    }
+
+    /// Starts reading attachment `name` again as scanned: the loading chip
+    /// says so. Returns the file's path, or `None` (with a toast) when
+    /// Tern no longer knows where it came from.
+    pub fn read_again_started(&mut self, name: &str) -> Option<std::path::PathBuf> {
+        let Some(path) = attach::origin(name) else {
+            self.toast_info(format!(
+                "Attach {name} again to read it as scanned: Tern no longer knows where it is."
+            ));
+            return None;
+        };
+        self.attaching += 1;
+        self.attaching_doc = Some(format!(
+            "{name} (as scanned, with the local document or OCR model)"
+        ));
+        Some(path)
+    }
+
+    /// A PDF's reading as scanned came back: it replaces the chip of the
+    /// same name, or joins the composer when that chip is gone (or the
+    /// file was attached to an earlier message). An error keeps the
+    /// first reading and says why.
+    pub fn read_again_done(&mut self, name: &str, result: Result<Attachment, String>) -> bool {
+        self.attaching = self.attaching.saturating_sub(1);
+        if self.attaching == 0 {
+            self.attaching_doc = None;
+        }
+        match result {
+            Ok(a) => {
+                match self.attachments.iter().position(|x| x.name == name) {
+                    Some(i) => self.attachments[i] = a,
+                    None => self.attachments.push(a),
+                }
+                true
+            }
+            Err(e) => {
+                self.toast_error(e, None);
+                false
+            }
+        }
+    }
+
+    /// The newest PDF sent in this chat that Tern can read again, by
+    /// name (for "try local model granite docling" with nothing attached).
+    pub fn last_sent_pdf(&self) -> Option<String> {
+        self.entries.iter().rev().find_map(|e| match e {
+            Entry::User { chips, .. } => chips
+                .iter()
+                .rev()
+                .find(|c| {
+                    c.name.to_ascii_lowercase().ends_with(".pdf")
+                        && attach::origin(&c.name).is_some()
+                })
+                .map(|c| c.name.clone()),
+            _ => None,
+        })
     }
 
     /// An attached audio file went to the speech-to-text model, from the

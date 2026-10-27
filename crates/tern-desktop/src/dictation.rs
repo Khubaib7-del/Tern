@@ -122,12 +122,40 @@ impl Dictation {
         }
     }
 
-    /// Changes the pace mid-recording (Auto heard the language).
-    pub fn set_pace(&mut self, pace: Pace) {
+    /// Starts the recording over from its first sample at `pace`, every
+    /// text so far dropped: Auto heard a language the fast model cannot
+    /// write, so Whisper takes the whole recording (#70). An answer still
+    /// on its way is ignored.
+    pub fn restart(&mut self, pace: Pace) {
+        self.committed.clear();
+        self.interim.clear();
+        self.said.clear();
+        self.start = 0;
+        self.sent_to = 0;
+        self.in_flight = None;
+        self.tries = 0;
         self.pace = pace;
-        if pace.resend.is_none() {
-            self.interim.clear();
-        }
+    }
+
+    /// Drops the open window's text and any answer on its way, and goes
+    /// on at `pace` from the same place (the language changed mid
+    /// recording, #70). Committed text stays.
+    pub fn redo_open_window(&mut self, pace: Pace) {
+        self.interim.clear();
+        self.in_flight = None;
+        self.sent_to = self.start;
+        self.tries = 0;
+        self.pace = pace;
+    }
+
+    /// Where the open window starts (sample index).
+    pub fn open_start(&self) -> usize {
+        self.start
+    }
+
+    /// Whether the mic was stopped.
+    pub fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// The mic was stopped: the open window gets one last pass.
@@ -276,6 +304,26 @@ impl Dictation {
     }
 }
 
+/// Auto's language check waits for this much audio after a phrase
+/// starts (#70)...
+pub const CHECK_MIN: usize = RATE * 3;
+/// ...and listens to at most this much.
+pub const CHECK_MAX: usize = RATE * 4;
+
+/// The stretch of `samples` from `from` Auto's language check should
+/// listen to: [`CHECK_MIN`]–[`CHECK_MAX`] of audio with speech in it, or
+/// `None` while there is not enough yet (or it is quiet). `stopped`
+/// takes whatever there is, from a second.
+pub fn language_window(samples: &[f32], from: usize, stopped: bool) -> Option<(usize, usize)> {
+    let len = samples.len();
+    let need = if stopped { RATE } else { CHECK_MIN };
+    if len < from.saturating_add(need) {
+        return None;
+    }
+    let end = (from + CHECK_MAX).min(len);
+    (loudest(&samples[from..end]) >= QUIET_RMS * 2.0).then_some((from, end))
+}
+
 /// Root mean square of a slice.
 fn rms(s: &[f32]) -> f32 {
     if s.is_empty() {
@@ -362,9 +410,11 @@ pub enum Route {
     /// Whisper (on this computer or a provider) in this language, or
     /// detecting it on every window (`None`), in short chunks.
     Whisper(Option<String>),
-    /// Auto: the first window goes to Whisper to hear the language;
-    /// English then goes on with the fast model, anything else stays on
-    /// Whisper in that language.
+    /// Auto: the fast model streams live text at once while a language
+    /// check (Whisper's language detection only, no transcription) listens
+    /// to the first seconds; English then goes on with the fast model and
+    /// its text is kept, anything else starts over on Whisper in that
+    /// language (#70).
     Detect,
 }
 
@@ -396,8 +446,8 @@ impl Route {
     /// The pace for this route.
     pub fn pace(&self) -> Pace {
         match self {
-            Route::Fast => Pace::STREAMING,
-            Route::Whisper(_) | Route::Detect => Pace::CHUNKED,
+            Route::Fast | Route::Detect => Pace::STREAMING,
+            Route::Whisper(_) => Pace::CHUNKED,
         }
     }
 
@@ -409,6 +459,18 @@ impl Route {
             (Route::Detect, Some("en")) if fast => Route::Fast,
             (Route::Detect, l) => Route::Whisper(l.map(str::to_owned)),
             (r, _) => r.clone(),
+        }
+    }
+
+    /// Where Auto goes once the language check said `language`: English
+    /// with the fast model there stays fast; anything else goes to
+    /// Whisper in that language. Hindi from the check is often Urdu
+    /// heard by a small model, so Whisper then hears each window itself.
+    pub fn checked(language: &str, fast: bool) -> Route {
+        match language {
+            "en" if fast => Route::Fast,
+            "hi" | "?" | "" => Route::Whisper(None),
+            l => Route::Whisper(Some(l.to_owned())),
         }
     }
 
@@ -582,7 +644,7 @@ mod tests {
         assert!(!spoke);
         route = route.after_window(Some("en"), true, spoke);
         assert_eq!(route, Route::Detect, "a quiet window decides nothing");
-        assert_eq!(route.pace(), Pace::CHUNKED);
+        assert_eq!(route.pace(), Pace::STREAMING);
         samples.extend(tone(RATE * 5));
         let r = d.next_request(&samples).expect("a window with speech");
         assert!(!r.quiet);
@@ -629,7 +691,8 @@ mod tests {
             Route::Detect.heard(Some("ur"), true),
             Route::Whisper(Some("ur".into()))
         );
-        assert_eq!(Route::Detect.pace(), Pace::CHUNKED);
+        // Auto streams with the fast model while the language is checked.
+        assert_eq!(Route::Detect.pace(), Pace::STREAMING);
         assert_eq!(Route::Fast.pace(), Pace::STREAMING);
     }
 
@@ -683,5 +746,52 @@ mod tests {
         assert_eq!(d.take_committed().as_deref(), Some("partial"));
         assert!(d.done(s.len()));
         assert_eq!(d.error.as_deref(), Some("network"));
+    }
+
+    #[test]
+    fn auto_checks_the_language_once_from_the_first_seconds() {
+        // Nothing to check before 3 s, or in quiet.
+        assert_eq!(language_window(&tone(RATE * 2), 0, false), None);
+        assert_eq!(language_window(&vec![0.0; RATE * 5], 0, false), None);
+        assert_eq!(
+            language_window(&tone(RATE * 5), 0, false),
+            Some((0, RATE * 4))
+        );
+        // Stopped early: whatever there is, from a second.
+        assert_eq!(
+            language_window(&tone(RATE * 2), 0, true),
+            Some((0, RATE * 2))
+        );
+        assert_eq!(Route::checked("en", true), Route::Fast);
+        assert_eq!(
+            Route::checked("ur", true),
+            Route::Whisper(Some("ur".into()))
+        );
+        assert_eq!(Route::checked("hi", true), Route::Whisper(None));
+        assert_eq!(
+            Route::checked("en", false),
+            Route::Whisper(Some("en".into()))
+        );
+    }
+
+    #[test]
+    fn urdu_heard_starts_the_recording_over_on_whisper() {
+        let mut d = Dictation::with_pace(Route::Detect.pace());
+        let s = tone(RATE * 3);
+        let r = d.next_request(&s).unwrap();
+        assert!(!r.last);
+        d.on_result(r.seq, Ok("I'll give this guy my 7th answer".into()));
+        assert!(d.interim_line().is_some());
+        d.restart(Route::Whisper(Some("ur".into())).pace());
+        assert_eq!(d.interim_line(), None);
+        assert_eq!(d.take_committed(), None);
+        assert_eq!(d.open_start(), 0);
+        // The old answer is stale now.
+        assert!(!d.on_result(r.seq, Ok("garbage".into())));
+        // Whisper windows from the start of the recording.
+        let mut long = tone(RATE * 5);
+        long.extend(vec![0.0; RATE]);
+        let w = d.next_request(&long).unwrap();
+        assert_eq!(w.start, 0);
     }
 }

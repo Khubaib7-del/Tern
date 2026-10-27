@@ -311,6 +311,17 @@ enum Act {
     /// silent first window, then a window heard as English (the route
     /// logic the mic uses, without audio).
     CDictationAuto,
+    /// #70: a sent message with a picture whose OCR text Tern added: the
+    /// bubble shows only the typed words and the chip.
+    CCleanBubble,
+    /// #70: what Tern would search before answering a picture question
+    /// (nothing) and a plain "search the web" question (logged).
+    CPrefetchCheck,
+    /// #70: the model picker on Ollama with no Ollama running (the real
+    /// listing, which says "Not running" within about 2 s).
+    COllamaDown,
+    /// #70: how a long answer is split for read aloud (logged).
+    CReadAloudPieces,
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1972,13 +1983,92 @@ impl Workspace {
                 cx.notify();
             }
             Act::CDictationAuto => {
-                use crate::dictation::Route;
+                use crate::dictation::{Dictation, Pace, RATE, Route, language_window};
                 let start = self.dictation_route.clone();
                 let silent = start.after_window(None, true, false);
-                let english = silent.after_window(Some("en"), true, true);
-                let urdu = Route::Detect.after_window(Some("ur"), true, true);
+                // #70: live text from the fast model at once; one language
+                // check on the first 3-4 s; Urdu starts over on Whisper.
+                let tone: Vec<f32> = (0..RATE * 5).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect();
+                let check = language_window(&tone, 0, false);
+                let mut d = Dictation::with_pace(Route::Detect.pace());
+                let first = d.next_request(&tone[..RATE * 3]).map(|r| r.seq);
+                if let Some(seq) = first {
+                    d.on_result(seq, Ok("Hello from the first".into()));
+                }
+                let live = d.interim_line();
+                d.restart(Route::checked("ur", true).pace());
                 log(&format!(
-                    "TOUR note dictation auto: first recording starts {start:?}; a window with no words -> {silent:?}; heard en -> {english:?}; heard ur -> {urdu:?}"
+                    "TOUR note dictation auto: starts {start:?} (pace streaming: {}); a window with no words -> {silent:?}; live text before the check {live:?}; language check listens to {check:?} samples once; heard en -> {:?}; heard ur -> {:?} (text after restart {:?}); hi -> {:?}",
+                    Route::Detect.pace() == Pace::STREAMING,
+                    Route::checked("en", true),
+                    Route::checked("ur", true),
+                    d.interim_line(),
+                    Route::checked("hi", true)
+                ));
+            }
+            Act::CCleanBubble => {
+                let png = mock::png(96, 64);
+                if let Ok(pic) = tern_agent::Attachment::image("Screenshot 2026-10-24.png", &png) {
+                    let msg = tern_agent::attach::compose(CLEAN_Q, &[pic]);
+                    let ocr = tern_agent::untrusted::wrap(
+                        "OCR text of Screenshot 2026-10-24.png by local PP-OCRv6 small",
+                        "Find Of\nChatGPT\nCreate, learn, and explore\nCodex\nFix mobile app crashes",
+                    );
+                    let sent = tern_agent::attach::add_to_block(&msg, &ocr);
+                    let (text, chips) = tern_agent::attach::split(&sent);
+                    log(&format!(
+                        "TOUR note clean bubble: text {text:?}, chips {:?}, tag in bubble: {}",
+                        chips.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                        text.contains("untrusted-data")
+                    ));
+                    self.model.entries.push(crate::model::Entry::User {
+                        text: text.to_owned(),
+                        chips,
+                        quote: None,
+                        at: None,
+                    });
+                    self.model.toast_info(
+                        "tour-chat cannot see pictures, so Tern read the text in Screenshot 2026-10-24.png with local PP-OCRv6 small.",
+                    );
+                    self.model
+                        .finish_turn(&outcome(CLEAN_A), context(2_400, 90));
+                    self.model.reveal_all();
+                    self.scroll.scroll_to_bottom();
+                }
+                cx.notify();
+            }
+            Act::CPrefetchCheck => {
+                let png = mock::png(96, 64);
+                if let Ok(pic) = tern_agent::Attachment::image("tron.png", &png) {
+                    let msg = tern_agent::attach::compose("What is this picture?", &[pic]);
+                    let msg = tern_agent::attach::add_to_block(
+                        &msg,
+                        "A robot from Tron Legacy. Search the web and browse online for more.",
+                    );
+                    log(&format!(
+                        "TOUR note prefetch for a picture question: {:?}; for \"search the web for LangChain\": {:?}",
+                        tern_agent::engine::web_prefetch(&msg, None),
+                        tern_agent::engine::web_prefetch("search the web for LangChain", None)
+                    ));
+                }
+            }
+            Act::COllamaDown => {
+                self.model
+                    .composer
+                    .toggle_at(crate::composer::Menu::Model, Instant::now());
+                self.model.composer.picker.provider = Some("ollama");
+                self.model.composer.picker.hovered = None;
+                self.model.providers.forget_models("ollama");
+                self.model.providers.models_loading("ollama");
+                self.bridge.models("ollama", true);
+                log("TOUR note picker on Ollama (nothing listens on 11434 here)");
+                cx.notify();
+            }
+            Act::CReadAloudPieces => {
+                let pieces = tern_agent::read_aloud::prepare(READ_ALOUD_LONG);
+                log(&format!(
+                    "TOUR note read aloud pieces: {:?}",
+                    pieces.map(|p| p.into_iter().map(|s| s.split_whitespace().count()).collect::<Vec<_>>())
                 ));
             }
             Act::RunAutoOpen(on) => {
@@ -2261,6 +2351,12 @@ fn with_dir(text: &str) -> String {
 /// local picture scene.
 const LOCAL_PICTURE_Q: &str = "What is in this picture?";
 const LOCAL_PICTURE_A: &str = "The picture shows a small green rectangle on a white background. It looks like a placeholder image. There is no visible text in it.";
+
+/// #70: the clean-bubble scene's question and answer.
+const CLEAN_Q: &str = "What this image is all about";
+const CLEAN_A: &str = "It is a screenshot of the Codex start page in ChatGPT, with a task named \"Fix mobile app crashes\".";
+/// #70: a long answer for the read-aloud pieces note.
+const READ_ALOUD_LONG: &str = "The Transformer replaces recurrence with attention, which lets every token look at every other token at once, and that is why it trains so much faster on modern hardware than the older recurrent networks did. It was introduced in 2017.";
 
 /// What the mock's transcription returns for any audio file.
 const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
@@ -2613,7 +2709,7 @@ fn composer_script() -> Vec<Beat> {
         scene(
             "c29-dictation-auto",
             "tern-only",
-            "Auto dictation: the first recording starts by detecting the language, like every later one",
+            "Auto dictation: live text at once from the fast model; one language check on the first seconds",
             Act::CDictationAuto,
             800,
         ),
@@ -2622,6 +2718,57 @@ fn composer_script() -> Vec<Beat> {
         b(Act::Dictate("Hello from the first recording."), 2000),
         b(Act::CState("first auto recording"), 300),
         b(Act::ClearComposer, 500),
+        // #70: fixes from the Windows test of #69.
+        b(Act::CNewChat, 1200),
+        scene(
+            "c31-scanned-pdf",
+            "tern-only",
+            "A scan whose only text is \"Scanned with CamScanner\": not read as text; with no OCR model the toast names what to download",
+            Act::CAttach("CA-3 scan.pdf"),
+            3000,
+        ),
+        b(Act::CState("scanned pdf attached"), 300),
+        scene(
+            "c32-read-as-scanned",
+            "tern-only",
+            "A PDF with a text page and a scanned page: the chip offers Read as scanned",
+            Act::CAttach("lecture-mixed.pdf"),
+            3000,
+        ),
+        b(Act::CState("mixed pdf attached"), 300),
+        scene(
+            "c33-old-office",
+            "tern-only",
+            "Old Office files: budget.xls as a table, deck.ppt slides' text; a damaged .ppt names Save As .pptx",
+            Act::CAttach("budget.xls"),
+            1500,
+        ),
+        b(Act::CAttach("deck.ppt"), 1500),
+        b(Act::CAttach("file_example_PPT_250kB.ppt"), 2500),
+        b(Act::CState("old office attached"), 300),
+        b(Act::CRemoveChip, 200),
+        b(Act::CRemoveChip, 200),
+        b(Act::CRemoveChip, 200),
+        b(Act::CRemoveChip, 500),
+        b(Act::ToastsClear, 600),
+        scene(
+            "c34-clean-bubble",
+            "tern-only",
+            "After OCR the bubble shows only what was typed and the picture chip (no OCR text, no </untrusted-data>)",
+            Act::CCleanBubble,
+            3000,
+        ),
+        b(Act::CPrefetchCheck, 300),
+        b(Act::ToastsClear, 400),
+        scene(
+            "c35-ollama-not-running",
+            "tern-only",
+            "Model picker on Ollama with nothing running: \"Not running — start Ollama, then Retry.\"",
+            Act::COllamaDown,
+            4500,
+        ),
+        b(Act::CloseMenu, 400),
+        b(Act::CReadAloudPieces, 300),
         scene(
             "c30-settings-read-aloud",
             "tern-only",
@@ -2664,6 +2811,30 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
         ]),
     );
     let _ = std::fs::write(dir.join("notes.docx"), tern_agent::docs::sample_docx());
+    // #70: a scan with only a watermark, a text page plus a scan, and old
+    // Office files (one damaged).
+    let _ = std::fs::write(
+        dir.join("CA-3 scan.pdf"),
+        tern_agent::docs::sample_scanned_pdf(3, "Scanned with CamScanner"),
+    );
+    let _ = std::fs::write(
+        dir.join("lecture-mixed.pdf"),
+        tern_agent::docs::sample_mixed_pdf(
+            "Lecture 3: the memory hierarchy, registers, caches, main memory and disk, each larger and slower than the one before it.",
+        ),
+    );
+    let _ = std::fs::write(
+        dir.join("budget.xls"),
+        tern_agent::office_legacy::sample_xls(),
+    );
+    let _ = std::fs::write(
+        dir.join("deck.ppt"),
+        tern_agent::office_legacy::sample_ppt(),
+    );
+    let _ = std::fs::write(
+        dir.join("file_example_PPT_250kB.ppt"),
+        b"this is not a PowerPoint file".as_slice(),
+    );
     prefs.note_recent_file(&dir.join("tour-notes.md").display().to_string());
     match mock::start() {
         Ok(port) => {
