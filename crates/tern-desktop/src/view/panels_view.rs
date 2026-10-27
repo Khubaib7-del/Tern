@@ -343,7 +343,6 @@ impl Workspace {
                                 .icon(IconName::Plus)
                                 .ghost()
                                 .xsmall()
-                                .disabled(busy)
                                 .selected(self.tab_picker.is_some())
                                 .tooltip("New chat or open one in a tab")
                                 .on_click(cx.listener(|this, _, window, cx| {
