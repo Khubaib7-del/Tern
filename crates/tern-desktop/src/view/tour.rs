@@ -2964,6 +2964,14 @@ fn composer_script() -> Vec<Beat> {
             4000,
         ),
         b(Act::CState("rich table and code"), 300),
+        b(Act::Nothing, 6000),
+        scene(
+            "c43b-code-colours",
+            "tern-only",
+            "The revealed Rust block in syntax colours",
+            Act::CState("code colours"),
+            2500,
+        ),
         b(Act::CNewChat, 1200),
         b(
             Act::CTypePath("Explain attention with the formula and a diagram"),
