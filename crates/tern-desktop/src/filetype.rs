@@ -130,6 +130,38 @@ pub fn first_lines(text: &str, lines: usize) -> Vec<String> {
         .collect()
 }
 
+/// The lines a card previews for `text` of kind `kind`: a notebook's
+/// cell sources (its raw JSON says nothing at a glance), else
+/// [`first_lines`].
+pub fn preview_lines(kind: FileKind, text: &str, lines: usize) -> Vec<String> {
+    if kind == FileKind::Notebook
+        && let Some(cells) = notebook_cells(text)
+    {
+        return first_lines(&cells.join("\n"), lines);
+    }
+    first_lines(text, lines)
+}
+
+/// The sources of a Jupyter notebook's cells, in order; `None` when
+/// `text` is not a notebook's JSON.
+pub fn notebook_cells(text: &str) -> Option<Vec<String>> {
+    let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let cells = v.get("cells")?.as_array()?;
+    Some(
+        cells
+            .iter()
+            .filter_map(|c| match c.get("source")? {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Array(parts) => {
+                    Some(parts.iter().filter_map(|x| x.as_str()).collect::<String>())
+                }
+                _ => None,
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect(),
+    )
+}
+
 /// A file size as a card shows it: "820 B", "48 KB", "3.4 MB".
 pub fn size_words(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -145,6 +177,20 @@ pub fn size_words(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_notebook_card_previews_its_cells_not_its_json() {
+        let nb = r##"{"cells": [{"cell_type": "markdown", "source": ["# Lab 3\n", "Train the model"]},
+            {"cell_type": "code", "source": "import torch"}], "nbformat": 4}"##;
+        assert_eq!(notebook_cells(nb).unwrap().len(), 2);
+        assert_eq!(
+            preview_lines(FileKind::Notebook, nb, 6),
+            ["Lab 3", "Train the model", "import torch"]
+        );
+        // Not a notebook's JSON: plain first lines.
+        assert_eq!(preview_lines(FileKind::Notebook, "x = 1", 6), ["x = 1"]);
+        assert!(notebook_cells("{}").is_none());
+    }
 
     #[test]
     fn kinds_come_from_the_name() {

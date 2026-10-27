@@ -4578,9 +4578,19 @@ impl Workspace {
         let size = tern_agent::attach::origin(&a.name)
             .and_then(|path| std::fs::metadata(path).ok())
             .map(|m| crate::filetype::size_words(m.len()));
+        // A notebook counts its cells, not the lines of its JSON.
+        let base = match kind {
+            FileKind::Notebook => a
+                .files
+                .first()
+                .and_then(|f| crate::filetype::notebook_cells(&f.text))
+                .map(|c| format!("{} cells", c.len()))
+                .unwrap_or_else(|| a.detail()),
+            _ => a.detail(),
+        };
         let detail = match size {
-            Some(sz) => format!("{} · {sz}", a.detail()),
-            None => a.detail(),
+            Some(sz) => format!("{base} · {sz}"),
+            None => base,
         };
         let preview = card_preview(
             self.preview_image(a),
@@ -4645,9 +4655,12 @@ impl Workspace {
                             .text_color(p.faint)
                             .child(SharedString::from(detail)),
                     )
+                    // Context and Read as scanned: the second goes under
+                    // the first when the card is too narrow for both.
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_1()
                             .child(
@@ -6807,7 +6820,7 @@ fn card_preview(
 ) -> AnyElement {
     let lines = text
         .filter(|_| kind.shows_page())
-        .map(|t| crate::filetype::first_lines(t, 6))
+        .map(|t| crate::filetype::preview_lines(kind, t, 6))
         .filter(|l| !l.is_empty());
     let colour: Hsla = gpui_kit::rgb(kind.color()).into();
     let body = match (image, lines) {
