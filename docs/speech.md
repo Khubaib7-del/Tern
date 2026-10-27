@@ -36,13 +36,20 @@ The mic's live dictation picks its engine from **Settings › Speech › Dictati
 
 Moonshine knows only English. Given Urdu, it writes English that was never said, such as "You will not be able to do anything" over and over. The speech guard (`crates/tern-agent/src/speech_guard.rs`) keeps that out of the composer. It drops runs of the same words, a sentence repeated from the window before, and the phrases models write on silence ("Thank you.", "Thanks for watching", "Subtitles by the Amara.org community"). A window with no speech counts as a pause, so it shows no error. Dictated text goes in at the caret, and the caret moves with it.
 
+### Auto, from #70
+
+- **Live text at once**: Auto streams with the fast model straight away, so words appear while you speak.
+- **The language is checked once without transcribing** (Whisper's own language detection), and again on a new phrase at most every 10 s. With the optional **Whisper tiny** add-on downloaded (Settings › Local models › Transcribe audio files › Whisper tiny (q5_1), language check › **Add**, 31 MB) the check takes about a second; without it the installed Whisper model checks.
+- **Urdu (or any language but English)** restarts the open phrase on Whisper, so English never sits over Urdu speech.
+- Windows with no speech are never sent; the detected language is kept for 2 minutes; sound tags like `[inaudible]` or `(music)` are dropped.
+
 **Last transcription** in Settings › Speech names the model, the device (GPU or CPU and threads) and how long it took, for every engine.
 
 ## Read aloud (#69)
 
-Kokoro 82M reads answers aloud on the CPU (ONNX Runtime, at most four threads), through the speakers with cpal (WASAPI, CoreAudio, ALSA). **Settings › Speech › Read aloud** picks the voice (Heart, Michael, Emma, George) and the speed (0.8× to 1.3×). English only: an Urdu answer gets a note. See [local-models.md](local-models.md#read-aloud-kokoro).
+Kokoro 82M reads answers aloud on the CPU (ONNX Runtime, at most four threads), through the speakers with cpal (WASAPI, CoreAudio, ALSA). **Settings › Speech › Read aloud** picks the voice (Heart, Michael, Emma, George) and the speed (0.8× to 1.3×). Long sentences are spoken in clause-sized pieces (#70), so the first audio comes sooner, and `tern.log` says how fast synthesis ran against real time. English only: an Urdu answer gets a note. See [local-models.md](local-models.md#read-aloud-kokoro).
 
-The same **Device** setting decides where `tern-vlm` (the local picture models) runs: Auto and GPU try the GPU first, then the CPU.
+The same **Device** setting decides where `tern-vlm` (the local picture models) runs: Auto and GPU try the GPU first, then the CPU. Since #70 the `vlm:` line in `tern.log` says why a run went to the CPU.
 
 ## Fallback to the CPU
 
