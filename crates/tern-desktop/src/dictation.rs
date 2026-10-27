@@ -122,14 +122,6 @@ impl Dictation {
         }
     }
 
-    /// Changes the pace mid-recording (Auto heard the language).
-    pub fn set_pace(&mut self, pace: Pace) {
-        self.pace = pace;
-        if pace.resend.is_none() {
-            self.interim.clear();
-        }
-    }
-
     /// Starts the recording over from its first sample at `pace`, every
     /// text so far dropped: Auto heard a language the fast model cannot
     /// write, so Whisper takes the whole recording (#70). An answer still
