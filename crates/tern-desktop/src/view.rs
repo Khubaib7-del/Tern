@@ -4591,7 +4591,10 @@ impl Workspace {
                 .files
                 .first()
                 .and_then(|f| crate::filetype::notebook_cells(&f.text))
-                .map(|c| format!("{} cells", c.len()))
+                .map(|c| match c.len() {
+                    1 => "1 cell".to_owned(),
+                    n => format!("{n} cells"),
+                })
                 .unwrap_or_else(|| a.detail()),
             _ => a.detail(),
         };
