@@ -2857,7 +2857,7 @@ fn composer_script() -> Vec<Beat> {
         scene(
             "c36-preview-cards",
             "tern-only",
-            "Attachments as preview cards: picture thumbnail, first page of a PDF and documents, name, pages and size, a file-type logo beside the nameind badge",
+            "Attachments as preview cards: picture thumbnail, first page of a PDF and documents, name, pages and size, a file-type logo beside the name",
             Act::CAttach("photo.png"),
             700,
         ),
