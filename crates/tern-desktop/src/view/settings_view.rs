@@ -1649,6 +1649,7 @@ impl Workspace {
         }
         let body = vec![
             Self::settings_card("Speech-to-text", p, rows),
+            self.read_aloud_card(p, cx),
             div()
                 .text_xs()
                 .text_color(p.faint)
@@ -1656,6 +1657,77 @@ impl Workspace {
                 .into_any_element(),
         ];
         self.page(Section::Speech, p, None, body)
+    }
+
+    /// Settings › Speech › Read aloud (#69): Kokoro's voice and speed.
+    fn read_aloud_card(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        use tern_agent::local_models::kokoro_text::{SPEEDS, VOICES, voice_or_default};
+        let prefs = &self.model.providers.prefs;
+        let voice = voice_or_default(prefs.read_aloud_voice.as_deref());
+        let speed = prefs.read_aloud_speed.unwrap_or(100);
+        let voices = VOICES.map(|(id, label)| {
+            Button::new(SharedString::from(format!("read-aloud-voice-{id}")))
+                .capsule()
+                .label(label)
+                .ghost()
+                .xsmall()
+                .selected(voice == id)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.save_ui_prefs(move |p| p.read_aloud_voice = Some(id.to_owned()));
+                    cx.notify();
+                }))
+        });
+        let speeds = SPEEDS.map(|x| {
+            let pct = (x * 100.0).round() as u32;
+            Button::new(SharedString::from(format!("read-aloud-speed-{pct}")))
+                .capsule()
+                .label(SharedString::from(format!("{x}×")))
+                .ghost()
+                .xsmall()
+                .selected(speed == pct)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.save_ui_prefs(move |p| {
+                        p.read_aloud_speed = (pct != 100).then_some(pct);
+                    });
+                    cx.notify();
+                }))
+        });
+        let model = self
+            .model
+            .settings
+            .local
+            .for_task(tern_agent::local_models::Task::TextToSpeech)
+            .into_iter()
+            .find(|s| s.installed() && s.enabled)
+            .map(|s| format!("{} (on this computer)", s.entry.name))
+            .unwrap_or_else(|| {
+                "Not downloaded: get Kokoro 82M in Settings › Local models.".to_owned()
+            });
+        let rows = vec![
+            Self::row(
+                "Voice",
+                "The speaker button under an answer reads it aloud with Kokoro, on this computer. English for now; an Urdu answer gets a note instead.",
+                None,
+                p,
+            ),
+            div()
+                .id("read-aloud-voices")
+                .px_3()
+                .pb_2()
+                .flex()
+                .flex_wrap()
+                .gap_1()
+                .children(voices)
+                .into_any_element(),
+            Self::row(
+                "Speed",
+                "How fast the voice reads.",
+                Some(div().flex().gap_1().children(speeds).into_any_element()),
+                p,
+            ),
+            Self::row("Voice model", SharedString::from(model), None, p),
+        ];
+        Self::settings_card("Read aloud", p, rows)
     }
 
     // ----- Search & Crawler -----

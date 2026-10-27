@@ -19,6 +19,14 @@ changed except below. Search for "Tern patch".
   sidebar title showed it so (#68). Left-to-right lines take GPUI's own
   code unchanged.
 
+- `src/window.rs`, `Window::current_view` (#69): with no view on the
+  rendered-entity stack (an element drawn outside any view: a tooltip, a
+  drag preview, a prompt, or a frame asked for from an event handler) it
+  returns the window's root view instead of `unwrap()`ing `None`, which
+  aborted Tern on Windows (crash log 2026-10-25, `window.rs:5353`,
+  "panic in a function that cannot unwind" inside the window procedure).
+  It logs a warning; notifying the root view only redraws the window.
+
 The composer's right alignment, swapped arrow keys and selection on
 right-to-left text are in `third_party/gpui-base` (its TERN_PATCH.md).
 

@@ -87,11 +87,18 @@ fn every_task_has_one_default_and_one_alternative() {
             .map(|e| e.role)
             .filter(|r| *r != ModelRole::Addon)
             .collect();
-        assert_eq!(
-            roles,
-            vec![ModelRole::Default, ModelRole::Alternative],
-            "{t:?}"
-        );
+        // Vision has two alternatives (#69): SmolVLM 256M (picked first,
+        // the smaller) and Qwen3-VL 2B.
+        let want = if t == Task::Vision {
+            vec![
+                ModelRole::Default,
+                ModelRole::Alternative,
+                ModelRole::Alternative,
+            ]
+        } else {
+            vec![ModelRole::Default, ModelRole::Alternative]
+        };
+        assert_eq!(roles, want, "{t:?}");
     }
     for e in &m.models {
         assert!(!e.placeholder, "{}", e.id);

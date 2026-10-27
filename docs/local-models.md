@@ -2,7 +2,7 @@
 
 Tern can run OCR, document parsing, vision, speech, and embedding models on your own computer. **Nothing is bundled**: the app stays small and a model is downloaded only when you ask for it, from Hugging Face, into Tern's data folder.
 
-> **Three runtimes are linked: OCR, transcription and live dictation.** PP-OCRv6 small with the Arabic-script recogniser runs on ONNX Runtime through the pure-Rust [`oar-ocr`](https://crates.io/crates/oar-ocr) crate and reads pasted or attached pictures (English and Urdu) for chat models that cannot see. **Whisper** (small and large-v3 turbo) runs on [whisper.cpp](https://github.com/ggml-org/whisper.cpp) through `whisper-rs`, on the GPU (Vulkan on Windows and Linux, Metal on macOS) with the CPU as fallback ([speech.md](speech.md)), and transcribes attached audio files. **Moonshine Streaming Small** runs on ONNX Runtime (`ort`) and transcribes the mic as you speak. **Every other model downloads and verifies but does not run yet**: its row says "This build cannot run it yet". Describing pictures (SmolVLM, through a separate llama.cpp helper) and read aloud (Kokoro) come in the next PR.
+> **Five runtimes are linked: OCR, transcription, live dictation, pictures and read aloud.** PP-OCRv6 small with the Arabic-script recogniser runs on ONNX Runtime through the pure-Rust [`oar-ocr`](https://crates.io/crates/oar-ocr) crate and reads pasted or attached pictures (English and Urdu) for chat models that cannot see. **Whisper** (small and large-v3 turbo) runs on [whisper.cpp](https://github.com/ggml-org/whisper.cpp) through `whisper-rs`, on the GPU (Vulkan on Windows and Linux, Metal on macOS) with the CPU as fallback ([speech.md](speech.md)), and transcribes attached audio files. **Moonshine Streaming Small** runs on ONNX Runtime (`ort`) and transcribes the mic as you speak. **SmolVLM 500M / 256M, Qwen3-VL 2B and Granite-Docling** run on llama.cpp through `tern-vlm`, a helper program shipped beside Tern (#69), to describe pictures and read scanned pages. **Kokoro 82M** runs on ONNX Runtime through `loqui-kokoro` and reads answers aloud (#69). The remaining models download and verify but do not run yet: their row says "This build cannot run it yet".
 
 ## The models
 
@@ -16,6 +16,7 @@ Each task has a **Default** (what Tern uses unless you pick another) and an **Al
 | Documents to Markdown | Optional add-on | Math formulas (PP-FormulaNet+ L, on demand) (`pp-formulanet-plus-l`) | 730 MB | Apache-2.0 | ONNX Runtime |
 | Documents to Markdown | Alternative | Granite-Docling 258M (Q8) (`granite-docling-258m`) | 282 MB | Apache-2.0 | llama.cpp |
 | Describe pictures | Default | SmolVLM 500M Instruct (Q8) (`smolvlm-500m`) | 546 MB | Apache-2.0 | llama.cpp |
+| Describe pictures | Alternative | SmolVLM 256M Instruct (Q8) (`smolvlm-256m`) | 279 MB | Apache-2.0 | llama.cpp |
 | Describe pictures | Alternative | Qwen3-VL 2B Instruct (Q4_K_M) (`qwen3-vl-2b`) | 1.6 GB | Apache-2.0 | llama.cpp |
 | Live dictation | Default | Moonshine Streaming Small (`moonshine-streaming-small`) | 170 MB | MIT | ONNX Runtime |
 | Live dictation | Alternative | Parakeet TDT 0.6B v3 (int8) (`parakeet-tdt-0.6b-v3`) | 671 MB | CC-BY-4.0 | ONNX Runtime |
@@ -56,15 +57,49 @@ Notes on the picks:
 - **Local live dictation** (`moonshine_onnx.rs`, the `asr-onnx` feature): Moonshine Streaming Small on ONNX Runtime. The mic uses it when it is installed and on, before a provider's speech-to-text model; with neither, the installed Whisper model takes the mic.
 - **`tern models read <picture> [--model <id>]`** prints the text the local OCR model reads.
 
+## Pictures, documents and read aloud (#69)
+
+### Describing pictures: `tern-vlm`
+
+- **The helper.** llama.cpp's multimodal CLI (`llama-mtmd-cli`, MIT) at a pinned release (`b11900`), built by CI with `.github/scripts/build-vlm.sh` and renamed `tern-vlm`. It ships in a `vlm/` folder beside the app: `vlm/tern-vlm.exe` with `ggml-cpu.dll`, `ggml-vulkan.dll` and friends on Windows, `vlm/tern-vlm` with its `.so` files on Linux, `Tern.app/Contents/Resources/vlm/tern-vlm` on macOS (one static program with Metal). `TERN_VLM` points Tern at another copy. Without it, the vision rows say the build does not include the helper and pictures go to the next reader.
+- **Why a separate program**: a crash in the C++ runtime or a GPU driver ends the helper, never Tern. A failed run is a banner over the composer with **Use the alternative** or **Download**.
+- **Device**: Settings › Speech › Device applies. Auto and GPU offload every layer (`-ngl 99`; Vulkan on Windows and Linux, Metal on macOS) and run again on the CPU (`--device none`) when that fails; a PC without a Vulkan driver loads no Vulkan backend and runs on the CPU. CPU threads follow Whisper's rule (Auto, at most four). A run stops after 240 s. Each run logs the model, device, threads and time in `tern.log` (`vlm: model=… device=… threads=… took=…`).
+- **In the chat**: a picture for a chat model that cannot see is described by the installed vision model first (the status line says "Looking at image…"); the local OCR text goes with the description. SmolVLM 256M is the first alternative (half the size of 500M, faster on an older laptop), Qwen3-VL 2B the second.
+- `tern models describe <picture> [--model <id>] [--prompt "…"]` prints the description and the device.
+
+### Documents to Markdown
+
+Attached documents become Markdown before the model sees them (`tern_agent::docs`):
+
+- **PDF**: the text layer, page by page. Pages with no text (scans) are read by Granite-Docling (DocTags → Markdown: headings, lists, tables, captions, code, formulas) when it is installed and runnable, else by the local OCR model; at most 30 scanned pages.
+- **DOCX** (headings, lists, tables), **PPTX** (a section per slide), **XLSX** (a table per sheet, at most 300 rows and 40 columns), and an **HTML** file attached on its own (its main text).
+- The result is cached by the file's SHA-256, so attaching the same file again is instant.
+- The chip says how it was read: "PDF text → Markdown · 12 pages", "DOCX → Markdown", "Granite-Docling 258M (Q8) → Markdown · 3 pages", "OCR (PP-OCRv6 small) → Markdown · 2 pages". While a single document converts, the composer says "Converting report.pdf to Markdown…".
+- `tern models convert <file>` prints the Markdown.
+
+### Read aloud: Kokoro
+
+- **Kokoro 82M (int8)** on ONNX Runtime through [`loqui-kokoro`](https://crates.io/crates/loqui-kokoro) (MIT) with [`loqui-g2p`](https://crates.io/crates/loqui-g2p) (MIT) for the phonemes: misaki's English lexicons and a small neural model for unknown words. No espeak-ng (GPL-3.0) is linked or downloaded.
+- **The speaker button** under an answer reads it sentence by sentence: the first sentence plays as soon as it is made, the next ones are made behind it. While it reads the button becomes **Pause**/**Play** and **Stop** with "Reading 2 of 5". Leaving the chat or starting another reading stops it. Code blocks are not read out (they are announced as "code block"), and link addresses are left out.
+- **English only**: an Urdu answer gets the note "Read aloud supports English for now." instead of garbled phonemes; English sentences in a mixed answer are read.
+- **Settings › Speech › Read aloud**: Voice (Heart, Michael, Emma, George), Speed (0.8× to 1.3×), and the voice model in use. Saved as `read_aloud_voice` and `read_aloud_speed` in `preferences.json`.
+- With no voice model downloaded, the button shows the banner with **Download** (Kokoro 82M).
+- `tern models speak "text" --out hello.wav [--voice af_heart] [--speed 1.0]`.
+
+### CI
+
+Every pull request builds `tern-vlm` on Windows, Linux and macOS (cached by the hash of `build-vlm.sh`) and puts `vlm/` in the test builds. On Windows, CI checks that `tern-vlm.exe --list-devices` runs with the runner's Vulkan loader hidden. On Linux, `.github/scripts/local-runtimes-smoke.sh` downloads SmolVLM 256M and Kokoro (cached) and runs `tern models describe` on a test picture, `tern models speak` to a WAV and `tern models convert` on a DOCX.
+
 ## Not yet
 
-- **OCR, transcription and live dictation run** (see the note at the top): document parsing, describing pictures, read aloud, embeddings, Parakeet (the dictation alternative) and the Tesseract OCR alternative download and verify but do not run. SmolVLM (describe pictures, through a separate `tern-vlm` llama.cpp helper) and Kokoro (read aloud) are the next PR. A runtime plugs in by implementing `tern_agent::local_models::LocalEngine` (with `runs` saying which models it takes) and registering it in `register_builtin_engines`; `can_run` then turns on for those models everywhere.
-- Whisper's GPU speed is not measured in CI (the runners have no GPU); see [speech.md](speech.md).
+- Document layout (PaddleOCR layout + tables), embeddings, Parakeet (the dictation alternative), Supertonic (the read-aloud alternative) and the Tesseract OCR alternative download and verify but do not run. A runtime plugs in by implementing `tern_agent::local_models::LocalEngine` (with `runs` saying which models it takes) and registering it in `register_builtin_engines`; `can_run` then turns on for those models everywhere.
+- Read aloud is English only, and on the CPU.
+- Whisper's and `tern-vlm`'s GPU speed is not measured in CI (the runners have no GPU); see [speech.md](speech.md).
 
 ## Code
 
 - `tern-providers::download`: the byte mover (range resume, progress, cancel). Only `tern-providers` and `tern-crawl` may reach the network (`dependency_rules`).
 - `tern-agent::local_models`: manifest, download orchestration and verification, state, preferences, the engine registry. Unit tests run against a local mock HTTP server. `paddle.rs` reads PaddleOCR's `inference.yml` (dictionary, thresholds) and orders Urdu lines; `onnx_ocr.rs` is the OCR engine (an `#[ignore]`d test reads a real picture given `TERN_OCR_MODEL_DIR` and `TERN_OCR_IMAGE`).
-- `tern-agent::media`: `route_images` / `readers_for` (who reads pictures, best first), `read_chain` / `read_with` (the fallback chain), `mark_not_vision` / `is_not_vision` / `rejects_images`, `plain_error`. `tern-agent::pictures`: normalising pictures. `local_models/whisper_cpp.rs`, `moonshine_onnx.rs`, `audio.rs` (decode), `resample.rs` (16 kHz).
+- `tern-agent::media`: `route_images` / `readers_for` (who reads pictures, best first), `read_chain` / `read_with` (the fallback chain), `mark_not_vision` / `is_not_vision` / `rejects_images`, `plain_error`. `tern-agent::pictures`: normalising pictures. `local_models/whisper_cpp.rs`, `moonshine_onnx.rs`, `audio.rs` (decode), `resample.rs` (16 kHz), `llama_vlm.rs` (the `tern-vlm` helper, DocTags), `kokoro.rs` and `kokoro_text.rs` (read aloud). `tern-agent::docs`: documents to Markdown. `tern-agent::read_aloud` and `tern-platform::speaker`: playing an answer.
 - `tern-desktop`: `localmodels.rs` (GPUI-free page state) and `view/localmodels_view.rs`; logos in `assets/brands/` (see [assets.md](assets.md)).
 - `tern-tui`: `models.rs`.

@@ -295,6 +295,31 @@ pub trait LocalEngine: Send + Sync {
         let _ = (dir, image, prompt);
         Err(format!("{} cannot describe pictures", entry.name))
     }
+    /// Reads one page image (PNG or JPEG bytes) to Markdown with the
+    /// document model installed in `dir` (Granite-Docling, #69).
+    fn page_markdown(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        image: &[u8],
+    ) -> Result<String, String> {
+        let _ = (dir, image);
+        Err(format!("{} cannot read pages", entry.name))
+    }
+    /// Speaks `text` with the voice model installed in `dir`: 24 kHz mono
+    /// samples (#69, Kokoro). `voice` is a voice id such as `af_heart`;
+    /// `speed` 0.5–2.0.
+    fn speak(
+        &self,
+        dir: &Path,
+        entry: &ModelEntry,
+        text: &str,
+        voice: &str,
+        speed: f32,
+    ) -> Result<Vec<f32>, String> {
+        let _ = (dir, text, voice, speed);
+        Err(format!("{} cannot speak", entry.name))
+    }
 }
 
 type Engines = std::sync::RwLock<Vec<std::sync::Arc<dyn LocalEngine>>>;
@@ -347,11 +372,20 @@ pub fn register_builtin_engines() {
     register_engine(std::sync::Arc::new(whisper_cpp::WhisperCpp::default()));
     #[cfg(feature = "asr-onnx")]
     register_engine(std::sync::Arc::new(moonshine_onnx::MoonshineOnnx::default()));
+    // Vision and Granite-Docling through the `tern-vlm` helper (#69); it
+    // runs a model only when the helper ships beside Tern.
+    register_engine(std::sync::Arc::new(llama_vlm::LlamaVlm));
+    #[cfg(feature = "tts")]
+    register_engine(std::sync::Arc::new(kokoro::KokoroTts::default()));
 }
 
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod gpu;
+#[cfg(feature = "tts")]
+pub mod kokoro;
+pub mod kokoro_text;
+pub mod llama_vlm;
 #[cfg(feature = "asr-onnx")]
 pub mod moonshine_onnx;
 #[cfg(feature = "ocr-onnx")]
@@ -967,6 +1001,20 @@ impl LocalModels {
         let engine = self.engine(id)?;
         let entry = self.manifest.find(id).expect("engine() found it");
         engine.describe(&self.dir(id), entry, image, prompt)
+    }
+
+    /// Reads one page image to Markdown with installed document model `id`.
+    pub fn page_markdown(&self, id: &str, image: &[u8]) -> Result<String, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.page_markdown(&self.dir(id), entry, image)
+    }
+
+    /// Speaks `text` with installed voice model `id` (24 kHz mono).
+    pub fn speak(&self, id: &str, text: &str, voice: &str, speed: f32) -> Result<Vec<f32>, String> {
+        let engine = self.engine(id)?;
+        let entry = self.manifest.find(id).expect("engine() found it");
+        engine.speak(&self.dir(id), entry, text, voice, speed)
     }
 
     /// Transcribes speech (16 kHz mono samples) with installed model `id`.

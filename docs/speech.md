@@ -38,6 +38,12 @@ Moonshine knows only English. Given Urdu, it writes English that was never said,
 
 **Last transcription** in Settings › Speech names the model, the device (GPU or CPU and threads) and how long it took, for every engine.
 
+## Read aloud (#69)
+
+Kokoro 82M reads answers aloud on the CPU (ONNX Runtime, at most four threads), through the speakers with cpal (WASAPI, CoreAudio, ALSA). **Settings › Speech › Read aloud** picks the voice (Heart, Michael, Emma, George) and the speed (0.8× to 1.3×). English only: an Urdu answer gets a note. See [local-models.md](local-models.md#read-aloud-kokoro).
+
+The same **Device** setting decides where `tern-vlm` (the local picture models) runs: Auto and GPU try the GPU first, then the CPU.
+
 ## Fallback to the CPU
 
 - **No GPU, no driver**: ggml's Vulkan backend registers no device and Whisper runs on the CPU.

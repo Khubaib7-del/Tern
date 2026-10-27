@@ -5350,7 +5350,21 @@ impl Window {
     /// Get the entity ID for the currently rendering view
     pub fn current_view(&self) -> EntityId {
         self.invalidator.debug_assert_paint_or_prepaint();
-        self.rendered_entity_stack.last().copied().unwrap()
+        // Tern patch (#69): an element drawn outside any view (a tooltip, a
+        // drag preview, a prompt, or a frame requested from an event
+        // handler) found the stack empty and `unwrap()` aborted the app
+        // (crash log 2026-10-25, window.rs:5353). Fall back to the window's
+        // root view, which redraws everything under it.
+        match self.rendered_entity_stack.last().copied() {
+            Some(id) => id,
+            None => {
+                log::warn!("current_view() outside a view; using the root view");
+                self.root
+                    .as_ref()
+                    .map(|root| root.entity_id())
+                    .unwrap_or_else(|| EntityId::from(0u64))
+            }
+        }
     }
 
     #[inline]

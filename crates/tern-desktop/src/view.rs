@@ -51,6 +51,7 @@ mod palette_view;
 mod panels_view;
 mod pet_view;
 mod press;
+mod read_aloud_view;
 mod runmap_view;
 mod runs_view;
 mod scout_view;
@@ -329,6 +330,9 @@ pub struct Workspace {
     dictation_samples: Vec<f32>,
     dictation_pos: usize,
     dictation_task: Option<Task<()>>,
+    /// The answer read aloud (#69) and the timer that follows it.
+    read_aloud: Option<read_aloud_view::ReadingNow>,
+    read_aloud_task: Option<Task<()>>,
     /// Wakes the window when a toast should come, go, or fade.
     toast_wake: Option<Task<()>>,
     /// The timeline tick under the pointer, and a smooth scroll in flight
@@ -741,11 +745,15 @@ impl Workspace {
             dictation_model: None,
             dictation_fast: None,
             dictation_whisper: None,
-            dictation_route: crate::dictation::Route::Fast,
+            // Auto's starting point (#69): the state before the first
+            // recording is the one every later recording starts in.
+            dictation_route: crate::dictation::Route::Detect,
             dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
             dictation_task: None,
+            read_aloud: None,
+            read_aloud_task: None,
             toast_wake: None,
             rail_hover: None,
             rail_auto: false,
@@ -891,6 +899,7 @@ impl Workspace {
                 other => self.on_ext(other, cx),
             },
             Msg::Info(text) => self.model.toast_info(text),
+            Msg::Doing(what) => self.model.doing = what,
             Msg::Notice(text) => {
                 self.model.notice_line(text);
                 // A chat that would not reopen leaves no session; open a
@@ -1564,6 +1573,13 @@ impl Workspace {
             cx.notify();
             return;
         }
+        self.model.attaching_doc = match paths.as_slice() {
+            [one] if self.model.attaching == 0 => one
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| tern_agent::docs::converts(n)),
+            _ => None,
+        };
         self.model.attaching += paths.len();
         self.bridge.attach(paths);
         cx.notify();
@@ -2357,6 +2373,16 @@ impl Workspace {
             return;
         }
         use tern_agent::local_models::{Task, speech};
+        // The first recording after launch can come before the models
+        // folder was read in the background; read it now so the first
+        // recording routes exactly as the later ones (#69).
+        if self.model.settings.local.statuses.is_none()
+            && let Ok((lm, warning)) = tern_agent::local_models::LocalModels::discover()
+        {
+            let st = lm.statuses(&self.model.providers.prefs.local_models);
+            let root = lm.root().display().to_string();
+            self.model.settings.local.loaded(st, root, warning);
+        }
         let fast = self.model.settings.local.transcriber(Task::Dictation);
         let whisper = self.whisper_model();
         let language =
@@ -2559,16 +2585,23 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(d) = self.dictation.as_mut() {
-            d.on_result(seq, result);
-            // Auto: the first window told which language it is.
+            let spoke = d.on_result(seq, result);
+            // Auto: the first window with words tells which language it
+            // is; until then every window stays on Whisper (#69).
             if self.dictation_route == crate::dictation::Route::Detect {
-                let next = self
-                    .dictation_route
-                    .heard(heard.as_deref(), self.dictation_fast.is_some());
+                let next = self.dictation_route.after_window(
+                    heard.as_deref(),
+                    self.dictation_fast.is_some(),
+                    spoke,
+                );
                 tern_agent::diag::note(&format!(
-                    "dictation: heard {} -> {next:?}",
+                    "dictation: heard {} (words: {spoke}) -> {next:?}",
                     heard.as_deref().unwrap_or("?")
                 ));
+                if next == crate::dictation::Route::Detect {
+                    self.pump_dictation(window, cx);
+                    return;
+                }
                 d.set_pace(next.pace());
                 self.dictation_model = match next {
                     crate::dictation::Route::Fast => self.dictation_fast.clone(),
@@ -3892,7 +3925,9 @@ impl Workspace {
                 .text_xs()
                 .text_color(p.muted)
                 .child(Spinner::new().xsmall())
-                .child(if self.model.attaching == 1 {
+                .child(if let Some(doc) = &self.model.attaching_doc {
+                    format!("Converting {doc} to Markdown…")
+                } else if self.model.attaching == 1 {
                     "Reading 1 item".to_owned()
                 } else {
                     format!("Reading {} items", self.model.attaching)
@@ -3993,7 +4028,9 @@ impl Workspace {
                     .pl_2()
                     .pr_1()
                     .py_1()
-                    .max_w(px(280.))
+                    // Wide enough for "PDF text → Markdown · 2 pages ·
+                    // 48 lines" beside the role and remove buttons (#69).
+                    .max_w(px(440.))
                     .rounded_lg()
                     .border_1()
                     .border_color(if prompt { p.muted } else { p.border })

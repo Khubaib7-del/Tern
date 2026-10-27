@@ -1951,6 +1951,100 @@ impl Workspace {
         )
     }
 
+    /// A local model failed or is missing (#69): what happened, and the
+    /// way out ("Use the alternative", "Download", Settings).
+    fn local_failed_banner(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let f = self.model.local_failed.clone()?;
+        let line: SharedString = f.line().into();
+        let mut row = div()
+            .id("local-failed")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .rounded_lg()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.canvas)
+            .child(icon(AssetIcon::Download, p.muted))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(160.))
+                    .text_sm()
+                    .text_color(p.text)
+                    .child(line),
+            );
+        if let Some(label) = f.action() {
+            let fix = f.clone();
+            row = row.child(
+                Button::new("local-failed-fix")
+                    .capsule()
+                    .label(label)
+                    .small()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.fix_local_failure(&fix);
+                        cx.notify();
+                    })),
+            );
+        }
+        row = row
+            .child(
+                Button::new("local-failed-settings")
+                    .capsule()
+                    .label("Local models")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open_local_models();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("local-failed-close")
+                    .capsule()
+                    .label("Dismiss")
+                    .ghost()
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.model.local_failed = None;
+                        cx.notify();
+                    })),
+            );
+        Some(row.into_any_element())
+    }
+
+    /// The banner's main button: download the missing model, or switch the
+    /// task to its alternative (downloading it when needed).
+    pub(super) fn fix_local_failure(&mut self, f: &crate::chatflow::LocalFailure) {
+        self.model.local_failed = None;
+        if f.missing {
+            self.start_local_download(&f.id);
+            self.model
+                .toast_info(format!("Downloading {} (Settings › Local models)", f.name));
+            return;
+        }
+        let Some((alt, name, installed)) = f.alternative.clone() else {
+            return;
+        };
+        let task = f.task;
+        let pick = alt.clone();
+        self.save_ui_prefs(move |p| p.local_models.set_default(task, Some(&pick)));
+        if installed {
+            self.model.toast_info(format!(
+                "Tern will use {name} for this from now on. Send again to retry."
+            ));
+        } else {
+            self.start_local_download(&alt);
+            self.model.toast_info(format!(
+                "Downloading {name}; Tern will use it for this once it is in."
+            ));
+        }
+        self.reload_local_models();
+    }
+
     /// The banners over the composer, one at a time with "N more" to open
     /// the rest.
     fn notices(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1967,6 +2061,7 @@ impl Workspace {
                 Notice::Resume => self.resume_banner(p, cx),
                 Notice::Continue => self.continue_bar(p, cx),
                 Notice::Inserted => self.inserted_banner(p, cx),
+                Notice::Local => self.local_failed_banner(p, cx),
             });
         }
         if folded > 0 || (self.model.notices_open && active.len() > 1) {
@@ -2269,6 +2364,7 @@ impl Workspace {
             );
         if answer {
             row = row
+                .child(self.read_aloud_action(i, p, cx))
                 .when(!busy, |d| {
                     d.child(
                         action(

@@ -110,6 +110,11 @@ pub struct Preferences {
     /// first phrase; English goes on with the fast Moonshine model,
     /// anything else with Whisper in that language).
     pub dictation_language: Option<String>,
+    /// The read-aloud voice (Settings › Speech, #69): `af_heart`,
+    /// `am_michael`, `bf_emma`, `bm_george`. `None` means Heart.
+    pub read_aloud_voice: Option<String>,
+    /// Read-aloud speed in percent (80 to 130). `None` means 100.
+    pub read_aloud_speed: Option<u32>,
     /// Whether the run panel opens by itself when a deep research run
     /// starts (its pin, and Settings › Appearance). `None` means on.
     pub run_panel_auto: Option<bool>,
@@ -590,6 +595,8 @@ mod tests {
             speech_device: Some("cpu".into()),
             speech_threads: Some(4),
             dictation_language: Some("ur".into()),
+            read_aloud_voice: Some("bf_emma".into()),
+            read_aloud_speed: Some(110),
             run_panel_auto: Some(false),
             study_offline: true,
             study_quiz_count: Some(10),

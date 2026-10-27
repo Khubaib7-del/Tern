@@ -420,6 +420,66 @@ pub enum Notice {
     Continue,
     /// An MCP server wrote the composer text.
     Inserted,
+    /// A local model failed or is missing (#69): what failed, with "Use
+    /// the alternative" or "Download".
+    Local,
+}
+
+/// A local job that failed (#69): OCR, speech, vision, read aloud, or a
+/// document. Shown as a banner over the composer, never as a crash.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFailure {
+    /// The model that failed, or the one that is missing.
+    pub id: String,
+    pub name: String,
+    pub task: tern_agent::local_models::Task,
+    /// Why, in plain words.
+    pub error: String,
+    /// The task's backup: id, name, and whether it is downloaded.
+    pub alternative: Option<(String, String, bool)>,
+    /// The model itself is not downloaded (the fix is downloading it).
+    pub missing: bool,
+}
+
+impl LocalFailure {
+    /// The banner's line.
+    pub fn line(&self) -> String {
+        use tern_agent::local_models::Task;
+        let job = match self.task {
+            Task::Ocr => "read the text in the picture",
+            Task::DocParse => "convert the document",
+            Task::Vision => "describe the picture",
+            Task::Dictation | Task::SpeechToText => "transcribe the speech",
+            Task::TextToSpeech => "read the answer aloud",
+            Task::Embedding => "index the text",
+        };
+        let error = self.error.trim().trim_end_matches('.');
+        if self.missing {
+            return format!(
+                "To {job} on this computer, Tern needs {}: {error}.",
+                self.name
+            );
+        }
+        let mut line = format!("{} could not {job}: {error}.", self.name);
+        match &self.alternative {
+            Some((_, alt, true)) => line.push_str(&format!(" {alt} can do it instead.")),
+            Some((_, alt, false)) => line.push_str(&format!(" Download {alt} to try it instead.")),
+            None => {}
+        }
+        line
+    }
+
+    /// The main button: "Download", "Use the alternative", or none.
+    pub fn action(&self) -> Option<&'static str> {
+        if self.missing {
+            return Some("Download");
+        }
+        match &self.alternative {
+            Some((_, _, true)) => Some("Use the alternative"),
+            Some((_, _, false)) => Some("Download the alternative"),
+            None => None,
+        }
+    }
 }
 
 /// The nudge in Settings › Search & Crawlers and the first-run tour
@@ -470,6 +530,44 @@ pub fn more_notices(n: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_failed_local_model_offers_its_alternative() {
+        use tern_agent::local_models::Task;
+        let mut f = LocalFailure {
+            id: "smolvlm-500m".into(),
+            name: "SmolVLM 500M Instruct (Q8)".into(),
+            task: Task::Vision,
+            error: "the vision helper did not finish in 240 s".into(),
+            alternative: Some((
+                "smolvlm-256m".into(),
+                "SmolVLM 256M Instruct (Q8)".into(),
+                true,
+            )),
+            missing: false,
+        };
+        assert_eq!(
+            f.line(),
+            "SmolVLM 500M Instruct (Q8) could not describe the picture: the vision helper did not finish in 240 s. SmolVLM 256M Instruct (Q8) can do it instead."
+        );
+        assert_eq!(f.action(), Some("Use the alternative"));
+        f.alternative.as_mut().unwrap().2 = false;
+        assert_eq!(f.action(), Some("Download the alternative"));
+        f.missing = true;
+        assert_eq!(f.action(), Some("Download"));
+        assert!(
+            f.line()
+                .starts_with("To describe the picture on this computer")
+        );
+        f.alternative = None;
+        f.missing = false;
+        assert_eq!(f.action(), None);
+        // The banner sorts after the others.
+        assert_eq!(
+            stack(vec![Notice::Local, Notice::Resume], false).0,
+            [Notice::Resume]
+        );
+    }
 
     #[test]
     fn search_failures_get_one_clear_banner() {

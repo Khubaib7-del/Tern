@@ -210,9 +210,12 @@ impl Dictation {
     }
 
     /// A window's text came back (or why not). Stale answers are ignored.
-    pub fn on_result(&mut self, seq: u64, result: Result<String, String>) {
+    /// Returns whether the window brought words (it held sound and its
+    /// text survived the guard), which is when Auto may trust the
+    /// language Whisper heard in it.
+    pub fn on_result(&mut self, seq: u64, result: Result<String, String>) -> bool {
         let Some(req) = self.in_flight.filter(|r| r.seq == seq) else {
-            return;
+            return false;
         };
         self.in_flight = None;
         // "Heard no speech" is a pause, not a failure.
@@ -220,10 +223,12 @@ impl Dictation {
             Err(e) if e.contains(tern_agent::media::NO_SPEECH) => Ok(String::new()),
             r => r,
         };
+        let mut spoke = false;
         match result {
             Ok(text) => {
                 self.tries = 0;
                 let text = tern_agent::speech_guard::clean(&text, &self.said, req.quiet);
+                spoke = !req.quiet && !text.trim().is_empty();
                 if req.last {
                     // The window's own text wins over its interim guess.
                     let text = text.trim();
@@ -267,6 +272,7 @@ impl Dictation {
                 }
             }
         }
+        spoke
     }
 }
 
@@ -403,6 +409,20 @@ impl Route {
             (Route::Detect, Some("en")) if fast => Route::Fast,
             (Route::Detect, l) => Route::Whisper(l.map(str::to_owned)),
             (r, _) => r.clone(),
+        }
+    }
+
+    /// The route after a window came back. Auto stays on Whisper
+    /// (detecting) until a window that brought words says which language
+    /// it is: a quiet or empty window, a failed one, or one without a
+    /// language decides nothing (#69: the first recording after launch
+    /// went to Moonshine, because the first window, often the breath
+    /// before speaking or one Whisper was still loading for, "sounded"
+    /// English to Whisper's detector).
+    pub fn after_window(&self, language: Option<&str>, fast: bool, spoke: bool) -> Route {
+        match self {
+            Route::Detect if spoke && language.is_some() => self.heard(language, fast),
+            r => r.clone(),
         }
     }
 }
@@ -547,6 +567,31 @@ mod tests {
         );
     }
 
+    /// Auto, first recording after launch (#69): a quiet first window
+    /// that Whisper calls English keeps Whisper; the first window with
+    /// words picks the route (Urdu stays on Whisper in Urdu).
+    #[test]
+    fn auto_waits_for_words_before_picking_a_model() {
+        let mut route = Route::pick(None, true, true).unwrap().0;
+        assert_eq!(route, Route::Detect);
+        let mut d = Dictation::with_pace(route.pace());
+        let mut samples = vec![0.0_f32; RATE * 5];
+        let r = d.next_request(&samples).expect("a closed quiet window");
+        assert!(r.quiet);
+        let spoke = d.on_result(r.seq, Ok("you".into()));
+        assert!(!spoke);
+        route = route.after_window(Some("en"), true, spoke);
+        assert_eq!(route, Route::Detect, "a quiet window decides nothing");
+        assert_eq!(route.pace(), Pace::CHUNKED);
+        samples.extend(tone(RATE * 5));
+        let r = d.next_request(&samples).expect("a window with speech");
+        assert!(!r.quiet);
+        let spoke = d.on_result(r.seq, Ok("سلام پاکستان".into()));
+        assert!(spoke);
+        route = route.after_window(Some("ur"), true, spoke);
+        assert_eq!(route, Route::Whisper(Some("ur".into())));
+    }
+
     #[test]
     fn the_language_picks_the_model() {
         assert_eq!(Route::pick(Some("en"), true, true).unwrap().0, Route::Fast);
@@ -566,6 +611,20 @@ mod tests {
         assert!(Route::pick(None, false, false).is_none());
         // Auto hears the first window.
         assert_eq!(Route::Detect.heard(Some("en"), true), Route::Fast);
+        // ...but only a window that brought words decides (#69).
+        assert_eq!(
+            Route::Detect.after_window(Some("en"), true, false),
+            Route::Detect
+        );
+        assert_eq!(Route::Detect.after_window(None, true, true), Route::Detect);
+        assert_eq!(
+            Route::Detect.after_window(Some("en"), true, true),
+            Route::Fast
+        );
+        assert_eq!(
+            Route::Whisper(Some("ur".into())).after_window(Some("en"), true, true),
+            Route::Whisper(Some("ur".into()))
+        );
         assert_eq!(
             Route::Detect.heard(Some("ur"), true),
             Route::Whisper(Some("ur".into()))

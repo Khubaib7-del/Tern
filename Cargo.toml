@@ -51,6 +51,9 @@ unicode-width = "0.2"
 scraper = "0.29"
 ego-tree = "0.11"
 pdf-extract = "0.9"
+# Scanned PDF pages (#69): the page pictures, for local OCR. Already in the
+# tree through pdf-extract.
+lopdf = { version = "0.36", default-features = false }
 base64 = "0.22"
 futures = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -60,6 +63,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 sha1_smol = "1"
 sha2 = "0.10"
 cpal = "0.18"
+# Read aloud (#69): Kokoro-82M on ONNX Runtime with a GPL-free English G2P
+# (misaki lexicons + a neural fallback). MIT; same ort as OCR and Moonshine.
+loqui-kokoro = "=0.4.0"
+loqui-g2p = "=0.4.0"
 # Local speech: whisper.cpp (static, CPU) and audio file decoding.
 whisper-rs = { version = "0.16", default-features = false }
 # ONNX Runtime directly, for the speech models (the same build oar-ocr

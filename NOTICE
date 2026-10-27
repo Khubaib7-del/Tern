@@ -1,0 +1,58 @@
+Tern
+Copyright (c) Khubaib Nazeer and Tern contributors. Licensed under the
+terms in LICENSE.
+
+This file lists third-party pieces that Tern ships beside its own programs
+or downloads on request, with their licences. Rust crates linked into Tern
+carry their own licence files in their sources (see Cargo.lock).
+
+-------------------------------------------------------------------------
+Shipped with Tern's builds
+-------------------------------------------------------------------------
+
+llama.cpp and ggml (the `tern-vlm` helper in `vlm/`, #69)
+  https://github.com/ggml-org/llama.cpp (release b11900)
+  MIT License, Copyright (c) 2023-2026 The ggml authors.
+  `tern-vlm` is llama.cpp's `llama-mtmd-cli`, renamed. Its licence is
+  shipped as `vlm/LICENSE-llama.cpp.txt`.
+
+loqui-kokoro and loqui-g2p (read aloud, linked, #69)
+  https://github.com/Awakened-Labs/loqui
+  MIT License.
+  loqui-g2p embeds English pronunciation lexicons derived from misaki:
+    misaki, https://github.com/hexgrad/misaki
+    Apache License 2.0, Copyright hexgrad.
+  No espeak-ng (GPL-3.0) code or data is linked, shipped or downloaded.
+
+whisper.cpp (linked through whisper-rs)
+  https://github.com/ggml-org/whisper.cpp
+  MIT License, Copyright (c) 2023-2026 The ggml authors.
+
+ONNX Runtime (linked through ort)
+  https://github.com/microsoft/onnxruntime
+  MIT License, Copyright (c) Microsoft Corporation.
+
+-------------------------------------------------------------------------
+Models Tern downloads on request (never bundled)
+-------------------------------------------------------------------------
+
+Each model's licence and any attribution are shown on its row in
+Settings › Local models and kept in `crates/tern-agent/src/local_models/
+manifest.json`. The ones #69 runs:
+
+SmolVLM 500M Instruct and SmolVLM 256M Instruct
+  Hugging Face (HuggingFaceTB), Apache License 2.0.
+  GGUF conversions by ggml-org.
+
+Qwen3-VL 2B Instruct
+  Qwen team, Alibaba Cloud, Apache License 2.0.
+
+Granite-Docling 258M
+  IBM, Apache License 2.0. GGUF conversion by ggml-org.
+
+Kokoro 82M v1.0
+  hexgrad, Apache License 2.0.
+  ONNX conversion and voice packs by onnx-community.
+
+The Apache License 2.0 is at https://www.apache.org/licenses/LICENSE-2.0
+and the MIT License at https://opensource.org/license/mit.

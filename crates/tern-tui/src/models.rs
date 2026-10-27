@@ -57,6 +57,38 @@ pub(crate) enum ModelsCmd {
         #[arg(long)]
         language: Option<String>,
     },
+    /// Describe a picture on this computer with a local vision model
+    /// (SmolVLM; through the `tern-vlm` helper shipped beside Tern).
+    Describe {
+        /// A PNG, JPEG, GIF, or WebP file.
+        image: std::path::PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+        /// What to ask about it.
+        #[arg(
+            long,
+            default_value = "Describe this picture in detail. Transcribe any visible text exactly."
+        )]
+        prompt: String,
+    },
+    /// Speak English text with the local voice model (Kokoro) into a WAV
+    /// file (24 kHz mono).
+    Speak {
+        text: String,
+        /// Where to write the WAV.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+        /// af_heart, am_michael, bf_emma, bm_george.
+        #[arg(long, default_value = "af_heart")]
+        voice: String,
+        #[arg(long, default_value_t = 1.0)]
+        speed: f32,
+    },
+    /// Convert a document (PDF, DOCX, PPTX, XLSX, HTML) to Markdown, as
+    /// the app does for attachments.
+    Convert { file: std::path::PathBuf },
     /// Switch an installed model on or off without deleting it.
     Enable {
         id: String,
@@ -312,6 +344,65 @@ pub(crate) async fn run(cmd: ModelsCmd) -> Result<(), String> {
                 t.model_ms,
                 t.engine
             );
+            Ok(())
+        }
+        ModelsCmd::Describe {
+            image,
+            model,
+            prompt,
+        } => {
+            let id = match model {
+                Some(id) => id,
+                None => lm
+                    .usable(&prefs.local_models, Task::Vision)
+                    .map(|e| e.id.clone())
+                    .ok_or("no local vision model is installed and on; try `tern models download smolvlm-500m`")?,
+            };
+            let bytes = std::fs::read(&image)
+                .map_err(|e| format!("cannot read {}: {e}", image.display()))?;
+            let started = std::time::Instant::now();
+            println!("{}", lm.describe(&id, &bytes, &prompt)?);
+            eprintln!(
+                "({id}, {:.1} s on this computer)",
+                started.elapsed().as_secs_f32()
+            );
+            Ok(())
+        }
+        ModelsCmd::Speak {
+            text,
+            out,
+            model,
+            voice,
+            speed,
+        } => {
+            let id = match model {
+                Some(id) => id,
+                None => lm
+                    .usable(&prefs.local_models, Task::TextToSpeech)
+                    .map(|e| e.id.clone())
+                    .ok_or("no local voice model is installed and on; try `tern models download kokoro-82m-int8`")?,
+            };
+            let started = std::time::Instant::now();
+            let audio = lm.speak(&id, &text, &voice, speed)?;
+            let wav = tern_agent::platform::audio::wav(&audio, 24_000);
+            std::fs::write(&out, wav)
+                .map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+            eprintln!(
+                "({id}, {:.1} s of speech in {:.1} s)",
+                audio.len() as f32 / 24_000.0,
+                started.elapsed().as_secs_f32()
+            );
+            Ok(())
+        }
+        ModelsCmd::Convert { file } => {
+            let bytes =
+                std::fs::read(&file).map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+            let name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let c = tern_agent::docs::convert(&name, &bytes)?;
+            println!("{}", c.with_header(&name));
             Ok(())
         }
         ModelsCmd::Enable { id, state } => {

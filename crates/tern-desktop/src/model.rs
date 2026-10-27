@@ -519,6 +519,9 @@ pub struct Model {
     pub copied: Option<usize>,
     /// Attachments still being read from disk.
     pub attaching: usize,
+    /// The document being converted to Markdown while it is the only
+    /// item attaching (#69), for "Converting report.pdf to Markdown…".
+    pub attaching_doc: Option<String>,
     /// The composer's Deep research mode: the next message is planned
     /// and researched by parallel workers.
     pub deep_mode: bool,
@@ -541,6 +544,12 @@ pub struct Model {
     /// it had nothing on the question once off-topic pages were dropped:
     /// the banner suggests a Tavily or Brave key. Holds the query.
     pub wiki_empty: Option<String>,
+    /// A local model that failed or is missing (#69): the banner with
+    /// "Use the alternative" / "Download".
+    pub local_failed: Option<crate::chatflow::LocalFailure>,
+    /// What the turn does before the model is asked ("Looking at
+    /// image…"; #69): it leads the working line while it lasts.
+    pub doing: Option<String>,
     /// Questions on watch.
     pub watches: Vec<tern_agent::watch::Watch>,
     /// The watch the Watches screen shows.
@@ -710,6 +719,7 @@ impl Model {
             reply_to: None,
             copied: None,
             attaching: 0,
+            attaching_doc: None,
             deep_mode: false,
             steering: None,
             resume_offer: None,
@@ -718,6 +728,8 @@ impl Model {
             continue_offer: false,
             search_down: None,
             wiki_empty: None,
+            local_failed: None,
+            doing: None,
             watches: Vec::new(),
             watch_selected: None,
             watches_running: 0,
@@ -1523,6 +1535,9 @@ impl Model {
     /// A file, folder, or archive finished reading.
     pub fn attached(&mut self, result: Result<Attachment, String>) {
         self.attaching = self.attaching.saturating_sub(1);
+        if self.attaching == 0 {
+            self.attaching_doc = None;
+        }
         match result {
             Ok(a) => self.attachments.push(a),
             Err(e) => self.toast_error(e, None),
@@ -2007,6 +2022,9 @@ impl Model {
         if self.inserted.is_some() {
             v.push(Notice::Inserted);
         }
+        if self.local_failed.is_some() {
+            v.push(Notice::Local);
+        }
         v
     }
 
@@ -2455,6 +2473,11 @@ impl Model {
                     d.workers.len()
                 )
             }
+            _ => phrase,
+        };
+        // Pictures or a document read before the model is asked (#69).
+        let phrase = match &self.doing {
+            Some(d) if activity == Activity::Thinking => d.clone(),
             _ => phrase,
         };
         Some(WorkingLine {
