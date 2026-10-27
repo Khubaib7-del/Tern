@@ -952,3 +952,96 @@ async fn a_stop_mid_reply_keeps_what_streamed_and_nothing_after() {
         "a stopped reply is not history"
     );
 }
+
+#[tokio::test]
+async fn a_rate_limit_is_retried_after_a_visible_wait_and_the_answer_lands() {
+    let mut s = Setup::new();
+    let model = Script {
+        replies: Mutex::new(VecDeque::from([
+            Err(ProviderError::Unavailable {
+                provider: "Anthropic",
+                status: 529,
+                retry_after: None,
+                body: "Overloaded".into(),
+            }),
+            Err(ProviderError::RateLimited {
+                provider: "Anthropic",
+                retry_after: None,
+                detail: String::new(),
+            }),
+            Ok("Paris.".into()),
+        ])),
+        seen: Mutex::new(Vec::new()),
+    };
+    let sink = MemorySink::default();
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "m",
+        tools: &s.tools,
+        gate: &mut s.gate,
+        approver: &DenyAll,
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel: CancelFlag::default(),
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: None,
+        hooks: tern_agent::engine::RunHooks {
+            retry: Some(tern_providers::RetryPolicy {
+                retries: 4,
+                base: Duration::from_millis(5),
+                max_delay: Duration::from_millis(20),
+                max_wait: Duration::from_secs(5),
+            }),
+            ..Default::default()
+        },
+    }
+    .run(Vec::new(), "capital of France?")
+    .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(out.answer.as_deref(), Some("Paris."));
+    assert_eq!(model.requests().len(), 3);
+    let retries: Vec<_> = sink
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == "provider.retry")
+        .collect();
+    assert_eq!(retries.len(), 2);
+    assert_eq!(retries[0].payload["attempt"], 1);
+    assert_eq!(retries[0].payload["of"], 4);
+    assert_eq!(retries[0].payload["reason"], "overloaded");
+    assert_eq!(retries[1].payload["reason"], "rate limited");
+    assert!(
+        retries[1].user_summary.starts_with("Retrying "),
+        "{}",
+        retries[1].user_summary
+    );
+    // Only one model call counts against the turn's budget.
+    assert_eq!(
+        kinds(&sink),
+        [
+            "turn.started",
+            "provider.retry",
+            "provider.retry",
+            "model.replied",
+            "turn.finished"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_spend_cap_fails_the_turn_without_retrying() {
+    let mut s = Setup::new();
+    let model = Script::failing(ProviderError::SpendCap {
+        provider: "Anthropic",
+        detail: "You have reached your specified API usage limits.".into(),
+    });
+    let sink = MemorySink::default();
+    let out = s.run(&model, &DenyAll, &sink, SessionId::new(), "go").await;
+    assert_eq!(out.state, TurnState::Failed);
+    assert!(out.reason.unwrap().contains("spending limit"));
+    assert_eq!(model.requests().len(), 1);
+    assert!(!kinds(&sink).contains(&"provider.retry".to_owned()));
+}

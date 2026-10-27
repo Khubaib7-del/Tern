@@ -116,6 +116,7 @@ pub use run::{
 };
 pub use sources::PageRef;
 pub use steer::Steering;
+pub use tern_providers::retry::retry_line;
 pub use tern_providers::{
     Delta, Effort, ImageInput, ProviderSpec, Thinking, find as find_provider, known_context_window,
     thinking_support,

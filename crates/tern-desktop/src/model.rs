@@ -120,6 +120,10 @@ pub enum Activity {
     Checking,
     NeedsYou,
     Stopping,
+    /// Waiting to try the model again after a rate limit, an overloaded
+    /// server or a dropped connection (#72): "Retrying in 8 s (attempt
+    /// 2/4)".
+    Retrying,
 }
 
 /// The working line, ready to draw.
@@ -131,6 +135,22 @@ pub struct WorkingLine {
     /// Bumps on every real event (a step, a page, a burst of text), so the
     /// mark can beat in time with the work rather than a timer.
     pub beat: usize,
+}
+
+/// "Retrying in 8 s (attempt 2/4)", counting down from the run's last
+/// `provider.retry` step: `elapsed` is the time since the turn started,
+/// the clock the step's `at` is on (#72).
+pub fn retry_phrase(run: &Run, elapsed: std::time::Duration) -> String {
+    let Some(s) = run.steps.iter().rev().find(|s| s.event == "provider.retry") else {
+        return "Retrying".to_owned();
+    };
+    let wait = std::time::Duration::from_millis(s.payload["wait_ms"].as_u64().unwrap_or(0));
+    let left = (s.at + wait).saturating_sub(elapsed);
+    tern_agent::retry_line(
+        left.as_secs_f64().ceil() as u64,
+        s.payload["attempt"].as_u64().unwrap_or(1) as u32,
+        s.payload["of"].as_u64().unwrap_or(1) as u32,
+    )
 }
 
 /// What the working line shows while `tool` runs.
@@ -1034,9 +1054,11 @@ impl Model {
                 // Claim checks: Scout taps the scroll once per verdict.
                 Activity::Checking => Mood::Verifying,
                 Activity::NeedsYou => Mood::NeedsYou,
-                Activity::Thinking | Activity::Tool | Activity::Writing | Activity::Stopping => {
-                    Mood::Thinking
-                }
+                Activity::Thinking
+                | Activity::Tool
+                | Activity::Writing
+                | Activity::Stopping
+                | Activity::Retrying => Mood::Thinking,
             },
             Phase::Connecting | Phase::Ready
                 if self.screen == Screen::Study
@@ -2040,6 +2062,8 @@ impl Model {
             "turn.started" | "tool.executed" | "tool.failed" | "tool.rejected"
             | "model.replied" | "approval.answered" => Some(Activity::Thinking),
             "claims.checking" => Some(Activity::Checking),
+            // A worker's retry leaves the deep run's line alone.
+            "provider.retry" if e.payload.get("worker").is_none() => Some(Activity::Retrying),
             "worker.started" => Some(Activity::Searching),
             "worker.finished" | "plan.answered" => Some(Activity::Thinking),
             "tool.started" => Some(match e.payload["tool"].as_str() {
@@ -2777,6 +2801,7 @@ impl Model {
             }
             Activity::NeedsYou => "Needs your approval".to_owned(),
             Activity::Stopping => "Stopping".to_owned(),
+            Activity::Retrying => retry_phrase(run, since.elapsed()),
         };
         // A quick turn's tool says what it is doing.
         let phrase = match (&self.tool_doing, activity) {
@@ -3468,6 +3493,40 @@ mod tests {
         assert_eq!(m.panel_run().summary().searches, 1);
         assert_eq!(m.context_label(), "1.2k of 128k tokens");
         assert!((m.context_fraction().unwrap() - 1234.0 / 128_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_provider_retry_counts_down_on_the_working_line() {
+        let mut m = ready();
+        m.start_turn("What is RAG?");
+        m.on_event(&ev("turn.started", "Turn started", json!({})));
+        m.on_event(&ev(
+            "provider.retry",
+            "Retrying in 8 s (attempt 2/4)",
+            json!({"provider": "anthropic", "attempt": 2, "of": 4, "wait_ms": 8000, "reason": "overloaded"}),
+        ));
+        let line = m.working_line().unwrap();
+        assert_eq!(line.activity, Activity::Retrying);
+        assert_eq!(line.phrase, "Retrying in 8 s (attempt 2/4)");
+        // Later in the wait the line counts down; at the end it says now.
+        let run = m.panel_run().clone();
+        assert_eq!(
+            retry_phrase(&run, std::time::Duration::from_millis(5_500)),
+            "Retrying in 3 s (attempt 2/4)"
+        );
+        assert_eq!(
+            retry_phrase(&run, std::time::Duration::from_secs(9)),
+            "Retrying now (attempt 2/4)"
+        );
+        // A worker's retry does not take over a deep run's line.
+        m.on_event(&ev("model.replied", "m replied", json!({"model": "m"})));
+        assert_eq!(m.working_line().unwrap().phrase, "Thinking");
+        m.on_event(&ev(
+            "provider.retry",
+            "Worker 1: Retrying in 2 s (attempt 1/4)",
+            json!({"attempt": 1, "of": 4, "wait_ms": 2000, "worker": 1}),
+        ));
+        assert_eq!(m.working_line().unwrap().activity, Activity::Thinking);
     }
 
     #[test]

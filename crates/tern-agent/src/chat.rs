@@ -1204,6 +1204,7 @@ impl ChatSession {
                 on_reasoning: self.on_reasoning.as_deref(),
                 native_tools: crate::engine::native_tools_ok(self.provider.spec().id, &self.model),
                 prefetch: true,
+                retry: None,
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1570,6 +1571,7 @@ impl ChatSession {
                         &self.model,
                     ),
                     prefetch: false,
+                    retry: None,
                 };
                 TurnLoop {
                     session: self.session,

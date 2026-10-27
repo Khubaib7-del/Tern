@@ -164,14 +164,13 @@ impl Provider {
                 reason: e.to_string(),
             });
         }
-        let retry_after = resp
-            .headers()
-            .get("retry-after")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse().ok());
+        let retry_after = retry_after_secs(resp.headers());
         let body = resp.text().await.unwrap_or_default();
         let detail = said(&body);
         Err(match status {
+            StatusCode::TOO_MANY_REQUESTS if crate::retry::is_spend_cap(&body) => {
+                ProviderError::SpendCap { provider, detail }
+            }
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProviderError::Auth {
                 provider,
                 status: status.as_u16(),
@@ -185,6 +184,12 @@ impl Provider {
             StatusCode::NOT_FOUND => ProviderError::NotFound {
                 provider,
                 what: what.to_owned(),
+            },
+            s if s.is_server_error() || s.as_u16() == 529 => ProviderError::Unavailable {
+                provider,
+                status: status.as_u16(),
+                retry_after,
+                body: short(&body),
             },
             _ => ProviderError::Http {
                 provider,
@@ -809,6 +814,24 @@ fn without_url(e: &reqwest::Error) -> String {
     s
 }
 
+/// How long the provider asked Tern to wait, in whole seconds (rounded
+/// up): `retry-after-ms` (OpenAI), else `retry-after` as seconds (a
+/// fraction is rounded up). An HTTP-date `retry-after` is not read; the
+/// backoff applies then.
+pub(crate) fn retry_after_secs(h: &reqwest::header::HeaderMap) -> Option<u64> {
+    let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(str::trim);
+    if let Some(ms) = get("retry-after-ms").and_then(|v| v.parse::<f64>().ok())
+        && ms.is_finite()
+        && ms >= 0.0
+    {
+        return Some((ms / 1000.0).ceil() as u64);
+    }
+    get("retry-after")
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(|s| s.ceil() as u64)
+}
+
 /// The provider's own words from an error body (`error.message`,
 /// `message`, `detail`), redacted and shortened; empty when there are none.
 fn said(body: &str) -> String {
@@ -909,6 +932,24 @@ fn short(body: &str) -> String {
 #[cfg(test)]
 mod network_tests {
     use super::network_reason;
+
+    #[test]
+    fn retry_after_reads_seconds_and_milliseconds() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut h = HeaderMap::new();
+        assert_eq!(super::retry_after_secs(&h), None);
+        h.insert("retry-after", HeaderValue::from_static("7"));
+        assert_eq!(super::retry_after_secs(&h), Some(7));
+        h.insert("retry-after", HeaderValue::from_static("1.2"));
+        assert_eq!(super::retry_after_secs(&h), Some(2));
+        h.insert(
+            "retry-after",
+            HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert_eq!(super::retry_after_secs(&h), None);
+        h.insert("retry-after-ms", HeaderValue::from_static("250"));
+        assert_eq!(super::retry_after_secs(&h), Some(1));
+    }
 
     fn chain(s: &[&str]) -> Vec<String> {
         s.iter().map(|s| (*s).to_owned()).collect()

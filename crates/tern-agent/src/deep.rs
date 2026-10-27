@@ -29,7 +29,10 @@ use futures::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tern_core::{EffectClass, EventEnvelope, SessionId, TurnId, TurnState, TurnStateMachine};
 use tern_crawl::{Fetcher, SearchClient, SearchHit};
-use tern_providers::{ChatMessage, ChatRequest, Usage, UsageLedger};
+use tern_providers::{
+    ChatMessage, ChatRequest, ChatResponse, ProviderResult, RetryNotice, RetryPolicy, Usage,
+    UsageLedger, with_retry,
+};
 pub use tern_research::deep::{
     Final, Merged, NoteSource, NumberedText, WorkerNotes, WorkerStatus, finalize, merge,
     notes_prompt, parse_notes, synthesis_prompt,
@@ -508,6 +511,71 @@ impl Deep<'_> {
         )
     }
 
+    /// One model call with visible retries (#72): a rate limit, an
+    /// overloaded server or a dropped connection waits (a `provider.retry`
+    /// event first) and tries again instead of ending the worker or the
+    /// run. `worker` is the worker's number, `None` for the plan and the
+    /// answer. A streamed call is retried only while none of it reached
+    /// the screen.
+    async fn complete_retrying(
+        &self,
+        worker: Option<usize>,
+        req: &ChatRequest,
+        on_text: Option<&(dyn Fn(&str) -> bool + Send + Sync)>,
+    ) -> ProviderResult<ChatResponse> {
+        let sent = AtomicBool::new(false);
+        let (sink, session, turn) = (self.sink, self.session, self.turn);
+        let provider = self.model.provider_id();
+        let notify = move |n: &RetryNotice| {
+            let mut payload = crate::engine::retry_payload(provider, n);
+            let line = match worker {
+                Some(w) => {
+                    payload["worker"] = json!(w);
+                    format!("Worker {w}: {}", n.line())
+                }
+                None => n.line(),
+            };
+            let _ = sink.record(
+                EventEnvelope::new(
+                    session,
+                    "provider.retry",
+                    EffectClass::Network,
+                    line,
+                    payload,
+                )
+                .with_turn(turn),
+            );
+        };
+        let control = self.control;
+        let sent_ref = &sent;
+        let may_retry = move || {
+            !sent_ref.load(Ordering::Relaxed)
+                && match worker {
+                    Some(w) => !control.worker_cancelled(w),
+                    None => !control.is_cancelled(),
+                }
+        };
+        let model = self.model;
+        match on_text {
+            Some(f) => {
+                let forward = move |t: &str| {
+                    sent_ref.store(true, Ordering::Relaxed);
+                    f(t)
+                };
+                with_retry(RetryPolicy::default(), &notify, &may_retry, |_| {
+                    model.complete_stream(req, &forward)
+                })
+                .await
+            }
+            None => {
+                with_retry(RetryPolicy::default(), &notify, &may_retry, |_| {
+                    model.complete(req)
+                })
+                .await
+            }
+        }
+    }
+
     fn record_event(&self, e: EventEnvelope) -> Result<(), String> {
         self.sink
             .record(e)
@@ -957,10 +1025,17 @@ impl Deep<'_> {
                     sink(call, t);
                     !control.is_cancelled()
                 };
-                self.guard(None, None, self.model.complete_stream(&req, &forward))
+                self.guard(
+                    None,
+                    None,
+                    self.complete_retrying(None, &req, Some(&forward)),
+                )
+                .await
+            }
+            None => {
+                self.guard(None, None, self.complete_retrying(None, &req, None))
                     .await
             }
-            None => self.guard(None, None, self.model.complete(&req)).await,
         }
         .map_err(|_| Self::cancelled())?
         .map_err(|e| Stop {
@@ -1131,7 +1206,7 @@ impl Deep<'_> {
         req.temperature = Some(0.2);
         self.count(1, 0);
         let reply = self
-            .guard(None, None, self.model.complete(&req))
+            .guard(None, None, self.complete_retrying(None, &req, None))
             .await
             .map_err(|_| Self::cancelled())?;
         let (plan, why) = match reply {
@@ -1947,7 +2022,11 @@ impl Deep<'_> {
             req.temperature = Some(0.2);
             self.count(1, 0);
             let reply = self
-                .guard(Some(n), Some(deadline), self.model.complete(&req))
+                .guard(
+                    Some(n),
+                    Some(deadline),
+                    self.complete_retrying(Some(n), &req, None),
+                )
                 .await?
                 .map_err(|e| Halt::Failed(e.to_string()))?;
             self.add_usage(reply.usage);

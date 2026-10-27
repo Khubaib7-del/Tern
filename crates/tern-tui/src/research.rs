@@ -258,7 +258,9 @@ pub fn progress_line(e: &EventEnvelope) -> Option<String> {
             None => e.user_summary.clone(),
         }),
         "plan.answered" | "worker.started" | "worker.finished" | "claims.checking"
-        | "claims.checked" | "steer.received" | "steer.applied" | "run.resumed" => {
+        | "claims.checked" | "steer.received" | "steer.applied" | "run.resumed"
+        // "Worker 2: Retrying in 8 s (attempt 2/4)" (#72).
+        | "provider.retry" => {
             Some(e.user_summary.clone())
         }
         "tool.executed" | "tool.failed" if e.payload.get("worker").is_some() => {
@@ -296,6 +298,7 @@ mod tests {
         assert!(progress_line(&ev("worker.started", json!({"worker": 1}))).is_some());
         assert!(progress_line(&ev("tool.executed", json!({"worker": 1}))).is_some());
         assert!(progress_line(&ev("tool.executed", json!({}))).is_none());
+        assert!(progress_line(&ev("provider.retry", json!({"worker": 2}))).is_some());
         assert!(progress_line(&ev("model.replied", json!({"purpose": "notes"}))).is_none());
         assert!(progress_line(&ev("model.replied", json!({"purpose": "synthesis"}))).is_some());
     }
