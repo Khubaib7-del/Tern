@@ -638,8 +638,11 @@ impl MarkdownPlugin for Mermaid {
                     .flex()
                     .justify_center()
                     .child(
+                        // Never wider than the answer column (a narrow
+                        // window shrinks it; Contain keeps its shape).
                         img(art.image(dark))
                             .w(px(w))
+                            .max_w_full()
                             .h(px(h))
                             .object_fit(ObjectFit::Contain)
                             .flex_none(),
