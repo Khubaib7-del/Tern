@@ -1944,11 +1944,9 @@ async fn read_pictures(tx: &mpsc::UnboundedSender<Msg>, p: &Pictures, text: &str
             Msg::Notice(out.notice.clone())
         });
     }
-    if out.text.is_empty() {
-        text.to_owned()
-    } else {
-        format!("{text}\n\n{}", out.text)
-    }
+    // Inside the attachments block, so the bubble shows only the user's
+    // words and chips (#70).
+    tern_agent::attach::add_to_block(text, &out.text)
 }
 
 #[cfg(test)]
