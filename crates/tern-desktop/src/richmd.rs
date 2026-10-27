@@ -419,6 +419,15 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
     let RenderOutput::Svg(Some(svg)) = out else {
         return None;
     };
+    // The UI tour keeps each theme's drawing beside its scene log, to be
+    // looked at outside the app.
+    if crate::view::tour::enabled()
+        && let Some(log) = std::env::var_os("TERN_TOUR_LOG")
+        && let Some(dir) = std::path::Path::new(&log).parent()
+    {
+        let theme = if dark { "dark" } else { "light" };
+        let _ = std::fs::write(dir.join(format!("mermaid-{theme}.svg")), svg.svg());
+    }
     Some(sized(svg.svg()))
 }
 

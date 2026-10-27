@@ -6982,12 +6982,11 @@ fn donut(size: f32, ring: f32, arcs: Vec<(f32, f32, Hsla)>, track: Hsla) -> impl
 /// shimmering phrase, and elapsed seconds (`docs/02-ui-definition.md` §2.7).
 /// The answer with a verdict badge after each checked claim; a badge
 /// opens that claim in the run panel's Report view.
-/// Which page each citation number in `text` points at, as the claim
-/// checker numbers them (the answer's link list, else reading order).
+/// Which page each citation number in `text` opens: the page the claim
+/// checker matched, else the answer's own link list (#72).
 fn cite_pages(text: &str, pages: &[PageRef]) -> std::collections::HashMap<usize, String> {
-    tern_agent::verify::numbered(text, pages)
+    tern_agent::verify::cite_targets(text, pages)
         .into_iter()
-        .map(|(n, p)| (n, p.url))
         .collect()
 }
 
