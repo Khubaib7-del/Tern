@@ -410,17 +410,123 @@ pub struct PendingAudio {
     pub ctl: tern_agent::local_models::TranscribeCtl,
 }
 
-/// A chat's composer while another chat is open.
+/// A chat's composer while another chat is open: its text, attachments,
+/// audio still being transcribed, and files still being read or converted
+/// (#71: each chat owns its own; a conversion started in one chat never
+/// shows in another's composer).
 #[derive(Clone, Debug, Default)]
 pub struct Draft {
     pub text: String,
     pub attachments: Vec<Attachment>,
     pub audio: Vec<PendingAudio>,
+    pub attaching: usize,
+    pub attaching_doc: Option<String>,
+    pub attaching_name: Option<String>,
+    pub reread_send: Option<String>,
 }
 
 impl Draft {
     fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.attachments.is_empty() && self.audio.is_empty()
+        self.text.trim().is_empty()
+            && self.attachments.is_empty()
+            && self.audio.is_empty()
+            && self.attaching == 0
+            && self.reread_send.is_none()
+    }
+}
+
+/// One chat's live state (#71): its transcript, its run (phase, streamed
+/// text, reasoning, tool cards), and the banners and folds that belong to
+/// it. The window shows the open chat's; a chat whose run goes on while
+/// another is open keeps its own here, and its run's messages land in it.
+#[derive(Debug)]
+pub struct ChatSlot {
+    pub entries: Vec<Entry>,
+    pub phase: Phase,
+    pub compacted: Option<tern_agent::Compacted>,
+    pub compact_pending: bool,
+    pub compacting: bool,
+    pub connection: Option<Connection>,
+    pub context: ContextUse,
+    pub last_run: Run,
+    pub stopping: bool,
+    pub turn_pages: Vec<PageRef>,
+    pub outgoing_images: Vec<tern_agent::ImageInput>,
+    pub mcp_offers: Vec<tern_agent::mcp::MenuItem>,
+    pub steering: Option<tern_agent::Steering>,
+    pub resume_offer: Option<ResumeOffer>,
+    pub cut_off: bool,
+    pub continue_offer: bool,
+    pub tool_doing: Option<(String, Option<String>)>,
+    pub search_down: Option<String>,
+    pub wiki_empty: Option<String>,
+    pub local_failed: Option<crate::chatflow::LocalFailure>,
+    pub doing: Option<String>,
+    pub thinking: crate::chatflow::LiveThinking,
+    pub turn_at: Option<String>,
+    pub reveal: Option<(usize, crate::chatflow::Pacer)>,
+    pub draft_pacer: crate::chatflow::Pacer,
+    pub thought_open: std::collections::HashSet<usize>,
+    pub rollup_open: std::collections::HashSet<usize>,
+    pub live_rollup_open: bool,
+    pub folded: std::collections::HashSet<usize>,
+    pub action_menu: Option<(usize, crate::chatflow::ActionMenu)>,
+    pub paused: bool,
+    pub reply_to: Option<String>,
+    pub run_panel: RunPanel,
+    pub ids: crate::continuity::ChatIds,
+}
+
+impl ChatSlot {
+    /// Whether this put-away chat's run is still going (#71).
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Working { .. } | Phase::Approval { .. } | Phase::Plan { .. }
+        )
+    }
+}
+
+impl Default for ChatSlot {
+    fn default() -> Self {
+        let mut ids = crate::continuity::ChatIds::default();
+        ids.reset();
+        Self {
+            entries: Vec::new(),
+            phase: Phase::Ready,
+            compacted: None,
+            compact_pending: false,
+            compacting: false,
+            connection: None,
+            context: ContextUse::default(),
+            last_run: Run::new(),
+            stopping: false,
+            turn_pages: Vec::new(),
+            outgoing_images: Vec::new(),
+            mcp_offers: Vec::new(),
+            steering: None,
+            resume_offer: None,
+            cut_off: false,
+            continue_offer: false,
+            tool_doing: None,
+            search_down: None,
+            wiki_empty: None,
+            local_failed: None,
+            doing: None,
+            thinking: Default::default(),
+            turn_at: None,
+            reveal: None,
+            draft_pacer: Default::default(),
+            thought_open: Default::default(),
+            rollup_open: Default::default(),
+            live_rollup_open: false,
+            folded: Default::default(),
+            action_menu: None,
+            paused: false,
+            reply_to: None,
+            run_panel: RunPanel::default(),
+            ids,
+        }
     }
 }
 
@@ -474,6 +580,9 @@ pub struct Model {
     pub icons: HashMap<String, SiteIcon>,
     /// Attachments waiting in the composer, sent with the next message.
     pub attachments: Vec<Attachment>,
+    /// Pictures for attachment preview cards, by file name (#71): a
+    /// scanned PDF's first page, a sent picture.
+    pub previews: HashMap<String, Vec<u8>>,
     /// Pictures from the attachments of the turn just started, taken by the
     /// window when it hands the message to the session.
     pub outgoing_images: Vec<tern_agent::ImageInput>,
@@ -522,6 +631,8 @@ pub struct Model {
     /// The document being converted to Markdown while it is the only
     /// item attaching (#69), for "Converting report.pdf to Markdown…".
     pub attaching_doc: Option<String>,
+    /// That document's file name, for its page progress (#71).
+    pub attaching_name: Option<String>,
     /// A message held while the PDF it asks about is read again as
     /// scanned ("try local model granite docling", #70); sent when the
     /// reading arrives.
@@ -705,6 +816,7 @@ impl Model {
             turn_pages: Vec::new(),
             icons: HashMap::new(),
             attachments: Vec::new(),
+            previews: HashMap::new(),
             outgoing_images: Vec::new(),
             catalog: Default::default(),
             audio_pending: Vec::new(),
@@ -724,6 +836,7 @@ impl Model {
             copied: None,
             attaching: 0,
             attaching_doc: None,
+            attaching_name: None,
             reread_send: None,
             deep_mode: false,
             steering: None,
@@ -967,6 +1080,15 @@ impl Model {
         }
         let mut attachments = std::mem::take(&mut self.attachments);
         mention::apply(text, &mut attachments);
+        // A sent picture keeps its preview in the message's card (#71).
+        for a in &attachments {
+            if let Some(b) = a.images.first().and_then(tern_agent::attach::image_bytes) {
+                if self.previews.len() > 64 {
+                    self.previews.clear();
+                }
+                self.previews.insert(a.name.clone(), b);
+            }
+        }
         self.mention = None;
         self.slash = None;
         self.inserted = None;
@@ -1542,6 +1664,7 @@ impl Model {
         self.attaching = self.attaching.saturating_sub(1);
         if self.attaching == 0 {
             self.attaching_doc = None;
+            self.attaching_name = None;
         }
         match result {
             Ok(a) => self.attachments.push(a),
@@ -1563,6 +1686,7 @@ impl Model {
         self.attaching_doc = Some(format!(
             "{name} (as scanned, with the local document or OCR model)"
         ));
+        self.attaching_name = Some(name.to_owned());
         Some(path)
     }
 
@@ -1574,6 +1698,7 @@ impl Model {
         self.attaching = self.attaching.saturating_sub(1);
         if self.attaching == 0 {
             self.attaching_doc = None;
+            self.attaching_name = None;
         }
         match result {
             Ok(a) => {
@@ -1689,11 +1814,11 @@ impl Model {
     /// shows: `text` (what is typed), its attachments, and audio still
     /// being transcribed (it keeps going and lands there).
     pub fn stash_draft(&mut self, key: DraftKey, text: String) {
-        let d = Draft {
+        let mut d = Draft {
             text,
-            attachments: std::mem::take(&mut self.attachments),
-            audio: std::mem::take(&mut self.audio_pending),
+            ..Draft::default()
         };
+        self.swap_draft(&mut d);
         if d.is_empty() {
             self.drafts.remove(&key);
         } else {
@@ -1704,10 +1829,112 @@ impl Model {
     /// Takes chat `key`'s composer back out: its attachments and audio
     /// show again, and the returned text goes into the field.
     pub fn restore_draft(&mut self, key: DraftKey) -> String {
-        let d = self.drafts.remove(&key).unwrap_or_default();
-        self.attachments = d.attachments;
-        self.audio_pending = d.audio;
+        let mut d = self.drafts.remove(&key).unwrap_or_default();
+        self.swap_draft(&mut d);
         d.text
+    }
+
+    /// Exchanges the composer's own state (attachments, audio, files being
+    /// read, a held message) with `d`'s; the text stays where it is.
+    fn swap_draft(&mut self, d: &mut Draft) {
+        use std::mem::swap;
+        swap(&mut self.attachments, &mut d.attachments);
+        swap(&mut self.audio_pending, &mut d.audio);
+        swap(&mut self.attaching, &mut d.attaching);
+        swap(&mut self.attaching_doc, &mut d.attaching_doc);
+        swap(&mut self.attaching_name, &mut d.attaching_name);
+        swap(&mut self.reread_send, &mut d.reread_send);
+    }
+
+    /// Runs `f` on chat `key`'s composer while another chat is open
+    /// (#71): a file read or converted for that chat lands in its draft.
+    pub fn in_draft<R>(&mut self, key: DraftKey, f: impl FnOnce(&mut Model) -> R) -> R {
+        let mut d = self.drafts.remove(&key).unwrap_or_default();
+        self.swap_draft(&mut d);
+        let r = f(self);
+        self.swap_draft(&mut d);
+        if !d.is_empty() {
+            self.drafts.insert(key, d);
+        }
+        r
+    }
+
+    /// Whether chat `key`'s composer (open or put away) is still reading
+    /// files.
+    #[cfg(test)]
+    pub fn draft_attaching(&self, key: DraftKey, open: DraftKey) -> usize {
+        if key == open {
+            self.attaching
+        } else {
+            self.drafts.get(&key).map_or(0, |d| d.attaching)
+        }
+    }
+
+    /// Exchanges the open chat's live state with `slot`'s (#71). Called
+    /// twice around work on a chat that is not open, and once to put the
+    /// open chat away (or bring one back) when the user switches chats
+    /// while its run goes on.
+    pub fn swap_slot(&mut self, slot: &mut ChatSlot) {
+        use std::mem::swap;
+        swap(&mut self.entries, &mut slot.entries);
+        swap(&mut self.phase, &mut slot.phase);
+        swap(&mut self.compacted, &mut slot.compacted);
+        swap(&mut self.compact_pending, &mut slot.compact_pending);
+        swap(&mut self.compacting, &mut slot.compacting);
+        swap(&mut self.connection, &mut slot.connection);
+        swap(&mut self.context, &mut slot.context);
+        swap(&mut self.last_run, &mut slot.last_run);
+        swap(&mut self.stopping, &mut slot.stopping);
+        swap(&mut self.turn_pages, &mut slot.turn_pages);
+        swap(&mut self.outgoing_images, &mut slot.outgoing_images);
+        swap(&mut self.mcp_offers, &mut slot.mcp_offers);
+        swap(&mut self.steering, &mut slot.steering);
+        swap(&mut self.resume_offer, &mut slot.resume_offer);
+        swap(&mut self.cut_off, &mut slot.cut_off);
+        swap(&mut self.continue_offer, &mut slot.continue_offer);
+        swap(&mut self.tool_doing, &mut slot.tool_doing);
+        swap(&mut self.search_down, &mut slot.search_down);
+        swap(&mut self.wiki_empty, &mut slot.wiki_empty);
+        swap(&mut self.local_failed, &mut slot.local_failed);
+        swap(&mut self.doing, &mut slot.doing);
+        swap(&mut self.thinking, &mut slot.thinking);
+        swap(&mut self.turn_at, &mut slot.turn_at);
+        swap(&mut self.reveal, &mut slot.reveal);
+        swap(&mut self.draft_pacer, &mut slot.draft_pacer);
+        swap(&mut self.thought_open, &mut slot.thought_open);
+        swap(&mut self.rollup_open, &mut slot.rollup_open);
+        swap(&mut self.live_rollup_open, &mut slot.live_rollup_open);
+        swap(&mut self.folded, &mut slot.folded);
+        swap(&mut self.action_menu, &mut slot.action_menu);
+        swap(&mut self.paused, &mut slot.paused);
+        swap(&mut self.reply_to, &mut slot.reply_to);
+        swap(&mut self.run_panel, &mut slot.run_panel);
+        swap(&mut self.cont.ids, &mut slot.ids);
+    }
+
+    /// Puts the open chat's live state away (its run goes on) and leaves
+    /// the window with a fresh, idle one; the connection stays shown until
+    /// the next chat's arrives.
+    pub fn park_chat(&mut self) -> ChatSlot {
+        let mut slot = ChatSlot {
+            connection: self.connection.clone(),
+            context: ContextUse {
+                window: self.context.window,
+                ..ContextUse::default()
+            },
+            ..ChatSlot::default()
+        };
+        self.swap_slot(&mut slot);
+        slot
+    }
+
+    /// Runs `f` on a put-away chat's live state (#71): its run's text,
+    /// events, and end land in that chat, never the open one.
+    pub fn in_slot<R>(&mut self, slot: &mut ChatSlot, f: impl FnOnce(&mut Model) -> R) -> R {
+        self.swap_slot(slot);
+        let r = f(self);
+        self.swap_slot(slot);
+        r
     }
 
     /// A new chat got its id: its draft and its audio follow it.
@@ -1869,6 +2096,11 @@ impl Model {
                 self.draft_pacer = Default::default();
             }
             draft.push_str(text);
+            if self.stopping {
+                // Text already on its way when Stop was pressed shows as
+                // it is, not paced in after the stop.
+                self.draft_pacer.shown = draft.len();
+            }
             if !text.trim().is_empty() {
                 self.thinking.answer_started(call);
             }
@@ -2184,14 +2416,22 @@ impl Model {
         if self.is_busy() {
             self.stopping = true;
         }
+        // The stop point is now: everything that streamed shows at once,
+        // and no paced text keeps appearing after the click (#71).
+        if let Phase::Working { draft, .. } = &self.phase {
+            self.draft_pacer.shown = draft.len();
+        }
     }
 
     pub fn finish_turn(&mut self, out: &TurnOutcome, context: ContextUse) {
-        let (took, run) = match std::mem::replace(&mut self.phase, Phase::Ready) {
-            Phase::Working { since, run, .. }
-            | Phase::Approval { since, run, .. }
-            | Phase::Plan { since, run, .. } => (since.elapsed(), run),
-            _ => (Duration::ZERO, Run::new()),
+        let (took, run, streamed) = match std::mem::replace(&mut self.phase, Phase::Ready) {
+            Phase::Working {
+                since, run, draft, ..
+            } => (since.elapsed(), run, draft),
+            Phase::Approval { since, run, .. } | Phase::Plan { since, run, .. } => {
+                (since.elapsed(), run, String::new())
+            }
+            _ => (Duration::ZERO, Run::new(), String::new()),
         };
         self.last_run = run.clone();
         self.context = context;
@@ -2220,6 +2460,25 @@ impl Model {
                     self.reveal = Some((self.entries.len() - 1, pacer));
                 }
             }
+            // Stopped mid-answer (#71): everything that streamed up to the
+            // stop stays (the text and the tool cards), shown in full and
+            // marked Stopped; nothing more comes.
+            _ if out.state == TurnState::Cancelled => {
+                let text = draft_visible(&streamed)
+                    .unwrap_or_default()
+                    .trim_end()
+                    .to_owned();
+                if !text.is_empty() || has_tool_steps(&run) {
+                    self.entries.push(Entry::Assistant {
+                        text,
+                        run: Box::new(run),
+                        took,
+                        pages: std::mem::take(&mut self.turn_pages),
+                        thought,
+                        at,
+                    });
+                }
+            }
             _ => {}
         }
         if out.state != TurnState::Completed
@@ -2230,7 +2489,8 @@ impl Model {
             }
             if out.state == TurnState::Cancelled {
                 // The user stopped it: the chat says so where it happened.
-                self.entries.push(Entry::Notice(r.clone()));
+                let _ = r;
+                self.entries.push(Entry::Notice(STOPPED.into()));
             } else {
                 // A failure is a toast that stays, with Retry.
                 self.toast_error(
@@ -2290,10 +2550,9 @@ impl Model {
     /// Fills the transcript from a reopened chat's past turns.
     pub fn restore(&mut self, turns: &[PastTurn]) {
         self.entries.clear();
-        // Nothing waits to go from another chat: no attachments and no
-        // pictures (a new chat starts empty; an opened chat starts clean).
-        self.attachments.clear();
-        self.audio_pending.clear();
+        // The composer's attachments are this chat's own draft (#71, put
+        // back before its turns arrive); only pictures of a message being
+        // handed over are dropped.
         self.outgoing_images.clear();
         self.reveal = None;
         self.thought_open.clear();
@@ -2330,7 +2589,16 @@ impl Model {
                 }
                 None => missing += 1,
             }
-            if let Some(a) = &t.answer {
+            let stopped = t
+                .stop
+                .as_ref()
+                .is_some_and(|w| w.starts_with("You stopped"));
+            // A reply stopped before any text keeps its tool cards (#71).
+            let kept = t
+                .answer
+                .clone()
+                .or_else(|| (stopped && has_tool_steps(&t.run)).then(String::new));
+            if let Some(a) = &kept {
                 self.entries.push(Entry::Assistant {
                     text: a.clone(),
                     run: Box::new(t.run.clone()),
@@ -2345,8 +2613,8 @@ impl Model {
             }
             // A stop the user made stays in the chat; old errors and
             // system notes do not come back as lines in the transcript.
-            if let Some(why) = t.stop.as_ref().filter(|w| w.starts_with("You stopped")) {
-                self.entries.push(Entry::Notice(why.clone()));
+            if stopped {
+                self.entries.push(Entry::Notice(STOPPED.into()));
             }
             for r in &t.reports {
                 self.entries.push(Entry::Notice(report_note(r)));
@@ -2834,6 +3102,15 @@ pub fn grouped(n: u64) -> String {
 /// Events that show as a step under an answer.
 /// The part of a streaming reply worth showing: everything before a tool
 /// fence, minus a fence that is still arriving. `None` when nothing is left.
+/// The mark under a reply the user stopped (#71): what streamed up to the
+/// stop stays above it.
+pub const STOPPED: &str = "Stopped";
+
+/// Whether a run called any tool (its cards show in the answer's rollup).
+pub fn has_tool_steps(run: &Run) -> bool {
+    run.steps.iter().any(|s| s.event.starts_with("tool."))
+}
+
 pub fn draft_visible(draft: &str) -> Option<&str> {
     const FENCE: &str = "```tool";
     let mut text = match draft.find(FENCE) {
@@ -3065,7 +3342,7 @@ mod tests {
                     at: run.started_rfc3339(),
                 },
                 user("More"),
-                Entry::Notice("You stopped the run.".into()),
+                Entry::Notice(STOPPED.into()),
             ]
         );
     }
@@ -3392,7 +3669,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(notices, ["You stopped this turn."]);
+        // #71: a user's stop reads "Stopped" under what was streamed.
+        assert_eq!(notices, [STOPPED]);
     }
 
     #[test]
@@ -3405,10 +3683,7 @@ mod tests {
             &outcome(TurnState::Cancelled, None, Some("You stopped this turn.")),
             ctx(0, 0),
         );
-        assert_eq!(
-            m.entries.last(),
-            Some(&Entry::Notice("You stopped this turn.".into()))
-        );
+        assert_eq!(m.entries.last(), Some(&Entry::Notice(STOPPED.into())));
         assert!(m.can_send());
     }
 
@@ -3885,10 +4160,17 @@ mod tests {
         m.new_chat();
         assert!(m.attachments.is_empty());
         assert!(m.outgoing_images.is_empty());
-        // Opening another chat starts clean too.
+        // Opening another chat starts with that chat's own composer (#71).
         assert!(m.take_long_text(&"word ".repeat(1_000)));
+        m.stash_draft(None, String::new());
+        let other = Some(tern_core::SessionId::new());
+        assert_eq!(m.restore_draft(other), "");
         m.restore(&[]);
         assert!(m.attachments.is_empty());
+        // ...and the first chat's attachment is still its own.
+        m.stash_draft(other, String::new());
+        m.restore_draft(None);
+        assert_eq!(m.attachments.len(), 1);
         // A sent picture is taken for that message only.
         let mut m = ready();
         m.attachments
@@ -3898,6 +4180,196 @@ mod tests {
         let taken = std::mem::take(&mut m.outgoing_images);
         assert_eq!(taken.len(), 1);
         assert!(m.attachments.is_empty());
+    }
+
+    #[test]
+    fn a_stop_keeps_the_streamed_reply_marked_stopped() {
+        let mut m = ready();
+        m.start_turn("What is paging?").unwrap();
+        m.on_text(1, "Paging splits memory ");
+        m.on_text(1, "into pages.");
+        m.request_stop();
+        assert_eq!(m.paced_draft(), Some("Paging splits memory into pages."));
+        m.finish_turn(
+            &outcome(TurnState::Cancelled, None, Some("You stopped the run.")),
+            ctx(0, 0),
+        );
+        let n = m.entries.len();
+        assert!(
+            matches!(&m.entries[n - 2], Entry::Assistant { text, .. } if text == "Paging splits memory into pages.")
+        );
+        assert_eq!(m.entries[n - 1], Entry::Notice(STOPPED.into()));
+        assert!(
+            m.reveal.is_none(),
+            "nothing more is revealed after the stop"
+        );
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(t) if t.contains("You stopped")))
+        );
+        // A stop before any text leaves only the mark.
+        let mut m = ready();
+        m.start_turn("Hi").unwrap();
+        m.finish_turn(
+            &outcome(TurnState::Cancelled, None, Some("You stopped the run.")),
+            ctx(0, 0),
+        );
+        assert_eq!(m.entries.last(), Some(&Entry::Notice(STOPPED.into())));
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { .. }))
+        );
+    }
+
+    #[test]
+    fn a_reopened_chat_shows_the_stopped_reply() {
+        let mut m = ready();
+        m.restore(&[PastTurn {
+            message: Some("What is paging?".into()),
+            answer: Some("Paging splits memory".into()),
+            stop: Some("You stopped the run.".into()),
+            ..PastTurn::default()
+        }]);
+        assert!(
+            matches!(&m.entries[1], Entry::Assistant { text, .. } if text == "Paging splits memory")
+        );
+        assert_eq!(m.entries[2], Entry::Notice(STOPPED.into()));
+    }
+
+    #[test]
+    fn each_chat_keeps_its_own_composer_and_run() {
+        // #71: a conversion started in one chat never shows in another's
+        // composer, and a chat's run goes on while another chat is open.
+        let a = Some(tern_core::SessionId::new());
+        let b = Some(tern_core::SessionId::new());
+        let mut m = ready();
+        m.attaching = 1;
+        m.attaching_doc = Some("scan.pdf (as scanned)".into());
+        m.attaching_name = Some("scan.pdf".into());
+        m.stash_draft(a, "about the scan".into());
+        assert_eq!(m.restore_draft(b), "");
+        assert_eq!(m.attaching, 0, "chat B shows no converting chip");
+        assert!(m.attaching_doc.is_none());
+        assert_eq!(m.draft_attaching(a, b), 1);
+        // The conversion lands in chat A's draft while B is open.
+        m.in_draft(a, |m| {
+            m.attached(Ok(tern_agent::Attachment::paste(&"scan text ".repeat(10))))
+        });
+        assert!(m.attachments.is_empty(), "B's composer is untouched");
+        assert_eq!(m.draft_attaching(a, b), 0);
+        m.stash_draft(b, String::new());
+        assert_eq!(m.restore_draft(a), "about the scan");
+        assert_eq!(m.attachments.len(), 1);
+        assert!(m.attaching_doc.is_none());
+
+        // A's run goes on while B is open, and lands in A.
+        m.start_turn("What is paging?").unwrap();
+        assert!(m.is_busy());
+        let mut slot_a = m.park_chat();
+        assert!(!m.is_busy(), "chat B is not blocked by A's run");
+        assert!(matches!(slot_a.phase, Phase::Working { .. }));
+        m.start_turn("Side question").unwrap();
+        m.on_text(1, "Side answer.");
+        m.in_slot(&mut slot_a, |m| m.on_text(1, "Paging maps pages."));
+        m.finish_turn(
+            &outcome(TurnState::Completed, Some("Side answer."), None),
+            ctx(0, 0),
+        );
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Assistant { text, .. }) if text == "Side answer.")
+        );
+        m.in_slot(&mut slot_a, |m| {
+            m.finish_turn(
+                &outcome(TurnState::Completed, Some("Paging maps pages."), None),
+                ctx(0, 0),
+            )
+        });
+        assert!(matches!(slot_a.phase, Phase::Ready));
+        assert!(
+            matches!(slot_a.entries.last(), Some(Entry::Assistant { text, .. }) if text == "Paging maps pages.")
+        );
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { text, .. } if text.contains("Paging"))),
+            "A's answer never shows in B"
+        );
+    }
+
+    #[test]
+    fn a_side_tab_answers_at_once_while_the_main_chat_runs() {
+        // #71, the Windows case: the main chat is mid-answer, text copied
+        // from an earlier reply goes into another tab (a sub-session or
+        // a new chat), and that tab answers straight away, not queued
+        // behind the main run. Busy is per chat: the main chat's slot
+        // shows as running (its tab's spinner); the side tab is free.
+        let mut m = ready();
+        m.start_turn("What is paging?").unwrap();
+        m.on_text(1, "Paging splits memory into pages.");
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("Paging splits memory into pages."),
+                None,
+            ),
+            ctx(0, 0),
+        );
+        let copied = m
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Assistant { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        m.start_turn("Now explain TLBs in depth").unwrap();
+        m.on_text(1, "A TLB caches");
+        let mut main = m.park_chat();
+        assert!(main.is_busy(), "the main chat still runs: its tab spins");
+        assert!(!m.is_busy(), "the side tab is not blocked");
+        m.new_chat();
+        let side_q = format!("Simplify: {copied}");
+        m.start_turn(&side_q).expect("the side tab sends at once");
+        assert!(m.is_busy());
+        m.on_text(1, "Memory is cut into equal blocks.");
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("Memory is cut into equal blocks."),
+                None,
+            ),
+            ctx(0, 0),
+        );
+        assert!(
+            m.is_ready(),
+            "the side tab answered while the main chat ran"
+        );
+        assert!(main.is_busy(), "and the main chat is still running");
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Assistant { text, .. }) if text == "Memory is cut into equal blocks.")
+        );
+        // The main run goes on and finishes in its own chat.
+        m.in_slot(&mut main, |m| {
+            m.on_text(1, " virtual-to-physical translations.");
+            m.finish_turn(
+                &outcome(
+                    TurnState::Completed,
+                    Some("A TLB caches virtual-to-physical translations."),
+                    None,
+                ),
+                ctx(0, 0),
+            )
+        });
+        assert!(!main.is_busy(), "its spinner goes when it finishes");
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { text, .. } if text.contains("TLB"))),
+            "the main chat's answer never lands in the side tab"
+        );
     }
 
     fn tiny_png() -> Vec<u8> {

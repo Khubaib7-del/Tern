@@ -171,6 +171,117 @@ pub fn clean(text: &str, before: &str, quiet: bool) -> String {
     kept.join(" ")
 }
 
+/// A sentence that loops a few words ("Muslims and Muslims and the
+/// Muslims and Muslims"): six words or more, under half of them
+/// different (#71).
+fn loops(s: &str) -> bool {
+    let n = norm(s);
+    let words: Vec<&str> = n.split_whitespace().collect();
+    if words.len() < 6 {
+        return false;
+    }
+    let mut uniq = words.clone();
+    uniq.sort_unstable();
+    uniq.dedup();
+    uniq.len() * 2 < words.len()
+}
+
+/// Whether `s` has a letter of the Arabic script (Urdu, Arabic, Persian).
+fn has_arabic_script(s: &str) -> bool {
+    s.chars()
+        .any(|c| ('\u{0600}'..='\u{06FF}').contains(&c) || ('\u{0750}'..='\u{077F}').contains(&c))
+}
+
+/// Whether `s` is written only in Latin letters (with digits and marks).
+fn latin_only(s: &str) -> bool {
+    s.chars().any(|c| c.is_ascii_alphabetic())
+        && !s
+            .chars()
+            .any(|c| c.is_alphabetic() && !c.is_ascii_alphabetic())
+}
+
+/// Arabic letter forms Whisper writes for Urdu speech, as Urdu writes
+/// them (#71: Urdu came out looking like Arabic): yeh, kaf, heh, teh
+/// marbuta.
+pub fn urdu_letters(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\u{064A}' | '\u{0649}' => '\u{06CC}',
+            '\u{0643}' => '\u{06A9}',
+            '\u{0647}' | '\u{0629}' => '\u{06C1}',
+            other => other,
+        })
+        .collect()
+}
+
+/// [`clean`] for a window heard in `language` (#71): Urdu gets Urdu
+/// letter forms, a sentence looping a few words is dropped, and in an
+/// Urdu window a whole English sentence of five words or more (Whisper
+/// inventing an English line over Urdu speech) is dropped.
+pub fn clean_lang(text: &str, before: &str, quiet: bool, language: Option<&str>) -> String {
+    let urdu = language == Some("ur");
+    let text = if urdu {
+        urdu_letters(text)
+    } else {
+        text.to_owned()
+    };
+    let cleaned = clean(&text, before, quiet);
+    let urdu_heard = urdu && has_arabic_script(&cleaned);
+    let kept: Vec<String> = sentences(&cleaned)
+        .into_iter()
+        .filter(|s| !loops(s))
+        .filter(|s| !(urdu_heard && latin_only(s) && s.split_whitespace().count() >= 5))
+        .collect();
+    kept.join(" ")
+}
+
+#[cfg(test)]
+mod lang_tests {
+    use super::*;
+
+    #[test]
+    fn urdu_windows_get_urdu_letters_and_lose_invented_english() {
+        // Arabic yeh and kaf become Urdu's.
+        assert_eq!(
+            urdu_letters("\u{0643}\u{064A}\u{0627}"),
+            "\u{06A9}\u{06CC}\u{0627}"
+        );
+        let urdu = "\u{0645}\u{06CC}\u{06BA} \u{0679}\u{06BE}\u{06CC}\u{06A9} \u{06C1}\u{0648}\u{06BA}\u{06D4}";
+        let mixed = format!("{urdu} We are not talking about the world today.");
+        assert_eq!(clean_lang(&mixed, "", false, Some("ur")), urdu);
+        // An English window is left alone.
+        assert_eq!(
+            clean_lang(
+                "We are not talking about the world today.",
+                "",
+                false,
+                Some("en")
+            ),
+            "We are not talking about the world today."
+        );
+        // Short English inside Urdu speech stays.
+        let code = format!("{urdu} Open the file.");
+        assert_eq!(clean_lang(&code, "", false, Some("ur")), code);
+    }
+
+    #[test]
+    fn a_looping_sentence_is_dropped() {
+        assert_eq!(
+            clean_lang(
+                "Muslims Muslims and Muslims the Muslims Muslims world Muslims.",
+                "",
+                false,
+                None
+            ),
+            ""
+        );
+        assert_eq!(
+            clean_lang("Paging maps pages to frames.", "", false, None),
+            "Paging maps pages to frames."
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -210,7 +210,9 @@ fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
         };
         turn.run.push(e);
         if ENDS.contains(&e.kind.as_str()) {
-            turn.answer = text_at(&e.payload, "answer");
+            // A run stopped mid-reply keeps what streamed up to the stop
+            // (#71), with the stop still recorded.
+            turn.answer = text_at(&e.payload, "answer").or_else(|| text_at(&e.payload, "partial"));
             let completed = e.kind == "turn.finished"
                 && e.payload
                     .get("state")

@@ -77,11 +77,11 @@ impl Workspace {
                     .find(|s| s.id == id)
                     .map(|s| s.title.clone())
                     .unwrap_or_else(|| "Sub-session".into());
-                if !self.model.is_busy() {
-                    self.tabs.add();
-                    self.tabs.set_active(id, &title);
-                    self.load_chat(id, cx);
-                }
+                // A running chat goes on in the background (#71).
+                self.park_running(cx);
+                self.tabs.add();
+                self.tabs.set_active(id, &title);
+                self.load_chat(id, cx);
             }
             ContMsg::Background(id) => {
                 if !self.model.cont.background.contains(&id) {
@@ -131,10 +131,9 @@ impl Workspace {
                     } else {
                         format!("Wrote the handoff packet to {note} in your vault")
                     };
-                    if !self.model.is_busy() {
-                        self.tabs.add();
-                        self.load_chat(id, cx);
-                    }
+                    self.park_running(cx);
+                    self.tabs.add();
+                    self.load_chat(id, cx);
                     self.model
                         .notice_line(format!("{saved} and started this session from it alone."));
                 }
@@ -240,6 +239,8 @@ impl Workspace {
                 .child(text)
         };
         let anchor = self.model.cont.ids.anchor.unwrap_or(n);
+        // Moving rewrites this chat's log: not while its run writes it.
+        let can_move = !self.model.is_busy();
         Some(
             div()
                 .flex()
@@ -290,20 +291,22 @@ impl Workspace {
                         } else {
                             format!("Move Q{n} to a sub-session")
                         },
-                        true,
+                        can_move,
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.model.cont.ids.branch_menu = None;
-                        if let Some(s) = this.current {
-                            let picked: Vec<u32> = if this.model.cont.ids.selected.is_empty() {
-                                vec![n]
-                            } else {
-                                this.model.cont.ids.selected.iter().copied().collect()
-                            };
-                            this.bridge.range_move(s, picked, !in_sub);
-                        }
-                        cx.notify();
-                    })),
+                    .when(can_move, |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.cont.ids.branch_menu = None;
+                            if let Some(s) = this.current {
+                                let picked: Vec<u32> = if this.model.cont.ids.selected.is_empty() {
+                                    vec![n]
+                                } else {
+                                    this.model.cont.ids.selected.iter().copied().collect()
+                                };
+                                this.bridge.range_move(s, picked, !in_sub);
+                            }
+                            cx.notify();
+                        }))
+                    }),
                 )
                 .into_any_element(),
         )

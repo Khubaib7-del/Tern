@@ -78,6 +78,8 @@ Attached documents become Markdown before the model sees them (`tern_agent::docs
 - **DOCX** (headings, lists, tables), **PPTX** (a section per slide), **XLSX** (a table per sheet, at most 300 rows and 40 columns), and an **HTML** file attached on its own (its main text).
 - The result is cached by the file's SHA-256, so attaching the same file again is instant.
 - The chip says how it was read: "PDF text → Markdown · 12 pages", "DOCX → Markdown", "Granite-Docling 258M (Q8) → Markdown · 3 pages", "OCR (PP-OCRv6 small) → Markdown · 2 pages". While a single document converts, the composer says "Converting report.pdf to Markdown…".
+- **Progress** (#71): while Granite-Docling or the OCR model reads scanned pages, `docs::progress(name)` reports pages done and pages to read, and the composer's chip says "Converting report.pdf… page 3/6 · 50%" (`docs::progress_words`). The conversion and any held "read it again as scanned" message belong to the chat they were started in, and wait in its composer when another chat is open.
+- **Preview cards** (#71): a scanned PDF's first page is shown as the card's picture; text, code and notebook files show their first lines.
 - `tern models convert <file>` prints the Markdown.
 
 ### Read aloud: Kokoro

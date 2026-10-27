@@ -43,6 +43,16 @@ Moonshine knows only English. Given Urdu, it writes English that was never said,
 - **Urdu (or any language but English)** restarts the open phrase on Whisper, so English never sits over Urdu speech.
 - Windows with no speech are never sent; the detected language is kept for 2 minutes; sound tags like `[inaudible]` or `(music)` are dropped.
 
+### Urdu, from #71
+
+- **Urdu, not Arabic**: the small language detector hears Urdu as Arabic, Persian or Hindi often enough that Urdu came out in Arabic words and letters. A check that hears `ar`, `fa`, `hi`, `ps` or `ur` now asks Whisper for Urdu (`dictation::spoken`), and Urdu text is given Urdu letter forms (ی, ک, ہ for Arabic ي, ك, ه) by `speech_guard::clean_lang`.
+- **Guard**: in an Urdu window a sentence that loops a few words is dropped, and so is a whole English sentence of five words or more (Whisper inventing English over Urdu speech).
+- **Preload**: Auto loads Whisper in the background as soon as the mic starts, so the switch does not wait for a model load.
+- **No lost words**: a switch mid-recording re-reads the open phrase on Whisper from where it began (`Dictation::rewind`); what was already committed stays.
+- **"Switching to Urdu…"** shows under the composer text until Whisper's first words land.
+- **Sooner text**: a pause of 0.35 s (was longer) ends a phrase, a phrase from 1 s can be committed, and the live text redraws every 200 ms.
+- Dictation belongs to the chat it started in: opening another chat stops it and keeps what was heard in that chat's composer.
+
 **Last transcription** in Settings › Speech names the model, the device (GPU or CPU and threads) and how long it took, for every engine.
 
 ## Read aloud (#69)

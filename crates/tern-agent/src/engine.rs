@@ -537,6 +537,9 @@ struct Run<'r, 'a> {
     native: bool,
     /// The tools called, in order, for the diagnostic log.
     called: Vec<String>,
+    /// Reply text streamed before the user stopped the run (#71): kept in
+    /// the log with the stop, so a reopened chat shows it.
+    partial: String,
 }
 
 /// A step failed in a way that ends the turn.
@@ -570,6 +573,7 @@ impl<'a> TurnLoop<'a> {
             guidance: Vec::new(),
             native: self.hooks.native_tools,
             called: Vec::new(),
+            partial: String::new(),
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -815,12 +819,14 @@ impl Run<'_, '_> {
                 None::<std::time::Duration>,
             ));
             let asked = std::time::Instant::now();
+            let streamed = Mutex::new(String::new());
             let reply = match self.cfg.on_text {
                 Some(sink) => {
                     let call = self.model_calls;
                     let cancel = self.cfg.cancel.clone();
                     let on_reasoning = self.cfg.hooks.on_reasoning;
                     let thought = &thought;
+                    let streamed = &streamed;
                     let forward = move |d: tern_providers::Delta<'_>| {
                         match d {
                             tern_providers::Delta::Text(t) => {
@@ -829,6 +835,13 @@ impl Run<'_, '_> {
                                     th.2 = Some(asked.elapsed());
                                 }
                                 drop(th);
+                                // Nothing after the stop reaches the window.
+                                if cancel.is_cancelled() {
+                                    return false;
+                                }
+                                if let Ok(mut s) = streamed.lock() {
+                                    s.push_str(t);
+                                }
                                 sink(call, t);
                             }
                             tern_providers::Delta::Reasoning(r) => {
@@ -847,6 +860,15 @@ impl Run<'_, '_> {
                 }
                 None => model.complete(&req).await,
             };
+            // Stopped mid-reply: what streamed up to the stop is kept with
+            // the stop (#71), and nothing more is asked.
+            if self.cfg.cancel.is_cancelled() {
+                self.partial = streamed.into_inner().unwrap_or_default();
+                return Err(Stop {
+                    state: TurnState::Cancelled,
+                    reason: "You stopped the run.".into(),
+                });
+            }
             let reply = match reply {
                 // The model takes no native tools: ask again with the text
                 // protocol only, and remember it for later turns.
@@ -1405,6 +1427,8 @@ impl Run<'_, '_> {
                     "tool_calls": self.tool_calls,
                     "answer_chars": answer.as_ref().map(String::len),
                     "answer": answer,
+                    "partial": (state == TurnState::Cancelled && !self.partial.trim().is_empty())
+                        .then(|| self.partial.clone()),
                     "resumable": resumable,
                 }),
             )

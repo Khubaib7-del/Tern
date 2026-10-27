@@ -32,11 +32,34 @@ pub fn decode(img: &ImageInput) -> Option<(Format, Vec<u8>)> {
     Some((format, tern_agent::attach::image_bytes(img)?))
 }
 
+/// The format of picture `bytes` from their first bytes (#71: a scanned
+/// PDF's page picture for its preview card).
+pub fn sniff(bytes: &[u8]) -> Option<Format> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        Some(Format::Png)
+    } else if bytes.starts_with(&[0xFF, 0xD8]) {
+        Some(Format::Jpeg)
+    } else if bytes.starts_with(b"GIF8") {
+        Some(Format::Gif)
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some(Format::Webp)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0];
+
+    #[test]
+    fn page_pictures_are_sniffed() {
+        assert_eq!(sniff(PNG), Some(Format::Png));
+        assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(Format::Jpeg));
+        assert_eq!(sniff(b"%PDF-1.4"), None);
+    }
 
     #[test]
     fn pictures_decode_and_key_by_content() {

@@ -137,6 +137,86 @@ pub fn hash(bytes: &[u8]) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Page progress of documents being read by a local model (#71): the
+/// file name, pages done, and pages to read. The composer's converting
+/// chip polls [`progress`] for "page 3/6 · 50%".
+static PROGRESS: std::sync::Mutex<Vec<(String, usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+thread_local! {
+    /// The file this thread is converting, for [`set_progress`].
+    static JOB: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Marks `name` as the file this thread converts until the guard drops;
+/// its progress is cleared then.
+struct Job;
+
+impl Job {
+    fn start(name: &str) -> Self {
+        JOB.with(|j| *j.borrow_mut() = Some(name.to_owned()));
+        Job
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        if let Some(name) = JOB.with(|j| j.borrow_mut().take())
+            && let Ok(mut p) = PROGRESS.lock()
+        {
+            p.retain(|(n, ..)| *n != name);
+        }
+    }
+}
+
+/// Records that the converting thread's file has `done` of `total`
+/// pages read by a local model.
+fn set_progress(done: usize, total: usize) {
+    let Some(name) = JOB.with(|j| j.borrow().clone()) else {
+        return;
+    };
+    if let Ok(mut p) = PROGRESS.lock() {
+        match p.iter_mut().find(|(n, ..)| *n == name) {
+            Some(e) => (e.1, e.2) = (done, total),
+            None => p.push((name, done, total)),
+        }
+    }
+}
+
+/// How far a local model has got reading file `name`: (pages done,
+/// pages to read), while it runs.
+pub fn progress(name: &str) -> Option<(usize, usize)> {
+    PROGRESS
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(n, ..)| n == name)
+        .map(|&(_, d, t)| (d, t))
+}
+
+/// Shows `done` of `total` pages for `name` as if a model were reading it
+/// (the UI tour's progress scene, which has no local model); `total` 0
+/// clears it.
+pub fn show_progress(name: &str, done: usize, total: usize) {
+    let Ok(mut p) = PROGRESS.lock() else {
+        return;
+    };
+    p.retain(|(n, ..)| n != name);
+    if total > 0 {
+        p.push((name.to_owned(), done, total));
+    }
+}
+
+/// The converting chip's progress words: "page 3/6 · 50%".
+pub fn progress_words(done: usize, total: usize) -> String {
+    let total = total.max(1);
+    let done = done.min(total);
+    format!(
+        "page {}/{total} · {}%",
+        (done + 1).min(total),
+        done * 100 / total
+    )
+}
+
 /// Converts `bytes` (a file named `name`) to Markdown, from the cache when
 /// the same file was converted before. Scanned PDFs use the local models.
 pub fn convert(name: &str, bytes: &[u8]) -> Result<Converted, String> {
@@ -166,6 +246,7 @@ pub fn convert_with(name: &str, bytes: &[u8], scanned: bool) -> Result<Converted
         return Ok(c);
     }
     let t0 = std::time::Instant::now();
+    let _job = Job::start(name);
     let c = guarded(&|| convert_fresh(name, bytes))?;
     crate::diag::note(&format!(
         "docs: {name} -> Markdown via {} ({} pages, {} chars) in {:.1}s",
@@ -297,6 +378,7 @@ pub fn convert_as_scanned(name: &str, bytes: &[u8]) -> Result<Converted, String>
         return Ok(c);
     }
     let t0 = std::time::Instant::now();
+    let _job = Job::start(name);
     let c = std::panic::catch_unwind(|| {
         let pictures = page_pictures_each(bytes)?;
         let texts: Vec<String> = tern_crawl::pdf::read(bytes)
@@ -508,6 +590,11 @@ fn read_scanned(
     };
     let mut md = Vec::new();
     let mut used = String::new();
+    let to_read = (0..n)
+        .filter(|i| scanned.contains(i) && pictures.get(*i).is_some_and(Option::is_some))
+        .count();
+    let mut read = 0;
+    set_progress(0, to_read);
     for i in 0..n {
         let pic = if scanned.contains(&i) {
             pictures.get(i).and_then(Option::as_ref)
@@ -552,6 +639,8 @@ fn read_scanned(
             i + 1,
             page.unwrap_or_default().trim()
         ));
+        read += 1;
+        set_progress(read, to_read);
     }
     let used = if used.is_empty() { "OCR".into() } else { used };
     Ok(Converted {
@@ -1202,5 +1291,29 @@ mod tests {
             hash(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn progress_is_kept_per_file_while_it_converts() {
+        assert_eq!(progress_words(0, 6), "page 1/6 · 0%");
+        assert_eq!(progress_words(3, 6), "page 4/6 · 50%");
+        assert_eq!(progress_words(6, 6), "page 6/6 · 100%");
+        assert_eq!(progress_words(0, 0), "page 1/1 · 0%");
+        let name = "progress-test-scan.pdf";
+        {
+            let _job = Job::start(name);
+            set_progress(2, 5);
+            assert_eq!(progress(name), Some((2, 5)));
+            assert_eq!(progress("another.pdf"), None);
+        }
+        assert_eq!(progress(name), None, "cleared when the reading ends");
+        // Another thread's file is not this one's.
+        set_progress(1, 1);
+        assert_eq!(progress(name), None);
     }
 }

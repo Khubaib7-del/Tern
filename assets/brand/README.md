@@ -10,13 +10,14 @@ Reserved brand property. See the brand clause in [LICENSE](../../LICENSE). Do no
 | `tern-lockup-on-dark.png` | Dark lockup on a transparent background, trimmed | Former README header (dark); the README now uses `docs/assets/banner.webp` |
 | `tern-lockup-on-light.png` | Light lockup on a transparent background, trimmed | Former README header (light); the README now uses `docs/assets/banner-light.webp` |
 | `tern-app-icon.png` | App icon, 512 × 512 | Desktop app icon (planned) |
-| `tern.ico` | Windows icon: the mark enlarged to about 89% of a rounded black tile (22% corner radius) at 16, 20, 24, 32, 40, 48, 64, 96, 128 and 256 px. From 32 px up the tile has a faint 1 px light rim so it separates from dark taskbars; 20 to 32 px are weight-boosted and 16 px is drawn by hand so the forked tail and eye cut survive | Embedded into `tern-desktop.exe`, `tern.exe` and `tern-browser.exe` by each crate's `build.rs` |
+| `tern.ico` | Windows icon: the mark across about 94% of a rounded black tile's width (22% corner radius) at 16, 20, 24, 32, 40, 48, 64, 96, 128 and 256 px, its strokes thickened more the smaller the size (#71: the taskbar mark looked small and thin). From 32 px up the tile has a faint 1 px light rim so it separates from dark taskbars; 16 and 20 px are drawn by hand so the forked tail and eye cut survive. Built by `src/make_ico.py` (which keeps the hand-drawn sizes); `src/tern-ico-sizes.png` shows every size. The executable's icon resource and the window's taskbar icon are the same file (GPUI loads resource 1) | Embedded into `tern-desktop.exe`, `tern.exe` and `tern-browser.exe` by each crate's `build.rs` |
 | `tern-hero-dark.gif` | Animated dither scene, 1200 × 400, 320 frames, 16 s loop. A procedural 3D tern with jointed wings flies in, loops behind and in front of the wordmark, banks into its turns, then its last wingbeat eases to a stop, it glides into the logo position, and its silhouette morphs into the original mark. The sky stays live and a shimmer sweeps across the mark until it fades and the flight repeats | Former README header (dark); the README now uses `docs/assets/banner.webp` |
 | `tern-hero-light.gif` | Same hero, ink on paper | Former README header (light); the README now uses `docs/assets/banner-light.webp` |
 | `tern-hero-still-dark.png` / `-light.png` | One still frame of the hero | Social preview, reduced-motion fallback |
 | `tern-crawl.svg` | **Tern Crawl**, Tern's own crawler and reader: a snail in a cyan-to-blue gradient (`#5CF2FF` to `#1D3BFF`) with film grain, no background | "Read N pages" rows, crawler docs, service listings |
 | `tern-crawl-mono.svg` | The same mark in one colour | Print, tinted UI (the app's `tern-crawl` glyph) |
 | `tern-crawl-tile.svg` | The colour snail on a black rounded square | Standalone app or plugin icon |
+| `src/make_ico.py` | Generator for `tern.ico` (needs pillow) | Re-run after any mark change |
 | `src/dither_hero.py` | Generator for the hero files (software 3D render of the bird and wordmark plane, then 8 × 8 Bayer ordered dither; needs numpy, pillow, scipy, numba) | Re-render after any mark or wordmark change |
 
 ## Rules

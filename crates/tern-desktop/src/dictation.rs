@@ -28,8 +28,12 @@ pub const MAX_WINDOW: usize = RATE * 12;
 /// seconds keeps a minute of talking near 20 requests, inside the free
 /// speech-to-text limits (Groq allows 20 a minute).
 pub const RESEND_STEP: usize = RATE * 3;
-/// Quiet this long ends a phrase and closes the window.
-pub const PAUSE: usize = RATE / 2;
+/// Quiet this long ends a phrase and closes the window (#71: 0.35 s,
+/// was 0.5 s, part of the 2-3 s pause-to-text lag).
+pub const PAUSE: usize = RATE * 35 / 100;
+/// A phrase this long that ends in a pause is sent at once (#71), without
+/// waiting for the window's usual first length.
+pub const MIN_PHRASE: usize = RATE;
 /// The last bit of audio after stop is sent if it is at least this long.
 pub const MIN_FINAL: usize = RATE / 4;
 /// A window that failed this many times is dropped, not retried forever.
@@ -107,6 +111,8 @@ pub struct Dictation {
     pub heard_any: bool,
     /// The last failure, for a toast.
     pub error: Option<String>,
+    /// The language the windows are heard in (`ur` gets the Urdu guard).
+    lang: Option<String>,
 }
 
 impl Dictation {
@@ -143,6 +149,25 @@ impl Dictation {
     pub fn redo_open_window(&mut self, pace: Pace) {
         self.interim.clear();
         self.in_flight = None;
+        self.sent_to = self.start;
+        self.tries = 0;
+        self.pace = pace;
+    }
+
+    /// The language the next windows are transcribed in, for the guard.
+    pub fn set_language(&mut self, lang: Option<String>) {
+        self.lang = lang;
+    }
+
+    /// Goes back to sample `from` at `pace` (#71): Auto heard the speaker
+    /// switch to Urdu in a phrase that started there, so everything from
+    /// there is heard again by Whisper and no word is lost. Text not yet
+    /// in the composer is dropped (it was the wrong model's).
+    pub fn rewind(&mut self, from: usize, pace: Pace) {
+        self.committed.clear();
+        self.interim.clear();
+        self.in_flight = None;
+        self.start = from.min(self.start);
         self.sent_to = self.start;
         self.tries = 0;
         self.pace = pace;
@@ -203,6 +228,9 @@ impl Dictation {
         let pace = self.pace;
         let req = if self.stopped {
             (open >= MIN_FINAL).then_some((len, true))
+        } else if open >= MIN_PHRASE && open < pace.min && paused_short(&samples[self.start..]) {
+            // A short phrase and a pause: its text lands now (#71).
+            Some((len - PAUSE / 2, true))
         } else if open < pace.min {
             None
         } else if open >= pace.max {
@@ -255,7 +283,12 @@ impl Dictation {
         match result {
             Ok(text) => {
                 self.tries = 0;
-                let text = tern_agent::speech_guard::clean(&text, &self.said, req.quiet);
+                let text = tern_agent::speech_guard::clean_lang(
+                    &text,
+                    &self.said,
+                    req.quiet,
+                    self.lang.as_deref(),
+                );
                 spoke = !req.quiet && !text.trim().is_empty();
                 if req.last {
                     // The window's own text wins over its interim guess.
@@ -457,7 +490,7 @@ impl Route {
     pub fn heard(&self, language: Option<&str>, fast: bool) -> Route {
         match (self, language) {
             (Route::Detect, Some("en")) if fast => Route::Fast,
-            (Route::Detect, l) => Route::Whisper(l.map(str::to_owned)),
+            (Route::Detect, l) => Route::Whisper(l.map(|l| spoken(l).to_owned())),
             (r, _) => r.clone(),
         }
     }
@@ -469,8 +502,8 @@ impl Route {
     pub fn checked(language: &str, fast: bool) -> Route {
         match language {
             "en" if fast => Route::Fast,
-            "hi" | "?" | "" => Route::Whisper(None),
-            l => Route::Whisper(Some(l.to_owned())),
+            "?" | "" => Route::Whisper(None),
+            l => Route::Whisper(Some(spoken(l).to_owned())),
         }
     }
 
@@ -487,6 +520,29 @@ impl Route {
             r => r.clone(),
         }
     }
+}
+
+/// The language to transcribe when the check heard `language` (#71):
+/// Arabic, Persian and Hindi heard by the small detector are Urdu from
+/// this speaker (they share sounds and words; Urdu came out as Arabic
+/// script and words), so Whisper writes Urdu. Others stay as heard.
+pub fn spoken(language: &str) -> &str {
+    match language {
+        "ar" | "fa" | "hi" | "ur" | "ps" => "ur",
+        l => l,
+    }
+}
+
+/// Whether a short phrase (from [`MIN_PHRASE`]) ends in a pause, like
+/// [`paused`] for windows under the usual first length.
+fn paused_short(window: &[f32]) -> bool {
+    if window.len() < MIN_PHRASE {
+        return false;
+    }
+    let (speech, tail) = window.split_at(window.len() - PAUSE);
+    let loud = speech.chunks(RATE / 10).map(rms).fold(0.0_f32, f32::max);
+    let quiet = tail.chunks(RATE / 10).map(rms).fold(0.0_f32, f32::max);
+    loud > 0.01 && quiet < loud * 0.15
 }
 
 /// Whether the window ends in a pause: its last [`PAUSE`] is much quieter
@@ -549,6 +605,45 @@ mod tests {
         let more = [s.clone(), tone(MIN_WINDOW)].concat();
         let r = d.next_request(&more).unwrap();
         assert_eq!(r.start, s.len() - PAUSE / 2);
+    }
+
+    #[test]
+    fn a_short_phrase_and_a_pause_land_at_once() {
+        // #71: a 1.2 s phrase then a pause used to wait for 2 s of audio.
+        let mut d = Dictation::new();
+        let mut s = tone(RATE * 12 / 10);
+        s.extend(std::iter::repeat_n(0.0, PAUSE));
+        let r = d.next_request(&s).expect("sent without waiting");
+        assert!(r.last);
+        d.on_result(r.seq, Ok("open it".into()));
+        assert_eq!(d.take_committed().as_deref(), Some("open it"));
+        // Under a second of sound is not a phrase yet.
+        let mut d = Dictation::new();
+        let mut s = tone(RATE / 2);
+        s.extend(std::iter::repeat_n(0.0, PAUSE));
+        assert_eq!(d.next_request(&s), None);
+    }
+
+    #[test]
+    fn a_switch_to_urdu_hears_the_phrase_again_from_its_start() {
+        let mut d = Dictation::new();
+        let mut s = tone(RATE * 2);
+        s.extend(std::iter::repeat_n(0.0, PAUSE));
+        let r = d.next_request(&s).unwrap();
+        d.on_result(r.seq, Ok("first phrase".into()));
+        assert_eq!(d.take_committed().as_deref(), Some("first phrase"));
+        let from = d.open_start();
+        s.extend(tone(RATE * 3));
+        let r = d.next_request(&s).unwrap();
+        d.on_result(r.seq, Ok("wrong model words".into()));
+        // The check says Urdu for the phrase that started at `from`.
+        d.rewind(from, Pace::CHUNKED);
+        assert_eq!(d.take_committed(), None, "the wrong text is dropped");
+        assert_eq!(d.interim_line(), None);
+        assert_eq!(d.open_start(), from, "no audio is lost");
+        s.extend(tone(RATE * 2));
+        let r = d.next_request(&s).unwrap();
+        assert_eq!(r.start, from);
     }
 
     #[test]
@@ -767,7 +862,23 @@ mod tests {
             Route::checked("ur", true),
             Route::Whisper(Some("ur".into()))
         );
-        assert_eq!(Route::checked("hi", true), Route::Whisper(None));
+        // Arabic, Persian or Hindi heard from this speaker is Urdu (#71).
+        for heard in ["hi", "ar", "fa", "ur"] {
+            assert_eq!(
+                Route::checked(heard, true),
+                Route::Whisper(Some("ur".into())),
+                "{heard}"
+            );
+        }
+        assert_eq!(
+            Route::Detect.heard(Some("ar"), true),
+            Route::Whisper(Some("ur".into()))
+        );
+        assert_eq!(
+            Route::checked("de", true),
+            Route::Whisper(Some("de".into()))
+        );
+        assert_eq!(Route::checked("?", true), Route::Whisper(None));
         assert_eq!(
             Route::checked("en", false),
             Route::Whisper(Some("en".into()))
