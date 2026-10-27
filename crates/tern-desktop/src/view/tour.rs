@@ -1889,9 +1889,12 @@ impl Workspace {
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 window.dispatch_action(Box::new(MoveDown), cx);
                 // The action runs after this update; read the row then.
-                cx.defer_in(window, |this, _, _| {
+                let focused = window.focused(cx).is_some();
+                cx.defer_in(window, move |this, _, _| {
                     let selected = this.model.mention.as_ref().map(|m| m.selected);
-                    log(&format!("TOUR note Down; @ row selected {selected:?}"));
+                    log(&format!(
+                        "TOUR note Down; @ row selected {selected:?} (something focused: {focused})"
+                    ));
                 });
             }
             Act::CCollectExports => self.tour_collect_exports(),
