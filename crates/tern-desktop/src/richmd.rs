@@ -406,7 +406,12 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
     };
     let config = MermaidConfig::from_value(serde_json::json!({
         "theme": if dark { "dark" } else { "neutral" },
-        "fontFamily": "Inter, Segoe UI, Helvetica, Arial, sans-serif",
+        // The classic look: merman's default "neo" look strokes nodes with
+        // a gradient that fades to the page, so their borders vanish.
+        "look": "classic",
+        // The app's own font, so the SVG renderer finds it (a missing
+        // family fell back to an italic face).
+        "fontFamily": format!("{}, sans-serif", crate::assets::UI_FONT),
     }));
     let renderer = Renderer::new().with_engine(Engine::new().with_site_config(config));
     let request = SvgRequest {
@@ -428,7 +433,30 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
         let theme = if dark { "dark" } else { "light" };
         let _ = std::fs::write(dir.join(format!("mermaid-{theme}.svg")), svg.svg());
     }
-    Some(sized(svg.svg()))
+    Some(sized(&solid_edges(svg.svg())))
+}
+
+/// Drops the `stroke-dasharray:0 0 L G` Mermaid puts on edges for its
+/// draw-in animation: the SVG renderer draws such an edge as nothing,
+/// leaving only its arrowhead.
+pub fn solid_edges(svg: &str) -> String {
+    const DASH: &str = "stroke-dasharray:0 0 ";
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    while let Some(at) = rest.find(DASH) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let end = after.find([';', '"']).unwrap_or(after.len());
+        // The `;` goes with the declaration; a closing quote stays.
+        let end = if after[end..].starts_with(';') {
+            end + 1
+        } else {
+            end
+        };
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Gives the root `<svg>` a pixel width and height from its view box
@@ -813,6 +841,15 @@ mod tests {
         let svg = String::from_utf8(art.light.bytes().to_vec()).unwrap();
         assert!(!svg.contains("foreignObject"), "resvg-safe labels");
         assert!(draw_mermaid("this is not mermaid at all {{{").is_none());
+    }
+
+    #[test]
+    fn edges_lose_their_draw_in_dashes() {
+        let svg = r#"<path style="stroke-dasharray:0 0 42 4;stroke-dashoffset:0" d="M0"/><path style="stroke-dasharray:0 0 7.5 4" d="M1"/><path style="stroke-dasharray:3" d="M2"/>"#;
+        assert_eq!(
+            solid_edges(svg),
+            r#"<path style="stroke-dashoffset:0" d="M0"/><path style="" d="M1"/><path style="stroke-dasharray:3" d="M2"/>"#
+        );
     }
 
     #[test]
