@@ -2857,7 +2857,7 @@ fn composer_script() -> Vec<Beat> {
         scene(
             "c36-preview-cards",
             "tern-only",
-            "Attachments as preview cards: picture thumbnail, first page of a PDF and documents, name, pages and size, a coloured kind badge",
+            "Attachments as preview cards: picture thumbnail, first page of a PDF and documents, name, pages and size, a file-type logo beside the nameind badge",
             Act::CAttach("photo.png"),
             700,
         ),
@@ -2874,7 +2874,7 @@ fn composer_script() -> Vec<Beat> {
         scene(
             "c37-sent-cards",
             "tern-only",
-            "Sent: the message's attachments as small cards with the picture and kind badges",
+            "Sent: the message's attachments as small cards with the picture and file-type logos",
             Act::CSend,
             4000,
         ),

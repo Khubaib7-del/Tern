@@ -1,6 +1,6 @@
-//! File kinds for attachment preview cards (#71): the small coloured
-//! badge in a card's bottom corner, and whether the card shows a picture,
-//! a first page of text, or only the kind.
+//! File kinds for attachment preview cards (#71): whether the card shows
+//! a picture, a first page of text, or only its kind (the kind's logo is
+//! `crate::fileicon`, #72).
 
 /// What kind of file an attachment is, from its name (and whether it
 /// carries a picture).
@@ -49,51 +49,6 @@ impl FileKind {
             "mp3" | "wav" | "m4a" | "ogg" | "flac" | "opus" | "aac" | "wma" => Self::Audio,
             "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" => Self::Archive,
             _ => Self::Other,
-        }
-    }
-
-    /// The badge's short label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Pdf => "PDF",
-            Self::Image => "IMG",
-            Self::Word => "DOC",
-            Self::Sheet => "XLS",
-            Self::Slides => "PPT",
-            Self::Markdown => "MD",
-            Self::Text => "TXT",
-            Self::Csv => "CSV",
-            Self::Python => "PY",
-            Self::Notebook => "IPYNB",
-            Self::Code => "CODE",
-            Self::Audio => "AUDIO",
-            Self::Folder => "DIR",
-            Self::Archive => "ZIP",
-            Self::Link => "WEB",
-            Self::Other => "FILE",
-        }
-    }
-
-    /// The badge's colour (RGB): muted, readable with white text on both
-    /// themes.
-    pub fn color(self) -> u32 {
-        match self {
-            Self::Pdf => 0xC2413A,
-            Self::Image => 0x8B5CC4,
-            Self::Word => 0x2F6FC9,
-            Self::Sheet => 0x23885A,
-            Self::Slides => 0xC8622A,
-            Self::Markdown => 0x5B6573,
-            Self::Text => 0x6B7280,
-            Self::Csv => 0x2E8B6E,
-            Self::Python => 0x3B6FA8,
-            Self::Notebook => 0xD9822B,
-            Self::Code => 0x4B5A9A,
-            Self::Audio => 0xB8457E,
-            Self::Folder => 0x8A7A4A,
-            Self::Archive => 0x7A6A55,
-            Self::Link => 0x3E8A9A,
-            Self::Other => 0x6B7280,
         }
     }
 
@@ -208,7 +163,6 @@ mod tests {
         assert_eq!(FileKind::of("main.rs"), FileKind::Code);
         assert_eq!(FileKind::of("memo.m4a"), FileKind::Audio);
         assert_eq!(FileKind::of("Pasted text"), FileKind::Other);
-        assert_eq!(FileKind::Notebook.label(), "IPYNB");
         assert!(FileKind::Pdf.shows_page() && !FileKind::Image.shows_page());
     }
 

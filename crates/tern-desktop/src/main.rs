@@ -32,6 +32,8 @@ mod editor;
 mod evaluation;
 mod explain;
 mod extensions;
+mod fileicon;
+mod fileicon_table;
 mod filetype;
 mod flow;
 mod gauge;
