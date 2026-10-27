@@ -477,6 +477,16 @@ pub struct ChatSlot {
     pub ids: crate::continuity::ChatIds,
 }
 
+impl ChatSlot {
+    /// Whether this put-away chat's run is still going (#71).
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Working { .. } | Phase::Approval { .. } | Phase::Plan { .. }
+        )
+    }
+}
+
 impl Default for ChatSlot {
     fn default() -> Self {
         let mut ids = crate::continuity::ChatIds::default();
@@ -4287,6 +4297,80 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Entry::Assistant { text, .. } if text.contains("Paging"))),
             "A's answer never shows in B"
+        );
+    }
+
+    #[test]
+    fn a_side_tab_answers_at_once_while_the_main_chat_runs() {
+        // #71, the Windows case: the main chat is mid-answer, text copied
+        // from an earlier reply goes into another tab (a sub-session or
+        // a new chat), and that tab answers straight away, not queued
+        // behind the main run. Busy is per chat: the main chat's slot
+        // shows as running (its tab's spinner); the side tab is free.
+        let mut m = ready();
+        m.start_turn("What is paging?").unwrap();
+        m.on_text(1, "Paging splits memory into pages.");
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("Paging splits memory into pages."),
+                None,
+            ),
+            ctx(0, 0),
+        );
+        let copied = m
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Entry::Assistant { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        m.start_turn("Now explain TLBs in depth").unwrap();
+        m.on_text(1, "A TLB caches");
+        let mut main = m.park_chat();
+        assert!(main.is_busy(), "the main chat still runs: its tab spins");
+        assert!(!m.is_busy(), "the side tab is not blocked");
+        m.new_chat();
+        let side_q = format!("Simplify: {copied}");
+        m.start_turn(&side_q).expect("the side tab sends at once");
+        assert!(m.is_busy());
+        m.on_text(1, "Memory is cut into equal blocks.");
+        m.finish_turn(
+            &outcome(
+                TurnState::Completed,
+                Some("Memory is cut into equal blocks."),
+                None,
+            ),
+            ctx(0, 0),
+        );
+        assert!(
+            m.is_ready(),
+            "the side tab answered while the main chat ran"
+        );
+        assert!(main.is_busy(), "and the main chat is still running");
+        assert!(
+            matches!(m.entries.last(), Some(Entry::Assistant { text, .. }) if text == "Memory is cut into equal blocks.")
+        );
+        // The main run goes on and finishes in its own chat.
+        m.in_slot(&mut main, |m| {
+            m.on_text(1, " virtual-to-physical translations.");
+            m.finish_turn(
+                &outcome(
+                    TurnState::Completed,
+                    Some("A TLB caches virtual-to-physical translations."),
+                    None,
+                ),
+                ctx(0, 0),
+            )
+        });
+        assert!(!main.is_busy(), "its spinner goes when it finishes");
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Assistant { text, .. } if text.contains("TLB"))),
+            "the main chat's answer never lands in the side tab"
         );
     }
 

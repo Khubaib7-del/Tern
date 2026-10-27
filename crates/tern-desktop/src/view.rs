@@ -1851,6 +1851,14 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Whether chat `id` has a run going out of sight (#71): put away
+    /// while it ran, or a background branch. Its tab and sidebar row show
+    /// a small spinner.
+    pub(super) fn runs_in_background(&self, id: SessionId) -> bool {
+        self.background.get(&id).is_some_and(|b| b.slot.is_busy())
+            || self.model.cont.background.contains(&id)
+    }
+
     /// Brings back chat `id` put away while it ran (#71): its transcript,
     /// its run (still going, or finished while away) and its session.
     /// Returns false when it was not put away.
@@ -3564,13 +3572,12 @@ impl Workspace {
 
     /// One chat or sub-session row in the sidebar's project tree.
     fn chat_row(&self, ix: usize, p: Palette, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.model.is_busy();
         let s = &self.model.sessions[ix];
         let current = Some(s.id) == self.current;
         let id = s.id;
         let sub = s.parent.is_some();
         let planned = s.plan.is_some();
-        let running = self.model.cont.background.contains(&id);
+        let running = !current && self.runs_in_background(id);
         let needs_you = current && self.model.scout_mood() == crate::scout::Mood::NeedsYou;
         let age = crate::rows::age_label(&s.created_at, crate::rows::now_secs());
         if self.renaming == Some(id) {
@@ -3608,7 +3615,7 @@ impl Workspace {
             .text_sm()
             .text_color(if current { p.text } else { p.muted })
             .when(current, |d| d.bg(p.hover))
-            .when(!current && !busy, |d| {
+            .when(!current, |d| {
                 d.cursor_pointer()
                     .hover(|d| d.bg(p.hover).text_color(p.text))
             })
@@ -4071,12 +4078,12 @@ impl Workspace {
 
     /// Opens a new chat that starts with this chat's turns up to entry `i`.
     fn branch_from(&mut self, i: usize, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
-            return;
-        }
         let Some(from) = self.current else {
             return;
         };
+        // A running chat goes on in the background (#71); the copy opens
+        // beside it and answers on its own.
+        self.park_running(cx);
         let turns = self.model.turns_through(i);
         self.tabs.add();
         self.session = None;

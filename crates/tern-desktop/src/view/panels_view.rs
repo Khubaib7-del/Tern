@@ -6,6 +6,7 @@
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
@@ -160,7 +161,6 @@ impl Workspace {
 
     /// Open tabs as quiet text tabs; those that do not fit go into "▾".
     pub(super) fn tab_strip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let busy = self.model.is_busy();
         let active = self.tabs.active;
         let widths: Vec<f32> = self
             .tabs
@@ -193,7 +193,13 @@ impl Workspace {
                 .child(self.measure("tabs", i))
                 .text_color(if on { p.text } else { p.muted })
                 .when(!on, |d| d.hover(move |d| d.text_color(p.text)))
-                .when(busy && !on, |d| d.opacity(0.5))
+                // Other chats stay full strength while this one runs: each
+                // runs on its own (#71). A chat running out of sight shows
+                // a small spinner.
+                .when(
+                    !on && t.id.is_some_and(|id| self.runs_in_background(id)),
+                    |d| d.child(div().flex_none().child(Spinner::new().xsmall())),
+                )
                 .child(
                     div()
                         .min_w_0()

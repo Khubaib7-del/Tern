@@ -2317,7 +2317,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let copied = self.model.copied == Some(i);
-        let busy = self.model.is_busy();
         let open = self.model.action_menu;
         let action = move |id: &'static str, icon: AssetIcon, tip: &'static str| {
             div()
@@ -2369,8 +2368,9 @@ impl Workspace {
         if answer {
             row = row
                 .child(self.read_aloud_action(i, p, cx))
-                .when(!busy, |d| {
-                    d.child(
+                // Open while this chat runs too (#71): a sub-session, a
+                // copy or the side chat answers beside the run.
+                .child(
                         action(
                             "branch-menu",
                             AssetIcon::GitBranch,
@@ -2385,7 +2385,6 @@ impl Workspace {
                             cx.notify();
                         })),
                     )
-                })
                 .child(
                     action(
                         "explain-3d",
