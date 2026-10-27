@@ -41,6 +41,7 @@ mod deep_view;
 mod editor_view;
 mod eval_view;
 mod explain_view;
+mod export_view;
 mod flow_view;
 mod frame;
 mod git_view;
@@ -79,6 +80,8 @@ const RAIL_SLOTS: usize = 6;
 pub(crate) const RAIL_W: f32 = 52.;
 /// The right rail's width while it shows the run map.
 const GRAPH_W: f32 = 440.;
+/// The `@` menu's tallest; longer lists scroll.
+const MENTION_MENU_MAX_H: f32 = 340.;
 pub(crate) const COLUMN_MAX_W: f32 = 760.;
 /// The toast when the mic is clicked and no provider lists a voice model.
 pub const NO_VOICE_MODEL: &str = "No voice model available — download one in Settings › Local models, or add Groq, OpenAI or Mistral";
@@ -377,6 +380,8 @@ pub struct Workspace {
     read_aloud_task: Option<Task<()>>,
     /// Wakes the window when a toast should come, go, or fade.
     toast_wake: Option<Task<()>>,
+    /// The `@` menu's scroll, so the highlighted row stays in view.
+    mention_scroll: ScrollHandle,
     /// The timeline tick under the pointer, and a smooth scroll in flight
     /// (from, to, started).
     rail_hover: Option<usize>,
@@ -448,6 +453,14 @@ impl Workspace {
             crate::richmd::set_cite_opener(move |url, window, app| {
                 let url = url.to_owned();
                 let _ = this.update(app, |w, cx| w.browse(&url, window, cx));
+            });
+        }
+        // A block's Export ▾ in an answer saves through the window (#72
+        // round 2): it knows the chat's folder and shows the toast.
+        {
+            let this = cx.entity().downgrade();
+            crate::blockexport::set_saver(move |job, window, app| {
+                let _ = this.update(app, |w, cx| w.save_block(job, window, cx));
             });
         }
         let composer = cx.new(|cx| {
@@ -821,6 +834,7 @@ impl Workspace {
             read_aloud: None,
             read_aloud_task: None,
             toast_wake: None,
+            mention_scroll: ScrollHandle::new(),
             rail_hover: None,
             rail_auto: false,
             cmdk: None,
@@ -1524,8 +1538,14 @@ impl Workspace {
             return;
         }
         match e.keystroke.key.as_str() {
-            "up" => self.model.move_mention(-1),
-            "down" => self.model.move_mention(1),
+            "up" => {
+                self.model.move_mention(-1);
+                self.scroll_menu_to_selected();
+            }
+            "down" => {
+                self.model.move_mention(1);
+                self.scroll_menu_to_selected();
+            }
             "tab" => {
                 cx.stop_propagation();
                 self.choose_mention(None, window, cx);
@@ -1536,6 +1556,14 @@ impl Workspace {
         }
         cx.stop_propagation();
         cx.notify();
+    }
+
+    /// Scrolls the `@` menu so its highlighted row shows (its first child
+    /// is the heading).
+    fn scroll_menu_to_selected(&self) {
+        if let Some(m) = &self.model.mention {
+            self.mention_scroll.scroll_to_item(m.selected + 1);
+        }
     }
 
     /// The `@` menu over the composer.
@@ -1554,6 +1582,10 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap(px(2.))
+                // Long lists scroll; Up and Down keep the highlight in view.
+                .max_h(px(MENTION_MENU_MAX_H))
+                .overflow_y_scroll()
+                .track_scroll(&self.mention_scroll)
                 .p_1()
                 .rounded_lg()
                 .border_1()
@@ -1607,8 +1639,18 @@ impl Workspace {
                         .rounded_md()
                         .text_sm()
                         .cursor_pointer()
+                        // One highlight for the mouse and the keys: hovering
+                        // a row selects it.
                         .when(i == selected, |d| d.bg(p.hover))
-                        .hover(move |d| d.bg(p.hover))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered
+                                && let Some(m) = &mut this.model.mention
+                                && m.selected != i
+                            {
+                                m.selected = i;
+                                cx.notify();
+                            }
+                        }))
                         .child(lead)
                         .child(
                             div()
@@ -3986,6 +4028,9 @@ impl Workspace {
                             // it streams, `[n]` stays text so the view only
                             // re-parses its last block (#72).
                             let text = with_badges(i, shown, run);
+                            // `\( \)` and `\[ \]` formulas as dollar math
+                            // (round 2).
+                            let text = crate::richmd::prepare(&text).into_owned();
                             let text = if revealing {
                                 text
                             } else {
@@ -3993,10 +4038,11 @@ impl Workspace {
                             };
                             bidi_markdown("answer", i, text, move |t| {
                                 let open = open.clone();
-                                t.on_link_click(move |u, e, w, a| open(u, e, w, a))
-                                    .selectable(true)
-                                    .motion(stream_motion())
-                                    .markdown_extensions(crate::richmd::extensions())
+                                crate::richmd::rich(
+                                    t.on_link_click(move |u, e, w, a| open(u, e, w, a))
+                                        .selectable(true)
+                                        .motion(stream_motion()),
+                                )
                             })
                         })
                         .into_any_element()

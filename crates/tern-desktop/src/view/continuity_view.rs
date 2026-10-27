@@ -845,10 +845,14 @@ impl Workspace {
                             .text_color(p.muted)
                             .child(SharedString::from(a.clone()))
                             .into_any_element(),
-                        Some(a) => TextView::markdown(("side-answer", k), a.clone())
-                            .selectable(true)
-                            .markdown_extensions(crate::richmd::extensions())
-                            .into_any_element(),
+                        Some(a) => crate::richmd::rich(
+                            TextView::markdown(
+                                ("side-answer", k),
+                                crate::richmd::prepare(a).into_owned(),
+                            )
+                            .selectable(true),
+                        )
+                        .into_any_element(),
                         None => div()
                             .flex()
                             .items_center()

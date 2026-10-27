@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 /// How long an info toast stays.
 pub const INFO_FOR: Duration = Duration::from_secs(4);
+/// How long an info toast with an action ("Open folder") stays.
+pub const ACTION_FOR: Duration = Duration::from_secs(8);
 /// How long a toast takes to come in or go out (the house curve).
 pub const MOTION: Duration = Duration::from_millis(200);
 /// Toasts shown at once; older ones wait their turn.
@@ -34,6 +36,8 @@ pub enum Retry {
     Resend,
     /// Open Settings › Local models (no speech-to-text model yet).
     LocalModels,
+    /// Show a saved file in its folder (a block or answer exported).
+    OpenFolder(std::path::PathBuf),
 }
 
 impl Retry {
@@ -41,6 +45,7 @@ impl Retry {
     pub fn label(&self) -> &'static str {
         match self {
             Self::LocalModels => "Open Local models",
+            Self::OpenFolder(_) => "Open folder",
             _ => "Retry",
         }
     }
@@ -59,6 +64,15 @@ pub struct Toast {
 }
 
 impl Toast {
+    /// How long it stays when it is info (longer with an action to press).
+    fn stays(&self) -> Duration {
+        if self.retry.is_some() {
+            ACTION_FOR
+        } else {
+            INFO_FOR
+        }
+    }
+
     /// How far in it is (0 hidden, 1 fully shown) at `now`, on the
     /// model's own clock (the view draws it on a spring instead).
     #[cfg(test)]
@@ -83,6 +97,11 @@ pub struct Toasts {
 impl Toasts {
     pub fn info(&mut self, text: impl Into<String>, now: Instant) -> u64 {
         self.push(Level::Info, text.into(), None, now)
+    }
+
+    /// An info toast with an action under it ("Open folder").
+    pub fn info_with(&mut self, text: impl Into<String>, action: Retry, now: Instant) -> u64 {
+        self.push(Level::Info, text.into(), Some(action), now)
     }
 
     pub fn error(&mut self, text: impl Into<String>, retry: Option<Retry>, now: Instant) -> u64 {
@@ -138,7 +157,7 @@ impl Toasts {
             if t.level == Level::Info
                 && t.leaving.is_none()
                 && shown.contains(&t.id)
-                && now.saturating_duration_since(t.at) >= INFO_FOR
+                && now.saturating_duration_since(t.at) >= t.stays()
             {
                 t.leaving = Some(now);
             }
@@ -171,9 +190,10 @@ impl Toasts {
                 (None, _) if now.saturating_duration_since(t.at) < MOTION => {
                     Some(Duration::from_millis(16))
                 }
-                (None, Level::Info) => {
-                    Some(INFO_FOR.saturating_sub(now.saturating_duration_since(t.at)))
-                }
+                (None, Level::Info) => Some(
+                    t.stays()
+                        .saturating_sub(now.saturating_duration_since(t.at)),
+                ),
                 (None, Level::Error) => None,
             })
             .min()
@@ -284,6 +304,27 @@ mod tests {
         let id = q.shown()[0].id;
         q.dismiss(id, t0 + Duration::from_secs(61));
         q.tick(t0 + Duration::from_secs(62), false);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn a_saved_file_toast_offers_its_folder_for_longer() {
+        let t0 = Instant::now();
+        let mut q = Toasts::default();
+        let path = std::path::PathBuf::from("/work/snippet.rs");
+        q.info_with(
+            "Saved /work/snippet.rs",
+            Retry::OpenFolder(path.clone()),
+            t0,
+        );
+        assert_eq!(
+            q.shown()[0].retry.as_ref().map(Retry::label),
+            Some("Open folder")
+        );
+        q.tick(t0 + INFO_FOR + MOTION, false);
+        assert_eq!(q.shown().len(), 1, "still there after 4 s");
+        q.tick(t0 + ACTION_FOR, false);
+        q.tick(t0 + ACTION_FOR + MOTION, false);
         assert!(q.is_empty());
     }
 

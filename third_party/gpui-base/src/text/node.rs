@@ -2469,7 +2469,9 @@ impl CodeBlock {
             .w_full()
             .min_w_0()
             .px_4()
-            .pt(if lang_label.is_some() {
+            // Tern patch: custom actions get the same clear band as the
+            // language label, so they never sit over the first line.
+            .pt(if lang_label.is_some() || node_cx.code_block_actions.is_some() {
                 px(28.)
             } else {
                 px(14.)
