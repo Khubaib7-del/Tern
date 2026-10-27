@@ -8,7 +8,8 @@
 #   4. (#70) `tern-vlm --list-devices` runs (no crash without a GPU) and
 #      SmolVLM's answer stays short (capped at 200 tokens).
 #   5. (#70) A scan whose only text is a CamScanner watermark goes to OCR
-#      (PP-OCRv6 small), never "PDF text"; an old Excel .xls becomes a table.
+#      (PP-OCRv6 small), never "PDF text"; an old Excel .xls becomes a table
+#      and an old PowerPoint .ppt keeps its slide text.
 # Fails when a model runs and gives nothing (or the wrong kind of thing);
 # a download that cannot be fetched (Hugging Face down) is a warning.
 #   local-runtimes-smoke.sh <path to tern> <path to the vlm folder> <label>
@@ -197,29 +198,43 @@ wb += rec(0x00FC, sst) + rec(0x000A, b"")
 wb += rec(0x0809, struct.pack("<HHHH", 0x600, 0x10, 0, 0))
 for r, c, i in [(0, 0, 0), (0, 1, 1), (1, 0, 2)]: wb += rec(0x00FD, struct.pack("<HHHI", r, c, 0, i))
 wb += rec(0x0203, struct.pack("<HHHd", 1, 1, 0, 4250.0)) + rec(0x000A, b"")
-wb = wb.ljust(4096, b"\0"); n = len(wb) // 512 + (len(wb) % 512 > 0); wb = wb.ljust(n * 512, b"\0")
-END, FREE = 0xFFFFFFFE, 0xFFFFFFFF
-hdr = bytearray(512)
-hdr[0:8] = bytes([0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1])
-struct.pack_into("<HHHHH", hdr, 0x18, 0x3E, 3, 0xFFFE, 9, 6)
-struct.pack_into("<I", hdr, 0x2C, 1); struct.pack_into("<I", hdr, 0x30, 1); struct.pack_into("<I", hdr, 0x38, 4096)
-struct.pack_into("<I", hdr, 0x3C, END); struct.pack_into("<I", hdr, 0x44, END)
-for k in range(109): struct.pack_into("<I", hdr, 0x4C + 4 * k, 0 if k == 0 else FREE)
-fat = [FREE] * 128; fat[0] = 0xFFFFFFFD; fat[1] = END
-for j in range(n): fat[2 + j] = END if j == n - 1 else 3 + j
-d = bytearray(512)
-def entry(k, name, kind, start, size):
-    u = name.encode("utf-16-le"); e = 128 * k
-    d[e:e + len(u)] = u; struct.pack_into("<HB", d, e + 0x40, len(u) + 2, kind)
-    struct.pack_into("<III", d, e + 0x44, FREE, FREE, FREE); struct.pack_into("<II", d, e + 0x74, start, size)
-entry(0, "Root Entry", 5, END, 0); entry(1, "Workbook", 2, 2, len(wb))
-open("costs.xls", "wb").write(bytes(hdr) + struct.pack("<128I", *fat) + bytes(d) + wb)
+def cfb(path, name, wb):
+    wb = wb.ljust(4096, b"\0"); n = len(wb) // 512 + (len(wb) % 512 > 0); wb = wb.ljust(n * 512, b"\0")
+    END, FREE = 0xFFFFFFFE, 0xFFFFFFFF
+    hdr = bytearray(512)
+    hdr[0:8] = bytes([0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1])
+    struct.pack_into("<HHHHH", hdr, 0x18, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<I", hdr, 0x2C, 1); struct.pack_into("<I", hdr, 0x30, 1); struct.pack_into("<I", hdr, 0x38, 4096)
+    struct.pack_into("<I", hdr, 0x3C, END); struct.pack_into("<I", hdr, 0x44, END)
+    for k in range(109): struct.pack_into("<I", hdr, 0x4C + 4 * k, 0 if k == 0 else FREE)
+    fat = [FREE] * 128; fat[0] = 0xFFFFFFFD; fat[1] = END
+    for j in range(n): fat[2 + j] = END if j == n - 1 else 3 + j
+    d = bytearray(512)
+    def entry(k, name, kind, start, size):
+        u = name.encode("utf-16-le"); e = 128 * k
+        d[e:e + len(u)] = u; struct.pack_into("<HB", d, e + 0x40, len(u) + 2, kind)
+        struct.pack_into("<III", d, e + 0x44, FREE, FREE, FREE); struct.pack_into("<II", d, e + 0x74, start, size)
+    entry(0, "Root Entry", 5, END, 0); entry(1, name, 2, 2, len(wb)); struct.pack_into("<I", d, 0x4C, 1)
+    open(path, "wb").write(bytes(hdr) + struct.pack("<128I", *fat) + bytes(d) + wb)
+cfb("costs.xls", "Workbook", wb)
+
+# A PowerPoint 97-2003 file: two slides in a SlideListWithText.
+def atom(vi, t, b): return struct.pack("<HHI", vi, t, len(b)) + b
+lst = atom(0, 0x03F3, bytes(20)) + atom(0, 0x0FA0, "Intro\rHello from Lahore".encode("utf-16-le"))
+lst += atom(0, 0x03F3, bytes(20)) + atom(0, 0x0FA8, b"Plan\rShip 4250")
+cfb("deck.ppt", "PowerPoint Document", atom(0x000F, 0x03E8, atom(0x000F, 0x0FF0, lst)))
 EOF
 if "$tern" models convert costs.xls > xls.md 2> xls.err && grep -q "| Tea | 4250 |" xls.md; then
   sum "| convert | XLS | $(head -1 xls.md | tr '|' ' ') | - |"
 else
   cat xls.md xls.err; echo "::error::.xls to Markdown failed"; fail=1
   sum "| convert | XLS | FAILED: $(tail -c 160 xls.err | tr '\n|' '  ') | - |"
+fi
+if "$tern" models convert deck.ppt > ppt.md 2> ppt.err && grep -q "Hello from Lahore" ppt.md && grep -q "Ship 4250" ppt.md; then
+  sum "| convert | PPT | $(head -1 ppt.md | tr '|' ' ') | - |"
+else
+  cat ppt.md ppt.err; echo "::error::.ppt to Markdown failed"; fail=1
+  sum "| convert | PPT | FAILED: $(tail -c 160 ppt.err | tr '\n|' '  ') | - |"
 fi
 # Without an OCR model the scan is an error naming what to download.
 "$tern" models convert scan.pdf > scan0.md 2> scan0.err
