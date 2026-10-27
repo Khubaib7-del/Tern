@@ -48,6 +48,7 @@ mod perf;
 mod pet;
 mod providers;
 mod restore;
+mod richmd;
 mod rows;
 mod runmap;
 mod scout;

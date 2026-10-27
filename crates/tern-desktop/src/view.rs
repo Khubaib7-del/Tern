@@ -441,6 +441,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // A citation chip in an answer opens its page in Tern's browser
+        // (#72).
+        {
+            let this = cx.entity().downgrade();
+            crate::richmd::set_cite_opener(move |url, window, app| {
+                let url = url.to_owned();
+                let _ = this.update(app, |w, cx| w.browse(&url, window, cx));
+            });
+        }
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(1, 10)
@@ -3985,11 +3994,21 @@ impl Workspace {
                         )
                         .child({
                             let open = std::sync::Arc::new(self.link_opener(cx));
-                            bidi_markdown("answer", i, with_badges(i, shown, run), move |t| {
+                            // Citation chips once the answer has landed; while
+                            // it streams, `[n]` stays text so the view only
+                            // re-parses its last block (#72).
+                            let text = with_badges(i, shown, run);
+                            let text = if revealing {
+                                text
+                            } else {
+                                crate::richmd::chips(&text, &cite_pages(&text, pages))
+                            };
+                            bidi_markdown("answer", i, text, move |t| {
                                 let open = open.clone();
                                 t.on_link_click(move |u, e, w, a| open(u, e, w, a))
                                     .selectable(true)
                                     .motion(stream_motion())
+                                    .markdown_extensions(crate::richmd::extensions())
                             })
                         })
                         .into_any_element()
@@ -6963,6 +6982,15 @@ fn donut(size: f32, ring: f32, arcs: Vec<(f32, f32, Hsla)>, track: Hsla) -> impl
 /// shimmering phrase, and elapsed seconds (`docs/02-ui-definition.md` §2.7).
 /// The answer with a verdict badge after each checked claim; a badge
 /// opens that claim in the run panel's Report view.
+/// Which page each citation number in `text` points at, as the claim
+/// checker numbers them (the answer's link list, else reading order).
+fn cite_pages(text: &str, pages: &[PageRef]) -> std::collections::HashMap<usize, String> {
+    tern_agent::verify::numbered(text, pages)
+        .into_iter()
+        .map(|(n, p)| (n, p.url))
+        .collect()
+}
+
 fn with_badges(entry: usize, text: &str, run: &Run) -> String {
     tern_agent::verify::annotate(text, &run.checks, |claim| {
         tern_agent::verify::claim_link(entry, claim)

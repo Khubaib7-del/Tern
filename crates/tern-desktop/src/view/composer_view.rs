@@ -2678,7 +2678,9 @@ impl Workspace {
                 .children(rollup)
                 .children(draft.map(|d| {
                     super::bidi_markdown("answer", i, d.to_owned(), |t| {
-                        t.selectable(true).motion(super::stream_motion())
+                        t.selectable(true)
+                            .motion(super::stream_motion())
+                            .markdown_extensions(crate::richmd::extensions())
                     })
                 }))
                 .when(behind, |d| d.child(show_all(p, cx)))
