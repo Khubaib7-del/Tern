@@ -191,29 +191,142 @@ fn convert_fresh(name: &str, bytes: &[u8]) -> Result<Converted, String> {
 
 // ----- PDF -----
 
+/// The fewest letters and digits a page with a scanned picture needs in
+/// its text layer for that text to count as the page (#70). Below it the
+/// page is read as a scan.
+pub const MIN_PAGE_CHARS: usize = 100;
+
+/// Lines scanning apps stamp on every page ("Scanned with CamScanner").
+const WATERMARKS: [&str; 12] = [
+    "camscanner",
+    "scanned with",
+    "scanned by",
+    "adobe scan",
+    "genius scan",
+    "microsoft lens",
+    "office lens",
+    "tapscanner",
+    "clearscanner",
+    "turboscan",
+    "vflat",
+    "notebloc",
+];
+
+/// Whether a line is a scanning app's watermark.
+fn is_watermark(line: &str) -> bool {
+    let l = line.to_lowercase();
+    WATERMARKS.iter().any(|w| l.contains(w))
+        && l.chars().filter(|c| c.is_alphanumeric()).count() < 60
+}
+
+/// Letters and digits on a page, leaving out scanning-app watermarks.
+pub fn meaningful_chars(page: &str) -> usize {
+    page.lines()
+        .filter(|l| !is_watermark(l))
+        .map(|l| l.chars().filter(|c| c.is_alphanumeric()).count())
+        .sum()
+}
+
+/// Whether a page is a scan: it has a page-sized picture and its text
+/// layer is (nearly) empty or only a scanning app's watermark.
+pub fn page_is_scanned(text: &str, has_picture: bool) -> bool {
+    has_picture && meaningful_chars(text) < MIN_PAGE_CHARS
+}
+
 fn pdf(bytes: &[u8]) -> Result<Converted, String> {
     let text = tern_crawl::pdf::read(bytes);
     let pages = lopdf::Document::load_mem(bytes)
         .ok()
         .map(|d| d.get_pages().len());
-    if let Ok(t) = &text {
-        let joined = t.joined();
-        let n = pages.unwrap_or(1).max(1);
-        // A text layer worth reading: at least some 10 letters a page on
-        // average (a scanned PDF has none, or a stray page number).
-        if t.chars() >= 10 * n {
-            return Ok(Converted {
-                markdown: joined,
-                pages,
-                how: "PDF text".into(),
-            });
+    let pictures = page_pictures_each(bytes).unwrap_or_default();
+    let texts: Vec<String> = text.as_ref().map(|t| t.pages.clone()).unwrap_or_default();
+    let n = pages.unwrap_or(0).max(texts.len()).max(1);
+    let scanned: Vec<usize> = (0..n)
+        .filter(|&i| {
+            page_is_scanned(
+                texts.get(i).map_or("", String::as_str),
+                pictures.get(i).is_some_and(Option::is_some),
+            )
+        })
+        .collect();
+    if scanned.is_empty() {
+        if let Ok(t) = &text {
+            // A text layer worth reading: at least some 10 letters a page
+            // on average.
+            if t.chars() >= 10 * n || (pictures.iter().all(Option::is_none) && t.chars() > 0) {
+                return Ok(Converted {
+                    markdown: t.joined(),
+                    pages,
+                    how: "PDF text".into(),
+                });
+            }
         }
+        let e = "it has no text layer and no scanned page pictures Tern can take out";
+        return Err(match &text {
+            Err(t) => format!("{t}; {e}"),
+            Ok(_) => e.into(),
+        });
     }
-    // Scanned: read the pages' pictures with a local model.
-    scanned_pdf(bytes, pages).map_err(|e| match &text {
-        Err(t) => format!("{t}; {e}"),
-        Ok(_) => e,
+    crate::diag::note(&format!(
+        "docs: {} of {n} pages look scanned (no text layer, or only a scanning app's watermark)",
+        scanned.len()
+    ));
+    read_scanned(&texts, &pictures, &scanned, pages.or(Some(n)))
+}
+
+/// Reads every page with a picture as a scan, whatever its text layer
+/// says: the chip's "Read again as scanned" (#70). Kept in the cache
+/// apart from the first reading.
+pub fn convert_as_scanned(name: &str, bytes: &[u8]) -> Result<Converted, String> {
+    if ext(name) != "pdf" && !tern_crawl::pdf::is_pdf(bytes) {
+        return Err(format!("{name} is not a PDF"));
+    }
+    let key = format!("{}-scanned", hash(bytes));
+    if let Some(c) = cached(&key) {
+        return Ok(c);
+    }
+    let t0 = std::time::Instant::now();
+    let c = std::panic::catch_unwind(|| {
+        let pictures = page_pictures_each(bytes)?;
+        let texts: Vec<String> = tern_crawl::pdf::read(bytes)
+            .map(|t| t.pages)
+            .unwrap_or_default();
+        let scanned: Vec<usize> = (0..pictures.len())
+            .filter(|&i| pictures[i].is_some())
+            .collect();
+        if scanned.is_empty() {
+            return Err("it has no scanned page pictures Tern can take out".to_owned());
+        }
+        let pages = pictures.len().max(texts.len());
+        read_scanned(&texts, &pictures, &scanned, Some(pages))
     })
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "Tern could not read {name}: the file looks damaged"
+        ))
+    })?;
+    crate::diag::note(&format!(
+        "docs: {name} read again as scanned via {} ({} chars) in {:.1}s",
+        c.how,
+        c.markdown.chars().count(),
+        t0.elapsed().as_secs_f64()
+    ));
+    keep(&key, &c);
+    Ok(c)
+}
+
+/// Whether a message asks to read an attached document again with a
+/// local model ("try local model granite docling", "use OCR on it",
+/// "read it again") (#70).
+pub fn asks_reread(text: &str) -> bool {
+    let l = text.to_lowercase();
+    let model = ["granite", "docling", "ocr", "local model", "scan"]
+        .iter()
+        .any(|w| l.contains(w));
+    let again = ["again", "re-read", "reread", "try", "use", "with", "read"]
+        .iter()
+        .any(|w| l.contains(w));
+    (model && again) || l.contains("read it again") || l.contains("read again")
 }
 
 fn pdf_text_only(bytes: &[u8]) -> Result<Converted, String> {
@@ -231,78 +344,78 @@ fn pdf_text_only(bytes: &[u8]) -> Result<Converted, String> {
 /// The scanned picture of each page (JPEG bytes, or a PNG made from raw
 /// 8-bit grey/RGB samples), in page order, at most [`MAX_SCANNED_PAGES`].
 pub fn page_pictures(bytes: &[u8]) -> Result<Vec<Vec<u8>>, String> {
-    use lopdf::Object;
+    Ok(page_pictures_each(bytes)?.into_iter().flatten().collect())
+}
+
+/// [`page_pictures`] page by page: `None` for a page without one (and
+/// for pages past [`MAX_SCANNED_PAGES`]).
+pub fn page_pictures_each(bytes: &[u8]) -> Result<Vec<Option<Vec<u8>>>, String> {
     let doc = lopdf::Document::load_mem(bytes)
         .map_err(|e| format!("the PDF could not be opened: {e}"))?;
     let mut out = Vec::new();
-    for (_, page_id) in doc.get_pages().into_iter().take(MAX_SCANNED_PAGES) {
-        let mut best: Option<(u64, Vec<u8>)> = None;
-        let Ok((resources, _)) = doc.get_page_resources(page_id) else {
+    for (k, (_, page_id)) in doc.get_pages().into_iter().enumerate() {
+        if k >= MAX_SCANNED_PAGES {
+            out.push(None);
             continue;
-        };
-        let Some(res) = resources else { continue };
-        let xobjects = match res.get(b"XObject") {
-            Ok(Object::Dictionary(d)) => d.clone(),
-            Ok(Object::Reference(r)) => match doc.get_object(*r) {
-                Ok(Object::Dictionary(d)) => d.clone(),
-                _ => continue,
-            },
-            _ => continue,
-        };
-        for (_, obj) in xobjects.iter() {
-            let Ok(r) = obj.as_reference() else { continue };
-            let Ok(Object::Stream(s)) = doc.get_object(r) else {
-                continue;
-            };
-            if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Image".as_slice()) {
-                continue;
-            }
-            let w = s
-                .dict
-                .get(b"Width")
-                .and_then(|o| o.as_i64())
-                .unwrap_or(0)
-                .max(0) as u32;
-            let h = s
-                .dict
-                .get(b"Height")
-                .and_then(|o| o.as_i64())
-                .unwrap_or(0)
-                .max(0) as u32;
-            let area = u64::from(w) * u64::from(h);
-            if area < 200 * 200 || best.as_ref().is_some_and(|(a, _)| *a >= area) {
-                continue;
-            }
-            let filters: Vec<Vec<u8>> = match s.dict.get(b"Filter") {
-                Ok(Object::Name(n)) => vec![n.clone()],
-                Ok(Object::Array(a)) => a
-                    .iter()
-                    .filter_map(|o| o.as_name().ok().map(<[u8]>::to_vec))
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let picture = if filters.last().is_some_and(|f| f == b"DCTDecode") {
-                if filters.len() == 1 {
-                    Some(s.content.clone())
-                } else {
-                    None
-                }
-            } else {
-                raw_picture(s, w, h)
-            };
-            if let Some(p) = picture {
-                best = Some((area, p));
-            }
         }
-        if let Some((_, p)) = best {
-            out.push(p);
-        }
+        out.push(page_picture(&doc, page_id));
     }
     Ok(out)
 }
 
+fn page_picture(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Option<Vec<u8>> {
+    use lopdf::Object;
+    let mut best: Option<(u64, Vec<u8>)> = None;
+    let (resources, _) = doc.get_page_resources(page_id).ok()?;
+    let res = resources?;
+    let xobjects = match res.get(b"XObject") {
+        Ok(Object::Dictionary(d)) => d.clone(),
+        Ok(Object::Reference(r)) => match doc.get_object(*r) {
+            Ok(Object::Dictionary(d)) => d.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    for (_, obj) in xobjects.iter() {
+        let Ok(r) = obj.as_reference() else { continue };
+        let Ok(Object::Stream(s)) = doc.get_object(r) else {
+            continue;
+        };
+        if s.dict.get(b"Subtype").and_then(|o| o.as_name()).ok() != Some(b"Image".as_slice()) {
+            continue;
+        }
+        let dim = |k: &[u8]| s.dict.get(k).and_then(|o| o.as_i64()).unwrap_or(0).max(0) as u32;
+        let (w, h) = (dim(b"Width"), dim(b"Height"));
+        let area = u64::from(w) * u64::from(h);
+        if area < 200 * 200 || best.as_ref().is_some_and(|(a, _)| *a >= area) {
+            continue;
+        }
+        let filters: Vec<Vec<u8>> = match s.dict.get(b"Filter") {
+            Ok(Object::Name(n)) => vec![n.clone()],
+            Ok(Object::Array(a)) => a
+                .iter()
+                .filter_map(|o| o.as_name().ok().map(<[u8]>::to_vec))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let picture = if filters.last().is_some_and(|f| f == b"DCTDecode") {
+            if filters.len() == 1 {
+                Some(s.content.clone())
+            } else {
+                None
+            }
+        } else {
+            raw_picture(s, w, h, filters.is_empty())
+        };
+        if let Some(p) = picture {
+            best = Some((area, p));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
 /// A PNG from an image stream of raw 8-bit DeviceGray or DeviceRGB samples.
-fn raw_picture(s: &lopdf::Stream, w: u32, h: u32) -> Option<Vec<u8>> {
+fn raw_picture(s: &lopdf::Stream, w: u32, h: u32, unfiltered: bool) -> Option<Vec<u8>> {
     let bpc = s
         .dict
         .get(b"BitsPerComponent")
@@ -312,7 +425,11 @@ fn raw_picture(s: &lopdf::Stream, w: u32, h: u32) -> Option<Vec<u8>> {
         return None;
     }
     let cs = s.dict.get(b"ColorSpace").and_then(|o| o.as_name()).ok()?;
-    let data = s.decompressed_content().ok()?;
+    let data = if unfiltered {
+        s.content.clone()
+    } else {
+        s.decompressed_content().ok()?
+    };
     let img = match cs {
         b"DeviceGray" => image::DynamicImage::ImageLuma8(image::GrayImage::from_raw(w, h, data)?),
         b"DeviceRGB" => image::DynamicImage::ImageRgb8(image::RgbImage::from_raw(w, h, data)?),
@@ -323,35 +440,83 @@ fn raw_picture(s: &lopdf::Stream, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(png.into_inner())
 }
 
-fn scanned_pdf(bytes: &[u8], pages: Option<usize>) -> Result<Converted, String> {
+/// Reads the `scanned` pages (indexes) with the local document model
+/// (Granite-Docling) when it runs, else the local OCR model; the other
+/// pages keep their text layer. With neither model, a PDF that is all
+/// scans is an error naming what to download, and a mixed one keeps its
+/// text pages with a note on each scanned page.
+fn read_scanned(
+    texts: &[String],
+    pictures: &[Option<Vec<u8>>],
+    scanned: &[usize],
+    pages: Option<usize>,
+) -> Result<Converted, String> {
     use crate::local_models::{LocalModels, Task, can_run};
-    let pictures = page_pictures(bytes)?;
-    if pictures.is_empty() {
-        return Err("it has no text layer and no scanned page pictures Tern can take out".into());
-    }
-    let (lm, _) = LocalModels::discover()?;
+    let n = pages.unwrap_or(texts.len()).max(1);
+    let models = LocalModels::discover().ok().map(|(lm, _)| lm);
     let prefs = crate::prefs::Preferences::load();
-    let doc_model = lm
-        .usable(&prefs.local_models, Task::DocParse)
-        .filter(|e| can_run(e))
-        .map(|e| (e.id.clone(), e.name.clone()));
-    let ocr_model = lm
-        .usable(&prefs.local_models, Task::Ocr)
-        .filter(|e| can_run(e))
-        .map(|e| (e.id.clone(), e.name.clone()));
-    if doc_model.is_none() && ocr_model.is_none() {
-        return Err(
-            "it is a scanned PDF and no local OCR or document model is downloaded: get PP-OCRv6 small in Settings › Local models".into(),
-        );
-    }
+    let pick = |task: Task| {
+        models.as_ref().and_then(|lm| {
+            lm.usable(&prefs.local_models, task)
+                .filter(|e| can_run(e))
+                .map(|e| (e.id.clone(), e.name.clone()))
+        })
+    };
+    let doc_model = pick(Task::DocParse);
+    let ocr_model = pick(Task::Ocr);
+    let text_pages = (0..n)
+        .any(|i| !scanned.contains(&i) && texts.get(i).is_some_and(|t| meaningful_chars(t) > 0));
+    let Some(lm) = models.filter(|_| doc_model.is_some() || ocr_model.is_some()) else {
+        let why = "no local OCR or document model is downloaded: get PP-OCRv6 small or Granite-Docling in Settings › Local models";
+        if !text_pages {
+            return Err(format!(
+                "it is a scanned PDF (its text layer is empty or only a scanning app's watermark) and {why}"
+            ));
+        }
+        let md: Vec<String> = (0..n)
+            .map(|i| {
+                if scanned.contains(&i) {
+                    format!(
+                        "[page {}]\n[a scanned page: Tern could not read it, {why}]",
+                        i + 1
+                    )
+                } else {
+                    format!(
+                        "[page {}]\n{}",
+                        i + 1,
+                        texts.get(i).map_or("", |t| t.trim())
+                    )
+                }
+            })
+            .collect();
+        return Ok(Converted {
+            markdown: md.join("\n\n"),
+            pages,
+            how: "PDF text · scanned pages not read".into(),
+        });
+    };
     let mut md = Vec::new();
     let mut used = String::new();
-    for (i, pic) in pictures.iter().enumerate() {
+    for i in 0..n {
+        let pic = if scanned.contains(&i) {
+            pictures.get(i).and_then(Option::as_ref)
+        } else {
+            None
+        };
+        let Some(pic) = pic else {
+            let t = texts.get(i).map_or("", |t| t.trim());
+            if !t.is_empty() {
+                md.push(format!("[page {}]\n{t}", i + 1));
+            }
+            continue;
+        };
         let mut page = None;
         if let Some((id, name)) = &doc_model {
             match lm.page_markdown(id, pic) {
                 Ok(t) if !t.trim().is_empty() => {
-                    used = name.clone();
+                    if used.is_empty() {
+                        used = name.clone();
+                    }
                     page = Some(t);
                 }
                 Ok(_) => {}
@@ -377,11 +542,91 @@ fn scanned_pdf(bytes: &[u8], pages: Option<usize>) -> Result<Converted, String> 
             page.unwrap_or_default().trim()
         ));
     }
+    let used = if used.is_empty() { "OCR".into() } else { used };
     Ok(Converted {
         markdown: md.join("\n\n"),
-        pages: pages.or(Some(pictures.len())),
-        how: if used.is_empty() { "OCR".into() } else { used },
+        pages,
+        how: if text_pages {
+            format!("PDF text + {used}")
+        } else {
+            used
+        },
     })
+}
+
+/// A PDF whose pages are scans: a grey picture with a dark bar on each
+/// page, and a text layer holding only `watermark` ("Scanned with
+/// CamScanner"), as scanning apps make them (tests, the UI tour).
+pub fn sample_scanned_pdf(pages: usize, watermark: &str) -> Vec<u8> {
+    let (w, h) = (240usize, 240usize);
+    let mut pixels = vec![235u8; w * h];
+    for y in 100..140 {
+        for x in 30..210 {
+            pixels[y * w + x] = 20;
+        }
+    }
+    let mut objs: Vec<Vec<u8>> = Vec::new();
+    let kids: Vec<String> = (0..pages).map(|i| format!("{} 0 R", 4 + i * 3)).collect();
+    objs.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+    objs.push(
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+            kids.join(" ")
+        )
+        .into_bytes(),
+    );
+    objs.push(
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_vec(),
+    );
+    let esc = watermark
+        .replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)");
+    for i in 0..pages {
+        let (content, image) = (5 + i * 3, 6 + i * 3);
+        objs.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 {image} 0 R >> >> /Contents {content} 0 R >>"
+        ).into_bytes());
+        let stream =
+            format!("q 480 0 0 480 66 200 cm /Im1 Do Q BT /F1 8 Tf 72 40 Td ({esc}) Tj ET");
+        objs.push(
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            )
+            .into_bytes(),
+        );
+        let mut img = format!(
+            "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n",
+            pixels.len()
+        )
+        .into_bytes();
+        img.extend_from_slice(&pixels);
+        img.extend_from_slice(b"\nendstream");
+        objs.push(img);
+    }
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(o);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
 }
 
 // ----- Office XML -----
@@ -747,6 +992,52 @@ mod tests {
             parse_header(&header("a.docx", "DOCX", None)),
             Some(("DOCX".into(), None))
         );
+    }
+
+    #[test]
+    fn a_scan_with_only_a_watermark_is_read_as_scanned() {
+        let bytes = sample_scanned_pdf(3, "Scanned with CamScanner");
+        let text = tern_crawl::pdf::read(&bytes)
+            .map(|t| t.pages)
+            .unwrap_or_default();
+        let pics = page_pictures_each(&bytes).unwrap();
+        assert_eq!(pics.len(), 3);
+        assert!(
+            pics.iter().all(Option::is_some),
+            "every page has its picture"
+        );
+        for (i, p) in pics.iter().enumerate() {
+            let t = text.get(i).map_or("", String::as_str);
+            assert_eq!(meaningful_chars(t), 0, "{t:?}");
+            assert!(page_is_scanned(t, p.is_some()));
+        }
+        // Never read as "PDF text" (#70: 6 pages, 124 chars of watermark).
+        match convert_fresh("CA-3.pdf", &bytes) {
+            Ok(c) => assert_ne!(c.how, "PDF text", "{c:?}"),
+            Err(e) => assert!(
+                e.contains("scanned PDF") && e.contains("Local models"),
+                "{e}"
+            ),
+        }
+        // A page with real text keeps it, picture or not.
+        let long = "The memory hierarchy: registers, caches, main memory and disk, each slower and larger than the last one.";
+        assert!(!page_is_scanned(long, true));
+        assert!(!page_is_scanned("", false));
+        assert!(page_is_scanned(
+            "CamScanner\nScanned with CamScanner\n3",
+            true
+        ));
+    }
+
+    #[test]
+    fn asking_to_read_again_with_a_local_model() {
+        assert!(asks_reread("try local model granite docling"));
+        assert!(asks_reread(
+            "the text is very much visible try local model granatie docling"
+        ));
+        assert!(asks_reread("use OCR on it"));
+        assert!(asks_reread("read it again"));
+        assert!(!asks_reread("summarise the document"));
     }
 
     #[test]
