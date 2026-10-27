@@ -375,14 +375,22 @@ pub fn prefetch_calls(
     tools: &ToolRegistry,
 ) -> Vec<(&'static str, Value)> {
     let mut out = Vec::new();
+    // Only the user's own words: never the attachments block, the text
+    // Tern read from a picture, or a quoted reply (#70: a picture's
+    // description once became a web search for "Tron Legacy").
+    let (own, chips) = crate::attach::split(text);
+    let (_, own) = crate::reply::split(own);
+    let has_attachments = !chips.is_empty() || own.len() < text.len();
+    let previous = previous.map(|p| crate::reply::split(crate::attach::split(p).0).1);
     if tools.get("file_read").is_some()
-        && let Some(raw) = crate::paths::find_in_text(text)
+        && let Some(raw) = crate::paths::find_in_text(own)
         && crate::paths::user_path(&raw).is_file()
     {
         out.push(("file_read", json!({"path": raw})));
     }
     if tools.get("web_search").is_some()
-        && let Some(query) = crate::webintent::web_query_with(text, previous)
+        && !(has_attachments && crate::webintent::about_attachment(own))
+        && let Some(query) = crate::webintent::web_query_with(own, previous)
     {
         out.push(("web_search", json!({"query": query})));
     }

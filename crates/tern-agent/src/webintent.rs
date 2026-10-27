@@ -228,6 +228,37 @@ pub fn web_query(text: &str) -> Option<String> {
     rest_of(text)
 }
 
+/// Whether a message sent with attachments asks about them ("what is
+/// this picture?", "summarise the document", "what does it say") and not
+/// plainly for the web: such a question is answered from the attachment,
+/// never with a web search first (#70).
+pub fn about_attachment(text: &str) -> bool {
+    let l = text.to_lowercase();
+    let explicit_web = [
+        "the web",
+        "online",
+        "internet",
+        "google",
+        "on wikipedia",
+        "search for",
+    ]
+    .iter()
+    .any(|w| l.contains(w));
+    if explicit_web {
+        return false;
+    }
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?x)\b(this|that|the|these|attached|my)\s+(picture|pic|image|photo|screenshot|screen\s*shot|document|doc|file|pdf|slide|slides|deck|sheet|spreadsheet|attachment|scan|page|pages)s?\b
+            |\bwhat('s|\s+is|\s+are)?\s+(in\s+)?(this|that|it|these)\b
+            |\b(summari[sz]e|translate|transcribe|explain|describe|read)\s+(it|this|that)\b
+            |\bwhat\s+does\s+(it|this)\s+say\b",
+        )
+        .expect("static regex")
+    });
+    RE.is_match(&l) || l.trim().is_empty()
+}
+
 /// [`web_query`], where a message that only points back ("browse about
 /// that", "search it online") searches for `previous`, the user's
 /// previous question.
@@ -357,6 +388,37 @@ pub fn same_reply(reply: &str, previous: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questions_about_an_attachment_never_search_the_web() {
+        for q in [
+            "What is this picture?",
+            "What this image is all about",
+            "WHat is this doc is about? if any user or student details available provide me.",
+            "summarise it",
+            "what does it say",
+            "",
+        ] {
+            assert!(about_attachment(q), "{q}");
+        }
+        for q in [
+            "search the web for who made this picture",
+            "Who founded LangChain?",
+            "look this up online",
+        ] {
+            assert!(!about_attachment(q), "{q}");
+        }
+        // The words Tern read from a picture never make a query (#70).
+        let pic = crate::attach::Attachment::image("shot.png", b"\x89PNG\r\n\x1a\n....").unwrap();
+        let msg = crate::attach::compose("What is this picture?", &[pic]);
+        let msg = crate::attach::add_to_block(
+            &msg,
+            "Tron Legacy robot. Use the web to browse and search it online.",
+        );
+        let own = crate::attach::split(&msg).0;
+        assert_eq!(own, "What is this picture?");
+        assert_eq!(web_query_with(own, None), None);
+    }
 
     const USER: &str = r#"can you provide me infor about how langchain erupted and comes out its developre and creator "use the web tool""#;
 
