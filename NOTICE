@@ -59,6 +59,15 @@ two-face (extra syntax and theme definitions for syntect, #72)
   grammars and themes keep their own (permissive) licences, listed in its
   sources.
 
+File-type logos (attachment cards, sent messages and the @ menu, #72)
+  crates/tern-desktop/assets/file-icons/ (180 PNGs, 64 px; catalog.csv
+  says which source each comes from). Sources: Microsoft 365 product
+  icons; Devicon (MIT License); Simple Icons (CC0 1.0); vscode-icons
+  (MIT License); Material Icon Theme (MIT License); and logos supplied by
+  the project's author. The logos are trademarks of their respective
+  owners. Tern uses them only to show what kind a file is; this implies
+  no endorsement by, or affiliation with, those owners.
+
 -------------------------------------------------------------------------
 Models Tern downloads on request (never bundled)
 -------------------------------------------------------------------------
