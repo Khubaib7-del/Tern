@@ -322,6 +322,13 @@ enum Act {
     COllamaDown,
     /// #70: how a long answer is split for read aloud (logged).
     CReadAloudPieces,
+    /// #71: Stop, as the stop button.
+    CStop,
+    /// #71: asks the open side chat.
+    CSideAsk(&'static str),
+    /// #71: a converting chip for `name` at page `done` of `total` (0
+    /// clears it), as Granite-Docling reading a scan reports it.
+    CProgress(&'static str, usize, usize),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -2064,6 +2071,23 @@ impl Workspace {
                 log("TOUR note picker on Ollama (nothing listens on 11434 here)");
                 cx.notify();
             }
+            Act::CStop => self.stop(cx),
+            Act::CSideAsk(q) => self.side_ask(q.to_owned(), cx),
+            Act::CProgress(name, done, total) => {
+                tern_agent::docs::show_progress(name, done, total);
+                if total > 0 {
+                    self.model.attaching = 1;
+                    self.model.attaching_doc = Some(format!(
+                        "{name} (as scanned, with the local document or OCR model)"
+                    ));
+                    self.model.attaching_name = Some(name.to_owned());
+                    self.tick_audio(cx);
+                } else {
+                    self.model.attaching = 0;
+                    self.model.attaching_doc = None;
+                    self.model.attaching_name = None;
+                }
+            }
             Act::CReadAloudPieces => {
                 let pieces = tern_agent::read_aloud::prepare(READ_ALOUD_LONG);
                 log(&format!(
@@ -2232,6 +2256,45 @@ impl Workspace {
             self.model.active_notices(),
             self.model.wiki_empty,
         ));
+        // #71: what belongs to which chat.
+        let background: Vec<String> = self
+            .background
+            .iter()
+            .map(|(id, bg)| {
+                format!(
+                    "{id}: phase={:?} entries={} session_back={}",
+                    bg.slot.phase,
+                    bg.slot.entries.len(),
+                    bg.session.is_some()
+                )
+            })
+            .collect();
+        let side: Vec<String> = self
+            .model
+            .cont
+            .side
+            .lines
+            .iter()
+            .map(|l| format!("{} -> {:?}", l.question, l.answer))
+            .collect();
+        let tail: Vec<String> = self
+            .model
+            .entries
+            .iter()
+            .rev()
+            .take(2)
+            .map(|e| match e {
+                Entry::Assistant { text, .. } => {
+                    format!("answer {:?}", text.chars().take(120).collect::<String>())
+                }
+                Entry::Notice(n) => format!("notice {n:?}"),
+                Entry::User { text, chips, .. } => format!("user {text:?} chips={}", chips.len()),
+            })
+            .collect();
+        log(&format!(
+            "TOUR state {what}: attaching={} converting={:?} background={background:?} side={side:?} last={tail:?}",
+            self.model.attaching, self.model.attaching_doc,
+        ));
         if let Some(Entry::Assistant { run, .. }) =
             self.last_answer().map(|i| &self.model.entries[i])
         {
@@ -2359,6 +2422,10 @@ const CLEAN_A: &str = "It is a screenshot of the Codex start page in ChatGPT, wi
 const READ_ALOUD_LONG: &str = "The Transformer replaces recurrence with attention, which lets every token look at every other token at once, and that is why it trains so much faster on modern hardware than the older recurrent networks did. It was introduced in 2017.";
 
 /// What the mock's transcription returns for any audio file.
+/// #71: the slow answer, the side chat's answer, and the second chat's.
+const SLOW_A: &str = "Virtual memory gives every program its own address space. The operating system splits memory into pages and keeps a page table for each process that maps virtual pages to physical frames. When a program touches a page that is not in memory, the hardware raises a page fault and the operating system loads the page from disk, evicting another if memory is full. The translation lookaside buffer caches recent translations so most accesses skip the page table walk. Together these let programs use more memory than the machine has, keep processes isolated from each other, and share code pages safely.";
+const SIDE_A: &str = "TLB is the translation lookaside buffer: a small cache of recent page-table translations inside the CPU.";
+const TLB_A: &str = "A TLB (translation lookaside buffer) caches recent virtual-to-physical page translations, so most memory accesses skip the page-table walk.";
 const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
 const TOUR_NOTES: &str = "# Tour notes\n\nThe FYP demo is on 14 November in Lab 3.\n";
 const TOUR_PLAN: &str =
@@ -2769,6 +2836,104 @@ fn composer_script() -> Vec<Beat> {
         ),
         b(Act::CloseMenu, 400),
         b(Act::CReadAloudPieces, 300),
+        // #71: fixes from the Windows test of #70.
+        b(Act::CNewChat, 1200),
+        scene(
+            "c36-preview-cards",
+            "tern-only",
+            "Attachments as preview cards: picture thumbnail, first page of a PDF and documents, name, pages and size, a coloured kind badge",
+            Act::CAttach("photo.png"),
+            700,
+        ),
+        b(Act::CAttach("report.pdf"), 700),
+        b(Act::CAttach("notes.docx"), 700),
+        b(Act::CAttach("budget.xls"), 700),
+        b(Act::CAttach("deck.ppt"), 700),
+        b(Act::CAttach("tour-notes.md"), 500),
+        b(Act::CAttach("train.py"), 500),
+        b(Act::CAttach("lab.ipynb"), 500),
+        b(Act::CAttach("data.csv"), 2500),
+        b(Act::CState("preview cards"), 300),
+        b(Act::CTypePath("What do these files say?"), 300),
+        scene(
+            "c37-sent-cards",
+            "tern-only",
+            "Sent: the message's attachments as small cards with the picture and kind badges",
+            Act::CSend,
+            4000,
+        ),
+        b(Act::CState("sent cards"), 300),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath("Hello"), 200),
+        b(Act::CSend, 2500),
+        b(Act::CRemember, 200),
+        scene(
+            "c38-progress-chip",
+            "tern-only",
+            "Granite-Docling reading a scan: the converting chip shows page 3/6 · 33%",
+            Act::CProgress("CA-3 scan.pdf", 2, 6),
+            2500,
+        ),
+        b(Act::CState("progress chip"), 300),
+        b(Act::CNewChat, 1500),
+        scene(
+            "c39-isolated-composer",
+            "tern-only",
+            "Another chat: its composer is its own, with no converting chip from the first chat",
+            Act::CState("other chat composer"),
+            2500,
+        ),
+        b(Act::COpenRemembered, 2500),
+        b(Act::CState("first chat composer again"), 300),
+        b(Act::CProgress("CA-3 scan.pdf", 0, 0), 800),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath("What is paging?"), 200),
+        b(Act::CSend, 2500),
+        b(Act::CRemember, 200),
+        b(Act::CTypePath("Explain virtual memory slowly"), 200),
+        scene(
+            "c40-concurrent-side-chat",
+            "tern-only",
+            "The chat is mid-answer; a side chat over it answers at once, not queued behind the run",
+            Act::CSend,
+            2500,
+        ),
+        b(Act::SideChat, 600),
+        b(Act::CSideAsk("What does TLB mean here?"), 2500),
+        b(
+            Act::CState("side chat answered while the main chat runs"),
+            300,
+        ),
+        scene(
+            "c41-concurrent-new-chat",
+            "tern-only",
+            "A new chat while the first still runs: it answers at once; the first goes on in the background",
+            Act::CNewChat,
+            1500,
+        ),
+        b(Act::CTypePath("What is a TLB?"), 200),
+        b(Act::CSend, 3000),
+        b(
+            Act::CState("second chat answered while the first runs"),
+            300,
+        ),
+        b(Act::CloseSide, 300),
+        b(Act::COpenRemembered, 2500),
+        b(Act::CState("first chat back, still answering"), 300),
+        b(Act::Nothing, 14000),
+        b(Act::CState("first chat finished"), 300),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath("Explain caches slowly"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "c42-stopped-reply",
+            "tern-only",
+            "Stop mid-answer: the text streamed so far stays, marked Stopped; nothing more is written",
+            Act::CStop,
+            3000,
+        ),
+        b(Act::CState("stopped reply"), 300),
+        b(Act::ToastsClear, 400),
         scene(
             "c30-settings-read-aloud",
             "tern-only",
@@ -2811,6 +2976,19 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
         ]),
     );
     let _ = std::fs::write(dir.join("notes.docx"), tern_agent::docs::sample_docx());
+    // #71: files for the preview cards' kind badges.
+    let _ = std::fs::write(
+        dir.join("train.py"),
+        "import torch\n\n# Train the tern classifier\nmodel = torch.nn.Linear(4, 2)\n",
+    );
+    let _ = std::fs::write(
+        dir.join("lab.ipynb"),
+        r##"{"cells": [{"cell_type": "markdown", "source": ["# Lab 4: caches"]}], "nbformat": 4, "nbformat_minor": 5}"##,
+    );
+    let _ = std::fs::write(
+        dir.join("data.csv"),
+        "city,students\nLahore,120\nIslamabad,80\n",
+    );
     // #70: a scan with only a watermark, a text page plus a scan, and old
     // Office files (one damaged).
     let _ = std::fs::write(
@@ -2930,6 +3108,21 @@ mod mock {
             b
         };
         let (ctype, reply) = route(&method, &path, &body);
+        // #71: a slow answer streams a word every 250 ms, so a scene can
+        // stop it or open another chat while it runs.
+        if ctype == "text/event-stream" && slow(&body) {
+            let mut out = stream;
+            write!(
+                out,
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nConnection: close\r\n\r\n"
+            )?;
+            for event in reply.split_inclusive("\n\n") {
+                out.write_all(event.as_bytes())?;
+                out.flush()?;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            return Ok(());
+        }
         super::log(&format!(
             "TOUR mock {method} {path} -> {} bytes",
             reply.len()
@@ -3011,6 +3204,17 @@ mod mock {
         }
     }
 
+    /// Whether the request's last user message asks for a slow answer.
+    fn slow(body: &[u8]) -> bool {
+        let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+        let has_tools = req["tools"].as_array().is_some_and(|t| !t.is_empty());
+        has_tools
+            && req["messages"]
+                .as_array()
+                .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
+                .is_some_and(|m| text_of(m).contains("slowly"))
+    }
+
     /// A query parameter of a request path, decoded.
     pub(super) fn query_param(path: &str, key: &str) -> Option<String> {
         let query = path.split_once('?')?.1;
@@ -3071,6 +3275,17 @@ mod mock {
             );
         }
         let user = text_of(&msgs[last_user]);
+        // #71: the side chat's question, and slow answers for the
+        // concurrent-chats and Stop scenes.
+        if user.starts_with("About this part of the conversation:") {
+            return (super::SIDE_A.into(), None);
+        }
+        if has_tools && user.contains("slowly") {
+            return (super::SLOW_A.into(), None);
+        }
+        if has_tools && user.contains("What is a TLB?") {
+            return (super::TLB_A.into(), None);
+        }
         // Web results Tern sent back (its own search, or the model's call):
         // a cited answer. The follow-up says it searched again.
         if user.starts_with("Result of `web_search`") && user.contains("Wikipedia has nothing") {

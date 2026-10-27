@@ -111,13 +111,6 @@ struct BgRun {
     cancel: CancelFlag,
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     plan_reply: Option<oneshot::Sender<tern_agent::PlanAnswer>>,
-    /// Chats whose runs go on while another chat is open (#71).
-    background: std::collections::HashMap<SessionId, BgRun>,
-    /// A put-away chat's plan to show once its chat is open again.
-    replay_plan: Option<(
-        tern_agent::ResearchPlan,
-        oneshot::Sender<tern_agent::PlanAnswer>,
-    )>,
     plan_inputs: Vec<Entity<InputState>>,
     plan_dropped: HashSet<usize>,
     /// A plan that arrived while the chat was put away; shown on return.
@@ -174,6 +167,13 @@ pub struct Workspace {
     pending: Option<oneshot::Sender<ApprovalAnswer>>,
     /// The waiting deep research plan's answer channel.
     plan_reply: Option<oneshot::Sender<tern_agent::PlanAnswer>>,
+    /// Chats whose runs go on while another chat is open (#71).
+    background: std::collections::HashMap<SessionId, BgRun>,
+    /// A put-away chat's plan to show once its chat is open again.
+    replay_plan: Option<(
+        tern_agent::ResearchPlan,
+        oneshot::Sender<tern_agent::PlanAnswer>,
+    )>,
     /// The plan card's text fields, one per sub-question.
     plan_inputs: Vec<Entity<InputState>>,
     /// Sub-questions dropped in the plan card's edit mode, by position.
@@ -4409,6 +4409,13 @@ impl Workspace {
 
     /// Waiting attachments as chips: icon, name, detail, role, remove.
     fn attachment_chips(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let cards: Vec<AnyElement> = self
+            .model
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(i, a)| self.attachment_card(i, a, p, cx))
+            .collect();
         let loading = (self.model.attaching > 0).then(|| {
             div()
                 .flex()
@@ -4503,13 +4510,7 @@ impl Workspace {
             .flex()
             .flex_wrap()
             .gap_1()
-            .children(
-                self.model
-                    .attachments
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| self.attachment_card(i, a, p, cx)),
-            )
+            .children(cards)
             .children(audio)
             .children(loading)
             .children(self.cannot_see_note(p))

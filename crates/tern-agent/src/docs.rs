@@ -193,6 +193,19 @@ pub fn progress(name: &str) -> Option<(usize, usize)> {
         .map(|&(_, d, t)| (d, t))
 }
 
+/// Shows `done` of `total` pages for `name` as if a model were reading it
+/// (the UI tour's progress scene, which has no local model); `total` 0
+/// clears it.
+pub fn show_progress(name: &str, done: usize, total: usize) {
+    let Ok(mut p) = PROGRESS.lock() else {
+        return;
+    };
+    p.retain(|(n, ..)| n != name);
+    if total > 0 {
+        p.push((name.to_owned(), done, total));
+    }
+}
+
 /// The converting chip's progress words: "page 3/6 · 50%".
 pub fn progress_words(done: usize, total: usize) -> String {
     let total = total.max(1);
