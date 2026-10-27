@@ -546,9 +546,9 @@ pub fn toolbar(
         .is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
     let formats = Arc::new(formats);
     if !formats.is_empty() {
-        let open = open.clone();
+        let toggle = open.clone();
         tour_hook(format!("{id}-export"), move |_, cx| {
-            open.update(cx, |o, cx| {
+            toggle.update(cx, |o, cx| {
                 *o = !*o;
                 cx.notify();
             })
