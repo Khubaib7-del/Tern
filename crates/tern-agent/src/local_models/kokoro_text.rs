@@ -138,9 +138,10 @@ pub fn chunks(sentence: &str) -> Vec<String> {
         cur.push(w);
         let left = words.len() - i - 1;
         let clause_end = w.ends_with([',', ';', ':']) || *w == "-" || *w == "—";
-        let full = cur.len() >= CHUNK_WORDS + 4;
-        // A clause of at least 5 words ends a piece; a piece never leaves
-        // fewer than 4 words behind.
+        let full = cur.len() >= CHUNK_WORDS;
+        // A clause of at least 5 words ends a piece, and so does the
+        // CHUNK_WORDS-th word; a piece never leaves fewer than 4 words
+        // behind, so no piece is longer than CHUNK_WORDS + 3.
         if left >= 4 && ((clause_end && cur.len() >= 5) || full) {
             out.push(cur.join(" "));
             cur.clear();

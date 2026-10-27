@@ -1121,7 +1121,8 @@ mod tests {
             ),
         }
         // A page with real text keeps it, picture or not.
-        let long = "The memory hierarchy: registers, caches, main memory and disk, each slower and larger than the last one.";
+        let long = "The memory hierarchy: registers, caches, main memory and disk, each slower and larger than the last one, and a program runs fastest when its data stays near the top.";
+        assert!(meaningful_chars(long) >= MIN_PAGE_CHARS);
         assert!(!page_is_scanned(long, true));
         assert!(!page_is_scanned("", false));
         assert!(page_is_scanned(
