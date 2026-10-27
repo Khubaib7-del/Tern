@@ -383,6 +383,19 @@ pub fn fence_closed(source: &str) -> bool {
             .all(|c| c == fence.chars().next().unwrap_or('`'))
 }
 
+/// Loads the SVG renderer's fonts in the background at start-up. The
+/// first SVG with text otherwise scans the system's fonts while its image
+/// loads, and on Windows the first diagram stayed blank for 3–4 s.
+pub fn warm_up_svg_text(cx: &App) {
+    const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><text x="0" y="6" font-family="IBM Plex Sans" font-size="6">x</text></svg>"#;
+    let renderer = cx.svg_renderer();
+    cx.background_executor()
+        .spawn(async move {
+            let _ = renderer.render_single_frame(SVG, 1.0);
+        })
+        .detach();
+}
+
 /// Draws Mermaid `source` for both themes, or `None` when merman cannot
 /// read it.
 pub fn draw_mermaid(source: &str) -> Option<Art> {

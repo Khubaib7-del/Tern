@@ -110,6 +110,7 @@ fn main() {
             gpui_kit::init(cx);
             app_menu::install(cx);
             assets::register_fonts(cx);
+            richmd::warm_up_svg_text(cx);
             let look = appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
             // The window's own light or dark setting is read once it opens;
             // until then System starts dark.
