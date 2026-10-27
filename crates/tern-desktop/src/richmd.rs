@@ -98,7 +98,6 @@ fn code_tools(code: &CodeBlock, window: &mut Window, cx: &mut App) -> gpui_kit::
             Arc::<str>::from(&*text),
             stem,
             formats,
-            true,
             window,
             cx,
         ))
@@ -119,7 +118,6 @@ fn table_tools(table: &TableData, window: &mut Window, cx: &mut App) -> gpui_kit
             Arc::from(table.markdown.as_str()),
             stem,
             formats,
-            false,
             window,
             cx,
         ))
@@ -217,9 +215,13 @@ fn is_dark(cx: &App) -> bool {
 
 // ------------------------------------------------------------------ math
 
-/// SVG units per em that formulas are drawn at: large enough to stay sharp
-/// at twice the size they are shown.
-const MATH_EM: f64 = 40.0;
+/// SVG units per em that formulas are drawn at, close to the size they
+/// are shown (#73): GPUI rasterises an SVG image at twice its own size, and
+/// the GPU's downscale of a much larger raster dropped thin strokes (one
+/// bar of an `=` vanished at 40). 16 keeps the downscale near 2x, which
+/// averages instead of skipping pixels. Exports draw larger
+/// (`blockexport::MATH_PNG_SCALE`).
+const MATH_EM: f64 = 16.0;
 const MATH_PAD: f64 = 2.0;
 
 /// Whether `$…$` holds a formula rather than prose between two dollar
@@ -266,7 +268,7 @@ pub fn typeset(latex: &str, display: bool) -> Option<Art> {
                 &ratex_svg::SvgOptions {
                     font_size: MATH_EM,
                     padding: MATH_PAD,
-                    stroke_width: 1.5,
+                    stroke_width: 1.0,
                     embed_glyphs: true,
                     font_dir: String::new(),
                 },
@@ -455,15 +457,7 @@ impl MarkdownPlugin for DisplayMath {
                     cx,
                 )
             }),
-            crate::blockexport::toolbar(
-                &id,
-                Arc::from(latex.as_str()),
-                stem,
-                formats,
-                false,
-                window,
-                cx,
-            ),
+            crate::blockexport::toolbar(&id, Arc::from(latex.as_str()), stem, formats, window, cx),
             p,
         );
         let body = if show_source {
@@ -932,7 +926,6 @@ impl MarkdownPlugin for Mermaid {
                 Arc::from(d.source.as_str()),
                 stem,
                 formats,
-                false,
                 window,
                 cx,
             ),

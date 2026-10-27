@@ -1875,19 +1875,24 @@ impl Workspace {
                     window.dispatch_action(Box::new(MoveRight), cx);
                 }
             }
-            Act::CClick(prefix, suffix) => {
+            // After this update, as a real click runs: a Save calls back
+            // into the workspace, which is being updated here.
+            Act::CClick(prefix, suffix) => window.defer(cx, move |window, cx| {
                 match crate::blockexport::tour_click(prefix, suffix, window, cx) {
                     Some(id) => log(&format!("TOUR note clicked {id}")),
                     None => log(&format!("TOUR error no control {prefix}…{suffix}")),
                 }
-                cx.notify();
-            }
+                window.refresh();
+            }),
             Act::CDown => {
                 use gpui_kit::component::input::MoveDown;
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 window.dispatch_action(Box::new(MoveDown), cx);
-                let selected = self.model.mention.as_ref().map(|m| m.selected);
-                log(&format!("TOUR note Down; @ row selected {selected:?}"));
+                // The action runs after this update; read the row then.
+                cx.defer_in(window, |this, _, _| {
+                    let selected = this.model.mention.as_ref().map(|m| m.selected);
+                    log(&format!("TOUR note Down; @ row selected {selected:?}"));
+                });
             }
             Act::CCollectExports => self.tour_collect_exports(),
             Act::CSearch(id) => {
@@ -2631,8 +2636,8 @@ fn composer_script() -> Vec<Beat> {
         scene(
             "c09-mention-folder",
             "tern-only",
-            "@ menu: a typed folder",
-            Act::CTypePath("Summarise @{dir}"),
+            "@ menu: a typed folder, filtered by what follows it",
+            Act::CTypePath("Summarise @{dir}tour"),
             3000,
         ),
         b(Act::CState("mention folder"), 200),
@@ -3186,7 +3191,7 @@ fn composer_script() -> Vec<Beat> {
         b(Act::CCollectExports, 300),
         b(Act::ToastsClear, 400),
         b(Act::CNewChat, 1200),
-        b(Act::CTypePath("Summarise @{dir}"), 1500),
+        b(Act::CTypePath("Summarise @{dir}project/"), 1500),
         b(Act::CState("mention rows"), 200),
         b(Act::CDown, 500),
         scene(
@@ -3197,15 +3202,15 @@ fn composer_script() -> Vec<Beat> {
             2500,
         ),
         b(Act::ClearComposer, 400),
-        b(Act::CAttach("src"), 500),
-        b(Act::CAttach("docs"), 500),
-        b(Act::CAttach("tests"), 500),
-        b(Act::CAttach("assets"), 500),
-        b(Act::CAttach("server.go"), 400),
-        b(Act::CAttach("report.pl"), 400),
-        b(Act::CAttach("CMakeLists.txt"), 400),
-        b(Act::CAttach("lexer.ml"), 400),
-        b(Act::CAttach("chat.erl"), 2500),
+        b(Act::CAttach("project/src"), 500),
+        b(Act::CAttach("project/docs"), 500),
+        b(Act::CAttach("project/tests"), 500),
+        b(Act::CAttach("project/assets"), 500),
+        b(Act::CAttach("project/server.go"), 400),
+        b(Act::CAttach("project/report.pl"), 400),
+        b(Act::CAttach("project/CMakeLists.txt"), 400),
+        b(Act::CAttach("project/lexer.ml"), 400),
+        b(Act::CAttach("project/chat.erl"), 2500),
         scene(
             "c50-folder-logos",
             "tern-only",
@@ -3304,8 +3309,9 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
         ("tests", "smoke.py", "def test_smoke():\n    assert True\n"),
         ("assets", "readme.txt", "logos\n"),
     ] {
-        let _ = std::fs::create_dir_all(dir.join(folder));
-        let _ = std::fs::write(dir.join(folder).join(file), text);
+        let at = dir.join("project").join(folder);
+        let _ = std::fs::create_dir_all(&at);
+        let _ = std::fs::write(at.join(file), text);
     }
     for (file, text) in [
         ("server.go", "package main\n\nfunc main() {}\n"),
@@ -3314,7 +3320,7 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
         ("lexer.ml", "let () = print_endline \"tern\"\n"),
         ("chat.erl", "-module(chat).\n"),
     ] {
-        let _ = std::fs::write(dir.join(file), text);
+        let _ = std::fs::write(dir.join("project").join(file), text);
     }
     // #70: a scan with only a watermark, a text page plus a scan, and old
     // Office files (one damaged).

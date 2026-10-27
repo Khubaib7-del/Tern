@@ -40,7 +40,8 @@ pub enum Data {
         rows: Arc<Vec<Vec<String>>>,
     },
     /// An SVG, rasterised to PNG at twice its size.
-    Png(Arc<str>),
+    /// An SVG drawn to PNG at this many pixels per SVG unit.
+    Png(Arc<str>, f32),
 }
 
 /// One way to save a block.
@@ -159,10 +160,10 @@ pub fn bytes_of(f: &Format, cx: &App) -> Result<Vec<u8>, String> {
     match &f.data {
         Data::Text(t) => Ok(t.as_bytes().to_vec()),
         Data::Xlsx { headers, rows } => Ok(tern_agent::docs::write_xlsx("Table", headers, rows)),
-        Data::Png(svg) => {
+        Data::Png(svg, scale) => {
             let image = cx
                 .svg_renderer()
-                .render_single_frame(svg.as_bytes(), 2.0)
+                .render_single_frame(svg.as_bytes(), *scale)
                 .map_err(|e| format!("couldn't draw the picture: {e}"))?;
             let size = image.size(0);
             let bgra = image.as_bytes(0).ok_or("couldn't draw the picture")?;
@@ -382,6 +383,10 @@ pub fn table_formats(
     )
 }
 
+/// Pixels per SVG unit for a formula's PNG: formulas are drawn at 16
+/// units per em, so a PNG of about 100 px per em.
+pub const MATH_PNG_SCALE: f32 = 6.0;
+
 pub fn math_formats(latex: &str, svg: Option<&str>) -> (String, Vec<Format>) {
     let mut f = vec![Format {
         label: "LaTeX",
@@ -397,7 +402,7 @@ pub fn math_formats(latex: &str, svg: Option<&str>) -> (String, Vec<Format>) {
         f.push(Format {
             label: "PNG",
             ext: "png",
-            data: Data::Png(Arc::from(svg)),
+            data: Data::Png(Arc::from(svg), MATH_PNG_SCALE),
         });
     }
     ("formula".to_owned(), f)
@@ -418,7 +423,7 @@ pub fn mermaid_formats(source: &str, svg: Option<&str>) -> (String, Vec<Format>)
         f.push(Format {
             label: "PNG",
             ext: "png",
-            data: Data::Png(Arc::from(svg)),
+            data: Data::Png(Arc::from(svg), 2.0),
         });
     }
     ("diagram".to_owned(), f)
@@ -524,14 +529,12 @@ pub fn segmented(
 
 /// Copy and Export ▾ for one block; the open menu lists each format
 /// ("Save as CSV") and "Save as…". `id` names the block (its state is
-/// kept under it). `float`: the menu floats over what is below (a code
-/// block's corner) instead of pushing it down.
+/// kept under it). The open menu floats over what is below.
 pub fn toolbar(
     id: &str,
     copy: Arc<str>,
     stem: String,
     formats: Vec<Format>,
-    float: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -643,8 +646,7 @@ pub fn toolbar(
             .rounded_lg()
             .border_1()
             .border_color(p.border)
-            .bg(p.raised)
-            .when(float, |d| d.shadow_md());
+            .bg(p.raised);
         for (i, f) in formats.iter().enumerate() {
             let job = Job {
                 stem: stem.clone(),
@@ -697,13 +699,26 @@ pub fn toolbar(
             ),
         )
     });
+    // The open menu floats over what is below it (the code, the formula,
+    // the next paragraph), painted last and taking the clicks there, so it
+    // never pushes the block down and every row can be clicked (#73).
     div()
+        .relative()
         .flex()
         .flex_col()
         .items_end()
-        .gap_1()
         .child(row)
-        .children(menu)
+        .children(menu.map(|m| {
+            gpui_kit::deferred(
+                div()
+                    .absolute()
+                    .top(px(24.))
+                    .right_0()
+                    .occlude()
+                    .child(m.shadow_md()),
+            )
+            .with_priority(3)
+        }))
         .into_any_element()
 }
 

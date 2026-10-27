@@ -75,8 +75,13 @@ fn needs_quotes(label: &str) -> bool {
     label.contains(['(', ')', '[', ']', '{', '}', '|', '"', '@', ';'])
 }
 
+/// `label` in quotes. A `*` becomes `∗` (U+2217): merman reads `*` in a
+/// label as Markdown emphasis, so `4*d_model)` came out bold italic.
 fn quote(label: &str) -> String {
-    format!("\"{}\"", label.trim().replace('"', "#quot;"))
+    format!(
+        "\"{}\"",
+        label.trim().replace('"', "#quot;").replace('*', "\u{2217}")
+    )
 }
 
 fn is_quoted(label: &str) -> bool {
@@ -252,12 +257,12 @@ mod tests {
     fn labels_with_parentheses_are_quoted() {
         let out = tolerant(SAMPLE).expect("changed");
         assert!(
-            out.contains(r#"D1["Linear (d_model → 4*d_model)"] --> "#)
-                || out.contains(r#"C --> D1["Linear (d_model → 4*d_model)"]"#),
+            out.contains("D1[\"Linear (d_model → 4\u{2217}d_model)\"] --> ")
+                || out.contains("C --> D1[\"Linear (d_model → 4\u{2217}d_model)\"]"),
             "{out}"
         );
         assert!(
-            out.contains(r#"D3["Linear (4*d_model → d_model)"]"#),
+            out.contains("D3[\"Linear (4\u{2217}d_model → d_model)\"]"),
             "{out}"
         );
         assert!(out.contains(r#"E{"Output (logits)"}"#), "{out}");
