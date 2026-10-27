@@ -28,9 +28,10 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use gpui_kit::base::text::CodeBlock;
 use gpui_kit::component::text::{
-    CodeBlock, InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode,
-    MarkdownParseContext, MarkdownPlugin, TableData, TextView, markdown_ast as mdast,
+    InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
+    MarkdownPlugin, TableData, TextView, markdown_ast as mdast,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Image, ImageFormat, ObjectFit, SharedString, Window, div, img, px};

@@ -2580,7 +2580,7 @@ impl Workspace {
                 }
                 // The answer as a Markdown file (#72 round 2): into the
                 // chat's folder, or wherever Save as… says.
-                let mut save_md = |save_as: bool| {
+                let save_md = |save_as: bool| {
                     cx.listener(
                         move |this: &mut Self, _: &gpui_kit::ClickEvent, window, cx| {
                             this.model.action_menu = None;

@@ -418,7 +418,7 @@ fn tool(
         .tooltip(move |window, cx| {
             gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
         })
-        .child(gpui_kit::component::Icon::new(icon).xsmall())
+        .child(gpui_kit::component::Icon::new(icon).size(px(12.)))
 }
 
 /// Two labels, one lit: Diagram | Code, Rendered | LaTeX. `alt` lights
@@ -525,7 +525,7 @@ pub fn toolbar(
                     p,
                 )
                 .when(is_open, |d| d.bg(p.hover).text_color(p.text))
-                .child(gpui_kit::component::Icon::new(AssetIcon::ChevronDown).xsmall())
+                .child(gpui_kit::component::Icon::new(AssetIcon::ChevronDown).size(px(12.)))
                 .on_click(move |_, _, cx| {
                     open.update(cx, |o, cx| {
                         *o = !*o;
@@ -552,7 +552,7 @@ pub fn toolbar(
                     div()
                         .flex_none()
                         .text_color(p.muted)
-                        .child(gpui_kit::component::Icon::new(icon).xsmall()),
+                        .child(gpui_kit::component::Icon::new(icon).size(px(12.))),
                 )
                 .child(SharedString::from(label))
         };
