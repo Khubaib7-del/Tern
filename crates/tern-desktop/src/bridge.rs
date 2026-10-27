@@ -43,6 +43,13 @@ pub enum Msg {
     /// What the turn is doing before the model is asked ("Looking at
     /// image…", "Reading report.pdf…"; #69), or `None` when done.
     Doing(Option<String>),
+    /// A message from one chat's run (#71): its text, reasoning, events,
+    /// approvals, plan, and end. The window applies it to that chat, open
+    /// or not, so several chats can run at once.
+    Chat(SessionId, Box<Msg>),
+    /// A file read or converted for one chat's composer (#71), open or
+    /// put away (`None`: a new chat without an id yet).
+    Composer(crate::model::DraftKey, Box<Msg>),
     /// Every configured provider's listing, for routing.
     Catalog(Box<tern_agent::media::Catalog>),
     /// An attached audio file's transcript (file name, seconds it plays
@@ -63,6 +70,9 @@ pub enum Msg {
     Icon(String, Option<std::path::PathBuf>),
     /// A file, folder, or archive read for the composer, or why not.
     Attached(Result<tern_agent::Attachment, String>),
+    /// A picture for a file's preview card (#71): a scanned PDF's first
+    /// page, by file name.
+    Preview(String, Vec<u8>),
     /// Auto dictation's language check came back (#70): the recording,
     /// where the phrase starts, and (language, how sure, model) or why not.
     LanguageChecked(u64, usize, Result<(String, f32, String), String>),
@@ -227,8 +237,11 @@ impl std::fmt::Debug for Msg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connected(..) => f.write_str("Connected"),
+            Self::Chat(id, m) => write!(f, "Chat({id}, {m:?})"),
+            Self::Composer(key, m) => write!(f, "Composer({key:?}, {m:?})"),
             Self::Swapped(_, failed) => write!(f, "Swapped(ok: {})", failed.is_none()),
             Self::Attached(r) => write!(f, "Attached(ok: {})", r.is_ok()),
+            Self::Preview(name, b) => write!(f, "Preview({name}, {} bytes)", b.len()),
             Self::Resumed(_, turns, _) => write!(f, "Resumed({} turns)", turns.len()),
             Self::Notice(e) => write!(f, "Notice({e})"),
             Self::Info(e) => write!(f, "Info({e})"),
@@ -362,7 +375,8 @@ impl Bridge {
             // Four workers: a turn, a model switch, a listing, and a chat
             // being reopened can all wait on the network at once without
             // holding each other up.
-            .worker_threads(4)
+            // Six (#71): several chats can run at once.
+            .worker_threads(6)
             .enable_all()
             .thread_name("tern-desktop-rt")
             .build()?;
@@ -587,29 +601,73 @@ impl Bridge {
         });
     }
 
-    /// Reads files, folders, or archives off the UI thread, one message each.
-    pub fn attach(&self, paths: Vec<std::path::PathBuf>) {
+    /// A sender whose messages reach the window tagged with chat `id`'s
+    /// run (#71). The tags keep their order.
+    fn chat_tx(&self, id: SessionId) -> mpsc::UnboundedSender<Msg> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Msg>();
+        let out = self.tx.clone();
+        self.rt.spawn(async move {
+            while let Some(m) = rx.recv().await {
+                if out.send(Msg::Chat(id, Box::new(m))).is_err() {
+                    break;
+                }
+            }
+        });
+        tx
+    }
+
+    /// Sends `msg` for chat `key`'s composer (#71).
+    fn to_composer(tx: &mpsc::UnboundedSender<Msg>, key: crate::model::DraftKey, msg: Msg) {
+        let _ = tx.send(Msg::Composer(key, Box::new(msg)));
+    }
+
+    /// Reads files, folders, or archives off the UI thread, one message
+    /// each, for chat `chat`'s composer.
+    pub fn attach(&self, paths: Vec<std::path::PathBuf>, chat: crate::model::DraftKey) {
         for path in paths {
             let tx = self.tx.clone();
             self.rt.spawn(async move {
+                let pdf = path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+                let at = path.clone();
                 let result =
                     tokio::task::spawn_blocking(move || tern_agent::Attachment::load(&path))
                         .await
                         .unwrap_or_else(|e| Err(format!("Tern could not read that file: {e}")));
-                let _ = tx.send(Msg::Attached(result));
+                // A scanned PDF's first page picture for its card (#71).
+                if pdf && let Ok(a) = &result {
+                    let name = a.name.clone();
+                    let page = tokio::task::spawn_blocking(move || {
+                        let bytes = std::fs::read(&at).ok()?;
+                        tern_agent::docs::page_pictures_each(&bytes)
+                            .ok()?
+                            .into_iter()
+                            .next()
+                            .flatten()
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(b) = page {
+                        let _ = tx.send(Msg::Preview(name, b));
+                    }
+                }
+                Self::to_composer(&tx, chat, Msg::Attached(result));
             });
         }
     }
 
-    /// Reads a PDF again with its pictured pages as scans (#70).
-    pub fn read_again(&self, name: String, path: std::path::PathBuf) {
+    /// Reads a PDF again with its pictured pages as scans (#70), for chat
+    /// `chat`'s composer.
+    pub fn read_again(&self, name: String, path: std::path::PathBuf, chat: crate::model::DraftKey) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let result =
                 tokio::task::spawn_blocking(move || tern_agent::Attachment::load_as_scanned(&path))
                     .await
                     .unwrap_or_else(|e| Err(format!("Tern could not read that file: {e}")));
-            let _ = tx.send(Msg::ReadAgain(name, result));
+            Self::to_composer(&tx, chat, Msg::ReadAgain(name, result));
         });
     }
 
@@ -696,7 +754,7 @@ impl Bridge {
         cancel: CancelFlag,
         pictures: Option<Pictures>,
     ) {
-        let tx = self.tx.clone();
+        let tx = self.chat_tx(session.session_id());
         self.rt.spawn(async move {
             let approver = UiApprover(tx.clone());
             let events = tx.clone();
@@ -752,7 +810,7 @@ impl Bridge {
     /// synthesis) and hands the session back when it ends. `control`
     /// stops one worker or the whole run.
     pub fn deep(&self, mut session: Box<ChatSession>, text: String, control: DeepControl) {
-        let tx = self.tx.clone();
+        let tx = self.chat_tx(session.session_id());
         self.rt.spawn(async move {
             let opts = tokio::task::spawn_blocking(|| Preferences::load().deep_options())
                 .await
@@ -779,7 +837,7 @@ impl Bridge {
     /// Resumes the chat's stopped run from its checkpoint and hands the
     /// session back when it ends, like [`Bridge::send`].
     pub fn resume_run(&self, mut session: Box<ChatSession>, control: DeepControl) {
-        let tx = self.tx.clone();
+        let tx = self.chat_tx(session.session_id());
         self.rt.spawn(async move {
             let opts = tokio::task::spawn_blocking(|| Preferences::load().deep_options())
                 .await
@@ -1059,11 +1117,11 @@ impl Bridge {
     }
 
     /// Reads a link (URL or DOI) through the guarded reader and attaches it.
-    pub fn attach_link(&self, url: String) {
+    pub fn attach_link(&self, url: String, chat: crate::model::DraftKey) {
         let tx = self.tx.clone();
         self.rt.spawn(async move {
             let r = tern_agent::browse::open(&url).await.map(|p| p.attachment());
-            let _ = tx.send(Msg::Attached(r));
+            Self::to_composer(&tx, chat, Msg::Attached(r));
         });
     }
 
@@ -1323,6 +1381,24 @@ impl Bridge {
         self.rt.spawn(async move {
             let r = tern_agent::media::detect_language(audio).await;
             let _ = tx.send(Msg::LanguageChecked(rec, from, r));
+        });
+    }
+
+    /// Loads a local Whisper model in the background as Auto dictation
+    /// starts (#71): one second of quiet in Urdu, its text dropped, so the
+    /// model is in memory before Auto switches to it.
+    pub fn warm_speech(&self, via: tern_agent::media::ModelRef) {
+        self.rt.spawn(async move {
+            let t0 = std::time::Instant::now();
+            let quiet = vec![0.0_f32; tern_agent::platform::audio::SPEECH_RATE as usize];
+            let wav =
+                tern_agent::platform::audio::wav(&quiet, tern_agent::platform::audio::SPEECH_RATE);
+            let (r, _) = tern_agent::media::dictate(None, &via, &wav, Some("ur")).await;
+            tern_agent::diag::note(&format!(
+                "dictation: warmed {via} in {} ms ({})",
+                t0.elapsed().as_millis(),
+                if r.is_ok() { "ok" } else { "failed" }
+            ));
         });
     }
 

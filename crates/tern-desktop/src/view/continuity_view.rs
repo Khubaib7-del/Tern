@@ -77,11 +77,11 @@ impl Workspace {
                     .find(|s| s.id == id)
                     .map(|s| s.title.clone())
                     .unwrap_or_else(|| "Sub-session".into());
-                if !self.model.is_busy() {
-                    self.tabs.add();
-                    self.tabs.set_active(id, &title);
-                    self.load_chat(id, cx);
-                }
+                // A running chat goes on in the background (#71).
+                self.park_running(cx);
+                self.tabs.add();
+                self.tabs.set_active(id, &title);
+                self.load_chat(id, cx);
             }
             ContMsg::Background(id) => {
                 if !self.model.cont.background.contains(&id) {
@@ -131,10 +131,9 @@ impl Workspace {
                     } else {
                         format!("Wrote the handoff packet to {note} in your vault")
                     };
-                    if !self.model.is_busy() {
-                        self.tabs.add();
-                        self.load_chat(id, cx);
-                    }
+                    self.park_running(cx);
+                    self.tabs.add();
+                    self.load_chat(id, cx);
                     self.model
                         .notice_line(format!("{saved} and started this session from it alone."));
                 }

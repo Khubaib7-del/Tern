@@ -244,7 +244,7 @@ impl Workspace {
         match url {
             Some(u) => {
                 self.model.attaching += 1;
-                self.bridge.attach_link(u);
+                self.bridge.attach_link(u, self.current);
                 self.model.composer.link_open = false;
                 self.model.composer.note = None;
                 self.composer.update(cx, |c, cx| c.focus(window, cx));

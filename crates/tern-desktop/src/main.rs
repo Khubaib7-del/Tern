@@ -32,6 +32,7 @@ mod editor;
 mod evaluation;
 mod explain;
 mod extensions;
+mod filetype;
 mod flow;
 mod gauge;
 mod git;

@@ -1,0 +1,180 @@
+//! File kinds for attachment preview cards (#71): the small coloured
+//! badge in a card's bottom corner, and whether the card shows a picture,
+//! a first page of text, or only the kind.
+
+/// What kind of file an attachment is, from its name (and whether it
+/// carries a picture).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    Pdf,
+    Image,
+    Word,
+    Sheet,
+    Slides,
+    Markdown,
+    Text,
+    Csv,
+    Python,
+    Notebook,
+    Code,
+    Audio,
+    Folder,
+    Archive,
+    Link,
+    Other,
+}
+
+impl FileKind {
+    /// The kind of a file named `name`.
+    pub fn of(name: &str) -> Self {
+        let lower = name.to_ascii_lowercase();
+        let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        match ext {
+            "pdf" => Self::Pdf,
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "heic" | "svg" => {
+                Self::Image
+            }
+            "doc" | "docx" | "odt" | "rtf" => Self::Word,
+            "xls" | "xlsx" | "ods" => Self::Sheet,
+            "ppt" | "pptx" | "odp" | "key" => Self::Slides,
+            "md" | "markdown" => Self::Markdown,
+            "txt" | "log" | "text" => Self::Text,
+            "csv" | "tsv" => Self::Csv,
+            "py" | "pyw" | "pyi" => Self::Python,
+            "ipynb" => Self::Notebook,
+            "rs" | "js" | "mjs" | "ts" | "tsx" | "jsx" | "c" | "h" | "cpp" | "hpp" | "cc"
+            | "java" | "kt" | "go" | "rb" | "php" | "cs" | "swift" | "sh" | "ps1" | "bat"
+            | "html" | "htm" | "css" | "json" | "toml" | "yaml" | "yml" | "xml" | "sql" | "lua"
+            | "r" | "m" | "scala" | "dart" | "zig" | "asm" | "s" => Self::Code,
+            "mp3" | "wav" | "m4a" | "ogg" | "flac" | "opus" | "aac" | "wma" => Self::Audio,
+            "zip" | "tar" | "gz" | "tgz" | "7z" | "rar" | "xz" | "bz2" => Self::Archive,
+            _ => Self::Other,
+        }
+    }
+
+    /// The badge's short label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pdf => "PDF",
+            Self::Image => "IMG",
+            Self::Word => "DOC",
+            Self::Sheet => "XLS",
+            Self::Slides => "PPT",
+            Self::Markdown => "MD",
+            Self::Text => "TXT",
+            Self::Csv => "CSV",
+            Self::Python => "PY",
+            Self::Notebook => "IPYNB",
+            Self::Code => "CODE",
+            Self::Audio => "AUDIO",
+            Self::Folder => "DIR",
+            Self::Archive => "ZIP",
+            Self::Link => "WEB",
+            Self::Other => "FILE",
+        }
+    }
+
+    /// The badge's colour (RGB): muted, readable with white text on both
+    /// themes.
+    pub fn color(self) -> u32 {
+        match self {
+            Self::Pdf => 0xC2413A,
+            Self::Image => 0x8B5CC4,
+            Self::Word => 0x2F6FC9,
+            Self::Sheet => 0x23885A,
+            Self::Slides => 0xC8622A,
+            Self::Markdown => 0x5B6573,
+            Self::Text => 0x6B7280,
+            Self::Csv => 0x2E8B6E,
+            Self::Python => 0x3B6FA8,
+            Self::Notebook => 0xD9822B,
+            Self::Code => 0x4B5A9A,
+            Self::Audio => 0xB8457E,
+            Self::Folder => 0x8A7A4A,
+            Self::Archive => 0x7A6A55,
+            Self::Link => 0x3E8A9A,
+            Self::Other => 0x6B7280,
+        }
+    }
+
+    /// Whether the card shows the file's first lines as a little page
+    /// (text it was read as), when there is no picture.
+    pub fn shows_page(self) -> bool {
+        !matches!(
+            self,
+            Self::Image | Self::Audio | Self::Folder | Self::Archive | Self::Other
+        )
+    }
+}
+
+/// The first lines of an attachment's text for its card's page preview:
+/// up to `lines` non-empty lines, each at most 60 characters, without the
+/// conversion header (`[Converted … ]`) and page markers.
+pub fn first_lines(text: &str, lines: usize) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| !(l.starts_with('[') && l.ends_with(']')))
+        .filter(|l| !l.starts_with("<!--"))
+        .filter(|l| !l.starts_with("```") && !l.starts_with("---"))
+        .take(lines)
+        .map(|l| {
+            let l = l.trim_start_matches('#').trim();
+            if l.chars().count() > 60 {
+                let cut: String = l.chars().take(59).collect();
+                format!("{cut}…")
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect()
+}
+
+/// A file size as a card shows it: "820 B", "48 KB", "3.4 MB".
+pub fn size_words(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes < KB {
+        format!("{bytes} B")
+    } else if bytes < KB * KB {
+        format!("{} KB", bytes.div_ceil(KB))
+    } else {
+        format!("{:.1} MB", bytes as f64 / (KB * KB) as f64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kinds_come_from_the_name() {
+        assert_eq!(FileKind::of("CA-3 Report.PDF"), FileKind::Pdf);
+        assert_eq!(FileKind::of("photo.jpeg"), FileKind::Image);
+        assert_eq!(FileKind::of("notes.docx"), FileKind::Word);
+        assert_eq!(FileKind::of("old.doc"), FileKind::Word);
+        assert_eq!(FileKind::of("marks.xlsx"), FileKind::Sheet);
+        assert_eq!(FileKind::of("deck.ppt"), FileKind::Slides);
+        assert_eq!(FileKind::of("README.md"), FileKind::Markdown);
+        assert_eq!(FileKind::of("log.txt"), FileKind::Text);
+        assert_eq!(FileKind::of("data.csv"), FileKind::Csv);
+        assert_eq!(FileKind::of("train.py"), FileKind::Python);
+        assert_eq!(FileKind::of("lab.ipynb"), FileKind::Notebook);
+        assert_eq!(FileKind::of("main.rs"), FileKind::Code);
+        assert_eq!(FileKind::of("memo.m4a"), FileKind::Audio);
+        assert_eq!(FileKind::of("Pasted text"), FileKind::Other);
+        assert_eq!(FileKind::Notebook.label(), "IPYNB");
+        assert!(FileKind::Pdf.shows_page() && !FileKind::Image.shows_page());
+    }
+
+    #[test]
+    fn a_card_reads_the_first_lines_and_the_size() {
+        let text = "<!-- Tern: ca3.pdf → Markdown (PDF text, 3 pages) -->\n\n[page 1]\n# Computer Architecture\nAssignment 3\n\nQ1. Pipelining hazards and how forwarding resolves them in a five stage pipeline";
+        let l = first_lines(text, 3);
+        assert_eq!(l[0], "Computer Architecture");
+        assert_eq!(l[1], "Assignment 3");
+        assert!(l[2].ends_with('…') && l[2].chars().count() == 60);
+        assert_eq!(size_words(820), "820 B");
+        assert_eq!(size_words(48 * 1024), "48 KB");
+        assert_eq!(size_words(3_565_158), "3.4 MB");
+    }
+}

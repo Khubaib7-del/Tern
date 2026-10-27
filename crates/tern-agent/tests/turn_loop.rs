@@ -867,3 +867,88 @@ async fn a_typed_path_is_read_first_so_a_model_that_never_calls_tools_still_answ
         kinds(&sink)
     );
 }
+
+/// Streams a first piece, then the user stops the run, then more text
+/// arrives (#71).
+struct StoppedMidReply(CancelFlag);
+
+impl Model for StoppedMidReply {
+    fn provider_id(&self) -> &str {
+        "script"
+    }
+    fn complete<'a>(
+        &'a self,
+        _req: &'a ChatRequest,
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        unreachable!("the loop streams when it has a text sink")
+    }
+    fn complete_deltas<'a>(
+        &'a self,
+        _req: &'a ChatRequest,
+        on: &'a (dyn Fn(tern_providers::Delta<'_>) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        Box::pin(async move {
+            on(tern_providers::Delta::Text("Paging splits memory "));
+            on(tern_providers::Delta::Text("into pages."));
+            self.0.cancel();
+            on(tern_providers::Delta::Text(
+                " This part came after the stop.",
+            ));
+            Ok(ChatResponse {
+                text: "Paging splits memory into pages. This part came after the stop.".into(),
+                usage: Usage::measured(10, 5),
+                finish_reason: Some("stop".into()),
+                model: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_stop_mid_reply_keeps_what_streamed_and_nothing_after() {
+    let s = Setup::new();
+    let cancel = CancelFlag::default();
+    let model = StoppedMidReply(cancel.clone());
+    let sink = MemorySink::default();
+    let text = Mutex::new(String::new());
+    let on_text = |_: u32, t: &str| text.lock().unwrap().push_str(t);
+    let mut gate = PolicyGate::default();
+    let out = TurnLoop {
+        session: SessionId::new(),
+        model: &model,
+        model_name: "test-model",
+        tools: &s.tools,
+        gate: &mut gate,
+        approver: &DenyAll,
+        sink: &sink,
+        ledger: &s.ledger,
+        budget: s.budget,
+        cancel,
+        instructions: None,
+        max_output_tokens: 512,
+        on_text: Some(&on_text),
+        hooks: Default::default(),
+    }
+    .run(Vec::new(), "What is paging?")
+    .await;
+    assert_eq!(out.state, TurnState::Cancelled);
+    assert_eq!(out.answer, None);
+    assert_eq!(*text.lock().unwrap(), "Paging splits memory into pages.");
+    let events = sink.events();
+    let stopped = events.iter().find(|e| e.kind == "run.cancelled").unwrap();
+    assert_eq!(
+        stopped.payload["partial"],
+        "Paging splits memory into pages."
+    );
+    let turns = tern_agent::transcript::past_turns(&events);
+    assert_eq!(turns.len(), 1);
+    assert_eq!(
+        turns[0].answer.as_deref(),
+        Some("Paging splits memory into pages.")
+    );
+    assert_eq!(turns[0].stop.as_deref(), Some("You stopped the run."));
+    assert!(
+        turns[0].exchange().is_none(),
+        "a stopped reply is not history"
+    );
+}

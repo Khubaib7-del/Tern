@@ -102,6 +102,34 @@ pub(crate) fn set_end(
     c.set_selected_range(end..end, cx);
 }
 
+/// A chat whose run goes on while another chat is on screen (#71): its
+/// live state and what the window holds for its run (stop, approval,
+/// plan), until it is opened again. Its session comes back here when the
+/// run ends.
+struct BgRun {
+    slot: crate::model::ChatSlot,
+    cancel: CancelFlag,
+    pending: Option<oneshot::Sender<ApprovalAnswer>>,
+    plan_reply: Option<oneshot::Sender<tern_agent::PlanAnswer>>,
+    /// Chats whose runs go on while another chat is open (#71).
+    background: std::collections::HashMap<SessionId, BgRun>,
+    /// A put-away chat's plan to show once its chat is open again.
+    replay_plan: Option<(
+        tern_agent::ResearchPlan,
+        oneshot::Sender<tern_agent::PlanAnswer>,
+    )>,
+    plan_inputs: Vec<Entity<InputState>>,
+    plan_dropped: HashSet<usize>,
+    /// A plan that arrived while the chat was put away; shown on return.
+    plan: Option<(
+        tern_agent::ResearchPlan,
+        oneshot::Sender<tern_agent::PlanAnswer>,
+    )>,
+    deep_control: tern_agent::DeepControl,
+    queued: Option<String>,
+    session: Option<Box<ChatSession>>,
+}
+
 /// The one window of the app.
 pub struct Workspace {
     model: Model,
@@ -336,6 +364,9 @@ pub struct Workspace {
     dictation_last_check: Option<Instant>,
     dictation_rec: u64,
     dictation_lang_memo: Option<(String, f32, Instant)>,
+    /// Auto moved the recording to Whisper and no Whisper text is back
+    /// yet: the composer says "Switching to Urdu…" (#71).
+    dictation_switching: Option<String>,
     /// Where dictated text goes in the composer (follows the text).
     dictation_caret: crate::dictation::Caret,
     dictation_samples: Vec<f32>,
@@ -703,6 +734,8 @@ impl Workspace {
             open_sources: HashSet::new(),
             pending: None,
             plan_reply: None,
+            background: Default::default(),
+            replay_plan: None,
             plan_inputs: Vec::new(),
             plan_dropped: HashSet::new(),
             deep_control: tern_agent::DeepControl::default(),
@@ -771,6 +804,7 @@ impl Workspace {
             dictation_last_check: None,
             dictation_rec: 0,
             dictation_lang_memo: None,
+            dictation_switching: None,
             dictation_caret: crate::dictation::Caret::default(),
             dictation_samples: Vec::new(),
             dictation_pos: 0,
@@ -818,6 +852,39 @@ impl Workspace {
             return;
         }
         match msg {
+            // A run's message goes to its own chat (#71): the open one, or
+            // one put away while it runs.
+            Msg::Chat(id, inner) => {
+                if self.current != Some(id) && self.background.contains_key(&id) {
+                    self.on_background(id, *inner, cx);
+                } else {
+                    self.on_msg(*inner, window, cx);
+                }
+                return;
+            }
+            // A file read for one chat's composer lands in that chat (#71).
+            Msg::Composer(key, inner) => {
+                // A new chat that got its id while the file was read.
+                let key = if key.is_none()
+                    && self.current.is_some()
+                    && !self
+                        .model
+                        .drafts
+                        .get(&None)
+                        .is_some_and(|d| d.attaching > 0)
+                {
+                    self.current
+                } else {
+                    key
+                };
+                if key == self.current {
+                    self.on_msg(*inner, window, cx);
+                } else {
+                    self.on_other_composer(key, *inner);
+                }
+                cx.notify();
+                return;
+            }
             Msg::Connected(s, recent) => {
                 self.model.connected(Connection {
                     provider: s.provider_name().to_owned(),
@@ -986,6 +1053,12 @@ impl Workspace {
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
+            Msg::Preview(name, bytes) => {
+                if self.model.previews.len() > 64 {
+                    self.model.previews.clear();
+                }
+                self.model.previews.insert(name, bytes);
+            }
             Msg::ReadAgain(name, result) => {
                 let ok = self.model.read_again_done(&name, result);
                 // A held "read it again with Granite-Docling" goes now,
@@ -1228,7 +1301,8 @@ impl Workspace {
             && let Some(path) = self.model.read_again_started(&name)
         {
             self.model.reread_send = Some(text);
-            self.bridge.read_again(name, path);
+            self.bridge.read_again(name, path, self.current);
+            self.tick_audio(cx);
             self.composer
                 .update(cx, |c, cx| c.set_value("", window, cx));
             cx.notify();
@@ -1636,8 +1710,10 @@ impl Workspace {
                 .filter(|n| tern_agent::docs::converts(n)),
             _ => None,
         };
+        self.model.attaching_name = self.model.attaching_doc.clone();
         self.model.attaching += paths.len();
-        self.bridge.attach(paths);
+        self.tick_audio(cx);
+        self.bridge.attach(paths, self.current);
         cx.notify();
     }
 
@@ -1668,8 +1744,10 @@ impl Workspace {
                     .timer(Duration::from_millis(250))
                     .await;
                 let go = this.update(cx, |this, cx| {
+                    // Converting chips show page progress too (#71).
                     let any = !this.model.audio_pending.is_empty()
-                        || this.model.drafts.values().any(|d| !d.audio.is_empty());
+                        || this.model.drafts.values().any(|d| !d.audio.is_empty())
+                        || this.model.attaching_name.is_some();
                     if any {
                         cx.notify();
                     } else {
@@ -1718,6 +1796,162 @@ impl Workspace {
                 }
             }
         }));
+    }
+
+    /// A file read for a chat that is not open (#71): it waits in that
+    /// chat's composer. A held "read it again with Granite-Docling"
+    /// message waits there too, ready to send.
+    fn on_other_composer(&mut self, key: crate::model::DraftKey, msg: Msg) {
+        match msg {
+            Msg::Attached(result) => self.model.in_draft(key, |m| m.attached(result)),
+            Msg::ReadAgain(name, result) => {
+                let held = self.model.in_draft(key, |m| {
+                    m.read_again_done(&name, result);
+                    m.reread_send.take()
+                });
+                if let Some(text) = held {
+                    self.model.drafts.entry(key).or_default().text = text;
+                }
+                self.model.toast_info(format!(
+                    "{name} is read as scanned; it waits in the chat you asked in."
+                ));
+            }
+            Msg::Composer(_, inner) | Msg::Chat(_, inner) => self.on_other_composer(key, *inner),
+            _ => {}
+        }
+    }
+
+    /// Puts the open chat away while its run goes on (#71), so another
+    /// chat can open and run at the same time. The run's messages land in
+    /// it until it is opened again. Does nothing when the open chat is
+    /// idle.
+    fn park_running(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.current else {
+            return;
+        };
+        if !self.model.is_busy() {
+            return;
+        }
+        let slot = self.model.park_chat();
+        let bg = BgRun {
+            slot,
+            cancel: std::mem::take(&mut self.cancel),
+            pending: self.pending.take(),
+            plan_reply: self.plan_reply.take(),
+            plan_inputs: std::mem::take(&mut self.plan_inputs),
+            plan_dropped: std::mem::take(&mut self.plan_dropped),
+            plan: None,
+            deep_control: std::mem::take(&mut self.deep_control),
+            queued: self.queued.take(),
+            session: None,
+        };
+        tern_agent::diag::note(&format!("chat: {id} runs on while another chat is open"));
+        self.background.insert(id, bg);
+        self.ticker = None;
+        cx.notify();
+    }
+
+    /// Brings back chat `id` put away while it ran (#71): its transcript,
+    /// its run (still going, or finished while away) and its session.
+    /// Returns false when it was not put away.
+    fn unpark(&mut self, id: SessionId, cx: &mut Context<Self>) -> bool {
+        let Some(mut bg) = self.background.remove(&id) else {
+            return false;
+        };
+        self.model.swap_slot(&mut bg.slot);
+        self.cancel = bg.cancel;
+        self.pending = bg.pending;
+        self.plan_reply = bg.plan_reply;
+        self.plan_inputs = bg.plan_inputs;
+        self.plan_dropped = bg.plan_dropped;
+        self.deep_control = bg.deep_control;
+        self.queued = bg.queued;
+        self.replay_plan = bg.plan;
+        self.current = Some(id);
+        if let Some(s) = bg.session {
+            self.bridge.load_ids(s.session_id());
+            self.session = Some(s);
+        }
+        if self.model.is_busy() || self.model.reveal.is_some() {
+            self.start_ticker(cx);
+        }
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+        true
+    }
+
+    /// A message from the run of chat `id`, which is put away (#71): it
+    /// is applied to that chat's own state, never the open chat's.
+    fn on_background(&mut self, id: SessionId, msg: Msg, cx: &mut Context<Self>) {
+        let Some(mut bg) = self.background.remove(&id) else {
+            return;
+        };
+        let title = self
+            .model
+            .all_sessions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| "A chat".into());
+        match msg {
+            Msg::Event(e) => self.model.in_slot(&mut bg.slot, |m| m.on_event(&e)),
+            Msg::Text(call, text) => self.model.in_slot(&mut bg.slot, |m| m.on_text(call, &text)),
+            Msg::Reasoning(call, text) => self
+                .model
+                .in_slot(&mut bg.slot, |m| m.on_reasoning(call, &text)),
+            Msg::Doing(what) => self.model.in_slot(&mut bg.slot, |m| m.doing = what),
+            Msg::Info(text) => self.model.toast_info(text),
+            Msg::Approval(req, reply) => {
+                if bg.cancel.is_cancelled() {
+                    let _ = reply.send(ApprovalAnswer::Deny);
+                } else {
+                    bg.pending = Some(reply);
+                    self.model.in_slot(&mut bg.slot, |m| m.ask_approval(req));
+                    self.model
+                        .toast_info(format!("“{title}” needs your approval to go on."));
+                }
+            }
+            Msg::Plan(plan, reply) => {
+                if bg.cancel.is_cancelled() {
+                    let _ = reply.send(tern_agent::PlanAnswer::Cancel);
+                } else {
+                    bg.plan = Some((plan, reply));
+                    self.model
+                        .toast_info(format!("“{title}” has a research plan for you to check."));
+                }
+            }
+            Msg::Done(s, out, usage, recent) => {
+                let answered = out.answer.is_some();
+                self.model.in_slot(&mut bg.slot, |m| {
+                    m.finish_turn(&out, usage);
+                    m.show_compaction_notice();
+                    m.set_resume_offer(
+                        s.checkpoint().filter(|_| out.answer.is_none()).as_ref(),
+                        Some((out.state, out.reason.as_deref())),
+                    );
+                });
+                self.model.set_sessions(recent);
+                if !s.is_draft() {
+                    self.model.composer.remember(&s.session_id().to_string());
+                }
+                bg.session = Some(s);
+                if answered {
+                    self.model.toast_info(format!("“{title}” has its answer."));
+                }
+            }
+            Msg::Compacted(s, _, usage) => {
+                self.model.in_slot(&mut bg.slot, |m| {
+                    m.compacting = false;
+                    m.context = usage;
+                });
+                bg.session = Some(s);
+            }
+            other => {
+                tern_agent::diag::note(&format!("chat: {id} put away; dropped {other:?}"));
+            }
+        }
+        self.background.insert(id, bg);
+        cx.notify();
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -1922,9 +2156,11 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if self.model.is_busy() || self.current == Some(id) {
+        if self.current == Some(id) {
             return;
         }
+        // A running chat goes on in the background (#71).
+        self.park_running(cx);
         let title = self
             .model
             .sessions
@@ -1939,9 +2175,7 @@ impl Workspace {
 
     /// Opens a chat from the list in a new tab.
     fn open_in_tab(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
-            return;
-        }
+        self.park_running(cx);
         if self.tabs.list.iter().any(|t| t.id == Some(id)) {
             self.open_chat(id, cx);
             return;
@@ -1955,9 +2189,7 @@ impl Workspace {
 
     /// Adds a tab with a fresh chat.
     fn add_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
-            return;
-        }
+        self.park_running(cx);
         self.stash_tab_place(cx);
         self.tabs.add();
         self.show_tab(self.tabs.active_tab().clone(), window, cx);
@@ -1974,9 +2206,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model.is_busy() {
-            return;
-        }
+        self.park_running(cx);
         self.stash_tab_place(cx);
         if self.tabs.open_new(id, title) {
             let tab = self.tabs.active_tab().clone();
@@ -2107,10 +2337,10 @@ impl Workspace {
     fn focus_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         let from_explain = self.tabs.active_tab().is_explain();
         let to_explain = self.tabs.list.get(i).is_some_and(Tab::is_explain);
-        // Explainers never interrupt a run; moving between them and the
-        // chat on screen is always allowed.
-        if self.model.is_busy() && !from_explain && !to_explain {
-            return;
+        // Explainers never interrupt a run; another chat's tab puts a
+        // running chat away, still running (#71).
+        if self.model.is_busy() && !from_explain && !to_explain && i != self.tabs.active {
+            self.park_running(cx);
         }
         if i != self.tabs.active {
             self.stash_tab_place(cx);
@@ -2122,7 +2352,7 @@ impl Workspace {
                 return;
             }
             if self.model.is_busy() && !tab.is_explain() && tab.id != self.current {
-                return;
+                self.park_running(cx);
             }
             self.show_tab(tab, window, cx);
         }
@@ -2132,7 +2362,9 @@ impl Workspace {
         let closing = self.tabs.list.get(i).cloned();
         let was_explain = self.tabs.active_tab().is_explain();
         if self.model.is_busy() && i == self.tabs.active && !was_explain {
-            return;
+            // Closing a running chat's tab: the run goes on in the
+            // background and the chat stays in the list (#71).
+            self.park_running(cx);
         }
         if let Some(key) = closing.as_ref().and_then(|t| t.explain) {
             self.drop_explain(key);
@@ -2180,7 +2412,29 @@ impl Workspace {
 
     /// Loads a past chat into the window.
     fn load_chat(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.park_running(cx);
         self.switch_draft(Some(id), cx);
+        if self.background.contains_key(&id) {
+            // Put away while it ran (#71): it comes back as it is now,
+            // with its own composer, without reading the log again.
+            self.session = None;
+            self.open_sources.clear();
+            self.pending_restore = None;
+            let text = self.model.restore_draft(Some(id));
+            self.composer_restore = Some(text);
+            self.model.screen = Screen::Chat;
+            self.unpark(id, cx);
+            if let Some(t) = self
+                .model
+                .all_sessions
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.title.clone())
+            {
+                self.tabs.set_active(id, &t);
+            }
+            return;
+        }
         self.session = None;
         self.current = Some(id);
         self.open_sources.clear();
@@ -2200,7 +2454,38 @@ impl Workspace {
         if self.current == to {
             return;
         }
-        let text = self.composer.read(cx).value().to_string();
+        let mut text = self.composer.read(cx).value().to_string();
+        // Dictation belongs to the chat it started in (#71): leaving that
+        // chat stops it, and what was heard stays in its composer.
+        if self.dictation.is_some() || self.recording.is_some() {
+            if let Some(rec) = self.recording.take() {
+                rec.cancel();
+            }
+            if let Some(mut d) = self.dictation.take() {
+                let heard: Vec<String> = [
+                    d.take_committed(),
+                    d.interim_line()
+                        .map(|l| l.trim_end_matches('…').trim().to_owned()),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|t| !t.is_empty())
+                .collect();
+                if !heard.is_empty() {
+                    if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+                        text.push(' ');
+                    }
+                    text.push_str(&heard.join(" "));
+                }
+            }
+            self.dictation_model = None;
+            self.dictation_samples = Vec::new();
+            self.dictation_pos = 0;
+            self.dictation_task = None;
+            self.dictation_switching = None;
+            self.dictation_checking = false;
+            self.dictation_rec += 1;
+        }
         self.model.stash_draft(self.current, text);
     }
 
@@ -2272,9 +2557,8 @@ impl Workspace {
     }
 
     fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.model.is_busy() {
-            return;
-        }
+        // A running chat goes on in the background (#71).
+        self.park_running(cx);
         let had_messages = !self.model.entries.is_empty();
         let fresh = had_messages || self.session.is_none();
         // The old chat keeps its composer; the new one starts empty.
@@ -2499,8 +2783,14 @@ impl Workspace {
                 .unwrap_or_default()
         ));
         let auto = language.is_none();
+        // Auto keeps Whisper loaded from the first second (#71), so a
+        // switch to Urdu does not wait for the model to load.
+        let warm = whisper.clone().filter(|w| auto && w.is_local());
         self.start_recording(via, fast, whisper, route, window, cx);
         self.dictation_auto = auto;
+        if let Some(w) = warm {
+            self.bridge.warm_speech(w);
+        }
         if remembered.is_some() {
             self.dictation_last_check = Some(Instant::now());
         }
@@ -2519,7 +2809,10 @@ impl Workspace {
         match tern_agent::platform::mic::Recording::start() {
             Ok(r) => {
                 self.recording = Some(r);
-                self.dictation = Some(crate::dictation::Dictation::with_pace(route.pace()));
+                let mut d = crate::dictation::Dictation::with_pace(route.pace());
+                d.set_language(route_language(&route));
+                self.dictation = Some(d);
+                self.dictation_switching = None;
                 self.dictation_model = Some(via);
                 self.dictation_fast = fast;
                 self.dictation_whisper = whisper;
@@ -2561,13 +2854,14 @@ impl Workspace {
         self.dictation_pos = pos;
     }
 
-    /// Every 400 ms while dictating: read new speech, send the next window
-    /// when it is due, and end when the last one is back.
+    /// Every 200 ms while dictating (#71: was 400 ms): read new speech,
+    /// send the next window when it is due, and end when the last one is
+    /// back.
     fn start_dictation_timer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dictation_task = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(400))
+                    .timer(Duration::from_millis(200))
                     .await;
                 let go = this.update_in(cx, |this, window, cx| {
                     if let Some(rec) = this.recording.take() {
@@ -2614,7 +2908,9 @@ impl Workspace {
         // While Auto checks the language, the fast model's text shows grey
         // and is held: Urdu heard starts the recording over on Whisper.
         let detecting = self.dictation_route == crate::dictation::Route::Detect;
-        if !detecting {
+        // A later phrase's check holds its text too, so a switch to Urdu
+        // can hear the phrase again without English words left behind.
+        if !detecting && !self.dictation_checking {
             self.commit_dictation(window, cx);
         }
         let finished = !self.dictation_checking
@@ -2686,6 +2982,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let _ = heard;
+        if result.is_ok() {
+            self.dictation_switching = None;
+        }
         if let Some(d) = self.dictation.as_mut() {
             // Auto's language comes from its own check (#70), not from
             // the windows' transcription.
@@ -2781,7 +3080,17 @@ impl Workspace {
             match (&was, &next) {
                 (crate::dictation::Route::Detect, crate::dictation::Route::Fast) => {}
                 (crate::dictation::Route::Detect, _) => d.restart(next.pace()),
+                // The phrase the check heard is heard again from where it
+                // started: no word is lost in the switch (#71).
+                (_, crate::dictation::Route::Whisper(_)) => d.rewind(from, next.pace()),
                 _ => d.redo_open_window(next.pace()),
+            }
+            d.set_language(route_language(&next));
+            if let crate::dictation::Route::Whisper(l) = &next {
+                self.dictation_switching = Some(format!(
+                    "Switching to {}…",
+                    tern_agent::local_models::speech::language_name(l.as_deref())
+                ));
             }
             if next != crate::dictation::Route::Fast {
                 self.dictation_model = self
@@ -2797,7 +3106,10 @@ impl Workspace {
 
     /// The open phrase's interim text, grey with a trailing ellipsis.
     fn dictation_line(&self) -> Option<String> {
-        self.dictation.as_ref().and_then(|d| d.interim_line())
+        self.dictation
+            .as_ref()
+            .and_then(|d| d.interim_line())
+            .or_else(|| self.dictation_switching.clone())
     }
 
     /// Esc while recording: stop and throw the audio away.
@@ -3594,7 +3906,11 @@ impl Workspace {
                             .justify_end()
                             .gap_1()
                             .max_w(px(COLUMN_MAX_W * 0.8))
-                            .children(chips.iter().map(|c| sent_chip(c, p))),
+                            .children(
+                                chips
+                                    .iter()
+                                    .map(|c| sent_card(c, self.named_preview(&c.name), p)),
+                            ),
                     )
                 })
                 .child(
@@ -4107,7 +4423,20 @@ impl Workspace {
                 .text_color(p.muted)
                 .child(Spinner::new().xsmall())
                 .child(if let Some(doc) = &self.model.attaching_doc {
-                    format!("Converting {doc} to Markdown…")
+                    // Page x/y and % while a local model reads the pages
+                    // (#71: Granite-Docling showed no progress).
+                    match self
+                        .model
+                        .attaching_name
+                        .as_deref()
+                        .and_then(tern_agent::docs::progress)
+                    {
+                        Some((done, total)) if total > 0 => format!(
+                            "Converting {doc} to Markdown… {}",
+                            tern_agent::docs::progress_words(done, total)
+                        ),
+                        _ => format!("Converting {doc} to Markdown…"),
+                    }
                 } else if self.model.attaching == 1 {
                     "Reading 1 item".to_owned()
                 } else {
@@ -4174,132 +4503,198 @@ impl Workspace {
             .flex()
             .flex_wrap()
             .gap_1()
-            .children(self.model.attachments.iter().enumerate().map(|(i, a)| {
-                let icon = match a.source {
-                    AttachSource::File if a.is_image() => AssetIcon::FileImage,
-                    AttachSource::File => AssetIcon::FileText,
-                    AttachSource::Folder => AssetIcon::Folder,
-                    AttachSource::Archive => AssetIcon::FileArchive,
-                    AttachSource::Paste => AssetIcon::ClipboardPaste,
-                    AttachSource::Link => AssetIcon::Link,
-                    AttachSource::Mcp => AssetIcon::Blocks,
-                    AttachSource::Audio(_) => AssetIcon::Mic,
-                };
-                let prompt = a.role == Role::Prompt;
-                let lead = match self.thumbnail(a) {
-                    Some(image) => div()
-                        .size(px(32.))
-                        .flex_none()
-                        .rounded_md()
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(p.border)
-                        .bg(p.raised)
-                        .child(gpui_kit::img(image).size_full())
-                        .into_any_element(),
-                    None => div()
-                        .text_color(p.muted)
-                        .child(gpui_kit::component::Icon::new(icon).small())
-                        .into_any_element(),
-                };
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl_2()
-                    .pr_1()
-                    .py_1()
-                    // Wide enough for "PDF text → Markdown · 2 pages ·
-                    // 48 lines" beside the role and remove buttons (#69).
-                    .max_w(px(440.))
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(if prompt { p.muted } else { p.border })
-                    .bg(p.canvas)
-                    .child(lead)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(p.text)
-                                    .child(SharedString::from(a.name.clone())),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(p.faint)
-                                    .child(SharedString::from(a.detail())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id(("attach-role", i))
-                            .flex_none()
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .cursor_pointer()
-                            .when(prompt, |d| d.bg(p.hover))
-                            .text_color(if prompt { p.text } else { p.faint })
-                            .hover(|d| d.text_color(p.text))
-                            .child(a.role.label())
-                            .tooltip(|window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(
-                                    "Context is material to read. Prompt is your instructions. Click to switch.",
-                                )
-                                .build(window, cx)
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.model.toggle_role(i);
-                                cx.notify();
-                            })),
-                    )
-                    .when(a.rereadable(), |d| {
-                        let name = a.name.clone();
-                        d.child(
-                            div()
-                                .id(("attach-reread", i))
-                                .flex_none()
-                                .px_1()
-                                .rounded_sm()
-                                .text_xs()
-                                .cursor_pointer()
-                                .text_color(p.faint)
-                                .hover(|d| d.text_color(p.text).bg(p.hover))
-                                .child("Read as scanned")
-                                .tooltip(|window, cx| {
-                                    gpui_kit::component::tooltip::Tooltip::new(
-                                        "Read again with Granite-Docling (or the local OCR model) as scanned pages, for a scan whose text layer is empty or only a watermark.",
-                                    )
-                                    .build(window, cx)
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(path) = this.model.read_again_started(&name) {
-                                        this.bridge.read_again(name.clone(), path);
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .child(chip_remove(
-                        ("attach-remove", i),
-                        "Remove",
-                        p,
-                        cx.listener(move |this, _, _, cx| {
-                            this.model.remove_attachment(i);
-                            cx.notify();
-                        }),
-                    ))
-            }))
+            .children(
+                self.model
+                    .attachments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| self.attachment_card(i, a, p, cx)),
+            )
             .children(audio)
             .children(loading)
             .children(self.cannot_see_note(p))
+    }
+
+    /// A preview of a file as a picture: a picture attachment's
+    /// thumbnail, or the first page picture of a scanned PDF (#71).
+    fn preview_image(&self, a: &tern_agent::Attachment) -> Option<std::sync::Arc<gpui_kit::Image>> {
+        self.thumbnail(a).or_else(|| self.named_preview(&a.name))
+    }
+
+    /// The picture kept for file `name` (a scanned PDF's first page, a
+    /// sent picture), decoded once.
+    fn named_preview(&self, name: &str) -> Option<std::sync::Arc<gpui_kit::Image>> {
+        let key = format!("preview:{name}");
+        if let Some(t) = self.thumbs.borrow().get(&key) {
+            return Some(t.clone());
+        }
+        let bytes = self.model.previews.get(name)?;
+        let format = match crate::thumbs::sniff(bytes)? {
+            crate::thumbs::Format::Png => gpui_kit::ImageFormat::Png,
+            crate::thumbs::Format::Jpeg => gpui_kit::ImageFormat::Jpeg,
+            crate::thumbs::Format::Gif => gpui_kit::ImageFormat::Gif,
+            crate::thumbs::Format::Webp => gpui_kit::ImageFormat::Webp,
+        };
+        let image = std::sync::Arc::new(gpui_kit::Image::from_bytes(format, bytes.clone()));
+        let mut cache = self.thumbs.borrow_mut();
+        if cache.len() > 64 {
+            cache.clear();
+        }
+        cache.insert(key, image.clone());
+        Some(image)
+    }
+
+    /// One waiting attachment as a preview card (#71): a thumbnail for a
+    /// picture, the first page for a PDF or document (its picture when
+    /// scanned, else its first lines), a kind tile otherwise; the file's
+    /// name, pages and size; a coloured kind badge in the bottom corner;
+    /// role, "Read as scanned", and remove.
+    fn attachment_card(
+        &self,
+        i: usize,
+        a: &tern_agent::Attachment,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::filetype::FileKind;
+        let kind = match a.source {
+            AttachSource::File if a.is_image() => FileKind::Image,
+            AttachSource::Folder => FileKind::Folder,
+            AttachSource::Archive => FileKind::Archive,
+            AttachSource::Link => FileKind::Link,
+            AttachSource::Audio(_) => FileKind::Audio,
+            AttachSource::Paste => FileKind::Text,
+            _ => FileKind::of(&a.name),
+        };
+        let prompt = a.role == Role::Prompt;
+        let size = tern_agent::attach::origin(&a.name)
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|m| crate::filetype::size_words(m.len()));
+        let detail = match size {
+            Some(sz) => format!("{} · {sz}", a.detail()),
+            None => a.detail(),
+        };
+        let preview = card_preview(
+            self.preview_image(a),
+            kind,
+            a.files.first().map(|f| f.text.as_str()),
+            p,
+            PREVIEW_CARD_W,
+            84.,
+        );
+        let name = a.name.clone();
+        div()
+            .id(("attach-card", i))
+            .flex()
+            .flex_col()
+            .w(px(PREVIEW_CARD_W))
+            .rounded_lg()
+            .overflow_hidden()
+            .border_1()
+            .border_color(if prompt { p.muted } else { p.border })
+            .bg(p.canvas)
+            .child(
+                div()
+                    .relative()
+                    .child(preview)
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(3.))
+                            .right(px(3.))
+                            .rounded_md()
+                            .bg(p.canvas)
+                            .child(chip_remove(
+                                ("attach-remove", i),
+                                "Remove",
+                                p,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.model.remove_attachment(i);
+                                    cx.notify();
+                                }),
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .px_2()
+                    .py_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(p.text)
+                            .child(SharedString::from(a.name.clone())),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(detail)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .id(("attach-role", i))
+                                    .flex_none()
+                                    .px_1()
+                                    .rounded_sm()
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .when(prompt, |d| d.bg(p.hover))
+                                    .text_color(if prompt { p.text } else { p.faint })
+                                    .hover(|d| d.text_color(p.text))
+                                    .child(a.role.label())
+                                    .tooltip(|window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(
+                                            "Context is material to read. Prompt is your instructions. Click to switch.",
+                                        )
+                                        .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.model.toggle_role(i);
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(a.rereadable(), |d| {
+                                d.child(
+                                    div()
+                                        .id(("attach-reread", i))
+                                        .flex_none()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .text_color(p.faint)
+                                        .hover(|d| d.text_color(p.text).bg(p.hover))
+                                        .child("Read as scanned")
+                                        .tooltip(|window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                "Read again with Granite-Docling (or the local OCR model) as scanned pages, for a scan whose text layer is empty or only a watermark.",
+                                            )
+                                            .build(window, cx)
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(path) = this.model.read_again_started(&name) {
+                                                this.bridge.read_again(name.clone(), path, this.current);
+                                                this.tick_audio(cx);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// Under waiting pictures, when the chat model cannot see: who will
@@ -5718,6 +6113,9 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let build_from = Instant::now();
+        if let Some((plan, reply)) = self.replay_plan.take() {
+            self.show_plan(plan, reply, window, cx);
+        }
         if let Some(text) = self.composer_restore.take() {
             self.composer
                 .update(cx, |c, cx| crate::view::set_end(c, text, window, cx));
@@ -6348,23 +6746,123 @@ fn offset(s: &RunStep) -> SharedString {
 }
 
 /// An attachment on a sent message.
-fn sent_chip(c: &tern_agent::Chip, p: Palette) -> AnyElement {
+/// The width of an attachment preview card in the composer (#71).
+const PREVIEW_CARD_W: f32 = 148.;
+/// ...and in a sent message.
+const SENT_CARD_W: f32 = 112.;
+
+/// A sent message's attachment as a small preview card (#71): its kept
+/// picture, else a kind tile, with the kind badge and the name.
+fn sent_card(
+    c: &tern_agent::Chip,
+    image: Option<std::sync::Arc<gpui_kit::Image>>,
+    p: Palette,
+) -> AnyElement {
+    let kind = crate::filetype::FileKind::of(&c.name);
     div()
         .flex()
-        .items_center()
-        .gap_1()
-        .px_2()
-        .py(px(2.))
-        .rounded_md()
+        .flex_col()
+        .w(px(SENT_CARD_W))
+        .rounded_lg()
+        .overflow_hidden()
         .border_1()
         .border_color(p.border)
-        .text_xs()
-        .text_color(p.muted)
-        .child(gpui_kit::component::Icon::new(AssetIcon::Paperclip).xsmall())
-        .child(SharedString::from(c.name.clone()))
-        .when(c.role == Role::Prompt, |d| {
-            d.child(div().text_color(p.text).child("· Prompt"))
-        })
+        .bg(p.canvas)
+        .child(card_preview(image, kind, None, p, SENT_CARD_W, 60.))
+        .child(
+            div()
+                .px_2()
+                .py(px(3.))
+                .truncate()
+                .text_xs()
+                .text_color(p.muted)
+                .child(SharedString::from(if c.role == Role::Prompt {
+                    format!("{} · Prompt", c.name)
+                } else {
+                    c.name.clone()
+                })),
+        )
+        .into_any_element()
+}
+
+/// A card's preview area, `w` × `h`: the picture when there is one; the
+/// first lines of the text as a little page for a document; else a tile
+/// with the kind. The kind's coloured badge sits in the bottom-left
+/// corner.
+fn card_preview(
+    image: Option<std::sync::Arc<gpui_kit::Image>>,
+    kind: crate::filetype::FileKind,
+    text: Option<&str>,
+    p: Palette,
+    w: f32,
+    h: f32,
+) -> AnyElement {
+    let lines = text
+        .filter(|_| kind.shows_page())
+        .map(|t| crate::filetype::first_lines(t, 6))
+        .filter(|l| !l.is_empty());
+    let colour: Hsla = gpui_kit::rgb(kind.color()).into();
+    let body = match (image, lines) {
+        (Some(img), _) => div()
+            .size_full()
+            .child(
+                gpui_kit::img(img)
+                    .size_full()
+                    .object_fit(gpui_kit::ObjectFit::Cover),
+            )
+            .into_any_element(),
+        (None, Some(lines)) => div()
+            .size_full()
+            .p(px(6.))
+            .bg(Hsla::from(gpui_kit::rgb(0xF7F6F2)))
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .overflow_hidden()
+            .children(lines.into_iter().enumerate().map(|(k, l)| {
+                div()
+                    .text_size(px(if k == 0 { 8.5 } else { 7. }))
+                    .line_height(px(if k == 0 { 11. } else { 9. }))
+                    .when(k == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .text_color(gpui_kit::rgb(if k == 0 { 0x222222 } else { 0x555555 }))
+                    .truncate()
+                    .child(SharedString::from(l))
+            }))
+            .into_any_element(),
+        (None, None) => div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(p.raised)
+            .text_color(colour)
+            .text_size(px(15.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(kind.label())
+            .into_any_element(),
+    };
+    div()
+        .relative()
+        .w(px(w))
+        .h(px(h))
+        .overflow_hidden()
+        .border_b_1()
+        .border_color(p.border)
+        .child(body)
+        .child(
+            div()
+                .absolute()
+                .left(px(4.))
+                .bottom(px(4.))
+                .px(px(4.))
+                .py(px(1.))
+                .rounded_sm()
+                .bg(colour)
+                .text_color(gpui_kit::rgb(0xFFFFFF))
+                .text_size(px(8.))
+                .font_weight(FontWeight::BOLD)
+                .child(kind.label()),
+        )
         .into_any_element()
 }
 
@@ -6780,4 +7278,14 @@ fn chip_remove(
             cx.stop_propagation();
             on(e, window, cx)
         })
+}
+
+/// The language a route's windows are transcribed in, for the dictation
+/// guard (#71).
+fn route_language(route: &crate::dictation::Route) -> Option<String> {
+    match route {
+        crate::dictation::Route::Whisper(l) => l.clone(),
+        crate::dictation::Route::Fast => Some("en".into()),
+        crate::dictation::Route::Detect => None,
+    }
 }
