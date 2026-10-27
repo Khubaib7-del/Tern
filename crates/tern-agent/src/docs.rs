@@ -481,7 +481,7 @@ fn read_scanned(
         let why = "no local OCR or document model is downloaded: get PP-OCRv6 small or Granite-Docling in Settings › Local models";
         if !text_pages {
             return Err(format!(
-                "it is a scanned PDF (its text layer is empty or only a scanning app's watermark) and {why}"
+                "it is a scanned PDF: its text layer is empty or only a scanning app's watermark, and {why}"
             ));
         }
         let md: Vec<String> = (0..n)

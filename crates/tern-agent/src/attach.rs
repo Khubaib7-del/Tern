@@ -348,7 +348,15 @@ impl Attachment {
             // "DOCX → Markdown · 3 pages" (#69).
             parts.push(format!("{how} → Markdown"));
             if let Some(n) = pages {
-                parts.push(plural(n, "page"));
+                // A workbook counts sheets and a deck slides (#70).
+                let unit = if how.starts_with("XLS") {
+                    "sheet"
+                } else if how.starts_with("PPT") {
+                    "slide"
+                } else {
+                    "page"
+                };
+                parts.push(plural(n, unit));
             }
         } else if self.files.len() == 1 && self.files[0].text.starts_with("[page 1]") {
             let pages = self.files[0].text.matches("\n[page ").count() + 1;
@@ -986,6 +994,23 @@ mod tests {
             a.detail().starts_with("PDF text → Markdown · 2 pages"),
             "{}",
             a.detail()
+        );
+        // Old Office files count sheets and slides (#70).
+        let xls = dir.path().join("budget.xls");
+        std::fs::write(&xls, crate::office_legacy::sample_xls()).unwrap();
+        let x = Attachment::load(&xls).unwrap();
+        assert!(
+            x.detail().starts_with("XLS → Markdown · 1 sheet"),
+            "{}",
+            x.detail()
+        );
+        let ppt = dir.path().join("deck.ppt");
+        std::fs::write(&ppt, crate::office_legacy::sample_ppt()).unwrap();
+        let p = Attachment::load(&ppt).unwrap();
+        assert!(
+            p.detail().starts_with("PPT text → Markdown · 2 slides"),
+            "{}",
+            p.detail()
         );
         let png = dir.path().join("chart.png");
         let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
