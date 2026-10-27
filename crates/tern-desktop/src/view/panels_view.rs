@@ -7,7 +7,7 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
+use gpui_kit::component::{IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, Window, div, px};
 use tern_core::SessionId;
