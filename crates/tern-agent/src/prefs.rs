@@ -210,6 +210,15 @@ pub struct Preferences {
     /// Files attached lately (full paths, newest first), offered by the
     /// `@` menu.
     pub recent_files: Vec<String>,
+    /// The approval mode (#75): `read_only`, `ask`, `workspace_write`,
+    /// `full`. `None` is Ask.
+    pub approval_mode: Option<String>,
+    /// Permission rules by domain, path and tool (#75).
+    pub permission_rules: Vec<crate::permissions::PermissionRule>,
+    /// Programs added to the workbench's list (#75).
+    pub workbench_programs: Vec<String>,
+    /// Network for commands the workbench runs (#75); off by default.
+    pub workbench_network: bool,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -469,6 +478,22 @@ impl Preferences {
         }
     }
 
+    /// The approval mode chosen (#75), Ask when none.
+    pub fn approval(&self) -> crate::permissions::ApprovalMode {
+        self.approval_mode
+            .as_deref()
+            .and_then(crate::permissions::ApprovalMode::parse)
+            .unwrap_or_default()
+    }
+
+    /// The workbench settings for spawned commands (#75).
+    pub fn workbench(&self) -> crate::workbench::WorkbenchSettings {
+        crate::workbench::WorkbenchSettings {
+            extra_programs: self.workbench_programs.clone(),
+            network: self.workbench_network,
+        }
+    }
+
     /// Chat options that open these choices.
     pub fn chat_options(&self) -> ChatOptions {
         tern_providers::custom::register_all(&self.custom_providers);
@@ -486,6 +511,8 @@ impl Preferences {
                 .iter()
                 .filter_map(|(k, v)| parse_mode(v).map(|m| (k.clone(), m)))
                 .collect(),
+            approval_mode: self.approval(),
+            permission_rules: self.permission_rules.clone(),
             model: self.model.clone(),
             search: self.effective_search(),
             search_url: self.search_url.clone(),
@@ -668,6 +695,14 @@ mod tests {
             scout_variant: Some("study".into()),
             local_models: Default::default(),
             recent_files: vec!["/home/me/notes.md".into()],
+            approval_mode: Some("workspace_write".into()),
+            permission_rules: vec![crate::permissions::PermissionRule::new(
+                crate::permissions::RuleKind::Url,
+                "arxiv.org",
+                crate::Mode::Allow,
+            )],
+            workbench_programs: vec!["latex".into()],
+            workbench_network: true,
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

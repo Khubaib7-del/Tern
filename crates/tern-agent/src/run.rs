@@ -840,6 +840,7 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             (step.verb, step.note) = match answer {
                 "allow_once" => ("You approved", "once".to_owned()),
                 "allow_for_session" => ("You approved", "for this chat".to_owned()),
+                "allow_always" => ("You approved", "always (rule added)".to_owned()),
                 _ => ("You declined", String::new()),
             };
             step.ok = answer != "deny";
@@ -924,6 +925,25 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             if let Some(n) = p["worker"].as_u64() {
                 step.note = with_worker(&step.note, n);
             }
+        }
+        "sandbox.denied" => {
+            step.kind = StepKind::Problem;
+            step.verb = "Sandbox refused";
+            step.target = p["args"]["command"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or(tool);
+            step.note = str_at(p, "reason").unwrap_or_default().to_owned();
+            step.ok = false;
+        }
+        "tool.queued" | "tool.started" => {
+            step.verb = if e.kind == "tool.queued" {
+                "Queued"
+            } else {
+                "Started"
+            };
+            step.target = tool;
+            step.detailed = false;
         }
         "tool.rejected" | "loop.suspected" => {
             step.kind = StepKind::Problem;

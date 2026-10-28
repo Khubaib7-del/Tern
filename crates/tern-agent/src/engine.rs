@@ -581,6 +581,12 @@ struct Run<'r, 'a> {
     /// Reply text streamed before the user stopped the run (#71): kept in
     /// the log with the stop, so a reopened chat shows it.
     partial: String,
+    /// Tool calls numbered so far this turn (#75): each call's events
+    /// carry its number, so a card follows one call through its states.
+    call_seq: u32,
+    /// The number the next `tool_step` uses, set when a reply's calls were
+    /// queued.
+    next_call: Option<u32>,
 }
 
 /// A step failed in a way that ends the turn.
@@ -615,6 +621,8 @@ impl<'a> TurnLoop<'a> {
             native: self.hooks.native_tools,
             called: Vec::new(),
             partial: String::new(),
+            call_seq: 0,
+            next_call: None,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -882,6 +890,9 @@ impl Run<'_, '_> {
             };
             let stop = &self.cfg.cancel;
             let may_retry = || !stop.is_cancelled() && streamed.lock().is_ok_and(|s| s.is_empty());
+            // Native tool calls' arguments as they stream, by index, for
+            // the Files tab's live preview of a file being written (#75).
+            let writes: Mutex<HashMap<usize, (String, String, usize)>> = Mutex::default();
             let reply = match self.cfg.on_text {
                 Some(sink) => {
                     let call = self.model_calls;
@@ -889,8 +900,12 @@ impl Run<'_, '_> {
                     let on_reasoning = self.cfg.hooks.on_reasoning;
                     let thought = &thought;
                     let streamed = &streamed;
+                    let writes = &writes;
                     let forward = move |d: tern_providers::Delta<'_>| {
                         match d {
+                            tern_providers::Delta::Tool { index, name, args } => {
+                                stream_write_preview(writes, index, name, args);
+                            }
                             tern_providers::Delta::Text(t) => {
                                 let mut th = thought.lock().expect("thought lock");
                                 if th.1.is_some() && th.2.is_none() {
@@ -1154,6 +1169,26 @@ impl Run<'_, '_> {
                     // and all the results go back together.
                     let calls = protocol::parse_calls(&reply.text);
                     let mut results = Vec::with_capacity(calls.len());
+                    let first = self.call_seq + 1;
+                    self.call_seq += calls.len() as u32;
+                    self.record(self.event(
+                        "tool.queued",
+                        EffectClass::Analysis,
+                        format!(
+                            "The model asked for {}",
+                            calls
+                                .iter()
+                                .map(|(n, _)| format!("`{n}`"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        json!({
+                            "step": self.model_calls,
+                            "calls": calls.iter().enumerate().map(|(i, (n, a))| json!({
+                                "call": first + i as u32, "tool": n, "args": brief_args(a),
+                            })).collect::<Vec<_>>(),
+                        }),
+                    ))?;
                     for (i, (name, args)) in calls.iter().enumerate() {
                         let key = format!("{name}:{args}");
                         let n = seen.entry(key).or_default();
@@ -1180,6 +1215,7 @@ impl Run<'_, '_> {
                         }
                         self.called.push(name.clone());
                         searched |= name == "web_search";
+                        self.next_call = Some(first + i as u32);
                         results.push(self.tool_step(name, args).await?);
                     }
                     messages.push(ChatMessage::assistant(reply.text));
@@ -1305,13 +1341,17 @@ impl Run<'_, '_> {
     /// Validates, gates, runs, and records one tool call. Returns the text
     /// the model reads next.
     async fn tool_step(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
+        let call = self.next_call.take().unwrap_or_else(|| {
+            self.call_seq += 1;
+            self.call_seq
+        });
         let Some(tool) = self.cfg.tools.get(name) else {
             self.go(TurnState::RecordResult)?;
             self.record(self.event(
                 "tool.rejected",
                 EffectClass::Analysis,
                 format!("The model asked for `{name}`, which this turn does not have"),
-                json!({"tool": name}),
+                json!({"tool": name, "call": call}),
             ))?;
             let names = self.cfg.tools.names().collect::<Vec<_>>().join(", ");
             return Ok(format!(
@@ -1325,7 +1365,7 @@ impl Run<'_, '_> {
                 "tool.rejected",
                 tool.effect(),
                 format!("`{name}` was asked for with bad arguments"),
-                json!({"tool": name, "error": e}),
+                json!({"tool": name, "call": call, "error": e}),
             ))?;
             return Ok(format!("Tool `{name}` {e}. Check its input schema."));
         }
@@ -1336,6 +1376,33 @@ impl Run<'_, '_> {
             )));
         }
 
+        if name == "file_write" {
+            // A write whose arguments did not stream still shows in full
+            // before it is approved.
+            crate::live::preview_write(
+                args["path"].as_str().unwrap_or_default(),
+                args["text"].as_str().unwrap_or_default(),
+                true,
+            );
+        }
+        if let Some(why) = tool.refuses(args) {
+            self.go(TurnState::RecordResult)?;
+            let what = tool.target(args).unwrap_or_else(|| name.to_owned());
+            if name == "run_command" {
+                crate::sandbox::note_denied(&what, std::path::Path::new(""), &why);
+            } else {
+                crate::diag::note(&format!("sandbox: denied `{name}`: {why}"));
+            }
+            self.record(self.event(
+                "sandbox.denied",
+                tool.effect(),
+                format!("The sandbox refused `{what}`: {why}"),
+                json!({"tool": name, "call": call, "args": brief_args(args), "reason": why}),
+            ))?;
+            return Ok(format!(
+                "Tool `{name}` was refused by Tern's sandbox: {why}"
+            ));
+        }
         let target = tool.target(args);
         let view = CallView {
             tool: name,
@@ -1346,7 +1413,18 @@ impl Run<'_, '_> {
         self.go(TurnState::PolicyCheck)?;
         let risk = self.cfg.gate.url_risk(&view);
         let asks = tool.asks_because(args);
-        let decision = self.cfg.gate.check_asking(&view, asks.is_some());
+        let facts = crate::permissions::CallFacts {
+            tool: name,
+            host: None,
+            paths: tool.rule_paths(args),
+            detail: crate::policy::call_detail_line(args),
+            folder: None,
+            home: None,
+        };
+        let decision = self
+            .cfg
+            .gate
+            .check_full(&view, asks.is_some(), &facts, tool.confined(args));
         let why = match &risk {
             Some(Ok(why)) => Some(why.clone()),
             _ => asks,
@@ -1360,12 +1438,16 @@ impl Run<'_, '_> {
                 (Decision::Ask, None) => format!("`{name}` needs your approval"),
                 (Decision::Deny { reason }, _) => reason.clone(),
             },
-            json!({"tool": name, "target": target, "decision": decision, "flag": why,
-                   "detail": call_detail(name, args)}),
+            json!({"tool": name, "call": call, "target": target, "decision": decision, "flag": why,
+                   "detail": call_detail(name, args), "mode": self.cfg.gate.config().approval.id()}),
         ))?;
         match decision {
             Decision::Allow { .. } => {}
             Decision::Deny { reason } => {
+                crate::diag::note(&format!("policy: refused `{name}`: {reason}"));
+                if name == "file_write" {
+                    crate::live::clear_preview();
+                }
                 self.go(TurnState::Blocked)?;
                 return Err(Stop {
                     state: TurnState::Blocked,
@@ -1384,14 +1466,25 @@ impl Run<'_, '_> {
                     target: target.clone(),
                     args: args.clone(),
                 };
+                let mut asked = serde_json::to_value(&req).unwrap_or_default();
+                asked["call"] = json!(call);
+                if name == "file_write" {
+                    asked["args"] = brief_args(args);
+                }
                 self.record(self.event(
                     "approval.requested",
                     tool.effect(),
                     format!("Asked you to approve `{name}`"),
-                    serde_json::to_value(&req).unwrap_or_default(),
+                    asked,
                 ))?;
+                crate::diag::note(&format!(
+                    "approval: asked for `{name}` ({}){}",
+                    self.cfg.gate.config().approval.id(),
+                    why.as_deref().map(|w| format!(": {w}")).unwrap_or_default()
+                ));
                 let answer = self.cfg.approver.ask(&req).await;
                 let allowed = self.cfg.gate.answer(&view, answer);
+                crate::diag::note(&format!("approval: `{name}` answered {answer:?}"));
                 self.record(self.event(
                     "approval.answered",
                     tool.effect(),
@@ -1400,8 +1493,11 @@ impl Run<'_, '_> {
                     } else {
                         format!("You declined `{name}`")
                     },
-                    json!({"tool": name, "answer": answer}),
+                    json!({"tool": name, "call": call, "answer": answer}),
                 ))?;
+                if !allowed && name == "file_write" {
+                    crate::live::clear_preview();
+                }
                 if !allowed {
                     self.go(TurnState::Blocked)?;
                     return Err(Stop {
@@ -1415,6 +1511,12 @@ impl Run<'_, '_> {
 
         self.go(TurnState::Executing)?;
         self.tool_calls += 1;
+        self.record(self.event(
+            "tool.started",
+            tool.effect(),
+            format!("Running `{name}`"),
+            json!({"tool": name, "call": call, "args": brief_args(args)}),
+        ))?;
         let out: Result<ToolOutput, ToolError> =
             match tokio::time::timeout(tool.timeout(), tool.call(args.clone())).await {
                 Ok(r) => r,
@@ -1444,7 +1546,7 @@ impl Run<'_, '_> {
                         "tool.executed",
                         tool.effect(),
                         format!("Ran `{name}`"),
-                        json!({"tool": name, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta}),
+                        json!({"tool": name, "call": call, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta, "output": output_head_tail(&o.content)}),
                     )
                     .with_evidence(o.evidence_refs.clone()),
                 )?;
@@ -1462,7 +1564,7 @@ impl Run<'_, '_> {
                     "tool.failed",
                     tool.effect(),
                     format!("`{name}` {e}"),
-                    json!({"tool": name, "args": args, "error": e, "retry_safe": tool.idempotent()}),
+                    json!({"tool": name, "call": call, "args": args, "error": e, "retry_safe": tool.idempotent()}),
                 ))?;
                 format!("Tool `{name}` {e}.")
             }
@@ -1540,8 +1642,79 @@ pub fn result_id(turn: &str, call: u32) -> String {
     format!("t{}-{call}", tail.to_ascii_lowercase())
 }
 
+/// A call's arguments for the log and the cards: a long `text` or `code`
+/// is cut to its first 2,000 characters with its length noted.
+pub fn brief_args(args: &Value) -> Value {
+    let mut a = args.clone();
+    if let Some(obj) = a.as_object_mut() {
+        for k in ["text", "code", "content"] {
+            if let Some(Value::String(t)) = obj.get(k)
+                && t.chars().count() > 2000
+            {
+                let n = t.chars().count();
+                let head: String = t.chars().take(2000).collect();
+                obj.insert(
+                    k.to_owned(),
+                    Value::String(format!("{head}… [{n} characters]")),
+                );
+            }
+        }
+    }
+    a
+}
+
+/// A tool's output for its card (#75): all of it up to 3,000 characters,
+/// else the first 2,000 and the last 1,000 with the cut marked.
+pub fn output_head_tail(text: &str) -> String {
+    let n = text.chars().count();
+    if n <= 3000 {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(2000).collect();
+    let tail: String = text.chars().skip(n - 1000).collect();
+    format!("{head}\n… [{} characters cut] …\n{tail}", n - 3000)
+}
+
+/// Feeds one streamed piece of a native tool call to the live preview of
+/// a file being written (`file_write`).
+fn stream_write_preview(
+    writes: &Mutex<HashMap<usize, (String, String, usize)>>,
+    index: usize,
+    name: Option<&str>,
+    args: &str,
+) {
+    let Ok(mut w) = writes.lock() else {
+        return;
+    };
+    let e = w.entry(index).or_default();
+    if let Some(n) = name {
+        e.0 = n.to_owned();
+    }
+    e.1.push_str(args);
+    // Parse again every 200 bytes or so: the preview keeps up without
+    // reading the whole text on every piece.
+    if e.0 != "file_write" || (e.1.len() < e.2 + 200 && !e.1.ends_with('}')) {
+        return;
+    }
+    e.2 = e.1.len();
+    if let (Some(path), text) = crate::live::partial_write_args(&e.1) {
+        crate::live::preview_write(&path, text.as_deref().unwrap_or_default(), false);
+    }
+}
+
 #[cfg(test)]
 mod length_tests {
+    #[test]
+    fn long_arguments_and_outputs_are_cut_for_cards() {
+        let long = "x".repeat(5000);
+        let a = super::brief_args(&serde_json::json!({"path": "a.md", "text": long}));
+        assert!(a["text"].as_str().unwrap().ends_with("[5000 characters]"));
+        assert_eq!(a["path"], "a.md");
+        let o = super::output_head_tail(&"y".repeat(4000));
+        assert!(o.contains("[1000 characters cut]"));
+        assert_eq!(super::output_head_tail("short"), "short");
+    }
+
     #[test]
     fn result_ids_are_short_and_safe() {
         assert_eq!(super::result_id("trn_01JBXK3K9QZ", 2), "tk3k9qz-2");

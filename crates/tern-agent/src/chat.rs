@@ -61,6 +61,10 @@ pub struct ChatOptions {
     pub tools_off: Vec<String>,
     /// Per-tool approvals chosen in Settings › Tools.
     pub tool_modes: std::collections::BTreeMap<String, crate::Mode>,
+    /// The approval mode (#75).
+    pub approval_mode: crate::permissions::ApprovalMode,
+    /// Permission rules (#75).
+    pub permission_rules: Vec<crate::permissions::PermissionRule>,
 }
 
 pub(crate) const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -597,6 +601,7 @@ impl ChatSession {
         {
             let ws = Arc::new(ws);
             ws.register(&mut s.tools);
+            s.gate.set_folder(Some(ws.root()));
             s.workspace = Some(ws);
             s.workspace_logged = true;
         }
@@ -694,10 +699,12 @@ impl ChatSession {
         // A file the user names by its full path can be read with no
         // workspace open (each one approved).
         crate::workspace::register_local_read(&mut tools);
+        crate::workbench::register_always(&mut tools);
         let mut gate = PolicyGate::default();
         for (name, mode) in &opts.tool_modes {
             gate.set_tool_mode(name, *mode);
         }
+        gate.set_approval(opts.approval_mode, opts.permission_rules.clone());
         let mut mcp_notes = Vec::new();
         let mut mcp_servers = Vec::new();
         let mut mcp_offers = Vec::new();
@@ -879,6 +886,20 @@ impl ChatSession {
         self.tools.set_mode(mode);
     }
 
+    /// Sets the approval mode and permission rules for the next calls (#75).
+    pub fn set_approval(
+        &mut self,
+        mode: crate::permissions::ApprovalMode,
+        rules: Vec<crate::permissions::PermissionRule>,
+    ) {
+        self.gate.set_approval(mode, rules);
+    }
+
+    /// The approval mode in force.
+    pub fn approval(&self) -> crate::permissions::ApprovalMode {
+        self.gate.config().approval
+    }
+
     pub fn turn_mode(&self) -> Option<crate::workspace::TurnMode> {
         self.turn_mode
     }
@@ -893,6 +914,7 @@ impl ChatSession {
             .map(Arc::new);
         crate::workspace::Workspace::unregister(&mut self.tools);
         self.workspace = None;
+        self.gate.set_folder(ws.as_ref().map(|w| w.root()));
         match ws {
             Some(ws) => {
                 ws.register(&mut self.tools);

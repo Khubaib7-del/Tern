@@ -49,6 +49,25 @@ symphonia = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 loqui-kokoro = { workspace = true, optional = true }
 loqui-g2p = { workspace = true, optional = true }
+# run_python (#75): Monty, a Python-subset interpreter in Rust (MIT).
+monty = "1.4"
+monty-types = "1.4"
+# Diffs before a file write (#75). Apache-2.0; already in the tree.
+similar = "2"
+
+# Sandbox v1 (#75): process groups and rlimits.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Sandbox v1 (#75): a Job Object around each command's process tree.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
 
 [features]
 # The microphone, through tern-platform (cpal). The desktop app turns it on.

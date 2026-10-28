@@ -80,6 +80,21 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     fn asks_because(&self, _args: &Value) -> Option<String> {
         None
     }
+    /// Why this call is refused before anyone is asked (the sandbox's
+    /// program list, a protected path), or `None`.
+    fn refuses(&self, _args: &Value) -> Option<String> {
+        None
+    }
+    /// Whether the call stays inside the chat's folder under the sandbox
+    /// (a file write there, a sandboxed command with no outside paths).
+    /// The Workspace write approval mode runs such calls without asking.
+    fn confined(&self, _args: &Value) -> bool {
+        false
+    }
+    /// The full paths a call touches, for path permission rules.
+    fn rule_paths(&self, _args: &Value) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
     fn timeout(&self) -> Duration {
         Duration::from_secs(30)
     }
@@ -159,6 +174,21 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         name: "file_write",
         label: "Write a workspace file",
         effect: EffectClass::Write,
+    },
+    BuiltinTool {
+        name: "run_command",
+        label: "Run a command on the workbench (sandboxed)",
+        effect: EffectClass::ExternalSideEffect,
+    },
+    BuiltinTool {
+        name: "run_python",
+        label: "Run Python glue code (Monty, no files or network)",
+        effect: EffectClass::Analysis,
+    },
+    BuiltinTool {
+        name: "show_in_panel",
+        label: "Show a tab in the right panel",
+        effect: EffectClass::Analysis,
     },
     BuiltinTool {
         name: "load_skill",
