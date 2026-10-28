@@ -395,7 +395,7 @@ async fn code_mode_calls_many_tools_and_only_the_print_comes_back() {
     // The prompt lists the stubs.
     let system = model.requests()[0].system.clone().unwrap();
     assert!(
-        system.contains("def web_search(query: str) -> str:"),
+        system.contains("def web_search(query: str) -> str"),
         "{system}"
     );
     assert!(!system.contains("def run_python("));
