@@ -152,7 +152,11 @@ impl Tool for RunCommand {
                 ),
                 s => format!(
                     "The command {} after {:.1} s.",
-                    s.label(),
+                    match s {
+                        crate::live::RunState::Killed => "was killed",
+                        crate::live::RunState::TimedOut => "hit its time limit",
+                        other => other.label(),
+                    },
                     o.took.as_secs_f32()
                 ),
             };

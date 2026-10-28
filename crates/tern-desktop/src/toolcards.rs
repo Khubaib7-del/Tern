@@ -354,7 +354,23 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                         c.started = Some(s.at);
                     }
                     "tool.executed" => {
-                        c.state = CardState::Done;
+                        // A command that was killed or ran out of time
+                        // did not finish, whatever its output says.
+                        match p["meta"]["state"].as_str() {
+                            Some("killed") => {
+                                c.state = CardState::Cancelled;
+                                c.error = Some("Killed before it finished.".into());
+                            }
+                            Some("timed out") => {
+                                c.state = CardState::Failed;
+                                c.error = Some("Hit its time limit.".into());
+                            }
+                            Some("could not start") => {
+                                c.state = CardState::Failed;
+                                c.error = Some("The program could not start.".into());
+                            }
+                            _ => c.state = CardState::Done,
+                        }
                         c.started.get_or_insert(s.at);
                         c.ended = Some(s.at);
                         c.output = p["output"].as_str().unwrap_or_default().to_owned();
@@ -399,6 +415,33 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
     }
     groups.sort_by_key(|g| g.step);
     groups
+}
+
+/// The line a waiting card shows. The approval card under it says what
+/// the call does, so a long reason (a tool's description) is not repeated.
+pub fn waiting_line(why: &str) -> String {
+    let why = why.trim();
+    if why.is_empty() || why.chars().count() > 90 {
+        "Needs your approval below.".to_owned()
+    } else {
+        format!("Needs your approval: {why}")
+    }
+}
+
+/// The first `head` and last `tail` lines of a tool's output, with a line
+/// saying how many were left out between them.
+pub fn preview_lines(text: &str, head: usize, tail: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= head + tail + 1 {
+        return text.trim_end().to_owned();
+    }
+    let hidden = lines.len() - head - tail;
+    let mut out = lines[..head].join("\n");
+    out.push_str(&format!(
+        "\n… {hidden} more lines (Terminal or Full output) …\n"
+    ));
+    out.push_str(&lines[lines.len() - tail..].join("\n"));
+    out
 }
 
 /// A file name whose logo stands for a program (`pandoc` → a Markdown
@@ -540,6 +583,32 @@ mod tests {
         assert_eq!(all[0].error.as_deref(), Some("not on the list"));
         assert_eq!(all[1].state, CardState::Done);
         assert_eq!(g[0].tools_line(), "run_command, web_search");
+    }
+
+    #[test]
+    fn killed_commands_are_cancelled_and_long_output_folds() {
+        let r = run(&[
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [{"call": 1, "tool": "run_command", "args": {"command": "python3 x.py"}}]}),
+            ),
+            ev("tool.started", json!({"tool": "run_command", "call": 1})),
+            ev(
+                "tool.executed",
+                json!({"tool": "run_command", "call": 1, "output": "The command was killed after 2.0 s.", "meta": {"state": "killed", "run": 3}}),
+            ),
+        ]);
+        let c = &cards_of(&r)[0].cards[0];
+        assert_eq!(c.state, CardState::Cancelled);
+        assert_eq!(c.terminal_run, Some(3));
+        let long: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+        let p = preview_lines(&long, 8, 4);
+        assert!(p.starts_with("line 1\n"));
+        assert!(p.contains("… 28 more lines"));
+        assert!(p.ends_with("line 40"));
+        assert_eq!(preview_lines("a\nb\n", 8, 4), "a\nb");
+        assert_eq!(waiting_line("a pipe"), "Needs your approval: a pipe");
+        assert_eq!(waiting_line(&"x".repeat(200)), "Needs your approval below.");
     }
 
     #[test]

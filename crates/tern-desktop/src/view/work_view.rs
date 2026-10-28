@@ -129,6 +129,10 @@ fn state_icon(s: CardState, p: Palette, fam: Family) -> AnyElement {
     }
 }
 
+/// Lines of a tool's output a card shows before and after the fold.
+const CARD_HEAD_LINES: usize = 8;
+const CARD_TAIL_LINES: usize = 4;
+
 fn mono(text: impl Into<SharedString>, p: Palette) -> gpui_kit::Div {
     div()
         .font_family(assets::MONO_FONT)
@@ -501,7 +505,7 @@ impl Workspace {
                 div()
                     .text_xs()
                     .text_color(approval_yellow(p))
-                    .child(SharedString::from(format!("Needs your approval: {why}"))),
+                    .child(SharedString::from(crate::toolcards::waiting_line(why))),
             );
         }
         if let Some(e) = &c.error {
@@ -513,7 +517,10 @@ impl Workspace {
             );
         }
         if !c.output.is_empty() {
-            let (shown, cut) = tail_chars(&c.output, 3200);
+            // The card keeps the first and last lines; the rest is in the
+            // Terminal tab or Full output.
+            let (shown, _) = tail_chars(&c.output, 3200);
+            let shown = crate::toolcards::preview_lines(shown, CARD_HEAD_LINES, CARD_TAIL_LINES);
             col = col.child(
                 div()
                     .mt_1()
@@ -522,14 +529,8 @@ impl Workspace {
                     .bg(p.canvas)
                     .border_1()
                     .border_color(p.border)
-                    .child(mono(
-                        if cut {
-                            format!("…\n{shown}")
-                        } else {
-                            shown.to_owned()
-                        },
-                        p,
-                    )),
+                    .min_w_0()
+                    .child(mono(shown, p)),
             );
         }
         let output = c.output.clone();
@@ -823,7 +824,14 @@ impl Workspace {
                     .justify_between()
                     .text_xs()
                     .text_color(p.faint)
-                    .child(SharedString::from(format!("{} · {}", r.cwd, r.sandbox)))
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(format!("{} · {}", r.cwd, r.sandbox))),
+                    )
                     .child(
                         Button::new(SharedString::from(format!("term-copy-{id}")))
                             .capsule()
