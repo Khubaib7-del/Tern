@@ -284,12 +284,16 @@ pub enum RunView {
     Context,
     /// The files this chat made, and its folder's tree (#74).
     Files,
+    /// Every tool call as a colour-coded card, grouped by step (#75).
+    Tools,
+    /// Commands the workbench ran: live output, exit code, kill (#75).
+    Terminal,
 }
 
 impl RunView {
     /// The views a run offers: Workers too for a deep research run.
     pub fn for_run(run: &Run) -> Vec<RunView> {
-        let mut v = vec![Self::Summary];
+        let mut v = vec![Self::Summary, Self::Tools];
         if run.deep.is_some() {
             v.push(Self::Workers);
         }
@@ -305,6 +309,7 @@ impl RunView {
         }
         v.push(Self::Context);
         v.push(Self::Files);
+        v.push(Self::Terminal);
         v
     }
 
@@ -320,6 +325,8 @@ impl RunView {
             Self::Graph => "Graph",
             Self::Context => "Context",
             Self::Files => "Files",
+            Self::Tools => "Tools",
+            Self::Terminal => "Terminal",
         }
     }
 }
@@ -335,29 +342,34 @@ pub enum RailTab {
     Graph,
     Context,
     Files,
+    Terminal,
 }
 
 impl RailTab {
-    pub const ALL: [RailTab; 6] = [
+    pub const ALL: [RailTab; 7] = [
         Self::Plan,
         Self::Sources,
         Self::Report,
         Self::Graph,
         Self::Context,
         Self::Files,
+        Self::Terminal,
     ];
 
     /// The tab a view sits in.
     pub fn of(view: RunView) -> Self {
         match view {
-            RunView::Summary | RunView::Detailed | RunView::Workers | RunView::Decisions => {
-                Self::Plan
-            }
+            RunView::Summary
+            | RunView::Tools
+            | RunView::Detailed
+            | RunView::Workers
+            | RunView::Decisions => Self::Plan,
             RunView::Ledger | RunView::Raw => Self::Sources,
             RunView::Report => Self::Report,
             RunView::Graph => Self::Graph,
             RunView::Context => Self::Context,
             RunView::Files => Self::Files,
+            RunView::Terminal => Self::Terminal,
         }
     }
 
@@ -380,6 +392,7 @@ impl RailTab {
             Self::Graph => "Graph",
             Self::Context => "Context",
             Self::Files => "Files",
+            Self::Terminal => "Terminal",
         }
     }
 
@@ -3691,9 +3704,9 @@ mod tests {
         assert_eq!(m.working_line().unwrap().activity, Activity::Reading);
         assert_eq!(m.turn_pages.len(), 1);
         let run = m.panel_run();
-        assert_eq!(RunView::for_run(run)[1], RunView::Workers);
+        assert_eq!(RunView::for_run(run)[2], RunView::Workers);
         assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
-        assert_eq!(RunView::for_run(&Run::new()).len(), 8);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 10);
         // A normal turn after a deep one goes back to the summary.
         m.finish_turn(
             &outcome(TurnState::Completed, Some("A [1]."), None),

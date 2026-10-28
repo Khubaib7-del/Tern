@@ -67,6 +67,7 @@ mod theme;
 mod thumbs;
 mod timeline;
 mod toast;
+mod toolcards;
 mod view;
 mod webview;
 

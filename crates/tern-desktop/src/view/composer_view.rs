@@ -558,67 +558,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The chip at the top of a chat with a workspace: the folder's logo
-    /// and name. Before the first message it can be changed in the tray
-    /// under the composer; after, it is fixed and a click shows its files.
-    pub(super) fn workspace_chip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (name, path) = self.model.workspace.as_ref()?;
-        let locked = self.model.folder_locked();
-        let tip: SharedString = if locked {
-            format!("{}\n{}", path.display(), super::folders_view::FIXED).into()
-        } else {
-            format!(
-                "{}\nChange it under the composer until you send the first message",
-                path.display()
-            )
-            .into()
-        };
-        let logo = if path.is_dir() {
-            crate::fileicon::folder_logo(&path.to_string_lossy(), 14.)
-        } else {
-            crate::fileicon::logo(crate::fileicon::FileIcon::of(name), 14., self.model.dark)
-        };
-        Some(
-            div()
-                .w_full()
-                .max_w(px(super::COLUMN_MAX_W))
-                .mx_auto()
-                .px_4()
-                .pt_2()
-                .flex()
-                .child(
-                    div()
-                        .id("workspace-chip")
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .max_w_full()
-                        .px_2()
-                        .py(px(3.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(p.border)
-                        .text_xs()
-                        .text_color(p.muted)
-                        .cursor_pointer()
-                        .hover(|d| d.bg(p.hover).text_color(p.text))
-                        .child(logo)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(name.clone())),
-                        )
-                        .tooltip(move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                .build(window, cx)
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.show_files(cx))),
-                )
-                .into_any_element(),
-        )
-    }
-
     /// The composer: menus, banners, chips, the text field, and the row of
     /// controls.
     pub(super) fn composer(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2809,8 +2748,15 @@ impl Workspace {
             crate::model::Phase::Working { run, .. } => self.rollup(None, run, p, cx),
             _ => None,
         };
+        // The tool calls of the run in progress, as cards (#75).
+        let cards = match &self.model.phase {
+            crate::model::Phase::Working { run, .. } | crate::model::Phase::Approval { run, .. } => {
+                self.tool_cards(None, run, p, cx)
+            }
+            _ => None,
+        };
         let draft = self.model.paced_draft();
-        if thinking.is_none() && rollup.is_none() && draft.is_none() {
+        if thinking.is_none() && rollup.is_none() && draft.is_none() && cards.is_none() {
             return None;
         }
         let i = self.model.entries.len();
@@ -2825,6 +2771,7 @@ impl Workspace {
                 .gap_2()
                 .children(thinking)
                 .children(rollup)
+                .children(cards)
                 .children(draft.map(|d| {
                     super::bidi_markdown("answer", i, crate::richmd::prepare(d).into_owned(), |t| {
                         crate::richmd::rich(t.selectable(true).motion(super::stream_motion()))

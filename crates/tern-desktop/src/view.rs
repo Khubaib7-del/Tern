@@ -64,6 +64,7 @@ mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
+mod work_view;
 pub(crate) mod tour;
 pub use pet_view::Shell;
 
@@ -388,6 +389,10 @@ pub struct Workspace {
     files_scroll: ScrollHandle,
     /// Checks the Files tab's folder for changes while it shows.
     _folder_poll: Task<()>,
+    /// The workbench board, checked every 120 ms (#75).
+    _live_poll: Task<()>,
+    /// Tool cards, Terminal and write preview state (#75).
+    work: work_view::WorkUi,
     /// The timeline tick under the pointer, and a smooth scroll in flight
     /// (from, to, started).
     rail_hover: Option<usize>,
@@ -672,6 +677,19 @@ impl Workspace {
                 }
             }
         });
+        // The workbench: commands' output, a file being written,
+        // show_in_panel requests (#75).
+        let live_poll = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(work_view::LIVE_POLL)
+                    .await;
+                if this.update(cx, |this, cx| this.poll_live(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+        tern_agent::workbench::set_settings(tern_agent::Preferences::load().workbench());
         let mut model = Model::new();
         let look = crate::appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
         model.dark = look.is_dark(system_dark(window));
@@ -854,6 +872,8 @@ impl Workspace {
             mention_scroll: ScrollHandle::new(),
             files_scroll: ScrollHandle::new(),
             _folder_poll: folder_poll,
+            _live_poll: live_poll,
+            work: work_view::WorkUi::default(),
             rail_hover: None,
             rail_auto: false,
             cmdk: None,
@@ -1382,6 +1402,15 @@ impl Workspace {
         let mut session = session;
         let mode = self.model.composer.mode;
         session.set_turn_mode(mode.turn_mode());
+        {
+            // The approval mode and rules as Settings › Permissions and
+            // the composer left them (#75).
+            let prefs = &self.model.providers.prefs;
+            session.set_approval(prefs.approval(), prefs.permission_rules.clone());
+            tern_agent::workbench::set_settings(prefs.workbench());
+        }
+        tern_agent::live::clear_preview();
+        self.work.preview_path = None;
         session.set_effort(self.model.composer.effort);
         // A Study mode asks the same model to answer in its style.
         let mut text = match mode.study_prefix() {
@@ -4140,6 +4169,11 @@ impl Workspace {
                     .gap_2()
                     .children(thought.as_ref().map(|th| self.thinking_done(i, th, p, cx)))
                     .children(self.rollup(Some(i), run, p, cx))
+                    .children(if folded {
+                        None
+                    } else {
+                        self.tool_cards(Some(i), run, p, cx)
+                    })
                     .child(body)
                     .when(revealing && !folded, |d| {
                         d.child(composer_view::show_all(p, cx))
@@ -4401,9 +4435,8 @@ impl Workspace {
                 .into_any_element()
         };
         let mut items: Vec<AnyElement> = Vec::new();
-        if let Some(chip) = self.workspace_chip(p, cx) {
-            items.push(wrap(chip));
-        }
+        // The chat's folder shows in the title bar (#75 removed the chip
+        // that sat here, centred over the transcript).
         if self.model.entries.is_empty() && !self.model.is_busy() {
             items.push(wrap(self.empty_state(p, cx)));
         }
@@ -5778,6 +5811,8 @@ impl Workspace {
             self.run_context(p)
         } else if view == RunView::Files {
             self.files_panel(p, cx)
+        } else if view == RunView::Terminal {
+            self.terminal_panel(p, cx)
         } else if run.is_empty() {
             div()
                 .text_sm()
@@ -5796,6 +5831,8 @@ impl Workspace {
                 RunView::Graph => self.run_graph(run, p, cx),
                 RunView::Context => self.run_context(p),
                 RunView::Files => self.files_panel(p, cx),
+                RunView::Tools => self.run_tools(run, p, cx),
+                RunView::Terminal => self.terminal_panel(p, cx),
             }
         };
         div()

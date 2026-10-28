@@ -337,6 +337,8 @@ impl Workspace {
             .gap(px(2.))
             .overflow_y_scroll()
             .track_scroll(&self.files_scroll)
+            // A file the model is writing, as it arrives (#75).
+            .children(self.write_preview(p, cx))
             .child(self.section_head("Outputs", Some(n_out), p));
         if outputs.is_empty() {
             col = col.child(
