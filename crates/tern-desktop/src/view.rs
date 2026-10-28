@@ -52,6 +52,7 @@ mod localmodels_view;
 mod onboarding_view;
 mod palette_view;
 mod panels_view;
+mod permissions_view;
 mod pet_view;
 mod press;
 mod read_aloud_view;

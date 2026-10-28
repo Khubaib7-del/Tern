@@ -731,6 +731,7 @@ impl Workspace {
                                 }))
                                 .children(self.effort_chip(p, cx))
                                 .children(self.search_chip(p, cx))
+                                .child(self.approval_chip(p, cx))
                                 .child(self.context_ring(p, cx))
                                 .children(pause)
                                 .child(action),
@@ -1367,6 +1368,7 @@ impl Workspace {
             Menu::Model => return None,
             Menu::Effort => return None,
             Menu::Search => self.search_menu(p, cx),
+            Menu::Approval => self.approval_menu(p, cx),
         };
         Some(
             div()
@@ -1391,7 +1393,7 @@ impl Workspace {
         )
     }
 
-    fn menu_row(
+    pub(super) fn menu_row(
         id: impl Into<gpui_kit::ElementId>,
         lead: AnyElement,
         title: SharedString,

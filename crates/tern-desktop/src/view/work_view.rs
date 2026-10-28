@@ -7,13 +7,21 @@
 use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as AssetIcon;
+<<<<<<< Updated upstream
+=======
+use gpui_kit::component::{Selectable as _, Sizable as _};
+>>>>>>> Stashed changes
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
+<<<<<<< Updated upstream
 use gpui_kit::{
     AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, div, hsla, px,
 };
+=======
+use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, div, hsla, px};
+>>>>>>> Stashed changes
 use tern_agent::Run;
 use tern_agent::live::{self, RunState, Stream};
 

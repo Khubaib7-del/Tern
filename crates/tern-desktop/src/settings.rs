@@ -25,6 +25,8 @@ pub enum Section {
     Speech,
     /// Tern's own tools: on or off, and when each asks first.
     Tools,
+    /// The approval mode, permission rules, and the workbench (#75).
+    Permissions,
     /// The decision model: off, local, Jev, SubQ Snap, Voyage.
     Decision,
     /// Evaluation runs and suites.
@@ -48,12 +50,13 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Providers,
         Self::Models,
         Self::LocalModels,
         Self::Speech,
         Self::Tools,
+        Self::Permissions,
         Self::Decision,
         Self::Evaluation,
         Self::Extensions,
@@ -73,6 +76,7 @@ impl Section {
             Self::LocalModels => "Local models",
             Self::Speech => "Speech",
             Self::Tools => "Tools",
+            Self::Permissions => "Permissions",
             Self::Decision => "Decision model",
             Self::Evaluation => "Evaluation",
             Self::Extensions => "MCP & Skills",
@@ -102,6 +106,9 @@ impl Section {
                 "The language the mic listens for; where local speech-to-text and the picture models (SmolVLM, Qwen3-VL) run: the GPU or the CPU, and how many CPU threads; and Read aloud's voice and speed."
             }
             Self::Tools => "Tern's own tools: turn one off, or choose whether it asks you first.",
+            Self::Permissions => {
+                "When Tern asks before it acts, rules by site, path or tool, and the programs its workbench may run."
+            }
             Self::Decision => {
                 "A small, fast model that makes Tern's quick choices so the chat model does not have to."
             }
@@ -133,6 +140,7 @@ impl Section {
             Self::LocalModels => "local-models",
             Self::Speech => "speech",
             Self::Tools => "tools",
+            Self::Permissions => "permissions",
             Self::Decision => "decision",
             Self::Evaluation => "evaluation",
             Self::Extensions => "extensions",
@@ -255,6 +263,21 @@ pub const ENTRIES: &[Entry] = &[
         Section::Tools,
         "Approvals",
         "ask allow deny permission confirm policy",
+    ),
+    e(
+        Section::Permissions,
+        "Approval mode",
+        "read-only read only ask workspace write full access approve permission confirm",
+    ),
+    e(
+        Section::Permissions,
+        "Permission rules",
+        "rule allow ask deny domain path tool command always",
+    ),
+    e(
+        Section::Permissions,
+        "Workbench programs",
+        "terminal sandbox command program pandoc typst python network run",
     ),
     e(
         Section::Decision,
