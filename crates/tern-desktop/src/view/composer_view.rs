@@ -116,6 +116,15 @@ impl Workspace {
         self.model.composer.chat_opened(id.as_deref(), s.harness());
         self.model.deep_mode = self.model.composer.mode.is_deep();
         self.model.workspace = s.workspace().map(|w| (w.name(), w.path().to_path_buf()));
+        self.model.outputs = if s.is_draft() {
+            Vec::new()
+        } else {
+            s.outputs()
+        };
+        self.model
+            .files
+            .set_root(self.model.workspace.as_ref().map(|(_, p)| p.clone()));
+        self.model.file_menu = None;
     }
 
     /// Saves a preference change both to disk and to the providers state
@@ -441,8 +450,14 @@ impl Workspace {
             .unwrap_or_default()
     }
 
-    /// Opens a folder or a file as the chat's workspace.
+    /// Opens a folder or a file as the chat's workspace. A folder becomes
+    /// (or finds) its project and the chat is filed there (#74). Once the
+    /// chat has a message its folder is fixed: this shows its files.
     pub(super) fn pick_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.model.folder_locked() {
+            self.show_files(cx);
+            return;
+        }
         let picked = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
             files: true,
             directories: true,
@@ -454,7 +469,12 @@ impl Workspace {
                 && let Some(path) = paths.into_iter().next()
             {
                 let _ = this.update(cx, |this, cx| {
-                    this.set_workspace(Some(path), cx);
+                    if path.is_dir() {
+                        this.bridge
+                            .projects(crate::bridge::ProjectChange::Folder(path));
+                    } else {
+                        this.set_workspace(Some(path), cx);
+                    }
                 });
             }
         })
@@ -466,6 +486,12 @@ impl Workspace {
         path: Option<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) {
+        if self.model.folder_locked() {
+            self.model
+                .toast_info(format!("{}.", super::folders_view::FIXED));
+            cx.notify();
+            return;
+        }
         let Some(s) = self.session.as_mut() else {
             self.model
                 .notice_line("Wait for the chat to connect, then open the folder again.".into());
@@ -475,38 +501,83 @@ impl Workspace {
         match s.set_workspace(path.as_deref()) {
             Ok(()) => {
                 self.model.workspace = s.workspace().map(|w| (w.name(), w.path().to_path_buf()));
+                self.model
+                    .files
+                    .set_root(self.model.workspace.as_ref().map(|(_, p)| p.clone()));
             }
             Err(e) => self.model.notice_line(e),
         }
         cx.notify();
     }
 
-    /// The title bar's workspace picker.
+    /// Opens the right rail on its Files tab.
+    pub(super) fn show_files(&mut self, cx: &mut Context<Self>) {
+        self.model.browser.visible = false;
+        self.model.run_panel_open = true;
+        self.model.set_run_view(crate::model::RunView::Files);
+        self.model.files.reload();
+        self.model.outputs_open = false;
+        cx.notify();
+    }
+
+    /// The title bar's workspace picker: on an empty chat it picks the
+    /// folder; once the chat has started it names the fixed folder and
+    /// opens its files.
     pub(super) fn workspace_button(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let locked = self.model.folder_locked();
         let label: SharedString = match &self.model.workspace {
             Some((name, _)) => name.clone().into(),
+            None if locked => "No folder".into(),
             None => "Open folder".into(),
+        };
+        let tip: SharedString = match (&self.model.workspace, locked) {
+            (Some((_, path)), true) => {
+                format!("{}\n{}", path.display(), super::folders_view::FIXED).into()
+            }
+            (None, true) => "This chat has no folder; start a new chat to use one".into(),
+            (_, false) => "Pick the folder this chat works in: Tern's file tools read only inside it. It is fixed once you send the first message".into(),
         };
         div()
             .occlude()
             .child(
-                Button::new("open-workspace").capsule()
-                    .icon(AssetIcon::FolderOpen)
+                Button::new("open-workspace")
+                    .capsule()
+                    .icon(if locked {
+                        AssetIcon::FolderClosed
+                    } else {
+                        AssetIcon::FolderOpen
+                    })
                     .label(label)
                     .ghost()
                     .small()
-                    .disabled(self.model.is_busy())
-                    .tooltip("Open a folder or a file as this chat's workspace: Tern's file tools read only inside it")
+                    .disabled(self.model.is_busy() && !locked)
+                    .tooltip(tip)
                     .on_click(cx.listener(|this, _, _, cx| this.pick_workspace(cx))),
             )
             .text_color(p.muted)
             .into_any_element()
     }
 
-    /// The chip at the top of a chat with a workspace.
+    /// The chip at the top of a chat with a workspace: the folder's logo
+    /// and name. Before the first message it can be changed in the tray
+    /// under the composer; after, it is fixed and a click shows its files.
     pub(super) fn workspace_chip(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (name, path) = self.model.workspace.as_ref()?;
-        let full: SharedString = path.display().to_string().into();
+        let locked = self.model.folder_locked();
+        let tip: SharedString = if locked {
+            format!("{}\n{}", path.display(), super::folders_view::FIXED).into()
+        } else {
+            format!(
+                "{}\nChange it under the composer until you send the first message",
+                path.display()
+            )
+            .into()
+        };
+        let logo = if path.is_dir() {
+            crate::fileicon::folder_logo(&path.to_string_lossy(), 14.)
+        } else {
+            crate::fileicon::logo(crate::fileicon::FileIcon::of(name), 14., self.model.dark)
+        };
         Some(
             div()
                 .w_full()
@@ -522,15 +593,16 @@ impl Workspace {
                         .items_center()
                         .gap_1p5()
                         .max_w_full()
-                        .pl_2()
-                        .pr_1()
-                        .py(px(2.))
+                        .px_2()
+                        .py(px(3.))
                         .rounded_md()
                         .border_1()
                         .border_color(p.border)
                         .text_xs()
                         .text_color(p.muted)
-                        .child(icon(AssetIcon::FolderOpen, p.muted))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(p.hover).text_color(p.text))
+                        .child(logo)
                         .child(
                             div()
                                 .min_w_0()
@@ -538,21 +610,10 @@ impl Workspace {
                                 .child(SharedString::from(name.clone())),
                         )
                         .tooltip(move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
                                 .build(window, cx)
                         })
-                        .child(
-                            Button::new("workspace-close")
-                                .capsule()
-                                .icon(IconName::Close)
-                                .ghost()
-                                .xsmall()
-                                .disabled(self.model.is_busy())
-                                .tooltip("Close the workspace")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.set_workspace(None, cx)),
-                                ),
-                        ),
+                        .on_click(cx.listener(|this, _, _, cx| this.show_files(cx))),
                 )
                 .into_any_element(),
         )

@@ -27,7 +27,7 @@ pub(super) enum Cmd {
     Scout,
 }
 
-const ALL: [Cmd; 17] = [
+const ALL: [Cmd; 18] = [
     Cmd::NewChat,
     Cmd::Research,
     Cmd::Study,
@@ -38,6 +38,7 @@ const ALL: [Cmd; 17] = [
     Cmd::Tab(RailTab::Report),
     Cmd::Tab(RailTab::Graph),
     Cmd::Tab(RailTab::Context),
+    Cmd::Tab(RailTab::Files),
     Cmd::Library,
     Cmd::Browser,
     Cmd::Editor,
@@ -60,6 +61,7 @@ impl Cmd {
             Self::Tab(RailTab::Report) => "Rail: Report",
             Self::Tab(RailTab::Graph) => "Rail: Graph",
             Self::Tab(RailTab::Context) => "Rail: Context",
+            Self::Tab(RailTab::Files) => "Rail: Files",
             Self::Library => "Open the library",
             Self::Browser => "Show or hide the browser",
             Self::Editor => "Open the editor",

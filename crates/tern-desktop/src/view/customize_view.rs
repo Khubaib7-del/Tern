@@ -272,6 +272,8 @@ impl Workspace {
                     Err(e) => c.note = Some(Note::Failed(e)),
                 }
             }
+            // Handled with the window (`Workspace::folder_opened`).
+            ExtMsg::Folder(_) => {}
             ExtMsg::Projects(r, recent, n) => {
                 let t = &mut self.model.projects;
                 match r {
@@ -1375,17 +1377,15 @@ impl Workspace {
             .pb_1()
             .child(div().text_xs().text_color(p.faint).child("Projects"))
             .child(
-                Button::new("project-new")
-                    .capsule()
-                    .icon(AssetIcon::FolderPlus)
-                    .ghost()
-                    .xsmall()
-                    .tooltip("New project")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.start_project_edit(None, window, cx)
-                        }),
-                    ),
+                div().flex().items_center().child(
+                    Button::new("project-open-folder")
+                        .capsule()
+                        .icon(AssetIcon::FolderPlus)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Open folder: it becomes a project, its chats grouped under it")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_folder_dialog(cx))),
+                ),
             )
             .into_any_element()
     }
@@ -1469,7 +1469,12 @@ impl Workspace {
         .detach();
     }
 
-    fn new_chat_in(&mut self, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn new_chat_in(
+        &mut self,
+        name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.model.is_busy() {
             return;
         }
@@ -1504,6 +1509,7 @@ impl Workspace {
                 }
                 out
             }
+            TreeRow::More { id, hidden } => vec![self.show_more_row(id, hidden, p, cx)],
             TreeRow::Project {
                 id,
                 name,
@@ -1511,9 +1517,13 @@ impl Workspace {
                 collapsed,
                 shown,
                 has_rules,
+                root,
             } => {
                 if self.model.projects.editing == Some(Some(id)) {
                     return self.project_name_field(Some(id), p).into_iter().collect();
+                }
+                if let Some(root) = root {
+                    return self.folder_project_row(id, name, root, collapsed, has_rules, p, cx);
                 }
                 let confirming = self.model.projects.confirm_delete == Some(id);
                 let chat_name = (!inbox).then(|| name.clone());

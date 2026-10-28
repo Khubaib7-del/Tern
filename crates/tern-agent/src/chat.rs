@@ -147,6 +147,22 @@ pub struct Output {
     pub at: time::OffsetDateTime,
 }
 
+impl Output {
+    /// A file made just now.
+    pub fn now(path: std::path::PathBuf, what: &str) -> Self {
+        Self {
+            path,
+            what: what.to_owned(),
+            at: time::OffsetDateTime::now_utc(),
+        }
+    }
+
+    /// How long ago it was made, in seconds.
+    pub fn age_secs(&self) -> i64 {
+        (time::OffsetDateTime::now_utc() - self.at).whole_seconds()
+    }
+}
+
 /// The outputs in a chat's events (see [`ChatSession::outputs`]): saves
 /// recorded as `session.output`, and `file_write` calls that ran, read
 /// against the workspace open when they ran (`workspace` when the log

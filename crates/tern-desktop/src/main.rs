@@ -35,6 +35,7 @@ mod explain;
 mod extensions;
 mod fileicon;
 mod fileicon_table;
+mod files;
 mod filetype;
 mod flow;
 mod gauge;
