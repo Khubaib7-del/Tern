@@ -1153,6 +1153,8 @@ pub(crate) fn seed() {
     }
     let mut prefs = tern_agent::Preferences::load();
     prefs.onboarded = true;
+    // The intro plays only in its own tour scene (#76).
+    prefs.intro_seen = true;
     prefs.study_offline = true;
     prefs.reduced_motion = false;
     prefs.deep_workers = Some(3);

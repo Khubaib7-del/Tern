@@ -2039,6 +2039,7 @@ impl Workspace {
         // The tour is not shown again just because settings were reset.
         let fresh = tern_agent::Preferences {
             onboarded: true,
+            intro_seen: true,
             ..tern_agent::Preferences::default()
         };
         self.model.providers.prefs = fresh.clone();

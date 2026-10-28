@@ -41,6 +41,7 @@ mod flow;
 mod gauge;
 mod git;
 mod harness;
+mod intro;
 mod layout;
 mod localmodels;
 mod mark;

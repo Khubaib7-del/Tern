@@ -39,6 +39,10 @@ impl Workspace {
             return;
         }
         self.onboarding_checked = true;
+        // The first-run intro plays first; onboarding follows it (#76).
+        if self.start_intro_once() {
+            return;
+        }
         let onboarded = self.model.providers.prefs.onboarded;
         let any_key = self
             .model
