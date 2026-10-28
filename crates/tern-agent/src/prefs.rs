@@ -174,6 +174,8 @@ pub struct Preferences {
 
     /// The first-run onboarding was finished or skipped; it shows once.
     pub onboarded: bool,
+    /// The desktop's first-run intro (#76) has played; it plays once.
+    pub intro_seen: bool,
     /// The model that turns text into vectors, as `provider/model`. `None`
     /// leaves retrieval on Tern's own keyword scoring.
     pub default_embedding_model: Option<String>,
@@ -670,6 +672,7 @@ mod tests {
             compact_keep_turns: Some(6),
             density: Some("compact".into()),
             onboarded: true,
+            intro_seen: true,
             default_embedding_model: None,
             base_urls: Default::default(),
             tools_off: vec!["read_url".into()],

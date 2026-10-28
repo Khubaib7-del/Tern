@@ -180,6 +180,16 @@ impl Workspace {
                 format!("Always allow writes in {}", rule.pattern),
                 "Reject, and tell Tern what to do".into(),
             ]
+        } else if rule.kind == tern_agent::permissions::RuleKind::Path
+            && matches!(request.tool.as_str(), "file_read" | "files_list")
+        {
+            // A file or folder outside the working folder (#76).
+            [
+                "Allow once".into(),
+                "Allow for this chat".into(),
+                format!("Always for this path ({})", rule.pattern),
+                "No, and tell Tern what to do".into(),
+            ]
         } else {
             [
                 "Allow once".into(),
@@ -223,6 +233,34 @@ impl Workspace {
                     .border_color(p.border)
                     .bg(p.canvas)
                     .child(self.diff_view(path, text, p))
+                    .into_any_element(),
+            )
+        } else if request.tool == "file_rename" {
+            // Old -> new, so a rename is never a surprise copy (#76).
+            let a = request.args["from"].as_str().unwrap_or_default().to_owned();
+            let b = request.args["to"].as_str().unwrap_or_default().to_owned();
+            Some(
+                div()
+                    .id("needs-you-rename")
+                    .ml(px(18.))
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.canvas)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .font_family(crate::assets::MONO_FONT)
+                    .text_xs()
+                    .child(
+                        div()
+                            .text_color(p.muted)
+                            .line_through()
+                            .child(SharedString::from(a)),
+                    )
+                    .child(div().text_color(p.faint).child("→"))
+                    .child(div().text_color(p.text).child(SharedString::from(b)))
                     .into_any_element(),
             )
         } else if request.tool == "run_command" {

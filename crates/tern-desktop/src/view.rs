@@ -15,7 +15,7 @@ use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable a
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, Context, Entity, FontWeight, Hsla, ScrollHandle,
-    SharedString, Subscription, Task, Transformation, Window, div, point, px, radians, size, svg,
+    SharedString, Subscription, Task, Window, div, px, svg,
 };
 use tern_agent::Role;
 use tern_agent::attach::Source as AttachSource;
@@ -44,9 +44,11 @@ mod explain_view;
 mod export_view;
 mod files_view;
 mod flow_view;
+mod focus_view;
 mod folders_view;
 mod frame;
 mod git_view;
+mod intro_view;
 mod library_view;
 mod localmodels_view;
 mod onboarding_view;
@@ -417,6 +419,12 @@ pub struct Workspace {
     onboarding: Option<crate::onboarding::Onboarding>,
     /// Whether the tour was considered at launch (once per run).
     onboarding_checked: bool,
+    /// The first-run intro (#76), from when it started, while it plays.
+    intro: Option<Instant>,
+    /// Where the cursor is over the intro, as fractions of the window.
+    intro_cursor: Option<(f32, f32)>,
+    /// The block focus view (#76), while a block is open in it.
+    focus: Option<Box<focus_view::FocusUi>>,
     /// The scripted UI tour, when `TERN_TOUR` is set (`view::tour`).
     tour: Option<tour::Tour>,
     _subscriptions: Vec<Subscription>,
@@ -473,6 +481,13 @@ impl Workspace {
             let this = cx.entity().downgrade();
             crate::blockexport::set_saver(move |job, window, app| {
                 let _ = this.update(app, |w, cx| w.save_block(job, window, cx));
+            });
+        }
+        // A block's Expand opens it in the focus view (#76).
+        {
+            let this = cx.entity().downgrade();
+            crate::blockexport::set_focus_opener(move |block, window, app| {
+                let _ = this.update(app, |w, cx| w.open_focus(block, window, cx));
             });
         }
         let composer = cx.new(|cx| {
@@ -883,6 +898,9 @@ impl Workspace {
             setup_inputs,
             onboarding: None,
             onboarding_checked: false,
+            intro: None,
+            intro_cursor: None,
+            focus: None,
             tour: tour::enabled().then(tour::Tour::new),
             _subscriptions: {
                 let mut subs = vec![
@@ -986,6 +1004,8 @@ impl Workspace {
                 }
                 if self.current == Some(id) && self.session.is_none() {
                     self.model.restore(&turns);
+                    self.focus = None;
+                    self.apply_block_edits();
                     self.request_icons();
                     self.scroll.scroll_to_bottom();
                     self.apply_restore(window, cx);
@@ -1019,6 +1039,8 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.focus = None;
+                self.apply_block_edits();
                 self.model.compacted = s.compacted().cloned();
                 self.model.mcp_offers = s.mcp_offers().to_vec();
                 self.model.context = s.context();
@@ -4036,11 +4058,8 @@ impl Workspace {
                             .justify_end()
                             .gap_1()
                             .max_w(px(COLUMN_MAX_W * 0.8))
-                            .children(
-                                chips
-                                    .iter()
-                                    .map(|c| sent_card(c, self.named_preview(&c.name), p)),
-                            ),
+                            // A sent picture opens large (#76).
+                            .children(chips.iter().map(|c| self.sent_picture(c, p, cx))),
                     )
                 })
                 .child(
@@ -4210,6 +4229,24 @@ impl Workspace {
                     .into_any_element()
             }
             Entry::Notice(t) if t == crate::model::COMPACT_NOTICE => self.compact_notice(p, cx),
+            // A cut-off reply's note (#76): a short line at the cut,
+            // ruled on the left so it reads as the end of that reply.
+            Entry::Notice(t) if t.starts_with("Interrupted: ") => div()
+                .id(SharedString::from(format!("interrupted-{i}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_2()
+                .py(px(2.))
+                .border_l_2()
+                .border_color(p.faint)
+                .text_sm()
+                .text_color(p.muted)
+                .child(div().text_color(p.text).child("Interrupted"))
+                .child(SharedString::from(
+                    t.trim_start_matches("Interrupted: ").to_owned(),
+                ))
+                .into_any_element(),
             Entry::Notice(t) => div()
                 .text_sm()
                 .text_color(p.muted)
@@ -6298,6 +6335,7 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let build_from = Instant::now();
+        self.tick_intro(window, cx);
         if let Some((plan, reply)) = self.replay_plan.take() {
             self.show_plan(plan, reply, window, cx);
         }
@@ -6522,7 +6560,8 @@ impl Render for Workspace {
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.palette_keys(e, window, cx)
+                if !this.focus_keys(e, window, cx)
+                    && !this.palette_keys(e, window, cx)
                     && !this.needs_you_keys(e, window, cx)
                     && !this.settings_keys(e, window, cx)
                     && !this.scout_keys(e, cx)
@@ -6631,7 +6670,9 @@ impl Render for Workspace {
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
             .children(self.palette_overlay(p, cx))
-            .children(self.splash(p, window));
+            .children(self.focus_overlay(p, window, cx))
+            .children(self.splash(p, window))
+            .children(self.intro_overlay(window, cx));
         // A sliding highlight or knob still moving draws the next frame.
         if self.anim_pending.take() {
             frame::next_frame(window, cx);
@@ -7201,11 +7242,6 @@ fn working_line(
     at: &'static str,
 ) -> impl IntoElement {
     let still = reduced || matches!(line.activity, Activity::NeedsYou | Activity::Stopping);
-    let mark_color = match line.activity {
-        Activity::NeedsYou => p.text,
-        Activity::Stopping => p.faint,
-        _ => p.muted,
-    };
     let phrase: AnyElement = if still {
         div()
             .text_color(if line.activity == Activity::NeedsYou {
@@ -7239,12 +7275,7 @@ fn working_line(
         .gap_2()
         .text_sm()
         .text_color(p.muted)
-        .child(
-            div()
-                .size(px(16.))
-                .flex_none()
-                .child(mark(line, mark_color, still, at)),
-        )
+        .child(working_mark(line, p, still, at))
         .child(phrase)
         .child(
             div()
@@ -7253,60 +7284,72 @@ fn working_line(
         )
 }
 
-/// The tern mark, animated by what the turn is doing. Continuous motion
-/// (the glide, the wingbeats) runs only while that state lasts; the
-/// one-off beats restart on each real event through the beat counter.
-fn mark(line: &WorkingLine, color: Hsla, still: bool, at: &'static str) -> AnyElement {
-    use std::f32::consts::PI;
-    let base = svg().path(assets::MARK).size(px(16.)).text_color(color);
-    if still {
-        return base.into_any_element();
+/// How tall the working mark is: big enough that its wingbeats read
+/// (#76; the bobbing 16 px glyph looked static).
+const WORKING_MARK_H: f32 = 34.;
+
+/// The working mark (#76): the live dithered tern from the mark rig
+/// (`assets/mark`), theme-aware, flapping and gliding in a loop while the
+/// turn works. Waiting for you, stopping and reduced motion show the
+/// still. The frame comes from the animation's phase, so nothing asks for
+/// frames from a listener.
+fn working_mark(line: &WorkingLine, p: Palette, still: bool, at: &'static str) -> AnyElement {
+    thread_local! {
+        static ANIM: crate::mark::MarkAnim = crate::mark::MarkAnim::embedded();
     }
-    match line.activity {
-        // Slow glide: a 2px bob every 2 s.
-        Activity::Thinking => base
-            .with_animation(
-                (at, 1usize),
-                Animation::new(Duration::from_secs(2)).repeat(),
-                |s, t| {
-                    let lift = (PI * (t / 0.35).min(1.0)).sin();
-                    s.with_transformation(Transformation::translate(point(px(0.), px(-2. * lift))))
-                },
+    let dark = p.canvas.l < 0.5;
+    let (still_path, strip_path, frames, fw) = ANIM.with(|m| {
+        let now = Instant::now();
+        let (sp, _, _) = m.frame(dark, now, now, true);
+        let (ap, _, n) = m.frame(dark, now, now, false);
+        (sp, ap, n, m.display_size(WORKING_MARK_H).0)
+    });
+    let h = WORKING_MARK_H;
+    let dim = matches!(line.activity, Activity::Stopping);
+    let boxed = div()
+        .id(SharedString::from(format!("working-mark-{at}")))
+        .w(px(fw))
+        .h(px(h))
+        .flex_none()
+        .overflow_hidden()
+        .relative()
+        .when(dim, |d| d.opacity(0.5));
+    if still || frames <= 1 {
+        return boxed
+            .child(
+                gpui_kit::img(SharedString::from(still_path))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(px(fw))
+                    .h(px(h))
+                    .object_fit(gpui_kit::ObjectFit::Fill),
             )
-            .into_any_element(),
-        // Quick wingbeats while a query or tool is in flight.
-        Activity::Searching | Activity::Tool => base
-            .with_animation(
-                (at, 2usize),
-                Animation::new(Duration::from_millis(360)).repeat(),
-                |s, t| {
-                    let beat = (2. * PI * t).sin().abs();
-                    s.with_transformation(Transformation::scale(size(1., 1. - 0.22 * beat)))
-                },
-            )
-            .into_any_element(),
-        // Head dips once per page fetched.
-        Activity::Reading | Activity::Checking => base
-            .with_animation(
-                SharedString::from(format!("{at}-read-{}", line.beat)),
-                Animation::new(motion::MARK).with_easing(motion::ease),
-                |s, t| {
-                    s.with_transformation(Transformation::rotate(radians(0.28 * (PI * t).sin())))
-                },
-            )
-            .into_any_element(),
-        // Small beats in time with the streamed text.
-        _ => base
-            .with_animation(
-                SharedString::from(format!("{at}-write-{}", line.beat)),
-                Animation::new(Duration::from_millis(320)),
-                |s, t| {
-                    let beat = (PI * t).sin();
-                    s.with_transformation(Transformation::scale(size(1., 1. - 0.14 * beat)))
-                },
-            )
-            .into_any_element(),
+            .into_any_element();
     }
+    // Wingbeats and the glide (frames 0-56 of the 72-frame loop, 30 fps):
+    // the rest pose at the loop's end is left out while it works.
+    let flying = frames.min(57);
+    let pass = Duration::from_millis(flying as u64 * 1000 / 30);
+    let strip = SharedString::from(strip_path);
+    boxed
+        .with_animation(
+            SharedString::from(format!("working-mark-{at}-fly")),
+            Animation::new(pass).repeat(),
+            move |d, t| {
+                let i = ((t * flying as f32) as u32).min(flying - 1);
+                d.child(
+                    gpui_kit::img(strip.clone())
+                        .absolute()
+                        .top_0()
+                        .left(px(-(i as f32) * fw))
+                        .w(px(fw * frames as f32))
+                        .h(px(h))
+                        .object_fit(gpui_kit::ObjectFit::Fill),
+                )
+            },
+        )
+        .into_any_element()
 }
 
 /// A page's own scrollbar (Settings): Tern's thin thumb, shown while the

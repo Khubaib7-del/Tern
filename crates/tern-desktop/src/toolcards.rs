@@ -69,7 +69,9 @@ impl Family {
             "web_search" | "scholar_search" | "vault_search" | "file_search" => Self::Search,
             "read_url" | "file_read" | "files_list" | "vault_read" | "read_result"
             | "load_skill" => Self::Read,
-            "file_write" | "vault_write" | "export" | "show_in_panel" => Self::Write,
+            "file_write" | "file_rename" | "vault_write" | "export" | "show_in_panel" => {
+                Self::Write
+            }
             "run_command" | "run_python" => Self::Command,
             "transcribe" | "describe_image" | "ocr" | "read_aloud" => Self::LocalModel,
             "verify_claims" | "check_claims" => Self::Verify,
@@ -201,6 +203,10 @@ pub fn title_of(tool: &str, args: &Value) -> String {
                 first.to_owned()
             }
         }),
+        "file_rename" => match (s("from"), s("to")) {
+            (Some(a), Some(b)) => Some(format!("{a} → {b}")),
+            (a, b) => a.or(b).map(str::to_owned),
+        },
         "show_in_panel" => s("tab").map(|t| match s("path") {
             Some(p) => format!("{t}: {p}"),
             None => t.to_owned(),

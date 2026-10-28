@@ -150,13 +150,21 @@ impl Tool for RunCommand {
                         .unwrap_or_else(|| "unknown".into()),
                     o.took.as_secs_f32()
                 ),
+                // #76: the real cause, stated plainly, so the model reports
+                // it instead of guessing ("a stricter limit", "the
+                // environment").
+                crate::live::RunState::Killed => format!(
+                    "The command was killed after {:.1} s: the user stopped it (Kill in the Terminal tab, or Stop). It did not finish. That is the only reason it ended; tell the user exactly that and do not suggest other causes.",
+                    o.took.as_secs_f32()
+                ),
+                crate::live::RunState::TimedOut => format!(
+                    "The command was stopped after {:.1} s because it reached Tern's time limit of {} s for one command. It did not finish. That is the only reason it ended; tell the user exactly that (a longer timeout_s, up to 600, may let it finish).",
+                    o.took.as_secs_f32(),
+                    policy.limits.wall.as_secs()
+                ),
                 s => format!(
                     "The command {} after {:.1} s.",
-                    match s {
-                        crate::live::RunState::Killed => "was killed",
-                        crate::live::RunState::TimedOut => "hit its time limit",
-                        other => other.label(),
-                    },
+                    s.label(),
                     o.took.as_secs_f32()
                 ),
             };

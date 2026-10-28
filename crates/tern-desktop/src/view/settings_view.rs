@@ -71,6 +71,7 @@ fn tool_icon(name: &str) -> AssetIcon {
         "files_list" => AssetIcon::FolderOpen,
         "file_read" => AssetIcon::FileText,
         "file_search" => AssetIcon::Search,
+        "file_rename" => AssetIcon::Pencil,
         "load_skill" => AssetIcon::Sparkles,
         "run_command" => AssetIcon::SquareTerminal,
         "run_python" => AssetIcon::FileCode,
@@ -2038,6 +2039,7 @@ impl Workspace {
         // The tour is not shown again just because settings were reset.
         let fresh = tern_agent::Preferences {
             onboarded: true,
+            intro_seen: true,
             ..tern_agent::Preferences::default()
         };
         self.model.providers.prefs = fresh.clone();

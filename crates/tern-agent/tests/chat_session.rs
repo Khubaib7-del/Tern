@@ -160,9 +160,11 @@ async fn reopened_chat_brings_back_turns_and_history() {
     // since #64, and how to call a tool, one or several at once since
     // #66, and `read_result` for long tool results since #72, and the
     // workbench tools every chat has since #75: `run_python` and
-    // `show_in_panel`), at four characters a token.
+    // `show_in_panel`, and the tool rules since #76: approval cards
+    // instead of prose questions, `file_rename`, no invented actions,
+    // full paths outside the folder), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (532, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (702, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))

@@ -2513,10 +2513,14 @@ impl Model {
                     self.reveal = Some((self.entries.len() - 1, pacer));
                 }
             }
-            // Stopped mid-answer (#71): everything that streamed up to the
-            // stop stays (the text and the tool cards), shown in full and
-            // marked Stopped; nothing more comes.
-            _ if out.state == TurnState::Cancelled => {
+            // Stopped or failed mid-answer (#71, #76): everything that
+            // streamed up to the cut stays (the text and the tool cards),
+            // shown in full, and the note below says why; nothing more comes.
+            _ if !matches!(
+                out.state,
+                TurnState::Completed | TurnState::CompletedWithGaps | TurnState::BudgetExceeded
+            ) =>
+            {
                 let text = draft_visible(&streamed)
                     .unwrap_or_default()
                     .trim_end()
@@ -2534,23 +2538,38 @@ impl Model {
             }
             _ => {}
         }
+        // A cut-off reply ends with a short note at the cut (#76). A
+        // failure before anything streamed stays a toast only.
+        let half = matches!(self.entries.last(), Some(Entry::Assistant { .. }));
+        let failed = !matches!(
+            out.state,
+            TurnState::Completed
+                | TurnState::CompletedWithGaps
+                | TurnState::Cancelled
+                | TurnState::BudgetExceeded
+        );
+        let note = interrupt_note(
+            out.state,
+            out.reason.as_deref(),
+            out.answer.as_deref().unwrap_or_default(),
+            &self.last_run,
+        );
         if out.state != TurnState::Completed
             && let Some(r) = &out.reason
         {
             if crate::chatflow::is_search_failure(r) {
                 self.search_down = Some(r.clone());
             }
-            if out.state == TurnState::Cancelled {
-                // The user stopped it: the chat says so where it happened.
-                let _ = r;
-                self.entries.push(Entry::Notice(STOPPED.into()));
-            } else {
-                // A failure is a toast that stays, with Retry.
+            if out.state != TurnState::Cancelled {
+                // A failure is also a toast that stays, with Retry.
                 self.toast_error(
                     tern_agent::media::plain_error(r),
                     Some(crate::toast::Retry::Resend),
                 );
             }
+        }
+        if let Some(n) = note.filter(|_| half || !failed) {
+            self.entries.push(Entry::Notice(n));
         }
         if self.continue_offer {
             self.entries.push(Entry::Notice(
@@ -3167,7 +3186,75 @@ pub fn grouped(n: u64) -> String {
 /// fence, minus a fence that is still arriving. `None` when nothing is left.
 /// The mark under a reply the user stopped (#71): what streamed up to the
 /// stop stays above it.
-pub const STOPPED: &str = "Stopped";
+pub const STOPPED: &str = "Interrupted: you stopped the reply.";
+
+/// The note a reply ends with when it was cut off (#76): the user's stop,
+/// a command killed under it, or a failure. It sits at the cut, under what
+/// had streamed, so the chat never ends in a silent half-answer. `None`
+/// for a reply that finished.
+pub fn interrupt_note(
+    state: TurnState,
+    reason: Option<&str>,
+    answer: &str,
+    run: &Run,
+) -> Option<String> {
+    use crate::toolcards::{CardState, Family};
+    let last = crate::toolcards::cards_of(run)
+        .into_iter()
+        .flat_map(|g| g.cards)
+        .next_back();
+    let killed = last.as_ref().is_some_and(|c| {
+        c.family == Family::Command && matches!(c.state, CardState::Cancelled | CardState::Failed)
+    });
+    let failed_tool = last
+        .as_ref()
+        .filter(|c| c.state == CardState::Failed)
+        .and_then(|c| c.error.clone());
+    match state {
+        TurnState::Cancelled => Some(if killed {
+            "Interrupted: you stopped the reply while a command was running.".into()
+        } else {
+            STOPPED.into()
+        }),
+        TurnState::Completed | TurnState::CompletedWithGaps => {
+            if !answer.trim().is_empty() {
+                return None;
+            }
+            if killed {
+                Some("Interrupted: the command was stopped before it finished.".into())
+            } else {
+                failed_tool.map(|e| format!("Interrupted: {}", trim_note(&e)))
+            }
+        }
+        TurnState::BudgetExceeded => None,
+        _ => {
+            let why = reason
+                .map(tern_agent::media::plain_error)
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| "the reply failed before it finished".into());
+            Some(format!("Interrupted: {}", trim_note(&why)))
+        }
+    }
+}
+
+/// One short line: the first sentence, at most 160 characters, ending in
+/// a full stop.
+fn trim_note(s: &str) -> String {
+    let line = s.lines().next().unwrap_or_default().trim();
+    let mut out: String = line.chars().take(160).collect();
+    if line.chars().count() > 160 {
+        out.push('…');
+    } else if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    let mut c = out.chars();
+    match c.next() {
+        Some(f) if f.is_uppercase() && !out.starts_with("API") && !out.starts_with("HTTP") => {
+            f.to_lowercase().chain(c).collect()
+        }
+        _ => out,
+    }
+}
 
 /// Whether a run called any tool (its cards show in the answer's rollup).
 pub fn has_tool_steps(run: &Run) -> bool {
@@ -3740,6 +3827,46 @@ mod tests {
         assert_eq!(t.retry, Some(crate::toast::Retry::Resend));
         m.notice_line("Now answering with Mistral · codestral.".into());
         assert_eq!(m.toasts.shown()[1].level, crate::toast::Level::Info);
+    }
+
+    #[test]
+    fn a_reply_cut_by_a_failure_ends_with_a_note_at_the_cut() {
+        let mut m = ready();
+        m.start_turn("q");
+        m.on_text(1, "The first half of the answer");
+        m.finish_turn(
+            &outcome(
+                TurnState::Failed,
+                None,
+                Some("Could not reach Groq: the connection failed."),
+            ),
+            ctx(0, 0),
+        );
+        match m.entries.last() {
+            Some(Entry::Notice(n)) => assert!(n.starts_with("Interrupted: "), "{n}"),
+            other => panic!("expected a note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interrupt_notes_name_the_cause() {
+        let run = Run::new();
+        assert_eq!(
+            interrupt_note(TurnState::Cancelled, None, "", &run).as_deref(),
+            Some(STOPPED)
+        );
+        assert_eq!(
+            interrupt_note(TurnState::Completed, None, "Done.", &run),
+            None
+        );
+        assert_eq!(
+            interrupt_note(TurnState::Failed, Some("The terminal was closed"), "", &run).as_deref(),
+            Some("Interrupted: the terminal was closed.")
+        );
+        assert_eq!(
+            interrupt_note(TurnState::BudgetExceeded, Some("x"), "", &run),
+            None
+        );
     }
 
     #[test]

@@ -820,7 +820,9 @@ impl Workspace {
         PetSnapshot {
             state,
             bubble,
-            hidden: self.scout_hidden,
+            // The focus view and the first-run intro cover the window; Scout
+            // steps out while they are open (#76).
+            hidden: self.scout_hidden || self.focus.is_some() || self.intro.is_some(),
             variant,
             palette: crate::theme::Palette::get(self.model.dark),
             reduced: self.reduced_motion,

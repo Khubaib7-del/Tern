@@ -98,6 +98,7 @@ fn code_tools(code: &CodeBlock, window: &mut Window, cx: &mut App) -> gpui_kit::
             Arc::<str>::from(&*text),
             stem,
             formats,
+            Some(crate::focus::Block::code(&lang, &text)),
             window,
             cx,
         ))
@@ -118,6 +119,11 @@ fn table_tools(table: &TableData, window: &mut Window, cx: &mut App) -> gpui_kit
             Arc::from(table.markdown.as_str()),
             stem,
             formats,
+            Some(crate::focus::Block::table(
+                &table.headers,
+                &table.rows,
+                &table.markdown,
+            )),
             window,
             cx,
         ))
@@ -462,7 +468,15 @@ impl MarkdownPlugin for DisplayMath {
                     cx,
                 )
             }),
-            crate::blockexport::toolbar(&id, Arc::from(latex.as_str()), stem, formats, window, cx),
+            crate::blockexport::toolbar(
+                &id,
+                Arc::from(latex.as_str()),
+                stem,
+                formats,
+                (!latex.is_empty()).then(|| crate::focus::Block::math(&latex)),
+                window,
+                cx,
+            ),
             p,
         );
         let body = if show_source {
@@ -841,7 +855,7 @@ fn view_box(tag: &str) -> Option<(f32, f32)> {
     }
 }
 
-fn svg_size(svg: &str) -> Option<(f32, f32)> {
+pub(crate) fn svg_size(svg: &str) -> Option<(f32, f32)> {
     let start = svg.find("<svg")?;
     let end = svg[start..].find('>')? + start;
     view_box(&svg[start..end])
@@ -931,6 +945,7 @@ impl MarkdownPlugin for Mermaid {
                 Arc::from(d.source.as_str()),
                 stem,
                 formats,
+                Some(crate::focus::Block::mermaid(&d.source)),
                 window,
                 cx,
             ),

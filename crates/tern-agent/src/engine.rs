@@ -918,6 +918,10 @@ impl Run<'_, '_> {
                                 }
                                 if let Ok(mut s) = streamed.lock() {
                                     s.push_str(t);
+                                    // A text-fenced tool call (providers
+                                    // without native tools) previews a file
+                                    // write as it streams too (#76).
+                                    stream_fence_preview(&s, writes);
                                 }
                                 sink(call, t);
                             }
@@ -1698,6 +1702,31 @@ fn stream_write_preview(
     }
     e.2 = e.1.len();
     if let (Some(path), text) = crate::live::partial_write_args(&e.1) {
+        crate::live::preview_write(&path, text.as_deref().unwrap_or_default(), false);
+    }
+}
+
+/// The live preview for a `file_write` asked for in a ```` ```tool ````
+/// fence in the reply text (providers without native tool calls): the
+/// fence's JSON so far is read like native arguments. Uses slot
+/// `usize::MAX` of `writes` to remember how far it last parsed.
+fn stream_fence_preview(streamed: &str, writes: &Mutex<HashMap<usize, (String, String, usize)>>) {
+    let Some(at) = streamed.rfind("```tool") else {
+        return;
+    };
+    let fence = &streamed[at + 7..];
+    if !fence.contains("\"file_write\"") {
+        return;
+    }
+    let Ok(mut w) = writes.lock() else {
+        return;
+    };
+    let e = w.entry(usize::MAX).or_default();
+    if streamed.len() < e.2 + 200 && !fence.trim_end().ends_with("```") {
+        return;
+    }
+    e.2 = streamed.len();
+    if let (Some(path), text) = crate::live::partial_write_args(fence) {
         crate::live::preview_write(&path, text.as_deref().unwrap_or_default(), false);
     }
 }
