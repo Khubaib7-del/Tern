@@ -191,6 +191,31 @@ impl Store {
         Ok(id.and_then(|s| s.parse().ok()))
     }
 
+    /// The folder each chat last had open as its workspace (the path of its
+    /// last `session.workspace` event; `None` when that event closed it),
+    /// for top-level chats that are not archived or deleted.
+    pub fn last_workspaces(&self) -> StoreResult<Vec<(SessionId, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.session_id, e.body FROM events e
+               JOIN sessions s ON s.id = e.session_id
+              WHERE e.type = 'session.workspace'
+                AND s.parent_id IS NULL AND s.archived_at IS NULL AND s.deleted_at IS NULL
+                AND e.seq = (SELECT MAX(seq) FROM events x
+                              WHERE x.session_id = e.session_id AND x.type = 'session.workspace')",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, body) = row?;
+            let Ok(id) = id.parse() else { continue };
+            let path = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["payload"]["path"].as_str().map(str::to_owned));
+            out.push((id, path));
+        }
+        Ok(out)
+    }
+
     /// Sets the sidebar order: projects in `order` get positions 0, 1, ….
     pub fn reorder_projects(&self, order: &[ProjectId]) -> StoreResult<()> {
         for (i, id) in order.iter().enumerate() {
@@ -273,5 +298,30 @@ mod tests {
         s.reorder_projects(&[b, a]).unwrap();
         let names: Vec<_> = s.projects().unwrap().into_iter().map(|p| p.name).collect();
         assert_eq!(names, [INBOX, "B", "A"]);
+    }
+
+    #[test]
+    fn the_last_workspace_of_each_chat() {
+        let mut s = Store::open_in_memory().unwrap();
+        let inbox = s.ensure_project(INBOX).unwrap();
+        let a = s.create_session(inbox, Harness::Research, "a").unwrap();
+        let b = s.create_session(inbox, Harness::Research, "b").unwrap();
+        let ws = |ses, path: Option<&str>| {
+            EventEnvelope::new(
+                ses,
+                "session.workspace",
+                EffectClass::Analysis,
+                "w",
+                json!({"path": path}),
+            )
+        };
+        s.append(&ws(a, Some("/tmp/one"))).unwrap();
+        s.append(&ev(a)).unwrap();
+        s.append(&ws(a, Some("/tmp/two"))).unwrap();
+        s.append(&ws(b, Some("/tmp/one"))).unwrap();
+        s.append(&ws(b, None)).unwrap();
+        let mut got = s.last_workspaces().unwrap();
+        got.sort_by_key(|(id, _)| *id != a);
+        assert_eq!(got, [(a, Some("/tmp/two".into())), (b, None)]);
     }
 }
