@@ -1458,7 +1458,9 @@ impl<'a> Run<'_, 'a> {
     async fn dispatch(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
         let tools: &'a ToolRegistry = self.cfg.tools;
         match name {
-            "run_tasks" if tools.get(name).is_some() => self.task_step(args).await,
+            "run_tasks" if tools.get(name).is_some() => {
+                self.task_step(&crate::planner::prepare_args(args)).await
+            }
             "run_python" if tools.get(name).is_some() => {
                 let stubs = crate::python::stubs(tools);
                 let code = args["code"].as_str().unwrap_or_default();

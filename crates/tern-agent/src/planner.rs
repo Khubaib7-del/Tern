@@ -329,6 +329,33 @@ fn task_title(tool: &str, args: &Value) -> String {
     }
 }
 
+/// A `run_tasks` call's arguments with a `tasks` (or `steps`) sent as a
+/// JSON string, or inside a code fence, read as the list it holds, so the
+/// schema check does not refuse what the graph reader can repair.
+pub fn prepare_args(args: &Value) -> Value {
+    let mut a = unwrap_json(args);
+    if let Value::Array(_) = a {
+        return json!({"tasks": a});
+    }
+    if let Some(o) = a.as_object_mut() {
+        for k in ["tasks", "steps"] {
+            if let Some(v @ Value::String(_)) = o.get(k) {
+                let read = unwrap_json(v);
+                if !read.is_string() {
+                    let read = match read {
+                        Value::Object(mut inner) => {
+                            inner.remove("tasks").unwrap_or(Value::Object(inner))
+                        }
+                        other => other,
+                    };
+                    o.insert(k.to_owned(), read);
+                }
+            }
+        }
+    }
+    a
+}
+
 /// Reads a `run_tasks` call. `known` says whether a tool exists (the
 /// turn's registry); the graph's own tools ([`NOT_IN_GRAPH`]) are refused.
 pub fn read_graph(args: &Value, known: &dyn Fn(&str) -> bool) -> Result<Graph, String> {
@@ -741,10 +768,12 @@ impl Tool for RunTasksTool {
         EffectClass::Analysis
     }
     fn input_schema(&self) -> Value {
-        // Lenient on purpose: the graph is repaired before it is refused.
+        // Lenient on purpose: the graph is repaired before it is refused
+        // (a `tasks` sent as a JSON string is read first, see
+        // [`prepare_args`]).
         json!({"type": "object", "properties": {
             "goal": {"type": "string"},
-            "tasks": {"items": {"type": "object", "properties": {
+            "tasks": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"},
                 "tool": {"type": "string"},
                 "args": {"type": "object"},
@@ -833,6 +862,18 @@ mod tests {
         .unwrap();
         assert_eq!(g.waves().len(), 2);
         assert!(read_graph(&json!(s), &known).is_ok());
+    }
+
+    #[test]
+    fn string_tasks_are_read_before_the_schema_check() {
+        let a = prepare_args(
+            &json!({"tasks": "```json\n[{\"id\": \"a\", \"tool\": \"web_search\"}]\n```"}),
+        );
+        assert!(a["tasks"].is_array());
+        assert!(crate::tools::validate(&RunTasksTool.input_schema(), &a).is_ok());
+        let b = prepare_args(&json!([{"id": "a", "tool": "web_search"}]));
+        assert_eq!(b["tasks"][0]["id"], "a");
+        assert!(read_graph(&b, &known).is_ok());
     }
 
     #[test]

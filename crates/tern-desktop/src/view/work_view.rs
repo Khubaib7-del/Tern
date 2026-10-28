@@ -442,7 +442,7 @@ impl Workspace {
                     .border_color(p.border)
                     .text_xs()
                     .text_color(p.faint)
-                    .child(gpui_kit::component::Icon::new(AssetIcon::History).xsmall())
+                    .child(gpui_kit::component::Icon::new(AssetIcon::Clock).xsmall())
                     .child("cached")
                     .tooltip(move |window, cx| {
                         gpui_kit::component::tooltip::Tooltip::new(SharedString::from(format!(

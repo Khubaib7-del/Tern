@@ -63,13 +63,13 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .children(plan.map(|v| self.plan_card(format!("{base}-plan"), &v, p, cx)))
-                .children(graph.map(|v| self.plan_card(format!("{base}-graph"), &v, p, cx)))
+                .children(plan.map(|v| self.plan_block(format!("{base}-plan"), &v, p, cx)))
+                .children(graph.map(|v| self.plan_block(format!("{base}-graph"), &v, p, cx)))
                 .into_any_element(),
         )
     }
 
-    fn plan_card(
+    fn plan_block(
         &self,
         key: String,
         v: &PlanView,
