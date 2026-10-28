@@ -216,6 +216,7 @@ impl Workspace {
             "file_write" | "file_read" | "vault_write" | "vault_read" => {
                 logo(FileIcon::of(s("path")), size, dark)
             }
+            "file_rename" => logo(FileIcon::of(s("to")), size, dark),
             "files_list" => crate::fileicon::folder_logo(s("path"), size),
             "read_url" => {
                 let host = tern_agent::permissions::host_of(s("url")).unwrap_or_default();
@@ -877,18 +878,26 @@ impl Workspace {
     pub(super) fn diff_view(&self, path: &str, text: &str, p: Palette) -> AnyElement {
         use tern_agent::diff::RowKind;
         let d = self.diff_for(path, text);
+        // GitHub-style counts (#76): the name, +N in green and −M in red,
+        // then what it is compared with.
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+        let note = if d.new_file {
+            "new file"
+        } else if d.rows.is_empty() {
+            "no change: the text matches the file on disk"
+        } else {
+            "against the file on disk"
+        };
         let mut col = div().flex().flex_col().min_w_0().child(
             div()
-                .text_xs()
-                .text_color(p.faint)
+                .flex()
+                .items_center()
+                .gap_2()
                 .pb_1()
-                .child(SharedString::from(if d.new_file {
-                    format!("New file · {} lines", d.added)
-                } else if d.rows.is_empty() {
-                    "No change: the text matches the file on disk.".to_owned()
-                } else {
-                    format!("+{} −{} against the file on disk", d.added, d.removed)
-                })),
+                .text_xs()
+                .child(mono(name, p).min_w_0().truncate().text_color(p.text))
+                .child(diff_counts(d.added, d.removed, p))
+                .child(div().text_color(p.faint).child(note)),
         );
         let (add_bg, del_bg) = (green(p).opacity(0.14), red(p).opacity(0.14));
         for r in d.rows.iter().take(DIFF_ROWS) {
@@ -1013,6 +1022,10 @@ impl Workspace {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(SharedString::from(w.path.clone())),
                         )
+                        .child({
+                            let d = self.diff_for(&w.path, &w.text);
+                            diff_counts(d.added, d.removed, p).flex_none()
+                        })
                         .child(
                             div()
                                 .flex_none()
@@ -1068,6 +1081,26 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// "+41 −0": lines added in green, removed in red, as GitHub shows them.
+pub(super) fn diff_counts(added: usize, removed: usize, p: Palette) -> gpui_kit::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .font_family(crate::assets::MONO_FONT)
+        .text_xs()
+        .child(
+            div()
+                .text_color(green(p))
+                .child(SharedString::from(format!("+{added}"))),
+        )
+        .child(
+            div()
+                .text_color(red(p))
+                .child(SharedString::from(format!("−{removed}"))),
+        )
 }
 
 /// How often the window checks the workbench board.

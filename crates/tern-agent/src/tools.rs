@@ -176,6 +176,11 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         effect: EffectClass::Write,
     },
     BuiltinTool {
+        name: "file_rename",
+        label: "Rename or move a workspace file",
+        effect: EffectClass::ExternalSideEffect,
+    },
+    BuiltinTool {
         name: "run_command",
         label: "Run a command on the workbench (sandboxed)",
         effect: EffectClass::ExternalSideEffect,

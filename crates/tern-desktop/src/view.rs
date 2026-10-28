@@ -4210,6 +4210,24 @@ impl Workspace {
                     .into_any_element()
             }
             Entry::Notice(t) if t == crate::model::COMPACT_NOTICE => self.compact_notice(p, cx),
+            // A cut-off reply's note (#76): a short line at the cut,
+            // ruled on the left so it reads as the end of that reply.
+            Entry::Notice(t) if t.starts_with("Interrupted: ") => div()
+                .id(SharedString::from(format!("interrupted-{i}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .pl_2()
+                .py(px(2.))
+                .border_l_2()
+                .border_color(p.faint)
+                .text_sm()
+                .text_color(p.muted)
+                .child(div().text_color(p.text).child("Interrupted"))
+                .child(SharedString::from(
+                    t.trim_start_matches("Interrupted: ").to_owned(),
+                ))
+                .into_any_element(),
             Entry::Notice(t) => div()
                 .text_sm()
                 .text_color(p.muted)

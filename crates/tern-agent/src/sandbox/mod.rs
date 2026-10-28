@@ -435,6 +435,16 @@ pub fn prepare(
         return Err(Denial::new("The command is empty."));
     };
     let stem = program_stem(&first);
+    if !policy.programs.iter().any(|p| program_stem(p) == stem)
+        && matches!(
+            stem.as_str(),
+            "dir" | "type" | "cat" | "ls" | "more" | "head" | "tail" | "find" | "findstr" | "grep"
+        )
+    {
+        return Err(Denial::new(format!(
+            "`{first}` is not a workbench program. To list a folder or read a file use `files_list` or `file_read` instead; a full path outside the chat's folder asks the user first."
+        )));
+    }
     if !policy.programs.iter().any(|p| program_stem(p) == stem) {
         return Err(Denial::new(format!(
             "`{first}` is not on the workbench's program list ({}). Add it in Settings › Permissions if you trust it.",
@@ -442,18 +452,7 @@ pub fn prepare(
         )));
     }
     let folder = policy.folder.clone();
-    let cwd = match cwd.map(str::trim).filter(|c| !c.is_empty() && *c != ".") {
-        Some(rel) => {
-            let p = lexical(&folder.join(rel));
-            if !p.starts_with(&folder) {
-                return Err(Denial::new(
-                    "The command must run inside the chat's folder.",
-                ));
-            }
-            p
-        }
-        None => folder.clone(),
-    };
+    let cwd = run_dir(&folder, cwd)?;
     let program = find_program(&first, &folder)
         .ok_or_else(|| Denial::new(format!("`{first}` is not installed (not found on PATH).")))?;
     if let Some(d) = denied(policy, &program) {
@@ -495,6 +494,87 @@ pub fn prepare(
         cwd,
         display,
         outside,
+    })
+}
+
+/// The folder a command runs in (#76): the chat's folder (always a full
+/// path, spaces and all) unless `cwd` names a folder inside it. Models
+/// often pass the folder's own name ("Tern testing") or its full path;
+/// both mean the folder itself, never a relative folder of that name.
+pub fn run_dir(folder: &Path, cwd: Option<&str>) -> Result<PathBuf, Denial> {
+    let Some(raw) = cwd
+        .map(|c| c.trim().trim_matches('"').trim_matches('\''))
+        .filter(|c| !c.is_empty() && *c != "." && *c != "./")
+    else {
+        return Ok(folder.to_path_buf());
+    };
+    let same = |a: &Path, b: &Path| {
+        let (a, b) = (crate::permissions::norm(a), crate::permissions::norm(b));
+        let (a, b) = (a.trim_end_matches('/'), b.trim_end_matches('/'));
+        if cfg!(windows) {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
+    let given = Path::new(raw);
+    let p = if given.is_absolute() || crate::paths::looks_absolute(raw) {
+        lexical(&crate::projects::plain_path(&crate::paths::user_path(raw)))
+    } else if folder
+        .file_name()
+        .is_some_and(|n| same(Path::new(n), given))
+        && !folder.join(given).is_dir()
+    {
+        folder.to_path_buf()
+    } else {
+        lexical(&folder.join(given))
+    };
+    let inside = same(&p, folder) || {
+        let (n, f) = (
+            crate::permissions::norm(&p),
+            crate::permissions::norm(folder),
+        );
+        let f = format!("{}/", f.trim_end_matches('/'));
+        if cfg!(windows) {
+            n.to_ascii_lowercase().starts_with(&f.to_ascii_lowercase())
+        } else {
+            n.starts_with(&f)
+        }
+    };
+    if !inside {
+        return Err(Denial::new(format!(
+            "The command must run inside the chat's folder ({}); leave cwd empty to run there.",
+            folder.display()
+        )));
+    }
+    if same(&p, folder) {
+        return Ok(folder.to_path_buf());
+    }
+    if !p.is_dir() {
+        return Err(Denial::new(format!(
+            "There is no folder `{raw}` inside the chat's folder; leave cwd empty to run in {}.",
+            folder.display()
+        )));
+    }
+    Ok(p)
+}
+
+/// Why `p` may not be read, when it is a protected place (keys, browser
+/// profiles, Tern's own data, git hooks, shell start-up files).
+pub fn protected(p: &Path) -> Option<String> {
+    let policy = SandboxPolicy {
+        folder: PathBuf::new(),
+        network: false,
+        programs: Vec::new(),
+        deny: default_deny(),
+        limits: Limits::default(),
+    };
+    denied(&policy, p).map(|d| {
+        format!(
+            "{} is inside {}, a protected place Tern never reads.",
+            p.display(),
+            d.display()
+        )
     })
 }
 
@@ -827,6 +907,23 @@ mod tests {
         assert!(e.reason.contains("program list"), "{}", e.reason);
         assert_eq!(program_stem("C:\\Py\\Python.EXE"), "python");
         assert!(prepare(&p, "", &[], None).is_err());
+    }
+
+    #[test]
+    fn run_dir_takes_the_folder_name_as_the_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path().join("Tern testing");
+        std::fs::create_dir_all(folder.join("sub")).unwrap();
+        assert_eq!(run_dir(&folder, None).unwrap(), folder);
+        assert_eq!(run_dir(&folder, Some("Tern testing")).unwrap(), folder);
+        assert_eq!(run_dir(&folder, Some(".")).unwrap(), folder);
+        assert_eq!(
+            run_dir(&folder, Some(&folder.display().to_string())).unwrap(),
+            folder
+        );
+        assert_eq!(run_dir(&folder, Some("sub")).unwrap(), folder.join("sub"));
+        assert!(run_dir(&folder, Some("missing")).is_err());
+        assert!(run_dir(&folder, Some("../")).is_err());
     }
 
     #[test]

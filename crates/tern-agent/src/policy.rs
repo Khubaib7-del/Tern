@@ -525,6 +525,20 @@ impl PolicyGate {
         if ask && mode == Mode::Allow && !ruled && approval != ApprovalMode::Full {
             mode = Mode::Ask;
         }
+        // #76: in Ask mode every file change (a write, a rename, a delete)
+        // shows its card before it happens, whatever the class settings
+        // say; only the user's own rule or per-tool setting skips it.
+        if approval == ApprovalMode::Ask
+            && mode == Mode::Allow
+            && !ruled
+            && !own
+            && matches!(
+                call.effect,
+                EffectClass::ExternalSideEffect | EffectClass::Destructive
+            )
+        {
+            mode = Mode::Ask;
+        }
         if mode != Mode::Deny {
             match self.url_risk(call) {
                 Some(Err(reason)) => return Decision::Deny { reason },

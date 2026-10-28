@@ -34,11 +34,12 @@ const MAX_HITS: usize = 40;
 const MAX_FILE_BYTES: u64 = 2_000_000;
 
 /// The tool names, so a chat can take them out again.
-pub const TOOL_NAMES: [&str; 5] = [
+pub const TOOL_NAMES: [&str; 6] = [
     "files_list",
     "file_read",
     "file_search",
     "file_write",
+    "file_rename",
     "run_command",
 ];
 
@@ -259,12 +260,35 @@ impl Workspace {
         Ok(self.rel(&p))
     }
 
+    /// Renames `from` to `to`, both inside the workspace. `to` must not
+    /// exist (nothing is overwritten) and its folder must.
+    pub fn rename(&self, from: &str, to: &str) -> Result<(String, String), ToolError> {
+        let a = self.resolve(from)?;
+        if !a.exists() {
+            return Err(ToolError::Failed(format!("There is no file at {from}.")));
+        }
+        if a == self.root {
+            return Err(ToolError::Failed(
+                "The workspace folder itself cannot be renamed.".into(),
+            ));
+        }
+        let b = self.resolve(to)?;
+        if b.exists() {
+            return Err(ToolError::Failed(format!(
+                "{to} already exists; nothing was renamed."
+            )));
+        }
+        std::fs::rename(&a, &b).map_err(|e| ToolError::Failed(e.to_string()))?;
+        Ok((self.rel(&a), self.rel(&b)))
+    }
+
     /// Adds the file tools for this workspace to `tools`.
     pub fn register(self: &Arc<Self>, tools: &mut ToolRegistry) {
         tools.register(FilesList(self.clone()));
         tools.register(FileRead(self.clone()));
         tools.register(FileSearch(self.clone()));
         tools.register(FileWrite(self.clone()));
+        tools.register(FileRename(self.clone()));
         crate::workbench::register(self, tools);
     }
 
@@ -426,22 +450,147 @@ macro_rules! tool {
     };
 }
 
-tool!(
-    FilesList,
-    "files_list",
-    "List a folder in the chat's workspace (path relative to it; empty for the top).",
-    EffectClass::Read,
-    json!({"type": "object", "additionalProperties": false,
-           "properties": {"path": {"type": "string"}}}),
-    |ws, args| {
-        let rows = ws.list(&path_arg(&args))?;
-        Ok(ToolOutput::text(if rows.is_empty() {
-            "The folder is empty.".to_owned()
-        } else {
-            rows.join("\n")
-        }))
+#[derive(Debug, Clone)]
+struct FilesList(Arc<Workspace>);
+
+impl Tool for FilesList {
+    fn name(&self) -> &'static str {
+        "files_list"
     }
-);
+    fn summary(&self) -> &'static str {
+        "List a folder in the chat's workspace (path relative to it; empty for the top), or any folder by the full path the user gave (the user approves folders outside the workspace)."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Read
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "additionalProperties": false,
+               "properties": {"path": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        let raw = path_arg(args);
+        Some(match self.0.outside(&raw) {
+            Some(p) => p.display().to_string(),
+            None => format!("{}/{}", self.0.name(), raw),
+        })
+    }
+    fn asks_because(&self, args: &Value) -> Option<String> {
+        self.0
+            .outside(&path_arg(args))
+            .map(|p| format!("{} is outside the workspace", p.display()))
+    }
+    fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
+        self.0.outside(&path_arg(args)).into_iter().collect()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        let ws = self.0.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let raw = path_arg(&args);
+                let rows = match ws.outside(&raw) {
+                    Some(p) => list_outside(&p)?,
+                    None => ws.list(&raw)?,
+                };
+                Ok(ToolOutput::text(if rows.is_empty() {
+                    "The folder is empty.".to_owned()
+                } else {
+                    rows.join("\n")
+                }))
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
+        })
+    }
+}
+
+/// A folder outside the workspace the user approved: its entries by
+/// full path, folders ending in `/`. Protected folders (keys, browser
+/// profiles, Tern's own data) are refused.
+fn list_outside(dir: &Path) -> Result<Vec<String>, ToolError> {
+    if let Some(why) = crate::sandbox::protected(dir) {
+        return Err(ToolError::Failed(why));
+    }
+    if !dir.is_dir() {
+        return Err(ToolError::Failed(format!(
+            "There is no folder at {}.",
+            dir.display()
+        )));
+    }
+    let rd = std::fs::read_dir(dir).map_err(|e| ToolError::Failed(e.to_string()))?;
+    let mut out: Vec<String> = rd
+        .flatten()
+        .map(|e| {
+            let p = e.path();
+            let shown = p.display().to_string();
+            if p.is_dir() {
+                format!("{shown}/")
+            } else {
+                shown
+            }
+        })
+        .collect();
+    out.sort();
+    out.truncate(MAX_LIST);
+    Ok(out)
+}
+
+/// `file_rename` (#76): moves or renames a file inside the workspace.
+/// The user sees old -> new on the approval card first.
+#[derive(Debug, Clone)]
+struct FileRename(Arc<Workspace>);
+
+impl Tool for FileRename {
+    fn name(&self) -> &'static str {
+        "file_rename"
+    }
+    fn summary(&self) -> &'static str {
+        "Rename or move a file inside the chat's workspace (from -> to, both relative to its folder). The user approves it first on a card showing the old and new path. Use this to rename; never write a new copy instead."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::ExternalSideEffect
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["from", "to"], "additionalProperties": false,
+               "properties": {"from": {"type": "string"}, "to": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        Some(format!(
+            "{}/{} -> {}",
+            self.0.name(),
+            args["from"].as_str().unwrap_or_default(),
+            args["to"].as_str().unwrap_or_default()
+        ))
+    }
+    fn confined(&self, args: &Value) -> bool {
+        self.0
+            .resolve(args["from"].as_str().unwrap_or_default())
+            .is_ok()
+            && self
+                .0
+                .resolve(args["to"].as_str().unwrap_or_default())
+                .is_ok()
+    }
+    fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
+        ["from", "to"]
+            .iter()
+            .filter_map(|k| self.0.resolve(args[*k].as_str().unwrap_or_default()).ok())
+            .collect()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        let ws = self.0.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let (a, b) = ws.rename(
+                    args["from"].as_str().unwrap_or_default(),
+                    args["to"].as_str().unwrap_or_default(),
+                )?;
+                Ok(ToolOutput::text(format!("Renamed {a} to {b}.")))
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 struct FileRead(Arc<Workspace>);
@@ -471,6 +620,9 @@ impl Tool for FileRead {
         self.0
             .outside(&path_arg(args))
             .map(|p| format!("{} is outside the workspace", p.display()))
+    }
+    fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
+        self.0.outside(&path_arg(args)).into_iter().collect()
     }
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let ws = self.0.clone();
@@ -576,7 +728,7 @@ impl TurnMode {
                 "Plan mode: do not call any tool and do not answer the question yet. Reply with a short numbered plan: the steps you would take, the sources or files you would check, and what the answer will cover. End with one line asking the user to approve or change the plan.",
             ),
             Self::Act => Some(
-                "Act mode: you may use tools that change things (writing notes or files, MCP tools that act). Each such step is shown to the user for approval; say what you will change before you do it.",
+                "Act mode: you may use tools that change things (writing notes or files, renaming files, running commands, MCP tools that act). Call them directly: the user approves each step on its card, so do not ask for permission in prose.",
             ),
         }
     }

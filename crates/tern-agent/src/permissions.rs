@@ -186,9 +186,25 @@ impl PermissionRule {
         {
             return Self::new(RuleKind::Url, host, Mode::Allow);
         }
-        if tool == "file_write"
+        // A file or folder outside the working folder: "Always for this
+        // path" (#76), never every read.
+        if matches!(tool, "file_read" | "files_list")
             && let Some(p) = args["path"].as_str()
+            && crate::paths::looks_absolute(p)
         {
+            let full = norm(&crate::paths::user_path(p));
+            let pat = if tool == "files_list" {
+                format!("{}/**", full.trim_end_matches('/'))
+            } else {
+                full
+            };
+            return Self::new(RuleKind::Path, pat, Mode::Allow);
+        }
+        if let Some(p) = match tool {
+            "file_write" => args["path"].as_str(),
+            "file_rename" => args["to"].as_str(),
+            _ => None,
+        } {
             let p = p.replace('\\', "/");
             let dir = match p.rsplit_once('/') {
                 Some((d, _)) if !d.is_empty() => format!("./{}/**", d.trim_start_matches("./")),
