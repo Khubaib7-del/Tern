@@ -1051,12 +1051,12 @@ mod tests {
         let facts = CallFacts {
             tool: "file_write",
             paths: vec![new_file.clone()],
-            folder: Some(&dir),
+            folder: Some(dir.as_path()),
             ..CallFacts::default()
         };
         // No rule: the card.
         let mut g = PolicyGate::default();
-        g.set_folder(Some(&dir));
+        g.set_folder(Some(dir.as_path()));
         assert_eq!(g.check_full(&c, false, &facts, true), Decision::Ask);
         // The old "Always allow writes in ./**": still the card for a new file.
         let every = PermissionRule::new(RuleKind::Path, "./**", Mode::Allow);
@@ -1088,7 +1088,7 @@ mod tests {
         }
         // Always allow on the card adds that folder rule, not `./**`.
         let mut g = PolicyGate::default();
-        g.set_folder(Some(&dir));
+        g.set_folder(Some(dir.as_path()));
         assert!(g.answer(&c, ApprovalAnswer::AllowAlways));
         assert_eq!(g.config().rules[0].pattern, pat);
         // Workspace write still writes it without asking.
