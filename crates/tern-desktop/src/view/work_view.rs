@@ -350,6 +350,17 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(SharedString::from(g.tools_line())),
             )
+            .when_some(g.cached_note(), |d, note| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .child(gpui_kit::component::Icon::new(AssetIcon::Clock).xsmall())
+                        .child(SharedString::from(note)),
+                )
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_open(k2.clone(), default);
                 cx.notify();

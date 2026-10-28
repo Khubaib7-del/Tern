@@ -342,6 +342,17 @@ impl StepGroup {
             .any(|c| matches!(c.family, Family::Write | Family::Command) || !c.children.is_empty())
     }
 
+    /// "cached" when every call of the step was served from the cache,
+    /// "1 cached" when some were, so a folded row still says so (#77).
+    pub fn cached_note(&self) -> Option<String> {
+        let n = self.cards.iter().filter(|c| c.cached.is_some()).count();
+        match n {
+            0 => None,
+            n if n == self.cards.len() => Some("cached".to_owned()),
+            n => Some(format!("{n} cached")),
+        }
+    }
+
     /// "web_search, read_url ×3".
     pub fn tools_line(&self) -> String {
         let mut out: Vec<(String, usize)> = Vec::new();
@@ -385,6 +396,9 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                     let (Some(n), Some(t)) = (c["call"].as_u64(), c["tool"].as_str()) else {
                         continue;
                     };
+                    if t == "plan" {
+                        continue;
+                    }
                     if find(&cards, n as u32).is_none() {
                         cards.push(ToolCard::new(n as u32, st, t, &c["args"]));
                     }
@@ -836,6 +850,7 @@ mod tests {
         let g = cards_of(&run(&evs));
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].cards.len(), 1, "only the script is a top-level card");
+        assert_eq!(g[0].cached_note(), None);
         let script = &g[0].cards[0];
         assert_eq!(script.tool, "run_python");
         assert_eq!(script.children.len(), 2);
