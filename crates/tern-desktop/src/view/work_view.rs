@@ -7,11 +7,13 @@
 use std::collections::HashMap;
 
 use gpui_kit::assets::IconName as AssetIcon;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{Selectable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, Hsla, SharedString, div, hsla, px};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, FontWeight, Hsla, SharedString, div, hsla, px,
+};
 use tern_agent::Run;
 use tern_agent::live::{self, RunState, Stream};
 
@@ -55,6 +57,9 @@ pub(super) struct WorkUi {
     pub preview_path: Option<String>,
     /// The diff last computed, by (path, text hash).
     pub diff_cache: std::cell::RefCell<Option<(String, u64, tern_agent::diff::Diff)>>,
+    /// Settings › Permissions: the new rule's kind and action (indices).
+    pub rule_kind: usize,
+    pub rule_action: usize,
 }
 
 impl std::fmt::Debug for WorkUi {

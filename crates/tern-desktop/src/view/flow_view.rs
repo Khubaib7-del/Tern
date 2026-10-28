@@ -17,7 +17,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable as _, IconName};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FontWeight, KeyDownEvent, SharedString, Window, div, px, svg,
+    AnimationExt as _, AnyElement, Context, Entity, FontWeight, KeyDownEvent, SharedString, Window,
+    div, px, svg,
 };
 use tern_agent::run::compact;
 use tern_agent::{ApprovalAnswer, PageRef, Run};
