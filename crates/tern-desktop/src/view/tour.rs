@@ -2990,7 +2990,7 @@ fn focus_beats() -> Vec<Beat> {
         scene(
             "x17-fence-new-file-waits",
             "tern-only",
-            "A new file asked for in a ```tool text block, with the old ./** rule in Settings: the approval card still comes first (+4 −0), and the Files tab says Pending approval · not written yet",
+            "A new file asked for in a ```tool text block, with the old ./** rule in Settings: the approval card still comes first (+4 −0), and the Files tab says Pending approval (not written)",
             Act::WState("fence new file waiting"),
             3000,
         ),

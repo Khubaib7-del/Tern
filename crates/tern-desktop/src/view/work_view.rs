@@ -973,14 +973,15 @@ impl Workspace {
         // #77: never read as saved before it is. The file on disk is the
         // proof: "Saved" only once it holds exactly this text.
         let saved = !waiting && w.done && self.preview_saved(&w.path, &w.text);
+        // Short, so the file's name keeps its room in the header.
         let status = if waiting {
-            "Pending approval · not written yet"
+            "Pending approval"
         } else if saved {
             "Saved"
         } else if w.done {
-            "Not written yet"
+            "Not written"
         } else {
-            "writing… (not saved)"
+            "writing…"
         };
         let (shown, cut) = tail_chars(&w.text, PREVIEW_CHARS);
         let body: AnyElement = match mode {
@@ -1029,15 +1030,17 @@ impl Workspace {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(64.))
                                 .truncate()
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(SharedString::from(w.path.clone())),
                         )
-                        .child({
+                        // Once saved the file on disk is the text, so a
+                        // diff against it would read +0 −0.
+                        .when(!saved, |row| {
                             let d = self.diff_for(&w.path, &w.text);
-                            diff_counts(d.added, d.removed, p).flex_none()
+                            row.child(diff_counts(d.added, d.removed, p).flex_none())
                         })
                         .child(
                             div()
