@@ -62,14 +62,21 @@ impl Workspace {
                     .push(tern_agent::chat::Output::now(path.clone(), what));
                 self.model.files.reload();
                 self.model.toasts.info_with(
-                    format!("Saved {}", path.display()),
+                    // Without Windows' `\\?\` prefix (#74).
+                    format!(
+                        "Saved {}",
+                        tern_agent::projects::plain_path(&path).display()
+                    ),
                     crate::toast::Retry::OpenFolder(path),
                     now,
                 );
             }
             Err(e) => {
                 self.model.toasts.error(
-                    format!("Couldn't save {}: {e}", path.display()),
+                    format!(
+                        "Couldn't save {}: {e}",
+                        tern_agent::projects::plain_path(&path).display()
+                    ),
                     None,
                     now,
                 );

@@ -269,13 +269,22 @@ impl Workspace {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| o.path.display().to_string());
                 let bytes = std::fs::metadata(&o.path).ok().map(|m| m.len());
-                let in_root = root.as_deref().is_some_and(|r| o.path.parent() == Some(r));
+                // One folder however it is spelled (`\\?\C:\…` or `C:\…`).
+                let plain = tern_agent::projects::plain_path;
+                let key = tern_agent::projects::folder_key;
+                let in_root = root
+                    .as_deref()
+                    .zip(o.path.parent())
+                    .is_some_and(|(r, d)| key(r) == key(d));
                 let detail = if bytes.is_none() {
                     "Moved or deleted".to_owned()
                 } else if in_root {
                     "In this chat's folder".to_owned()
                 } else {
-                    files::short_path(o.path.parent().unwrap_or(&o.path), root.as_deref())
+                    files::short_path(
+                        &plain(o.path.parent().unwrap_or(&o.path)),
+                        root.as_deref().map(plain).as_deref(),
+                    )
                 };
                 let right = format!(
                     "{}{}",
