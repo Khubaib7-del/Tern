@@ -400,7 +400,7 @@ impl Workspace {
         // ----- Workbench -----
         let mut chips: Vec<AnyElement> = Vec::new();
         let dark = p.text.l > 0.5;
-        let mut chip = |id: SharedString, name: &str, removable: bool| {
+        let chip = |id: SharedString, name: &str, removable: bool| {
             let n = name.to_owned();
             div()
                 .id(id.clone())
