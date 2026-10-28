@@ -1159,14 +1159,20 @@ impl Workspace {
         } else {
             tab.title.clone()
         };
-        let project = tab
+        // A draft is not in the list yet: it goes where the tray put it
+        // (#74).
+        let project = match tab
             .id
             .as_ref()
             .and_then(|id| self.model.sessions.iter().find(|s| &s.id == id))
-            .and_then(|s| s.project)
-            .and_then(|pid| self.model.projects.find(pid))
-            .map(|pr| pr.row.name.clone())
-            .unwrap_or_else(|| "Inbox".to_owned());
+        {
+            Some(s) => s
+                .project
+                .and_then(|pid| self.model.projects.find(pid))
+                .map(|pr| pr.row.name.clone()),
+            None => self.model.projects.new_in.clone(),
+        }
+        .unwrap_or_else(|| "Inbox".to_owned());
         Some(
             div()
                 .id("title-crumb")

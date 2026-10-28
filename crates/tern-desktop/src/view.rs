@@ -3939,15 +3939,21 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .when(self.model.sessions.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(p.faint)
-                                .child("Your chats will show here."),
-                        )
-                    })
+                    // Folder projects fill the list even before their
+                    // first chat (#74).
+                    .when(
+                        self.model.sessions.is_empty()
+                            && self.model.projects.projects.iter().all(|pr| pr.row.inbox),
+                        |d| {
+                            d.child(
+                                div()
+                                    .px_2()
+                                    .text_sm()
+                                    .text_color(p.faint)
+                                    .child("Your chats will show here."),
+                            )
+                        },
+                    )
                     .children(rows),
             )
             .children(self.watches_section(p, cx))
