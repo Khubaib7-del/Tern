@@ -680,7 +680,8 @@ pub fn replace_command(s: &str, name: &str, with: &str) -> String {
 
 /// Parses `latex` with `parse`; when it stops at an unknown command, that
 /// command is defined as an operator ([`OPERATORS`], else
-/// `\\operatorname{name}`) and it tries again, a few times at most.
+/// `\\operatorname{name}`) and it tries again, a few times at most. Each
+/// retry is written to `tern.log`.
 pub fn lenient<T>(latex: &str, parse: impl Fn(&str) -> Result<T, String>) -> Option<T> {
     let mut src = latex.to_owned();
     for _ in 0..8 {
@@ -695,13 +696,26 @@ pub fn lenient<T>(latex: &str, parse: impl Fn(&str) -> Result<T, String>) -> Opt
                     .unwrap_or_else(|| format!("\\operatorname{{{name}}}"));
                 let next = replace_command(&src, &name, &with);
                 if next == src {
+                    log_retry(&format!(
+                        "math: unknown \\{name} could not be replaced; shown as text"
+                    ));
                     return None;
                 }
+                log_retry(&format!("math: unknown \\{name} read as {with}, retrying"));
                 src = next;
             }
         }
     }
     None
+}
+
+/// Writes a retry of [`lenient`] to `tern.log` (typesetting is cached,
+/// so each formula logs once).
+fn log_retry(line: &str) {
+    #[cfg(not(test))]
+    crate::crashlog::log_line(line);
+    #[cfg(test)]
+    let _ = line;
 }
 
 /// `s` without `cmd{…}` (its braced argument too).

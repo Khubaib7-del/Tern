@@ -54,17 +54,20 @@ pub fn folder_of(path: &Path) -> PathBuf {
 /// Explorer's `/select,"…"` argument for `path`, with Windows separators
 /// and the path in quotes (Explorer reads the raw command line, so the
 /// quotes must reach it as written).
+#[cfg(any(windows, test))]
 pub fn explorer_select_arg(path: &str) -> String {
     format!("/select,\"{}\"", windows_path(path))
 }
 
 /// `path` quoted for a raw Windows command line.
+#[cfg(any(windows, test))]
 pub fn quoted(path: &str) -> String {
     format!("\"{}\"", windows_path(path))
 }
 
 /// `path` with `\` separators and no `\\?\` prefix (Explorer does not read
 /// verbatim paths).
+#[cfg(any(windows, test))]
 fn windows_path(path: &str) -> String {
     let p = path.strip_prefix(r"\\?\").unwrap_or(path);
     p.replace('/', "\\").trim_end_matches('"').to_owned()
