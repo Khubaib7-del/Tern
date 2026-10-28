@@ -303,15 +303,11 @@ mod tests {
     use super::*;
 
     fn tree() -> (PathBuf, FolderTree) {
-        let base = std::env::temp_dir().join(format!(
-            "tern files test {}",
-            std::process::id() as u64 * 1000
-                + SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .subsec_nanos() as u64
-                    % 1000
-        ));
+        // A counter per test: the clock's nanoseconds are whole microseconds
+        // on macOS, so two tests started together got the same folder.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!("tern files test {} {n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("src/inner")).unwrap();
         std::fs::create_dir_all(base.join("node_modules/x")).unwrap();
