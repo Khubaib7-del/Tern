@@ -17,7 +17,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable as _, IconName};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FontWeight, KeyDownEvent, SharedString, Window, div, px, svg,
+    AnimationExt as _, AnyElement, Context, Entity, FontWeight, KeyDownEvent, SharedString, Window,
+    div, px, svg,
 };
 use tern_agent::run::compact;
 use tern_agent::{ApprovalAnswer, PageRef, Run};
@@ -156,18 +157,37 @@ impl Workspace {
 
     // ----- Needs you (v2 s07) -----
 
-    /// "◆ Tern needs you": what it wants, then numbered answers. 1, 2 or 3
-    /// answers from the keyboard while the composer is empty.
+    /// "◆ Tern needs you": what it wants, then numbered answers, in a
+    /// yellow outline that pulses (#75). A file write shows its diff; a
+    /// command shows the sandbox it runs in. 1 to 4 answer from the
+    /// keyboard while the composer is empty.
     pub(super) fn needs_you_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let Phase::Approval { request, .. } = &self.model.phase else {
             return None;
         };
         let target = request.target.clone().unwrap_or_default();
-        let options: [&'static str; 3] = [
-            "Allow once",
-            "Allow for this chat",
-            "No, and tell Tern what to do",
-        ];
+        let write = request.tool == "file_write";
+        let rule = tern_agent::PermissionRule::suggest(
+            &request.tool,
+            request.effect,
+            request.target.as_deref(),
+            &request.args,
+        );
+        let options: [String; 4] = if write {
+            [
+                "Approve".into(),
+                "Approve for this chat".into(),
+                format!("Always allow writes in {}", rule.pattern),
+                "Reject, and tell Tern what to do".into(),
+            ]
+        } else {
+            [
+                "Allow once".into(),
+                "Allow for this chat".into(),
+                format!("Always allow this ({})", rule.line()),
+                "No, and tell Tern what to do".into(),
+            ]
+        };
         let rows = options.into_iter().enumerate().map(|(k, label)| {
             div()
                 .id(SharedString::from(format!("needs-you-{}", k + 1)))
@@ -182,52 +202,110 @@ impl Workspace {
                 .text_sm()
                 .hover(|d| d.bg(p.hover))
                 .child(kbd(&(k + 1).to_string(), p))
-                .child(label)
+                .child(div().min_w_0().truncate().child(SharedString::from(label)))
                 .on_click(
                     cx.listener(move |this, _, window, cx| this.pick_needs_you(k, window, cx)),
                 )
         });
-        Some(
-            div()
-                .id("needs-you")
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_sm()
-                        .child(div().text_color(p.accent).child("◆"))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Tern needs you"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(p.faint)
-                                .child(SharedString::from(format!(
-                                    "wants to use {}",
-                                    request.tool
-                                ))),
-                        ),
-                )
-                .child(
-                    div()
-                        .ml(px(18.))
-                        .text_sm()
-                        .text_color(p.muted)
-                        .child(SharedString::from(request.summary.clone())),
-                )
-                .when(!target.is_empty(), |d| {
+        let yellow = super::work_view::approval_yellow(p);
+        let detail: Option<AnyElement> = if write {
+            let path = request.args["path"].as_str().unwrap_or_default();
+            let text = request.args["text"].as_str().unwrap_or_default();
+            Some(
+                div()
+                    .id("needs-you-diff")
+                    .ml(px(18.))
+                    .max_h(px(320.))
+                    .overflow_y_scroll()
+                    .p_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.canvas)
+                    .child(self.diff_view(path, text, p))
+                    .into_any_element(),
+            )
+        } else if request.tool == "run_command" {
+            let folder = self
+                .model
+                .files
+                .root
+                .clone()
+                .map(|r| tern_agent::workbench::policy_for(&r).summary())
+                .unwrap_or_default();
+            Some(
+                div()
+                    .ml(px(18.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .p_2()
+                            .rounded_md()
+                            .bg(p.canvas)
+                            .border_1()
+                            .border_color(p.border)
+                            .font_family(crate::assets::MONO_FONT)
+                            .text_xs()
+                            .child(SharedString::from(format!("$ {target}"))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(format!(
+                                "Sandbox: {folder} · runs in the chat's folder"
+                            ))),
+                    )
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        let card = div()
+            .id("needs-you")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(yellow)
+            .bg(p.raised)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .child(div().text_color(yellow).child("◆"))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Tern needs you"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(format!(
+                                "wants to use {} · approval mode {}",
+                                request.tool,
+                                self.model.providers.prefs.approval().label()
+                            ))),
+                    ),
+            )
+            .child(
+                div()
+                    .ml(px(18.))
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(SharedString::from(request.summary.clone())),
+            )
+            .when(
+                !target.is_empty() && !write && request.tool != "run_command",
+                |d| {
                     d.child(
                         div()
                             .ml(px(18.))
@@ -236,21 +314,57 @@ impl Workspace {
                             .truncate()
                             .child(SharedString::from(target)),
                     )
-                })
-                .child(div().h(px(4.)))
-                .children(rows)
-                .into_any_element(),
-        )
+                },
+            )
+            .children(detail)
+            .child(div().h(px(4.)))
+            .children(rows);
+        Some(if self.reduced_motion {
+            card.into_any_element()
+        } else {
+            card.with_animation(
+                "needs-you-pulse",
+                gpui_kit::Animation::new(Duration::from_millis(1400)).repeat(),
+                move |d, t| {
+                    let a = 0.45 + 0.55 * (0.5 + 0.5 * (t * std::f32::consts::TAU).cos());
+                    d.border_color(yellow.opacity(a))
+                },
+            )
+            .into_any_element()
+        })
     }
 
-    fn pick_needs_you(&mut self, k: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn pick_needs_you(&mut self, k: usize, window: &mut Window, cx: &mut Context<Self>) {
         let answer = match k {
             0 => ApprovalAnswer::AllowOnce,
             1 => ApprovalAnswer::AllowForSession,
+            2 => ApprovalAnswer::AllowAlways,
             _ => ApprovalAnswer::Deny,
         };
+        if k == 2
+            && let Phase::Approval { request, .. } = &self.model.phase
+        {
+            // "Always allow this": the rule is kept in Settings ›
+            // Permissions, where it can be removed.
+            let rule = tern_agent::PermissionRule::suggest(
+                &request.tool,
+                request.effect,
+                request.target.as_deref(),
+                &request.args,
+            );
+            tern_agent::diag::note(&format!("approval: always allow -> rule {}", rule.line()));
+            let line = rule.line();
+            self.save_ui_prefs(move |p| {
+                if !p.permission_rules.contains(&rule) {
+                    p.permission_rules.push(rule.clone());
+                }
+            });
+            self.model.toast_info(format!(
+                "Added the rule {line}. Remove it in Settings › Permissions."
+            ));
+        }
         self.answer(answer, cx);
-        if k >= 2 {
+        if k >= 3 {
             self.composer.update(cx, |c, cx| c.focus(window, cx));
             self.model.toast_info(
                 "Not allowed. Tell Tern what to do instead: the composer steers the run.",
@@ -259,7 +373,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// 1, 2 or 3 answer the needs-you card while the composer is empty.
+    /// 1 to 4 answer the needs-you card while the composer is empty.
     pub(super) fn needs_you_keys(
         &mut self,
         e: &KeyDownEvent,
@@ -280,6 +394,7 @@ impl Workspace {
             "1" => 0,
             "2" => 1,
             "3" => 2,
+            "4" => 3,
             _ => return false,
         };
         self.pick_needs_you(k, window, cx);

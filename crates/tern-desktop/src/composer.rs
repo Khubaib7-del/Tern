@@ -148,6 +148,8 @@ pub enum Menu {
     Model,
     Effort,
     Search,
+    /// The approval mode (#75).
+    Approval,
 }
 
 /// A row of the + menu.

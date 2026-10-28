@@ -445,6 +445,11 @@ enum ProviderCmd {
 }
 
 fn main() -> ExitCode {
+    // `run_python` (#75) starts this executable again as a sandboxed
+    // Python worker.
+    if let Some(code) = tern_agent::python::worker_main() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
     // Every command's future is laid out in one frame, and in a debug
     // build that outgrows Windows' 1 MB main-thread stack. Run on a thread
     // with room to spare.

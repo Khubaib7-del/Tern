@@ -259,7 +259,9 @@ async fn allowed_tool_runs_and_its_result_goes_back_to_the_model() {
         [
             "turn.started",
             "model.replied",
+            "tool.queued",
             "policy.decided",
+            "tool.started",
             "tool.executed",
             "model.replied",
             "turn.finished"
@@ -546,9 +548,11 @@ async fn the_whole_turn_replays_from_the_store_in_order() {
         [
             "turn.started",
             "model.replied",
+            "tool.queued",
             "policy.decided",
             "approval.requested",
             "approval.answered",
+            "tool.started",
             "tool.executed",
             "model.replied",
             "turn.finished"

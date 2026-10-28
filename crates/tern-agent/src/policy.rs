@@ -30,7 +30,7 @@ use tern_core::EffectClass;
 use time::{Duration, OffsetDateTime};
 
 /// What the user's settings say about one effect class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     Allow,
@@ -65,6 +65,9 @@ pub enum ApprovalAnswer {
     AllowOnce,
     /// Allow this tool on this target for the rest of the session, until it expires.
     AllowForSession,
+    /// Allow it from now on: adds the suggested permission rule (see
+    /// [`crate::permissions::PermissionRule::suggest`]) and allows it now.
+    AllowAlways,
     Deny,
 }
 
@@ -92,6 +95,12 @@ pub struct PolicyConfig {
     /// the user set to always ask, allow, or refuse). Keyed by tool name.
     #[serde(default)]
     pub tool_modes: BTreeMap<String, Mode>,
+    /// The approval mode (#75): read-only, ask, workspace write, full.
+    #[serde(default)]
+    pub approval: crate::permissions::ApprovalMode,
+    /// Permission rules by domain, path and tool (#75).
+    #[serde(default)]
+    pub rules: Vec<crate::permissions::PermissionRule>,
 }
 
 impl Default for PolicyConfig {
@@ -113,6 +122,8 @@ impl Default for PolicyConfig {
             modes,
             session_grant_minutes: 30,
             tool_modes: BTreeMap::new(),
+            approval: crate::permissions::ApprovalMode::default(),
+            rules: Vec::new(),
         }
     }
 }
@@ -298,6 +309,8 @@ fn secret_shape(v: &str) -> Option<&'static str> {
 #[derive(Clone, Debug)]
 pub struct PolicyGate {
     config: PolicyConfig,
+    /// The chat's folder, for `./` path rules (#75).
+    folder: Option<std::path::PathBuf>,
     grants: Vec<Grant>,
     clock: Clock,
     provenance: Provenance,
@@ -313,6 +326,7 @@ impl PolicyGate {
     pub fn new(config: PolicyConfig) -> Self {
         Self {
             config,
+            folder: None,
             grants: Vec::new(),
             clock: OffsetDateTime::now_utc,
             provenance: Provenance::default(),
@@ -404,6 +418,21 @@ impl PolicyGate {
         self.config.tool_modes.insert(tool.to_owned(), mode);
     }
 
+    /// Sets the chat's folder, for `./` path rules.
+    pub fn set_folder(&mut self, folder: Option<&std::path::Path>) {
+        self.folder = folder.map(std::path::Path::to_path_buf);
+    }
+
+    /// Sets the approval mode and the permission rules (#75).
+    pub fn set_approval(
+        &mut self,
+        mode: crate::permissions::ApprovalMode,
+        rules: Vec<crate::permissions::PermissionRule>,
+    ) {
+        self.config.approval = mode;
+        self.config.rules = rules;
+    }
+
     /// Decides one call. Pure apart from dropping expired grants.
     pub fn check(&mut self, call: &CallView<'_>) -> Decision {
         self.check_asking(call, false)
@@ -414,11 +443,86 @@ impl PolicyGate {
     /// becomes Ask, an earlier approval of the same call or target still
     /// counts, and a refusal in the user's settings still refuses.
     pub fn check_asking(&mut self, call: &CallView<'_>, ask: bool) -> Decision {
+        let facts = crate::permissions::CallFacts {
+            tool: call.tool,
+            host: None,
+            detail: call_detail_line(call.args),
+            ..Default::default()
+        };
+        self.check_full(call, ask, &facts, false)
+    }
+
+    /// [`Self::check_asking`] with what the permission rules look at
+    /// (`facts`: the domain, the paths, the command) and whether the call
+    /// stays inside the chat's folder under the sandbox (`confined`).
+    ///
+    /// Order: a deny rule, Read-only, the tool's own setting refusing,
+    /// then an ask or allow rule, then the approval mode, then the class
+    /// setting. The web provenance checks ask or refuse in every mode.
+    pub fn check_full(
+        &mut self,
+        call: &CallView<'_>,
+        ask: bool,
+        facts: &crate::permissions::CallFacts<'_>,
+        confined: bool,
+    ) -> Decision {
+        use crate::permissions::{ApprovalMode, mode_verdict, rule_verdict};
         let now = (self.clock)();
         self.grants.retain(|g| g.expires.is_none_or(|t| t > now));
+        let host = facts.host.map(str::to_owned).or_else(|| {
+            call.args
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(crate::permissions::host_of)
+        });
+        let folder = facts
+            .folder
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| self.folder.clone());
+        let home = facts.home.clone().or_else(|| {
+            std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(std::path::PathBuf::from)
+        });
+        let facts = crate::permissions::CallFacts {
+            tool: call.tool,
+            host: host.as_deref(),
+            paths: facts.paths.clone(),
+            detail: facts.detail.clone(),
+            folder: folder.as_deref(),
+            home,
+        };
+        let rule = rule_verdict(&self.config.rules, &facts).map(|(m, r)| (m, r.line()));
+        if let Some((Mode::Deny, line)) = &rule {
+            return Decision::Deny {
+                reason: format!(
+                    "Your rule \"{line}\" refuses `{}`, so it did not run.",
+                    call.tool
+                ),
+            };
+        }
+        let approval = self.config.approval;
+        let by_mode = mode_verdict(approval, call.effect, confined);
+        if by_mode == Some(Mode::Deny) {
+            return Decision::Deny {
+                reason: format!(
+                    "Tern is in Read-only mode, so `{}` did not run. Switch the approval mode to Ask to let it ask you.",
+                    call.tool
+                ),
+            };
+        }
         let own = self.config.tool_modes.contains_key(call.tool);
         let mut mode = self.config.mode_for(call.tool, call.effect);
-        if ask && mode == Mode::Allow {
+        let ruled = match &rule {
+            Some((m, _)) if mode != Mode::Deny => {
+                mode = *m;
+                true
+            }
+            _ => false,
+        };
+        if !ruled && by_mode == Some(Mode::Allow) && mode == Mode::Ask {
+            mode = Mode::Allow;
+        }
+        if ask && mode == Mode::Allow && !ruled && approval != ApprovalMode::Full {
             mode = Mode::Ask;
         }
         if mode != Mode::Deny {
@@ -439,8 +543,17 @@ impl PolicyGate {
                     call.tool
                 ),
             },
+            Mode::Allow if ruled => Decision::Allow {
+                because: format!(
+                    "your rule \"{}\" allows it",
+                    rule.as_ref().map(|r| r.1.as_str()).unwrap_or_default()
+                ),
+            },
             Mode::Allow if own => Decision::Allow {
                 because: format!("you allowed `{}`", call.tool),
+            },
+            Mode::Allow if by_mode == Some(Mode::Allow) => Decision::Allow {
+                because: format!("the approval mode is {}", approval.label()),
             },
             Mode::Allow => Decision::Allow {
                 because: format!("{} steps are allowed", call.effect.label()),
@@ -479,6 +592,18 @@ impl PolicyGate {
                 });
                 true
             }
+            ApprovalAnswer::AllowAlways => {
+                let rule = crate::permissions::PermissionRule::suggest(
+                    call.tool,
+                    call.effect,
+                    call.target,
+                    call.args,
+                );
+                if !self.config.rules.contains(&rule) {
+                    self.config.rules.push(rule);
+                }
+                self.answer(call, ApprovalAnswer::AllowForSession)
+            }
             ApprovalAnswer::AllowForSession => {
                 if call.effect == EffectClass::Network
                     && let Some(t) = call.target
@@ -508,6 +633,17 @@ impl PolicyGate {
             self.grants.remove(i);
         }
     }
+}
+
+/// A call's query or command line, for tool rules.
+pub fn call_detail_line(args: &Value) -> String {
+    ["command", "query", "code", "path", "url"]
+        .iter()
+        .find_map(|k| args.get(*k).and_then(Value::as_str))
+        .unwrap_or_default()
+        .chars()
+        .take(400)
+        .collect()
 }
 
 /// JSON with object keys sorted, so equal arguments compare equal.
@@ -798,5 +934,77 @@ mod tests {
         let c = call("post", EffectClass::ExternalSideEffect, None, &a);
         assert!(!g.answer(&c, ApprovalAnswer::Deny));
         assert_eq!(g.check(&c), Decision::Ask);
+    }
+
+    #[test]
+    fn approval_modes_and_rules_decide_calls() {
+        use crate::permissions::{ApprovalMode, CallFacts, PermissionRule, RuleKind};
+        let a = json!({"command": "pandoc a.md -o a.docx"});
+        let c = call("run_command", EffectClass::ExternalSideEffect, None, &a);
+        let facts = CallFacts {
+            tool: "run_command",
+            detail: "pandoc a.md -o a.docx".into(),
+            ..CallFacts::default()
+        };
+        let mut g = PolicyGate::default();
+        assert_eq!(g.check_full(&c, false, &facts, true), Decision::Ask);
+        g.set_approval(ApprovalMode::WorkspaceWrite, vec![]);
+        assert!(matches!(
+            g.check_full(&c, false, &facts, true),
+            Decision::Allow { .. }
+        ));
+        assert_eq!(g.check_full(&c, false, &facts, false), Decision::Ask);
+        g.set_approval(ApprovalMode::ReadOnly, vec![]);
+        assert!(matches!(
+            g.check_full(&c, false, &facts, true),
+            Decision::Deny { .. }
+        ));
+        // Reads still run in Read-only.
+        let r = json!({"query": "x"});
+        let rc = call("web_search", EffectClass::Network, None, &r);
+        assert!(matches!(g.check(&rc), Decision::Allow { .. }));
+        g.set_approval(ApprovalMode::Full, vec![]);
+        assert!(matches!(
+            g.check_full(&c, true, &facts, false),
+            Decision::Allow { .. }
+        ));
+        // A deny rule beats Full; an allow rule beats Ask.
+        g.set_approval(
+            ApprovalMode::Full,
+            vec![PermissionRule::new(
+                RuleKind::Tool,
+                "run_command pandoc *",
+                Mode::Deny,
+            )],
+        );
+        assert!(matches!(
+            g.check_full(&c, false, &facts, true),
+            Decision::Deny { .. }
+        ));
+        g.set_approval(
+            ApprovalMode::Ask,
+            vec![PermissionRule::new(
+                RuleKind::Tool,
+                "run_command pandoc *",
+                Mode::Allow,
+            )],
+        );
+        assert!(matches!(
+            g.check_full(&c, false, &facts, false),
+            Decision::Allow { .. }
+        ));
+    }
+
+    #[test]
+    fn always_allow_adds_a_rule() {
+        let a = json!({"command": "typst compile a.typ"});
+        let c = call("run_command", EffectClass::ExternalSideEffect, None, &a);
+        let mut g = PolicyGate::default();
+        assert_eq!(g.check(&c), Decision::Ask);
+        assert!(g.answer(&c, ApprovalAnswer::AllowAlways));
+        assert_eq!(g.config().rules.len(), 1);
+        let b = json!({"command": "typst compile b.typ"});
+        let c2 = call("run_command", EffectClass::ExternalSideEffect, None, &b);
+        assert!(matches!(g.check(&c2), Decision::Allow { .. }));
     }
 }

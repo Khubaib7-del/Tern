@@ -360,6 +360,20 @@ enum Act {
     /// #74: a scene-log line with the chat's folder, whether it is fixed,
     /// its outputs and the sidebar's project rows.
     CFolderState(&'static str),
+    /// #75: the composer's mode (Act lets the model write and run).
+    WMode(crate::composer::Mode),
+    /// #75: the approval mode by id (`ask`, `workspace_write`, ...).
+    WApproval(&'static str),
+    /// #75: answers the approval card with option `k` (0 once, 1 for the
+    /// chat, 2 always allow, 3 reject), if one is asked.
+    WPick(usize),
+    /// #75: opens or closes the composer's approval-mode menu.
+    WApprovalMenu,
+    /// #75: kills the workbench's running commands (the Terminal's Kill).
+    WKill,
+    /// #75: a scene-log line with the cards, the Terminal's runs and the
+    /// rules.
+    WState(&'static str),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1966,6 +1980,38 @@ impl Workspace {
                 cx.notify();
             }
             Act::CFolderState(what) => self.log_folder_state(what),
+            Act::WMode(m) => {
+                self.model.set_mode(m, None);
+                cx.notify();
+            }
+            Act::WApproval(id) => match tern_agent::permissions::ApprovalMode::parse(id) {
+                Some(m) => self.set_approval_mode(m),
+                None => log(&format!("TOUR error no approval mode {id}")),
+            },
+            Act::WPick(k) => {
+                if self.pending.is_some() {
+                    log(&format!("TOUR note approval card answered with option {}", k + 1));
+                    self.pick_needs_you(k, window, cx);
+                } else {
+                    log("TOUR error no approval card to answer");
+                }
+            }
+            Act::WApprovalMenu => {
+                self.model
+                    .composer
+                    .toggle_at(crate::composer::Menu::Approval, std::time::Instant::now());
+                cx.notify();
+            }
+            Act::WKill => {
+                for r in tern_agent::live::runs() {
+                    if r.state == tern_agent::live::RunState::Running {
+                        let killed = tern_agent::live::kill(r.id);
+                        log(&format!("TOUR note kill run {} ({}): {killed}", r.id, r.command));
+                    }
+                }
+                cx.notify();
+            }
+            Act::WState(what) => self.log_work_state(what),
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -2328,6 +2374,55 @@ impl Workspace {
         }
     }
 
+    /// #75: the run's cards (tool, state), the Terminal's runs and the
+    /// permission rules, for the scene log.
+    fn log_work_state(&self, what: &str) {
+        let cards: Vec<String> = crate::toolcards::cards_of(self.model.panel_run())
+            .iter()
+            .flat_map(|g| {
+                g.cards.iter().map(move |c| {
+                    format!(
+                        "s{}#{} {} {:?}{}",
+                        g.step,
+                        c.call,
+                        c.tool,
+                        c.state,
+                        c.error
+                            .as_deref()
+                            .map(|e| format!(" ({})", e.chars().take(80).collect::<String>()))
+                            .unwrap_or_default()
+                    )
+                })
+            })
+            .collect();
+        let runs: Vec<String> = tern_agent::live::runs()
+            .iter()
+            .map(|r| {
+                format!(
+                    "{} [{}] exit={:?} lines={}",
+                    r.command,
+                    r.state.label(),
+                    r.exit,
+                    r.output.len()
+                )
+            })
+            .collect();
+        let rules: Vec<String> = self
+            .model
+            .providers
+            .prefs
+            .permission_rules
+            .iter()
+            .map(|r| r.line())
+            .collect();
+        log(&format!(
+            "TOUR work {what}: mode={} phase_approval={} cards={cards:?} runs={runs:?} rules={rules:?} preview={:?}",
+            self.model.providers.prefs.approval().id(),
+            self.pending.is_some(),
+            tern_agent::live::preview().map(|w| (w.path, w.text.len(), w.done)),
+        ));
+    }
+
     fn log_folder_state(&self, what: &str) {
         let order = crate::continuity::tree(&self.model.sessions);
         let rows: Vec<String> = self
@@ -2589,8 +2684,196 @@ fn unix_ms() -> u128 {
 fn composer_tour() -> bool {
     matches!(
         std::env::var("TERN_TOUR_ONLY").as_deref(),
-        Ok("composer" | "folders")
+        Ok("composer" | "folders" | "work")
     )
+}
+
+/// The work-surface tour (`TERN_TOUR_ONLY=work`, #75): tool cards, the
+/// Terminal, write diffs, Always allow, the approval chip, Settings ›
+/// Permissions and a sandbox denial, through the real engine and sandbox
+/// with the mock model.
+fn work_tour() -> bool {
+    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("work")
+}
+
+/// The program the work tour's commands run (a real Python on both CI
+/// runners).
+fn tour_python() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
+/// The work tour's slow conversion script: one line a quarter second.
+const WORK_SCRIPT: &str = "import sys, time\nname = sys.argv[1] if len(sys.argv) > 1 else 'notes.md'\nfor i in range(1, 61):\n    print(f'{name}: converted section {i} of 60', flush=True)\n    if i % 7 == 0:\n        print(f'warning: section {i} has no heading', file=sys.stderr, flush=True)\n    time.sleep(0.25)\nprint('done')\n";
+/// The summary the work tour's first write proposes.
+const WORK_SUMMARY: &str = "# Summary\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE policy next\n- Evaluation last\n";
+/// The second draft (rejected in the tour): two lines change.
+const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE and Self-RAG policies next\n- Evaluation last\n";
+
+/// #75: the work-surface scenes.
+fn work_beats() -> Vec<Beat> {
+    vec![
+        b(Act::COpenFolder("Tern testing"), 2000),
+        b(Act::WMode(crate::composer::Mode::Act), 300),
+        b(Act::CTypePath("What is a TLB?"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "w01-no-folder-chip",
+            "tern-only",
+            "The transcript without the centred folder chip; the title bar still names the folder (Tern testing)",
+            Act::CFolderState("work: no chip"),
+            2500,
+        ),
+        b(
+            Act::CTypePath("Tour: convert my notes and write a summary"),
+            200,
+        ),
+        b(Act::CSend, 3000),
+        scene(
+            "w02-cards-waiting-queued",
+            "tern-only",
+            "Two calls from one step: run_command waits for approval (yellow pulse), file_write is queued; the approval card shows the command and its sandbox",
+            Act::WState("waiting + queued"),
+            3000,
+        ),
+        b(Act::WPick(0), 2500),
+        scene(
+            "w03-terminal-streaming",
+            "tern-only",
+            "Terminal tab: the conversion streams stdout and stderr live, with Kill",
+            Act::View(RunView::Terminal),
+            2500,
+        ),
+        b(Act::WState("running"), 200),
+        scene(
+            "w04-terminal-killed",
+            "tern-only",
+            "Kill: the command and its process tree stop; the card shows the result",
+            Act::WKill,
+            3000,
+        ),
+        scene(
+            "w05-write-diff",
+            "tern-only",
+            "file_write waits: the approval card shows the diff (a new file); the Files tab shows the text as written",
+            Act::View(RunView::Files),
+            3000,
+        ),
+        scene(
+            "w06-write-approved",
+            "tern-only",
+            "Approved: the summary is written; cards Done",
+            Act::WPick(0),
+            3500,
+        ),
+        scene(
+            "w07-tools-view",
+            "tern-only",
+            "Run panel › Tools: every card by step with the family legend",
+            Act::View(RunView::Tools),
+            2500,
+        ),
+        b(Act::WState("after approve"), 200),
+        b(
+            Act::CTypePath("Tour: write a second draft of the summary"),
+            200,
+        ),
+        b(Act::CSend, 3000),
+        scene(
+            "w08-write-diff-existing",
+            "tern-only",
+            "A second draft of summary.md: the diff against the file on disk (+2 −2)",
+            Act::Nothing,
+            2500,
+        ),
+        scene(
+            "w09-write-rejected",
+            "tern-only",
+            "Rejected: the card fails with \"You declined it.\" and the file is unchanged",
+            Act::WPick(3),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: count the words in the summary"), 200),
+        b(Act::CSend, 3000),
+        scene(
+            "w10-always-allow",
+            "tern-only",
+            "The approval card's 4th option: Always allow this (run_command python *)",
+            Act::Nothing,
+            2000,
+        ),
+        scene(
+            "w11-always-allowed",
+            "tern-only",
+            "Always allow: the rule is added (toast) and the command runs",
+            Act::WPick(2),
+            3500,
+        ),
+        b(Act::ToastsClear, 300),
+        b(
+            Act::CTypePath("Tour: run it in bash and fetch the page"),
+            200,
+        ),
+        scene(
+            "w12-sandbox-denied",
+            "tern-only",
+            "Sandbox denial: bash is not on the workbench's list; the card fails with the reason and the model is told",
+            Act::CSend,
+            4000,
+        ),
+        b(Act::WState("after denial"), 200),
+        scene(
+            "w13-approval-chip-menu",
+            "tern-only",
+            "The composer's approval chip opened: Read-only, Ask, Workspace write, Full access",
+            Act::WApprovalMenu,
+            2500,
+        ),
+        b(Act::WApprovalMenu, 300),
+        b(Act::WApproval("workspace_write"), 300),
+        scene(
+            "w14-approval-chip-workspace",
+            "tern-only",
+            "The chip after picking Workspace write",
+            Act::Nothing,
+            1500,
+        ),
+        b(Act::CTypePath("Tour: a long conversion"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "w15-cancelled",
+            "tern-only",
+            "Stop while a command runs (Workspace write runs it without asking): the card is Cancelled",
+            Act::CStop,
+            2500,
+        ),
+        b(Act::WKill, 1500),
+        b(Act::WState("after stop"), 200),
+        scene(
+            "w16-settings-permissions",
+            "tern-only",
+            "Settings › Permissions: the mode picker, the rule added by Always allow, workbench programs with logos, the network switch",
+            Act::Settings(Section::Permissions),
+            3000,
+        ),
+        scene(
+            "w17-settings-permissions-light",
+            "tern-only",
+            "Settings › Permissions in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 1200),
+        b(Act::CloseSettings, 800),
+        scene(
+            "w18-cards-light",
+            "tern-only",
+            "The chat's cards in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 800),
+    ]
 }
 
 /// The folders tour (`TERN_TOUR_ONLY=folders`, #74): the composer tour's
@@ -2808,6 +3091,12 @@ fn folder_beats() -> Vec<Beat> {
 
 /// The composer scenes.
 fn composer_script() -> Vec<Beat> {
+    if work_tour() {
+        let mut v = vec![b(Act::Nothing, 4000), b(Act::CState("start"), 200)];
+        v.extend(work_beats());
+        v.push(b(Act::Quit, 0));
+        return v;
+    }
     if folders_tour() {
         let mut v = vec![b(Act::Nothing, 4000), b(Act::CState("start"), 200)];
         v.extend(folder_beats());
@@ -3540,6 +3829,8 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     }
     let _ = std::fs::write(testing.join("notes.md"), TOUR_NOTES);
     let _ = std::fs::write(testing.join("marks.csv"), "name,marks\nAli,81\nSara,92\n");
+    // #75: the work tour's conversion script.
+    let _ = std::fs::write(testing.join("convert.py"), WORK_SCRIPT);
     let _ = std::fs::write(testing.join("src").join("main.rs"), "fn main() {}\n");
     let _ = std::fs::write(testing.join("src").join("lib.rs"), "pub fn add() {}\n");
     let _ = std::fs::write(testing.join("node_modules/left-pad/index.js"), "\n");
@@ -3810,16 +4101,34 @@ mod mock {
         }
         let req: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
         let stream = req["stream"].as_bool().unwrap_or(false);
-        let (text, call) = decide(&req);
+        let (text, calls) = match work_decide(&req) {
+            Some(w) => w,
+            None => {
+                let (text, call) = decide(&req);
+                (text, call.into_iter().collect::<Vec<_>>())
+            }
+        };
         if stream {
-            ("text/event-stream", sse(&text, call.as_ref()))
+            ("text/event-stream", sse_many(&text, &calls))
         } else {
             let mut message = json!({"role": "assistant", "content": text});
-            if let Some((name, args)) = &call {
-                message["tool_calls"] = json!([{"id": "call_tour", "type": "function",
-                    "function": {"name": name, "arguments": args.to_string()}}]);
+            if !calls.is_empty() {
+                message["tool_calls"] = Value::Array(
+                    calls
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, args))| {
+                            json!({"id": format!("call_tour_{i}"), "type": "function",
+                                "function": {"name": name, "arguments": args.to_string()}})
+                        })
+                        .collect(),
+                );
             }
-            let finish = if call.is_some() { "tool_calls" } else { "stop" };
+            let finish = if calls.is_empty() {
+                "stop"
+            } else {
+                "tool_calls"
+            };
             (
                 "application/json",
                 json!({"id": "tour", "object": "chat.completion", "model": "tour-chat",
@@ -4050,7 +4359,103 @@ mod mock {
             .collect()
     }
 
-    fn sse(text: &str, call: Option<&(String, Value)>) -> String {
+    /// #75: the work tour's replies: several calls in one step, and a
+    /// short answer once the results are back. `None` for other messages.
+    fn work_decide(req: &Value) -> Option<(String, Vec<(String, Value)>)> {
+        let msgs = req["messages"].as_array()?;
+        if !req["tools"].as_array().is_some_and(|t| !t.is_empty()) {
+            return None;
+        }
+        let last_user = msgs.iter().rposition(|m| m["role"] == "user")?;
+        let user = text_of(&msgs[last_user]);
+        if !user.contains("Tour: ") {
+            return None;
+        }
+        let results: Vec<String> = msgs[last_user + 1..]
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(text_of)
+            .collect();
+        let py = super::tour_python();
+        let cmd = |c: String| ("run_command".to_owned(), json!({"command": c}));
+        let write = |text: &str| {
+            (
+                "file_write".to_owned(),
+                json!({"path": "summary.md", "text": text}),
+            )
+        };
+        let done = !results.is_empty();
+        let line = results
+            .last()
+            .map(|r| first_line(r.as_str()))
+            .unwrap_or_default();
+        super::log(&format!(
+            "TOUR mock work {:?} results={} last={line:?}",
+            user.chars().take(60).collect::<String>(),
+            results.len()
+        ));
+        if user.contains("convert my notes") {
+            return Some(if done {
+                (
+                    "Converted the notes (the conversion was stopped early) and wrote summary.md."
+                        .into(),
+                    Vec::new(),
+                )
+            } else {
+                (
+                    String::new(),
+                    vec![
+                        cmd(format!("{py} convert.py notes.md")),
+                        write(super::WORK_SUMMARY),
+                    ],
+                )
+            });
+        }
+        if user.contains("second draft") {
+            return Some(if done {
+                ("Wrote the second draft.".into(), Vec::new())
+            } else {
+                (String::new(), vec![write(super::WORK_SUMMARY_2)])
+            });
+        }
+        if user.contains("count the words") {
+            return Some(if done {
+                (format!("Counted: {line} words in summary.md."), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![cmd(format!(
+                        "{py} -c \"print(len(open('summary.md').read().split()))\""
+                    ))],
+                )
+            });
+        }
+        if user.contains("in bash") {
+            return Some(if done {
+                ("Tern's sandbox refused bash: it is not on the workbench's list, so I did not run it. Tern's own web tools can fetch the page instead.".into(), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![cmd("bash -c 'curl https://example.com'".into())],
+                )
+            });
+        }
+        if user.contains("long conversion") {
+            return Some(if done {
+                ("The conversion stopped.".into(), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![cmd(format!("{py} convert.py marks.csv"))],
+                )
+            });
+        }
+        None
+    }
+
+    /// A streamed reply with any number of tool calls; each call's
+    /// arguments arrive in pieces, as real providers send them.
+    fn sse_many(text: &str, calls: &[(String, Value)]) -> String {
         let mut out = String::new();
         let mut push = |v: Value| {
             out.push_str("data: ");
@@ -4061,16 +4466,25 @@ mod mock {
         for piece in text.split_inclusive(' ') {
             push(json!({"choices": [{"index": 0, "delta": {"content": piece}}]}));
         }
-        let finish = match call {
-            Some((name, args)) => {
+        for (i, (name, args)) in calls.iter().enumerate() {
+            push(
+                json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": i,
+                "id": format!("call_tour_{i}"), "type": "function",
+                "function": {"name": name, "arguments": ""}}]}}]}),
+            );
+            let a: Vec<char> = args.to_string().chars().collect();
+            for chunk in a.chunks(48) {
+                let piece: String = chunk.iter().collect();
                 push(
-                    json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0,
-                    "id": "call_tour", "type": "function",
-                    "function": {"name": name, "arguments": args.to_string()}}]}}]}),
+                    json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": i,
+                    "function": {"arguments": piece}}]}}]}),
                 );
-                "tool_calls"
             }
-            None => "stop",
+        }
+        let finish = if calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
         };
         push(
             json!({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
@@ -4078,6 +4492,11 @@ mod mock {
         );
         out.push_str("data: [DONE]\n\n");
         out
+    }
+
+    #[cfg(test)]
+    fn sse(text: &str, call: Option<&(String, Value)>) -> String {
+        sse_many(text, &call.into_iter().cloned().collect::<Vec<_>>())
     }
 
     fn crc32(data: &[u8]) -> u32 {

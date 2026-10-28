@@ -38,6 +38,7 @@ pub mod crawlers;
 pub mod decide;
 pub mod deep;
 pub mod diag;
+pub mod diff;
 pub mod docs;
 pub mod doctor;
 pub mod engine;
@@ -48,12 +49,14 @@ pub mod handoff;
 pub mod highlight;
 pub mod ledger;
 pub mod library;
+pub mod live;
 pub mod local_models;
 pub mod mcp;
 pub mod media;
 pub mod mention;
 pub mod office_legacy;
 pub mod paths;
+pub mod permissions;
 pub mod pictures;
 pub mod policy;
 pub mod prefs;
@@ -61,6 +64,7 @@ pub mod projects;
 pub mod prompts;
 pub mod protocol;
 pub mod providers;
+pub mod python;
 pub mod range;
 /// Read aloud with the local voice model (#69; needs the speakers).
 #[cfg(feature = "mic")]
@@ -72,6 +76,7 @@ pub mod report;
 pub mod results;
 pub mod rules;
 pub mod run;
+pub mod sandbox;
 pub mod search;
 pub mod side;
 pub mod skill_author;
@@ -90,6 +95,7 @@ pub mod verify;
 pub mod watch;
 pub mod web;
 pub mod webintent;
+pub mod workbench;
 pub mod workspace;
 
 pub use ask::{AskOptions, AskReport, Source};
@@ -109,6 +115,7 @@ pub use engine::{
     ApprovalRequest, Approver, Budget, CONTINUE_PROMPT, CancelFlag, DenyAll, EventSink, MemorySink,
     Model, OnText, StoreSink, TurnLoop, TurnOutcome, is_length_stop,
 };
+pub use permissions::{ApprovalMode, PermissionRule, RuleKind};
 pub use policy::{ApprovalAnswer, Decision, Mode, PolicyConfig, PolicyGate};
 pub use prefs::Preferences;
 pub use report::{ReportFiles, RunReport};

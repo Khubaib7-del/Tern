@@ -19,6 +19,15 @@ pub enum Delta<'a> {
     Text(&'a str),
     /// The model's reasoning, for the Thinking section.
     Reasoning(&'a str),
+    /// A piece of a native tool call's arguments as they stream (#75):
+    /// the call's index in the reply, its name when this piece names it,
+    /// and a JSON text fragment (a whole call's arguments when the
+    /// provider sends them at once).
+    Tool {
+        index: usize,
+        name: Option<&'a str>,
+        args: &'a str,
+    },
 }
 
 /// The result of `tern provider test`.
@@ -489,7 +498,7 @@ impl Provider {
     ) -> ProviderResult<ChatResponse> {
         let on = |d: Delta<'_>| match d {
             Delta::Text(t) => on_text(t),
-            Delta::Reasoning(_) => true,
+            Delta::Reasoning(_) | Delta::Tool { .. } => true,
         };
         self.chat_stream_deltas(req, &on).await
     }
@@ -555,9 +564,24 @@ impl Provider {
         let mut split = crate::effort::ThinkSplitter::default();
         let inline = self.spec.wire == Wire::OpenAiCompatible;
         let mut stopped = false;
+        // Calls the provider sends without an index (whole) count up.
+        let mut next_index = 0usize;
         // Sends a piece on: its reasoning, then its text (with any leading
         // `<think>` block moved over to reasoning). `false` stops.
         let mut forward = |piece: &mut stream::Piece| -> bool {
+            for t in &piece.tools {
+                let index = t.index.unwrap_or_else(|| {
+                    next_index += 1;
+                    1000 + next_index
+                });
+                let whole = t.whole.as_ref().map(|v| v.to_string());
+                let args = whole.as_deref().unwrap_or(&t.args);
+                on(Delta::Tool {
+                    index,
+                    name: t.name.as_deref(),
+                    args,
+                });
+            }
             if inline && !piece.text.is_empty() {
                 let (r, t) = split.push(&piece.text);
                 piece.reasoning.push_str(&r);

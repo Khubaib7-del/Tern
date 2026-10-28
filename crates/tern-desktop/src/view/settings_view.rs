@@ -46,6 +46,7 @@ fn section_icon(s: Section) -> AssetIcon {
         Section::LocalModels => AssetIcon::Download,
         Section::Speech => AssetIcon::Mic,
         Section::Tools => AssetIcon::Wrench,
+        Section::Permissions => AssetIcon::ShieldHalf,
         Section::Decision => AssetIcon::Signpost,
         Section::Evaluation => AssetIcon::FlaskConical,
         Section::Extensions => AssetIcon::Blocks,
@@ -71,6 +72,9 @@ fn tool_icon(name: &str) -> AssetIcon {
         "file_read" => AssetIcon::FileText,
         "file_search" => AssetIcon::Search,
         "load_skill" => AssetIcon::Sparkles,
+        "run_command" => AssetIcon::SquareTerminal,
+        "run_python" => AssetIcon::FileCode,
+        "show_in_panel" => AssetIcon::PanelRightClose,
         n if n.starts_with("vault") => AssetIcon::NotebookPen,
         n if n.starts_with("file") => AssetIcon::FileText,
         _ => AssetIcon::Wrench,
@@ -89,6 +93,9 @@ pub(super) struct SettingsInputs {
     pub base_url: Entity<InputState>,
     /// Models › catalogue filter.
     pub filter: Entity<InputState>,
+    /// Permissions: a new rule's pattern, and a program for the workbench.
+    pub rule_pattern: Entity<InputState>,
+    pub program: Entity<InputState>,
     pub catalog_scroll: UniformListScrollHandle,
     pub role_scroll: UniformListScrollHandle,
     pub provider_models_scroll: UniformListScrollHandle,
@@ -104,6 +111,14 @@ impl SettingsInputs {
         let base_url = cx
             .new(|cx| InputState::new(window, cx).placeholder("Leave empty for the usual address"));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter models"));
+        let rule_pattern = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(super::permissions_view::pattern_hint(
+                tern_agent::permissions::RuleKind::Url,
+            ))
+        });
+        let program = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("A program name, like latexmk or Rscript")
+        });
         let subs = vec![
             cx.subscribe_in(
                 &search,
@@ -132,6 +147,24 @@ impl SettingsInputs {
                 },
             ),
             cx.subscribe_in(
+                &rule_pattern,
+                window,
+                |this: &mut Workspace, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.add_permission_rule(window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &program,
+                window,
+                |this: &mut Workspace, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter { .. } = event {
+                        this.add_workbench_program(window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
                 &filter,
                 window,
                 |this: &mut Workspace, input, event: &InputEvent, _, cx| {
@@ -147,6 +180,8 @@ impl SettingsInputs {
                 search,
                 base_url,
                 filter,
+                rule_pattern,
+                program,
                 catalog_scroll: UniformListScrollHandle::new(),
                 role_scroll: UniformListScrollHandle::new(),
                 provider_models_scroll: UniformListScrollHandle::new(),
@@ -218,6 +253,7 @@ impl Workspace {
                 self.probe_gpu(cx);
             }
             Section::Tools
+            | Section::Permissions
             | Section::Study
             | Section::Privacy
             | Section::About
@@ -509,6 +545,7 @@ impl Workspace {
             Section::LocalModels => self.local_models_page(p, cx),
             Section::Speech => self.speech_page(p, cx),
             Section::Tools => self.tools_page(p, cx),
+            Section::Permissions => self.permissions_page(p, cx),
             Section::Decision => self.decision_screen(p, cx),
             Section::Evaluation => self.eval_screen(p, cx),
             Section::Extensions => self.customize_screen(p, window, cx),

@@ -67,6 +67,7 @@ mod theme;
 mod thumbs;
 mod timeline;
 mod toast;
+mod toolcards;
 mod view;
 mod webview;
 
@@ -80,6 +81,11 @@ pub(crate) const APP_ID: &str = "io.github.khubaib7_del.Tern";
 use view::Workspace;
 
 fn main() {
+    // `run_python` (#75) starts this executable again as a sandboxed
+    // Python worker; it runs the program and exits before any window.
+    if let Some(code) = tern_agent::python::worker_main() {
+        std::process::exit(code);
+    }
     // The hidden UI tour (TERN_TOUR=1 or --tour) runs in a throwaway data
     // folder: this process starts it as a child and waits.
     if let Some(code) = view::tour::isolate() {

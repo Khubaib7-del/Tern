@@ -34,7 +34,13 @@ const MAX_HITS: usize = 40;
 const MAX_FILE_BYTES: u64 = 2_000_000;
 
 /// The tool names, so a chat can take them out again.
-pub const TOOL_NAMES: [&str; 4] = ["files_list", "file_read", "file_search", "file_write"];
+pub const TOOL_NAMES: [&str; 5] = [
+    "files_list",
+    "file_read",
+    "file_search",
+    "file_write",
+    "run_command",
+];
 
 /// The folder or file a chat works in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,6 +84,11 @@ impl Workspace {
     /// The path the user opened.
     pub fn path(&self) -> &Path {
         self.only.as_deref().unwrap_or(&self.root)
+    }
+
+    /// The folder: the workspace itself, or a one-file workspace's folder.
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn is_file(&self) -> bool {
@@ -254,6 +265,7 @@ impl Workspace {
         tools.register(FileRead(self.clone()));
         tools.register(FileSearch(self.clone()));
         tools.register(FileWrite(self.clone()));
+        crate::workbench::register(self, tools);
     }
 
     /// Takes the file tools out.
@@ -487,18 +499,44 @@ tool!(
     }
 );
 
-tool!(
-    FileWrite,
-    "file_write",
-    "Write a text file in the chat's workspace (creates or replaces it). The user approves each write.",
-    EffectClass::ExternalSideEffect,
-    json!({"type": "object", "required": ["path", "text"], "additionalProperties": false,
-           "properties": {"path": {"type": "string"}, "text": {"type": "string"}}}),
-    |ws, args| {
-        let p = ws.write(&path_arg(&args), args["text"].as_str().unwrap_or_default())?;
-        Ok(ToolOutput::text(format!("Wrote {p}.")))
+#[derive(Debug, Clone)]
+struct FileWrite(Arc<Workspace>);
+
+impl Tool for FileWrite {
+    fn name(&self) -> &'static str {
+        "file_write"
     }
-);
+    fn summary(&self) -> &'static str {
+        "Write a text file in the chat's workspace (creates or replaces it). The user sees the text as it is written and a diff before it is saved, and approves the write unless the approval mode allows it."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::ExternalSideEffect
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["path", "text"], "additionalProperties": false,
+               "properties": {"path": {"type": "string"}, "text": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        Some(format!("{}/{}", self.0.name(), path_arg(args)))
+    }
+    fn confined(&self, args: &Value) -> bool {
+        self.0.resolve(&path_arg(args)).is_ok()
+    }
+    fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
+        self.0.resolve(&path_arg(args)).into_iter().collect()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        let ws = self.0.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let p = ws.write(&path_arg(&args), args["text"].as_str().unwrap_or_default())?;
+                Ok(ToolOutput::text(format!("Wrote {p}.")))
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
+        })
+    }
+}
 
 /// What a turn may do, from the composer's mode picker.
 #[derive(

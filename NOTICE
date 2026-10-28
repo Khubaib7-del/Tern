@@ -53,6 +53,24 @@ syntect (code colours in answers, linked through gpui-component, #72)
   MIT License, Copyright (c) 2016 Tristan Hume, Keith Hall, Google Inc
   and other contributors.
 
+monty and monty-types (run_python, Python glue code, linked, #75)
+  https://github.com/pydantic/monty (1.4.0)
+  MIT License, Copyright (c) Pydantic Services Inc.
+  Monty parses Python with Ruff's parser crates (ruff_python_parser,
+  ruff_python_ast and friends, 0.0.14), MIT License. Other crates it pulls
+  in are MIT, MIT OR Apache-2.0, Unlicense OR MIT, Apache-2.0, or
+  BlueOak-1.0.0 (minicbor, minicbor-serde; a permissive licence). No GPL
+  or AGPL code.
+
+similar (diffs before a file write, linked, #75)
+  https://github.com/mitsuhiko/similar
+  Apache License 2.0, Copyright Armin Ronacher.
+
+windows-sys and libc (sandbox v1: Job Objects on Windows, process groups
+and rlimits on Linux and macOS, linked, #75)
+  https://github.com/microsoft/windows-rs, https://github.com/rust-lang/libc
+  MIT License or Apache License 2.0, at your option.
+
 two-face (extra syntax and theme definitions for syntect, #72)
   https://github.com/CosmicHorrorDev/two-face
   MIT License or Apache License 2.0, at your option. Its bundled
