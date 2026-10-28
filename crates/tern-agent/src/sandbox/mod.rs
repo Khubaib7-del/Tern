@@ -187,8 +187,16 @@ impl SandboxPolicy {
             .filter(|(k, _)| KEEP.iter().any(|w| w.eq_ignore_ascii_case(k)))
             .filter(|(k, _)| !secret_name(k))
             .collect();
+        // Names are case-insensitive on Windows only: there `https_proxy`
+        // and `HTTPS_PROXY` are one variable.
         let mut set = |k: &str, v: &str| {
-            out.retain(|(o, _)| !o.eq_ignore_ascii_case(k));
+            out.retain(|(o, _)| {
+                if cfg!(windows) {
+                    !o.eq_ignore_ascii_case(k)
+                } else {
+                    o != k
+                }
+            });
             out.push((k.to_owned(), v.to_owned()));
         };
         set("TERN_SANDBOX", "1");
@@ -205,19 +213,21 @@ impl SandboxPolicy {
         );
         set("GIT_TERMINAL_PROMPT", "0");
         if !self.network {
+            // Lower case first, so on Windows the upper-case name is the
+            // one kept.
             for k in [
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
                 "http_proxy",
                 "https_proxy",
                 "all_proxy",
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
                 "FTP_PROXY",
             ] {
                 set(k, BLACKHOLE);
             }
-            set("NO_PROXY", "");
             set("no_proxy", "");
+            set("NO_PROXY", "");
             set("PIP_NO_INDEX", "1");
             set("UV_OFFLINE", "1");
             set("npm_config_offline", "true");
@@ -231,6 +241,10 @@ impl SandboxPolicy {
 /// A variable name that looks like it holds a secret.
 pub fn secret_name(k: &str) -> bool {
     let k = k.to_ascii_uppercase();
+    // Tern's own git setting (`GIT_CONFIG_KEY_0=core.hooksPath`).
+    if k.starts_with("GIT_CONFIG_KEY_") {
+        return false;
+    }
     [
         "KEY",
         "TOKEN",
@@ -514,9 +528,14 @@ fn path_candidates(w: &str) -> Vec<String> {
             out.push(s.to_owned());
         }
     };
-    push(w);
-    if let Some((_, v)) = w.split_once('=') {
-        push(v);
+    match w.split_once('=') {
+        // `--output=../x.md`: the value is the path, not the flag.
+        Some((flag, v)) if flag.starts_with('-') => push(v),
+        Some((_, v)) => {
+            push(w);
+            push(v);
+        }
+        None => push(w),
     }
     out
 }
