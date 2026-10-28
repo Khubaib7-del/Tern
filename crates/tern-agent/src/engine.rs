@@ -37,7 +37,7 @@ use crate::checkpoint::{
 use crate::policy::{ApprovalAnswer, CallView, Decision, PolicyGate};
 use crate::protocol::{self, Reply};
 use crate::steer::{Steering, guidance_message};
-use crate::tools::{BoxFuture, ToolError, ToolOutput, ToolRegistry, validate};
+use crate::tools::{BoxFuture, Tool, ToolError, ToolOutput, ToolRegistry, validate};
 
 /// A chat model the loop can call. [`Provider`] is the real one; tests script one.
 pub trait Model: Send + Sync {
@@ -388,6 +388,10 @@ pub struct RunHooks<'a> {
     /// head and tail and reads the rest with `read_result`). `None` keeps
     /// no copy (#72).
     pub results: Option<&'a crate::results::ResultStore>,
+    /// Results of searches, fetches and reads kept for the chat (#77): the
+    /// same call again gets the kept result, marked on its card. `None`
+    /// caches nothing.
+    pub cache: Option<&'a crate::toolcache::ToolCache>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -587,6 +591,28 @@ struct Run<'r, 'a> {
     /// The number the next `tool_step` uses, set when a reply's calls were
     /// queued.
     next_call: Option<u32>,
+    /// The call a script or a task graph runs inside (#77): its calls'
+    /// events carry it as `parent`, so their cards nest under it.
+    parent: Option<u32>,
+    /// The task graph task a call runs for, as `task`.
+    task: Option<String>,
+}
+
+/// A call checked by the gate and ready to run (#77).
+struct Ready<'t> {
+    call: u32,
+    name: String,
+    args: Value,
+    tool: &'t dyn Tool,
+    target: Option<String>,
+    task: Option<String>,
+}
+
+/// What [`Run::tool_pre`] found.
+enum Pre<'t> {
+    /// Answered without running: an unknown tool, bad input, a refusal.
+    Done(String),
+    Go(Ready<'t>),
 }
 
 /// A step failed in a way that ends the turn.
@@ -623,6 +649,8 @@ impl<'a> TurnLoop<'a> {
             partial: String::new(),
             call_seq: 0,
             next_call: None,
+            parent: None,
+            task: None,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -660,7 +688,18 @@ impl Run<'_, '_> {
         EventEnvelope::new(self.cfg.session, kind, effect, summary, payload).with_turn(self.turn)
     }
 
-    fn record(&self, e: EventEnvelope) -> Result<(), Stop> {
+    fn record(&self, mut e: EventEnvelope) -> Result<(), Stop> {
+        if (self.parent.is_some() || self.task.is_some())
+            && e.payload.get("call").is_some()
+            && let Some(o) = e.payload.as_object_mut()
+        {
+            if let Some(p) = self.parent {
+                o.entry("parent").or_insert(json!(p));
+            }
+            if let Some(t) = &self.task {
+                o.entry("task").or_insert(json!(t));
+            }
+        }
         self.cfg.sink.record(e).map(|_| ()).map_err(|e| Stop {
             state: TurnState::Failed,
             reason: format!("Tern could not write the run log, so it stopped: {e}"),
@@ -1220,7 +1259,7 @@ impl Run<'_, '_> {
                         self.called.push(name.clone());
                         searched |= name == "web_search";
                         self.next_call = Some(first + i as u32);
-                        results.push(self.tool_step(name, args).await?);
+                        results.push(self.dispatch(name, args).await?);
                     }
                     messages.push(ChatMessage::assistant(reply.text));
                     messages.push(ChatMessage::user(results.join("\n\n")));
@@ -1342,14 +1381,107 @@ impl Run<'_, '_> {
         }
     }
 
+    fn finish(mut self, result: Result<(TurnState, String), Stop>) -> TurnOutcome {
+        let (state, answer, reason) = match result {
+            Ok((state, text)) => {
+                let gap = (state == TurnState::CompletedWithGaps)
+                    .then(|| "The model gave an empty answer.".to_owned());
+                (state, Some(text), gap)
+            }
+            Err(stop) => (stop.state, None, Some(stop.reason)),
+        };
+        if self.fsm.state() != state {
+            // A failure to move here only happens after an earlier failure,
+            // which already set a terminal state.
+            let _ = self.fsm.move_to(state);
+        }
+        let kind = match state {
+            TurnState::BudgetExceeded => "budget.exceeded",
+            TurnState::Cancelled => "run.cancelled",
+            _ => "turn.finished",
+        };
+        let answered = answer.is_some();
+        if answered && let Some(sink) = self.cfg.hooks.checkpoints {
+            let _ = sink.clear(&self.cfg.session.to_string());
+        }
+        let resumable = !answered && self.cfg.hooks.checkpoints.is_some() && self.ck.is_some();
+        // The log may be what failed; the outcome still reports the stop.
+        let _ = self.record(
+            self.event(
+                kind,
+                EffectClass::Analysis,
+                reason.clone().unwrap_or_else(|| "Answered".into()),
+                json!({
+                    "state": state,
+                    "model_calls": self.model_calls,
+                    "tool_calls": self.tool_calls,
+                    "answer_chars": answer.as_ref().map(String::len),
+                    "answer": answer,
+                    "partial": (state == TurnState::Cancelled && !self.partial.trim().is_empty())
+                        .then(|| self.partial.clone()),
+                    "resumable": resumable,
+                }),
+            )
+            .with_usage(self.usage.to_delta()),
+        );
+        TurnOutcome {
+            turn_id: self.turn,
+            state: self.fsm.state(),
+            answer,
+            reason,
+            states: self.fsm.history().to_vec(),
+            usage: self.usage,
+            model_calls: self.model_calls,
+            tool_calls: self.tool_calls,
+        }
+    }
+}
+
+impl<'a> Run<'_, 'a> {
     /// Validates, gates, runs, and records one tool call. Returns the text
     /// the model reads next.
     async fn tool_step(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
+        match self.tool_pre(name, args).await? {
+            Pre::Done(text) => Ok(text),
+            Pre::Go(r) => {
+                self.begin(&r)?;
+                self.started(&r)?;
+                let (out, age) =
+                    execute(r.tool, &r.name, r.args.clone(), self.cfg.hooks.cache).await;
+                self.post(r, out, age)
+            }
+        }
+    }
+
+    /// A call the model asked for: a task graph and a script that calls
+    /// tools (code mode) run their own calls; the rest is one call (#77).
+    async fn dispatch(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
+        let tools: &'a ToolRegistry = self.cfg.tools;
+        match name {
+            "run_tasks" if tools.get(name).is_some() => self.task_step(args).await,
+            "run_python" if tools.get(name).is_some() => {
+                let stubs = crate::python::stubs(tools);
+                let code = args["code"].as_str().unwrap_or_default();
+                if !stubs.is_empty() && crate::python::calls_tools(code, &stubs) {
+                    self.code_step(args, stubs).await
+                } else {
+                    self.tool_step(name, args).await
+                }
+            }
+            _ => self.tool_step(name, args).await,
+        }
+    }
+
+    /// Everything before a call runs: is it known, are its arguments
+    /// right, does the sandbox refuse it, what the gate says, and the
+    /// approval card when it asks.
+    async fn tool_pre(&mut self, name: &str, args: &Value) -> Result<Pre<'a>, Stop> {
         let call = self.next_call.take().unwrap_or_else(|| {
             self.call_seq += 1;
             self.call_seq
         });
-        let Some(tool) = self.cfg.tools.get(name) else {
+        let tools: &'a ToolRegistry = self.cfg.tools;
+        let Some(tool) = tools.get(name) else {
             self.go(TurnState::RecordResult)?;
             self.record(self.event(
                 "tool.rejected",
@@ -1357,11 +1489,11 @@ impl Run<'_, '_> {
                 format!("The model asked for `{name}`, which this turn does not have"),
                 json!({"tool": name, "call": call}),
             ))?;
-            let names = self.cfg.tools.names().collect::<Vec<_>>().join(", ");
-            return Ok(format!(
+            let names = tools.names().collect::<Vec<_>>().join(", ");
+            return Ok(Pre::Done(format!(
                 "There is no tool called `{name}`. Available: {}.",
                 if names.is_empty() { "none" } else { &names }
-            ));
+            )));
         };
         if let Err(e) = validate(&tool.input_schema(), args) {
             self.go(TurnState::RecordResult)?;
@@ -1369,9 +1501,11 @@ impl Run<'_, '_> {
                 "tool.rejected",
                 tool.effect(),
                 format!("`{name}` was asked for with bad arguments"),
-                json!({"tool": name, "call": call, "error": e}),
+                json!({"tool": name, "call": call, "error": e, "args": brief_args(args)}),
             ))?;
-            return Ok(format!("Tool `{name}` {e}. Check its input schema."));
+            return Ok(Pre::Done(format!(
+                "Tool `{name}` {e}. Check its input schema."
+            )));
         }
         if self.tool_calls >= self.cfg.budget.max_tool_calls {
             return Err(Self::over_budget(format!(
@@ -1403,9 +1537,9 @@ impl Run<'_, '_> {
                 format!("The sandbox refused `{what}`: {why}"),
                 json!({"tool": name, "call": call, "args": brief_args(args), "reason": why}),
             ))?;
-            return Ok(format!(
+            return Ok(Pre::Done(format!(
                 "Tool `{name}` was refused by Tern's sandbox: {why}"
-            ));
+            )));
         }
         let target = tool.target(args);
         let view = CallView {
@@ -1433,6 +1567,13 @@ impl Run<'_, '_> {
             Some(Ok(why)) => Some(why.clone()),
             _ => asks,
         };
+        let mut decided = json!({"tool": name, "call": call, "target": target, "decision": decision, "flag": why,
+               "detail": call_detail(name, args), "mode": self.cfg.gate.config().approval.id()});
+        if self.parent.is_some() {
+            // A call inside a script or a graph has no queued event: its
+            // card starts here, with its arguments.
+            decided["args"] = brief_args(args);
+        }
         self.record(self.event(
             "policy.decided",
             tool.effect(),
@@ -1442,8 +1583,7 @@ impl Run<'_, '_> {
                 (Decision::Ask, None) => format!("`{name}` needs your approval"),
                 (Decision::Deny { reason }, _) => reason.clone(),
             },
-            json!({"tool": name, "call": call, "target": target, "decision": decision, "flag": why,
-                   "detail": call_detail(name, args), "mode": self.cfg.gate.config().approval.id()}),
+            decided,
         ))?;
         match decision {
             Decision::Allow { .. } => {}
@@ -1512,22 +1652,66 @@ impl Run<'_, '_> {
                 self.check_cancel()?;
             }
         }
+        Ok(Pre::Go(Ready {
+            call,
+            name: name.to_owned(),
+            args: args.clone(),
+            tool,
+            target,
+            task: self.task.clone(),
+        }))
+    }
 
+    /// The call starts: the state moves on and it counts.
+    fn begin(&mut self, _r: &Ready<'_>) -> Result<(), Stop> {
         self.go(TurnState::Executing)?;
         self.tool_calls += 1;
-        self.record(self.event(
+        Ok(())
+    }
+
+    /// Logs that the call is running.
+    fn started(&mut self, r: &Ready<'_>) -> Result<(), Stop> {
+        let task = std::mem::replace(&mut self.task, r.task.clone());
+        let res = self.record(self.event(
             "tool.started",
-            tool.effect(),
-            format!("Running `{name}`"),
-            json!({"tool": name, "call": call, "args": brief_args(args)}),
-        ))?;
-        let out: Result<ToolOutput, ToolError> =
-            match tokio::time::timeout(tool.timeout(), tool.call(args.clone())).await {
-                Ok(r) => r,
-                Err(_) => Err(ToolError::TimedOut),
-            };
+            r.tool.effect(),
+            format!("Running `{}`", r.name),
+            json!({"tool": r.name, "call": r.call, "args": brief_args(&r.args)}),
+        ));
+        self.task = task;
+        res
+    }
+
+    /// Records a call's result and gives the text the model reads.
+    fn post(
+        &mut self,
+        r: Ready<'_>,
+        out: Result<ToolOutput, ToolError>,
+        cached: Option<std::time::Duration>,
+    ) -> Result<String, Stop> {
+        let task = std::mem::replace(&mut self.task, r.task.clone());
+        let res = self.post_inner(&r, out, cached);
+        self.task = task;
+        res
+    }
+
+    fn post_inner(
+        &mut self,
+        r: &Ready<'_>,
+        out: Result<ToolOutput, ToolError>,
+        cached: Option<std::time::Duration>,
+    ) -> Result<String, Stop> {
+        let (name, args, tool, call) = (r.name.as_str(), &r.args, r.tool, r.call);
+        let view = CallView {
+            tool: name,
+            effect: tool.effect(),
+            target: r.target.as_deref(),
+            args,
+        };
         self.cfg.gate.consume(&view);
-        self.go(TurnState::RecordResult)?;
+        if self.fsm.state() != TurnState::RecordResult {
+            self.go(TurnState::RecordResult)?;
+        }
         if let Ok(o) = &out {
             self.note_provenance(name, o);
         }
@@ -1539,21 +1723,36 @@ impl Run<'_, '_> {
                 let cut = o.content.len() > RESULT_LIMIT;
                 let saved = match self.cfg.hooks.results {
                     Some(store) if cut && name != "read_result" => {
-                        let id = result_id(&self.turn.to_string(), self.tool_calls);
+                        let id = result_id(&self.turn.to_string(), call);
                         store.save(&id, &o.content).ok().map(|_| id)
                     }
                     _ => None,
                 };
                 let shown = crate::results::head_tail(&o.content, RESULT_LIMIT, saved.as_deref());
+                let mut p = json!({"tool": name, "call": call, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta, "output": output_head_tail(&o.content)});
+                if let Some(age) = cached {
+                    p["cached"] = json!(true);
+                    p["cached_age_s"] = json!(age.as_secs());
+                }
                 self.record(
                     self.event(
                         "tool.executed",
                         tool.effect(),
-                        format!("Ran `{name}`"),
-                        json!({"tool": name, "call": call, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta, "output": output_head_tail(&o.content)}),
+                        if cached.is_some() {
+                            format!("Ran `{name}` (cached result)")
+                        } else {
+                            format!("Ran `{name}`")
+                        },
+                        p,
                     )
                     .with_evidence(o.evidence_refs.clone()),
                 )?;
+                if name == "plan"
+                    && let Ok(plan) =
+                        serde_json::from_value::<crate::planner::PlanView>(o.meta["plan"].clone())
+                {
+                    self.plan_event(&plan)?;
+                }
                 if cut {
                     format!(
                         "Result of `{name}` ({} characters; the middle was cut, see the note in it):\n{shown}",
@@ -1575,60 +1774,301 @@ impl Run<'_, '_> {
         })
     }
 
-    fn finish(mut self, result: Result<(TurnState, String), Stop>) -> TurnOutcome {
-        let (state, answer, reason) = match result {
-            Ok((state, text)) => {
-                let gap = (state == TurnState::CompletedWithGaps)
-                    .then(|| "The model gave an empty answer.".to_owned());
-                (state, Some(text), gap)
+    /// Logs a plan or a task graph as it stands (`plan.updated`).
+    fn plan_event(&self, v: &crate::planner::PlanView) -> Result<(), Stop> {
+        self.record(self.event(
+            "plan.updated",
+            EffectClass::Analysis,
+            v.line(),
+            serde_json::to_value(v).unwrap_or_default(),
+        ))
+    }
+
+    /// Code mode (#77): a `run_python` script that calls tools. Each of
+    /// its calls is a call of this turn, through the gate (a write still
+    /// shows its card), nested under the script's card; only what the
+    /// script prints comes back to the model.
+    async fn code_step(
+        &mut self,
+        args: &Value,
+        stubs: Vec<crate::python::Stub>,
+    ) -> Result<String, Stop> {
+        let r = match self.tool_pre("run_python", args).await? {
+            Pre::Done(text) => return Ok(text),
+            Pre::Go(r) => r,
+        };
+        self.begin(&r)?;
+        self.started(&r)?;
+        let code = args["code"].as_str().unwrap_or_default().to_owned();
+        if code.len() > 200_000 {
+            return self.post(
+                r,
+                Err(ToolError::BadInput(
+                    "the program is longer than 200 KB".into(),
+                )),
+                None,
+            );
+        }
+        crate::diag::note(&format!(
+            "code mode: script with {} lines, {} tools callable",
+            code.lines().count(),
+            stubs.len()
+        ));
+        let mut script = crate::python::Script::start(code, stubs);
+        let outer = self.parent.replace(r.call);
+        let mut inner = 0u32;
+        let ended = loop {
+            match script.next().await {
+                crate::python::ScriptEvent::Call { tool, args } => {
+                    if let Err(stop) = self.check_cancel() {
+                        script.stop();
+                        break Err(stop);
+                    }
+                    inner += 1;
+                    self.called.push(tool.clone());
+                    if let Err(stop) = self.go(TurnState::ToolRequested) {
+                        script.stop();
+                        break Err(stop);
+                    }
+                    match self.tool_step(&tool, &args).await {
+                        Ok(text) => script.answer(Ok(strip_result_header(&text))),
+                        Err(stop) => {
+                            script.answer(Err(stop.reason.clone()));
+                            script.stop();
+                            break Err(stop);
+                        }
+                    }
+                }
+                crate::python::ScriptEvent::Done(out) => break Ok(out),
             }
-            Err(stop) => (stop.state, None, Some(stop.reason)),
         };
-        if self.fsm.state() != state {
-            // A failure to move here only happens after an earlier failure,
-            // which already set a terminal state.
-            let _ = self.fsm.move_to(state);
-        }
-        let kind = match state {
-            TurnState::BudgetExceeded => "budget.exceeded",
-            TurnState::Cancelled => "run.cancelled",
-            _ => "turn.finished",
+        self.parent = outer;
+        crate::diag::note(&format!("code mode: {inner} tool calls inside the script"));
+        let out = ended?;
+        let out = out.map(|mut o| {
+            o.meta["inner_calls"] = json!(inner);
+            o
+        });
+        self.post(r, out, None)
+    }
+
+    /// A task graph (#77): the tasks in waves, a wave's reads and
+    /// searches at the same time ([`crate::planner::PARALLEL`] at once),
+    /// its changes one by one after them; every task through the gate,
+    /// each finished task's result fed to the tasks that wait for it.
+    async fn task_step(&mut self, args: &Value) -> Result<String, Stop> {
+        use crate::planner::{self, StepStatus};
+        let r = match self.tool_pre("run_tasks", args).await? {
+            Pre::Done(text) => return Ok(text),
+            Pre::Go(r) => r,
         };
-        let answered = answer.is_some();
-        if answered && let Some(sink) = self.cfg.hooks.checkpoints {
-            let _ = sink.clear(&self.cfg.session.to_string());
-        }
-        let resumable = !answered && self.cfg.hooks.checkpoints.is_some() && self.ck.is_some();
-        // The log may be what failed; the outcome still reports the stop.
-        let _ = self.record(
-            self.event(
-                kind,
-                EffectClass::Analysis,
-                reason.clone().unwrap_or_else(|| "Answered".into()),
-                json!({
-                    "state": state,
-                    "model_calls": self.model_calls,
-                    "tool_calls": self.tool_calls,
-                    "answer_chars": answer.as_ref().map(String::len),
-                    "answer": answer,
-                    "partial": (state == TurnState::Cancelled && !self.partial.trim().is_empty())
-                        .then(|| self.partial.clone()),
-                    "resumable": resumable,
-                }),
-            )
-            .with_usage(self.usage.to_delta()),
+        self.begin(&r)?;
+        self.started(&r)?;
+        let tools: &'a ToolRegistry = self.cfg.tools;
+        let graph = match planner::read_graph(&r.args, &|t: &str| tools.get(t).is_some()) {
+            Ok(g) => g,
+            Err(e) => {
+                crate::diag::note(&format!("task graph: refused: {e}"));
+                return self.post(r, Err(ToolError::BadInput(e)), None);
+            }
+        };
+        let mut view = graph.view();
+        crate::diag::note(&format!(
+            "task graph: {} tasks in {} waves{}",
+            graph.tasks.len(),
+            view.waves,
+            if graph.notes.is_empty() {
+                String::new()
+            } else {
+                format!(" (repaired: {})", graph.notes.join("; "))
+            }
+        ));
+        self.plan_event(&view)?;
+        let outer = self.parent.replace(r.call);
+        let mut results: std::collections::BTreeMap<String, String> = Default::default();
+        let ran = self.run_waves(&graph, &mut view, &mut results).await;
+        self.parent = outer;
+        self.task = None;
+        ran?;
+        let mut text = format!(
+            "Task graph: {} tasks in {} waves; {} done, {} failed, {} skipped.",
+            graph.tasks.len(),
+            view.waves,
+            view.count(StepStatus::Done),
+            view.count(StepStatus::Failed),
+            view.count(StepStatus::Skipped),
         );
-        TurnOutcome {
-            turn_id: self.turn,
-            state: self.fsm.state(),
-            answer,
-            reason,
-            states: self.fsm.history().to_vec(),
-            usage: self.usage,
-            model_calls: self.model_calls,
-            tool_calls: self.tool_calls,
+        if !graph.notes.is_empty() {
+            text.push_str(&format!(" Tern fixed: {}.", graph.notes.join("; ")));
+        }
+        for (t, st) in graph.tasks.iter().zip(&view.steps) {
+            text.push_str(&format!(
+                "\n\n### Task {} · {} · {}\n{}",
+                t.id,
+                t.tool,
+                st.status.label(),
+                results.get(&t.id).map(String::as_str).unwrap_or("")
+            ));
+        }
+        self.post(
+            r,
+            Ok(ToolOutput {
+                content: text,
+                evidence_refs: Vec::new(),
+                meta: json!({"graph": view}),
+            }),
+            None,
+        )
+    }
+
+    async fn run_waves(
+        &mut self,
+        graph: &crate::planner::Graph,
+        view: &mut crate::planner::PlanView,
+        results: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<(), Stop> {
+        use crate::planner::{self, StepStatus};
+        let tools: &'a ToolRegistry = self.cfg.tools;
+        let cache = self.cfg.hooks.cache;
+        let mut failed: std::collections::BTreeSet<String> = Default::default();
+        for wave in graph.waves() {
+            self.check_cancel()?;
+            let mut parallel = Vec::new();
+            let mut serial = Vec::new();
+            for i in wave {
+                let t = &graph.tasks[i];
+                if let Some(d) = t.after.iter().find(|d| failed.contains(*d)) {
+                    failed.insert(t.id.clone());
+                    view.steps[i].status = StepStatus::Skipped;
+                    results.insert(
+                        t.id.clone(),
+                        format!("(skipped: task {d}, which it needs, did not finish)"),
+                    );
+                    continue;
+                }
+                match tools.get(&t.tool) {
+                    Some(tool) if planner::parallel_safe(tool.effect()) => parallel.push(i),
+                    _ => serial.push(i),
+                }
+            }
+            for chunk in parallel.chunks(planner::PARALLEL) {
+                let mut ready: Vec<(usize, Ready<'a>)> = Vec::new();
+                for &i in chunk {
+                    let t = &graph.tasks[i];
+                    let fed = planner::feed(&t.args, results);
+                    self.task = Some(t.id.clone());
+                    self.go(TurnState::ToolRequested)?;
+                    self.called.push(t.tool.clone());
+                    match self.tool_pre(&t.tool, &fed).await? {
+                        Pre::Done(text) => {
+                            failed.insert(t.id.clone());
+                            view.steps[i].status = StepStatus::Failed;
+                            results.insert(t.id.clone(), text);
+                        }
+                        Pre::Go(r) => {
+                            self.begin(&r)?;
+                            view.steps[i].status = StepStatus::InProgress;
+                            view.steps[i].call = Some(r.call);
+                            ready.push((i, r));
+                        }
+                    }
+                }
+                self.task = None;
+                if ready.is_empty() {
+                    continue;
+                }
+                self.plan_event(view)?;
+                for (_, r) in &ready {
+                    self.started(r)?;
+                }
+                let outs = futures::future::join_all(
+                    ready
+                        .iter()
+                        .map(|(_, r)| execute(r.tool, &r.name, r.args.clone(), cache)),
+                )
+                .await;
+                for ((i, r), (out, age)) in ready.into_iter().zip(outs) {
+                    let id = graph.tasks[i].id.clone();
+                    let ok = out.is_ok();
+                    let text = self.post(r, out, age)?;
+                    view.steps[i].status = if ok {
+                        StepStatus::Done
+                    } else {
+                        failed.insert(id.clone());
+                        StepStatus::Failed
+                    };
+                    results.insert(id, strip_result_header(&text));
+                }
+                self.plan_event(view)?;
+            }
+            for i in serial {
+                self.check_cancel()?;
+                let t = &graph.tasks[i];
+                let fed = planner::feed(&t.args, results);
+                self.task = Some(t.id.clone());
+                self.go(TurnState::ToolRequested)?;
+                self.called.push(t.tool.clone());
+                view.steps[i].status = StepStatus::InProgress;
+                view.steps[i].call = Some(self.call_seq + 1);
+                self.plan_event(view)?;
+                let text = self.tool_step(&t.tool, &fed).await?;
+                self.task = None;
+                let ok = !text.starts_with(&format!("Tool `{}`", t.tool))
+                    && !text.starts_with("There is no tool");
+                view.steps[i].status = if ok {
+                    StepStatus::Done
+                } else {
+                    failed.insert(t.id.clone());
+                    StepStatus::Failed
+                };
+                results.insert(t.id.clone(), strip_result_header(&text));
+                self.plan_event(view)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Runs a checked call: a kept result when the cache has a fresh one
+/// (with its age), else the tool itself within its time limit. Results
+/// worth keeping are kept; a change empties the kept file reads (#77).
+async fn execute(
+    tool: &dyn Tool,
+    name: &str,
+    args: Value,
+    cache: Option<&crate::toolcache::ToolCache>,
+) -> (Result<ToolOutput, ToolError>, Option<std::time::Duration>) {
+    if let Some(c) = cache
+        && let Some(hit) = c.get(name, &args)
+    {
+        crate::diag::note(&format!(
+            "cache: hit for `{name}` ({} s old)",
+            hit.age.as_secs()
+        ));
+        return (Ok(hit.output), Some(hit.age));
+    }
+    let out = match tokio::time::timeout(tool.timeout(), tool.call(args.clone())).await {
+        Ok(r) => r,
+        Err(_) => Err(ToolError::TimedOut),
+    };
+    if let (Some(c), Ok(o)) = (cache, &out) {
+        c.put(name, &args, o);
+        if crate::toolcache::changes_files(name) {
+            c.forget_local();
         }
     }
+    (out, None)
+}
+
+/// A call's text without the "Result of `x`:" line the model gets, for
+/// a script or a dependent task.
+pub fn strip_result_header(text: &str) -> String {
+    if text.starts_with("Result of `")
+        && let Some((_, rest)) = text.split_once('\n')
+    {
+        return rest.to_owned();
+    }
+    text.to_owned()
 }
 
 /// A saved result's id: the end of the turn's id and the call's number

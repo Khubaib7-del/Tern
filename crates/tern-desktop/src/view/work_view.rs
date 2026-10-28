@@ -74,6 +74,15 @@ pub(super) fn family_ink(fam: Family, p: Palette) -> Hsla {
     hsla(h, s, if p.canvas.l < 0.5 { 0.62 } else { 0.40 }, 1.)
 }
 
+/// The tool cards' done green and failed red, for the plan card (#77).
+pub(super) fn done_green(p: Palette) -> Hsla {
+    green(p)
+}
+
+pub(super) fn fail_red(p: Palette) -> Hsla {
+    red(p)
+}
+
 fn red(p: Palette) -> Hsla {
     hsla(0.0, 0.65, if p.canvas.l < 0.5 { 0.62 } else { 0.45 }, 1.)
 }
@@ -398,6 +407,17 @@ impl Workspace {
                     .text_color(p.text)
                     .child(SharedString::from(c.tool.clone())),
             )
+            .children(c.task.as_ref().map(|t| {
+                div()
+                    .flex_none()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(SharedString::from(format!("task {t}")))
+            }))
             .child(
                 div()
                     .flex_1()
@@ -408,6 +428,30 @@ impl Workspace {
                     .text_color(p.muted)
                     .child(SharedString::from(c.title.clone())),
             )
+            .children(c.cached.map(|age| {
+                // #77: served from the tool cache, not run again.
+                div()
+                    .id(SharedString::from(format!("tc-cached-{key}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(gpui_kit::component::Icon::new(AssetIcon::History).xsmall())
+                    .child("cached")
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(SharedString::from(format!(
+                            "Same call as before: {} (not run again)",
+                            tern_agent::toolcache::age_line(std::time::Duration::from_secs(age))
+                        )))
+                        .build(window, cx)
+                    })
+            }))
             .child(
                 div()
                     .flex_none()
@@ -431,6 +475,7 @@ impl Workspace {
                 cx.notify();
             }));
         let body = open.then(|| self.card_body(&key, c, p, cx));
+        let inner = (!c.children.is_empty()).then(|| self.inner_cards(&key, c, p, cx));
         let card = div()
             .id(SharedString::from(format!("tcard-{key}")))
             .relative()
@@ -459,7 +504,8 @@ impl Workspace {
                     }),
             )
             .child(head)
-            .children(body);
+            .children(body)
+            .children(inner);
         if waiting && !self.reduced_motion {
             card.with_animation(
                 SharedString::from(format!("tcard-pulse-{key}")),
@@ -473,6 +519,79 @@ impl Workspace {
         } else {
             card.into_any_element()
         }
+    }
+
+    /// The calls a code-mode script or a task graph made (#77): one row
+    /// that opens into their cards, open by itself when one waits for
+    /// you or failed.
+    fn inner_cards(
+        &self,
+        key: &str,
+        c: &ToolCard,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ikey = format!("{key}-in");
+        let default = c.opens_inner();
+        let open = self.is_open(&ikey, default);
+        let state = c.inner_state().unwrap_or(CardState::Done);
+        let fam = c
+            .children
+            .first()
+            .map(|k| k.family)
+            .unwrap_or(Family::Other);
+        let k2 = ikey.clone();
+        let row = div()
+            .id(SharedString::from(format!("tin-{key}")))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .min_w_0()
+            .text_xs()
+            .text_color(p.faint)
+            .cursor_pointer()
+            .hover(|d| d.text_color(p.text))
+            .child(
+                gpui_kit::component::Icon::new(if open {
+                    AssetIcon::ChevronDown
+                } else {
+                    AssetIcon::ChevronRight
+                })
+                .xsmall(),
+            )
+            .child(state_icon(state, p, fam))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(c.inner_line())),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_open(k2.clone(), default);
+                cx.notify();
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(row)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .pl_3()
+                        .border_l_1()
+                        .border_color(p.border)
+                        .children(
+                            c.children
+                                .iter()
+                                .map(|k| self.tool_card(format!("{key}-k{}", k.call), k, p, cx)),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     fn card_body(&self, key: &str, c: &ToolCard, p: Palette, cx: &mut Context<Self>) -> AnyElement {

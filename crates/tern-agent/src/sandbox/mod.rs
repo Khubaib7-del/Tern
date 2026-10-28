@@ -724,6 +724,22 @@ pub fn note_denied(command: &str, folder: &Path, reason: &str) -> u64 {
 /// Runs a prepared command under the policy, streaming its output to the
 /// Terminal tab.
 pub async fn run(policy: &SandboxPolicy, p: &Prepared) -> Outcome {
+    run_hosted(policy, p, None).await
+}
+
+/// A program that asks its host for things while it runs (#77, code
+/// mode): stdout lines starting with `mark` go to `requests` (the mark
+/// taken off) instead of the Terminal, and each line from `replies` is
+/// written to its stdin.
+#[derive(Debug)]
+pub struct Host {
+    pub mark: &'static str,
+    pub requests: tokio::sync::mpsc::UnboundedSender<String>,
+    pub replies: tokio::sync::mpsc::UnboundedReceiver<String>,
+}
+
+/// [`run`], with a [`Host`] the program talks to.
+pub async fn run_hosted(policy: &SandboxPolicy, p: &Prepared, host: Option<Host>) -> Outcome {
     let started = Instant::now();
     let id = live::start_run(&p.display, &p.cwd.display().to_string(), &policy.summary());
     crate::diag::note(&format!(
@@ -737,7 +753,11 @@ pub async fn run(policy: &SandboxPolicy, p: &Prepared) -> Outcome {
         .current_dir(&p.cwd)
         .env_clear()
         .envs(policy.env())
-        .stdin(std::process::Stdio::null())
+        .stdin(if host.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -771,10 +791,26 @@ pub async fn run(policy: &SandboxPolicy, p: &Prepared) -> Outcome {
         live::set_killer(id, Arc::new(move || stop.notify_one()));
     }
     let cap = policy.limits.output_bytes;
-    let out = child
-        .stdout
-        .take()
-        .map(|s| tokio::spawn(pump(id, s, Stream::Stdout, cap)));
+    let (out, feeder) = match host {
+        Some(h) => {
+            let feeder = child
+                .stdin
+                .take()
+                .map(|stdin| tokio::spawn(feed(stdin, h.replies)));
+            let out = child
+                .stdout
+                .take()
+                .map(|s| tokio::spawn(pump_hosted(id, s, cap, h.mark, h.requests)));
+            (out, feeder)
+        }
+        None => (
+            child
+                .stdout
+                .take()
+                .map(|s| tokio::spawn(pump(id, s, Stream::Stdout, cap))),
+            None,
+        ),
+    };
     let err = child
         .stderr
         .take()
@@ -802,6 +838,9 @@ pub async fn run(policy: &SandboxPolicy, p: &Prepared) -> Outcome {
     }
     // Anything the tree left running goes with it.
     drop(tree);
+    if let Some(f) = feeder {
+        f.abort();
+    }
     let read = |h: Option<tokio::task::JoinHandle<String>>| async move {
         match h {
             Some(h) => tokio::time::timeout(Duration::from_secs(5), h)
@@ -830,6 +869,47 @@ pub async fn run(policy: &SandboxPolicy, p: &Prepared) -> Outcome {
         stderr,
         took,
     }
+}
+
+/// Writes each reply as a line to the program's stdin, until either side
+/// closes.
+async fn feed(
+    mut stdin: tokio::process::ChildStdin,
+    mut replies: tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    use tokio::io::AsyncWriteExt as _;
+    while let Some(line) = replies.recv().await {
+        let mut line = line.replace('\n', " ");
+        line.push('\n');
+        if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+            break;
+        }
+    }
+}
+
+/// [`pump`] for a hosted program: lines with the mark are requests.
+async fn pump_hosted<R: tokio::io::AsyncRead + Unpin>(
+    id: u64,
+    r: R,
+    cap: usize,
+    mark: &'static str,
+    requests: tokio::sync::mpsc::UnboundedSender<String>,
+) -> String {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut kept = String::new();
+    let mut lines = tokio::io::BufReader::new(r).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(rest) = line.strip_prefix(mark) {
+            let _ = requests.send(rest.to_owned());
+            continue;
+        }
+        let text = format!("{line}\n");
+        live::push_output(id, Stream::Stdout, &text);
+        if kept.len() < cap {
+            kept.push_str(&text);
+        }
+    }
+    kept
 }
 
 async fn pump<R: tokio::io::AsyncRead + Unpin>(id: u64, mut r: R, s: Stream, cap: usize) -> String {

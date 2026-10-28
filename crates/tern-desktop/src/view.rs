@@ -56,6 +56,7 @@ mod palette_view;
 mod panels_view;
 mod permissions_view;
 mod pet_view;
+mod plan_view;
 mod press;
 mod read_aloud_view;
 mod runmap_view;
@@ -4206,6 +4207,11 @@ impl Workspace {
                     .gap_2()
                     .children(thought.as_ref().map(|th| self.thinking_done(i, th, p, cx)))
                     .children(self.rollup(Some(i), run, p, cx))
+                    .children(if folded {
+                        None
+                    } else {
+                        self.plan_cards(Some(i), run, p, cx)
+                    })
                     .children(if folded {
                         None
                     } else {

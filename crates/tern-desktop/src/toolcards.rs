@@ -14,6 +14,11 @@
 //!
 //! Events carry the call's number (`call`) from #75 on; older runs have
 //! none, and their finished calls show as Done or Failed cards.
+//!
+//! #77: a call made inside a code-mode script or a task graph carries its
+//! `parent` call, and its card nests under the parent's card (collapsed
+//! unless one of them needs you). A result served from the tool cache is
+//! marked on its card. `plan` calls have no card: the plan card shows them.
 
 use std::time::Duration;
 
@@ -145,6 +150,14 @@ pub struct ToolCard {
     /// (your rule, your tool setting, an earlier approval, the mode), so
     /// a skipped card is never silent (#77).
     pub allowed_because: Option<String>,
+    /// The script's or task graph's call it ran inside (#77).
+    pub parent: Option<u32>,
+    /// The task graph task it ran for.
+    pub task: Option<String>,
+    /// Served from the tool cache: how old the kept result was, seconds.
+    pub cached: Option<u64>,
+    /// The calls a script or a task graph made, in order.
+    pub children: Vec<ToolCard>,
 }
 
 impl ToolCard {
@@ -167,7 +180,60 @@ impl ToolCard {
             exit: None,
             asked_because: None,
             allowed_because: None,
+            parent: None,
+            task: None,
+            cached: None,
+            children: Vec::new(),
         }
+    }
+
+    /// The most pressing state among the calls inside it, if any.
+    pub fn inner_state(&self) -> Option<CardState> {
+        if self.children.is_empty() {
+            return None;
+        }
+        let has = |s: CardState| self.children.iter().any(|c| c.state == s);
+        Some(
+            [
+                CardState::Waiting,
+                CardState::Running,
+                CardState::Failed,
+                CardState::Queued,
+                CardState::Cancelled,
+            ]
+            .into_iter()
+            .find(|s| has(*s))
+            .unwrap_or(CardState::Done),
+        )
+    }
+
+    /// "3 tool calls inside: web_search ×2, file_write".
+    pub fn inner_line(&self) -> String {
+        let n = self.children.len();
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for c in &self.children {
+            match out.iter_mut().find(|(t, _)| *t == c.tool) {
+                Some((_, k)) => *k += 1,
+                None => out.push((c.tool.clone(), 1)),
+            }
+        }
+        let tools = out
+            .into_iter()
+            .map(|(t, k)| if k > 1 { format!("{t} ×{k}") } else { t })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "{n} {} inside: {tools}",
+            if n == 1 { "tool call" } else { "tool calls" }
+        )
+    }
+
+    /// Whether the calls inside start open: one waits for you or failed.
+    pub fn opens_inner(&self) -> bool {
+        matches!(
+            self.inner_state(),
+            Some(CardState::Waiting | CardState::Failed)
+        )
     }
 
     /// How long it ran, when it finished.
@@ -212,6 +278,11 @@ pub fn title_of(tool: &str, args: &Value) -> String {
             (Some(a), Some(b)) => Some(format!("{a} → {b}")),
             (a, b) => a.or(b).map(str::to_owned),
         },
+        "run_tasks" => s("goal").map(str::to_owned).or_else(|| {
+            args.get("tasks")
+                .and_then(Value::as_array)
+                .map(|t| format!("{} tasks", t.len()))
+        }),
         "show_in_panel" => s("tab").map(|t| match s("path") {
             Some(p) => format!("{t}: {p}"),
             None => t.to_owned(),
@@ -239,9 +310,14 @@ pub struct StepGroup {
 }
 
 impl StepGroup {
-    /// The state the folded row shows: the most pressing card's.
+    /// The state the folded row shows: the most pressing card's, the
+    /// calls inside a script or a graph included.
     pub fn state(&self) -> CardState {
-        let has = |s: CardState| self.cards.iter().any(|c| c.state == s);
+        let has = |s: CardState| {
+            self.cards
+                .iter()
+                .any(|c| c.state == s || c.children.iter().any(|k| k.state == s))
+        };
         [
             CardState::Waiting,
             CardState::Running,
@@ -295,6 +371,10 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
         if p.get("worker").is_some_and(|w| !w.is_null()) {
             continue;
         }
+        // The plan card shows the plan (#77).
+        if tool == "plan" {
+            continue;
+        }
         let call = p["call"].as_u64().map(|c| c as u32);
         let find = |cards: &[ToolCard], call: u32| cards.iter().position(|c| c.call == call);
         match s.event.as_str() {
@@ -330,7 +410,10 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                 let at = match find(&cards, n) {
                     Some(i) => i,
                     None => {
-                        cards.push(ToolCard::new(n, step.max(1), tool, &p["args"]));
+                        let mut c = ToolCard::new(n, step.max(1), tool, &p["args"]);
+                        c.parent = p["parent"].as_u64().map(|v| v as u32);
+                        c.task = p["task"].as_str().map(str::to_owned);
+                        cards.push(c);
                         cards.len() - 1
                     }
                 };
@@ -394,6 +477,9 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                         c.chars = p["chars"].as_u64();
                         c.terminal_run = p["meta"]["run"].as_u64();
                         c.exit = p["meta"]["exit"].as_i64();
+                        if p["cached"] == true {
+                            c.cached = Some(p["cached_age_s"].as_u64().unwrap_or_default());
+                        }
                     }
                     _ => {
                         c.state = CardState::Failed;
@@ -419,8 +505,23 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
             }
         }
     }
-    let mut groups: Vec<StepGroup> = Vec::new();
+    // Calls made inside a script or a graph go under its card.
+    let mut top: Vec<ToolCard> = Vec::new();
     for c in cards {
+        match c.parent {
+            Some(p) if p != c.call => match top.iter_mut().find(|t| t.call == p) {
+                Some(parent) => {
+                    let mut c = c;
+                    c.step = parent.step;
+                    parent.children.push(c);
+                }
+                None => top.push(c),
+            },
+            _ => top.push(c),
+        }
+    }
+    let mut groups: Vec<StepGroup> = Vec::new();
+    for c in top {
         match groups.iter_mut().find(|g| g.step == c.step) {
             Some(g) => g.cards.push(c),
             None => groups.push(StepGroup {
@@ -695,6 +796,63 @@ mod tests {
         assert_eq!(preview_lines("a\nb\n", 8, 4), "a\nb");
         assert_eq!(waiting_line("a pipe"), "Needs your approval: a pipe");
         assert_eq!(waiting_line(&"x".repeat(200)), "Needs your approval below.");
+    }
+
+    /// #77: calls inside a script nest under its card; a cached result
+    /// is marked; `plan` calls have no card.
+    #[test]
+    fn script_calls_nest_and_cache_hits_are_marked() {
+        let evs = vec![
+            ev("model.replied", json!({})),
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [
+                    {"call": 1, "tool": "plan", "args": {"steps": []}},
+                    {"call": 2, "tool": "run_python", "args": {"code": "web_search('a')\nfile_write('x.md', 'y')"}}
+                ]}),
+            ),
+            ev("tool.executed", json!({"tool": "plan", "call": 1})),
+            ev("tool.started", json!({"tool": "run_python", "call": 2})),
+            ev(
+                "policy.decided",
+                json!({"tool": "web_search", "call": 3, "parent": 2, "args": {"query": "a"},
+                       "decision": {"decision": "allow", "because": "network steps are allowed"}}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "web_search", "call": 3, "parent": 2, "output": "[1] a",
+                       "cached": true, "cached_age_s": 120}),
+            ),
+            ev(
+                "policy.decided",
+                json!({"tool": "file_write", "call": 4, "parent": 2, "args": {"path": "x.md"},
+                       "decision": {"decision": "ask"}}),
+            ),
+            ev(
+                "approval.requested",
+                json!({"tool": "file_write", "call": 4, "parent": 2, "summary": "Write"}),
+            ),
+        ];
+        let g = cards_of(&run(&evs));
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].cards.len(), 1, "only the script is a top-level card");
+        let script = &g[0].cards[0];
+        assert_eq!(script.tool, "run_python");
+        assert_eq!(script.children.len(), 2);
+        assert_eq!(script.children[0].cached, Some(120));
+        assert_eq!(script.children[0].title, "a");
+        assert_eq!(script.children[1].state, CardState::Waiting);
+        assert_eq!(script.inner_state(), Some(CardState::Waiting));
+        assert!(script.opens_inner());
+        assert_eq!(g[0].state(), CardState::Waiting);
+        assert_eq!(
+            script.inner_line(),
+            "2 tool calls inside: web_search, file_write"
+        );
+        assert_eq!(
+            title_of("run_tasks", &json!({"tasks": [{}, {}]})),
+            "2 tasks"
+        );
     }
 
     #[test]

@@ -136,6 +136,9 @@ pub struct ChatSession {
     /// Full copies of long tool results, which the model sees cut in the
     /// middle and reads in ranges with `read_result` (#72).
     results: Option<Arc<crate::results::ResultStore>>,
+    /// Searches, fetches and reads kept for this chat (#77); web results
+    /// also on disk, shared by every chat.
+    cache: crate::toolcache::ToolCache,
 }
 
 /// Where a front end takes a reply's reasoning as it streams: the model
@@ -819,6 +822,12 @@ impl ChatSession {
             compacted: None,
             compact_skip: None,
             calls_at_compaction: None,
+            cache: match &paths {
+                Some(p) => crate::toolcache::ToolCache::with_dir(
+                    crate::toolcache::ToolCache::dir_in(&p.data_dir),
+                ),
+                None => crate::toolcache::ToolCache::memory(),
+            },
             results,
             ledger: UsageLedger::default(),
             tools,
@@ -1396,6 +1405,7 @@ impl ChatSession {
                 prefetch: true,
                 retry: None,
                 results: self.results.as_deref(),
+                cache: Some(&self.cache),
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1764,6 +1774,7 @@ impl ChatSession {
                     prefetch: false,
                     retry: None,
                     results: self.results.as_deref(),
+                    cache: Some(&self.cache),
                 };
                 TurnLoop {
                     session: self.session,

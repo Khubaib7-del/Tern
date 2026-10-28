@@ -452,6 +452,9 @@ impl App {
                 | "tool.rejected"
                 | "approval.answered"
                 | "loop.suspected"
+                // #77: the plan and the task graph, one line each time
+                // they change ("Plan · 1 of 3 done: ✓ … · ▸ … · ○ …").
+                | "plan.updated"
         ) || (kind == "policy.decided" && !summary.contains("allowed"))
         {
             self.entries.push(Entry::Step(summary.to_owned()));
@@ -727,5 +730,21 @@ mod tests {
             .filter(|e| matches!(e, Entry::Step(_)))
             .collect();
         assert_eq!(steps, [&Entry::Step("Ran `web_search`".into())]);
+    }
+
+    /// #77: the plan shows as a step line each time it changes.
+    #[test]
+    fn plan_updates_show_as_steps() {
+        let mut a = App::new("p", "m");
+        a.start_turn("q".into());
+        a.on_event(
+            "plan.updated",
+            "Plan · 1 of 2 done: ✓ Find sources · ▸ Write the summary",
+        );
+        assert!(
+            a.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Step(s) if s.starts_with("Plan · 1 of 2 done")))
+        );
     }
 }
