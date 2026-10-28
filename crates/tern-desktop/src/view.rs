@@ -44,6 +44,7 @@ mod explain_view;
 mod export_view;
 mod files_view;
 mod flow_view;
+mod focus_view;
 mod folders_view;
 mod frame;
 mod git_view;
@@ -422,6 +423,8 @@ pub struct Workspace {
     intro: Option<Instant>,
     /// Where the cursor is over the intro, as fractions of the window.
     intro_cursor: Option<(f32, f32)>,
+    /// The block focus view (#76), while a block is open in it.
+    focus: Option<Box<focus_view::FocusUi>>,
     /// The scripted UI tour, when `TERN_TOUR` is set (`view::tour`).
     tour: Option<tour::Tour>,
     _subscriptions: Vec<Subscription>,
@@ -478,6 +481,13 @@ impl Workspace {
             let this = cx.entity().downgrade();
             crate::blockexport::set_saver(move |job, window, app| {
                 let _ = this.update(app, |w, cx| w.save_block(job, window, cx));
+            });
+        }
+        // A block's Expand opens it in the focus view (#76).
+        {
+            let this = cx.entity().downgrade();
+            crate::blockexport::set_focus_opener(move |block, window, app| {
+                let _ = this.update(app, |w, cx| w.open_focus(block, window, cx));
             });
         }
         let composer = cx.new(|cx| {
@@ -890,6 +900,7 @@ impl Workspace {
             onboarding_checked: false,
             intro: None,
             intro_cursor: None,
+            focus: None,
             tour: tour::enabled().then(tour::Tour::new),
             _subscriptions: {
                 let mut subs = vec![
@@ -993,6 +1004,8 @@ impl Workspace {
                 }
                 if self.current == Some(id) && self.session.is_none() {
                     self.model.restore(&turns);
+                    self.focus = None;
+                    self.apply_block_edits();
                     self.request_icons();
                     self.scroll.scroll_to_bottom();
                     self.apply_restore(window, cx);
@@ -1026,6 +1039,8 @@ impl Workspace {
                     context_window: s.context_window(),
                 });
                 self.model.restore(&turns);
+                self.focus = None;
+                self.apply_block_edits();
                 self.model.compacted = s.compacted().cloned();
                 self.model.mcp_offers = s.mcp_offers().to_vec();
                 self.model.context = s.context();
@@ -4043,11 +4058,8 @@ impl Workspace {
                             .justify_end()
                             .gap_1()
                             .max_w(px(COLUMN_MAX_W * 0.8))
-                            .children(
-                                chips
-                                    .iter()
-                                    .map(|c| sent_card(c, self.named_preview(&c.name), p)),
-                            ),
+                            // A sent picture opens large (#76).
+                            .children(chips.iter().map(|c| self.sent_picture(c, p, cx))),
                     )
                 })
                 .child(
@@ -6548,7 +6560,8 @@ impl Render for Workspace {
                 cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| this.panel_drag_end(cx)),
             )
             .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
-                if !this.palette_keys(e, window, cx)
+                if !this.focus_keys(e, window, cx)
+                    && !this.palette_keys(e, window, cx)
                     && !this.needs_you_keys(e, window, cx)
                     && !this.settings_keys(e, window, cx)
                     && !this.scout_keys(e, cx)
@@ -6657,6 +6670,7 @@ impl Render for Workspace {
             .children(self.toasts(p, cx))
             .children(self.onboarding_modal(p, window, cx))
             .children(self.palette_overlay(p, cx))
+            .children(self.focus_overlay(p, window, cx))
             .children(self.splash(p, window))
             .children(self.intro_overlay(window, cx));
         // A sliding highlight or knob still moving draws the next frame.

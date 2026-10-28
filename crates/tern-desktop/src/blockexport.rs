@@ -16,6 +16,10 @@
 //!
 //! The text view draws blocks without the window's state, so the toolbar
 //! hands a [`Job`] to the saver the window registers ([`set_saver`]).
+//!
+//! Expand (#76) opens the block in the focus view over the chat
+//! (`crate::focus`, `view/focus_view.rs`), through the opener the window
+//! registers ([`set_focus_opener`]).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -91,9 +95,25 @@ impl Job {
 
 /// What the window does with a [`Job`].
 type Saver = Rc<dyn Fn(Job, &mut Window, &mut App)>;
+/// What the window does with an expanded block.
+type Opener = Rc<dyn Fn(crate::focus::Block, &mut Window, &mut App)>;
 
 thread_local! {
     static SAVER: RefCell<Option<Saver>> = const { RefCell::new(None) };
+    static OPENER: RefCell<Option<Opener>> = const { RefCell::new(None) };
+}
+
+/// Registers the window's focus view opener.
+pub fn set_focus_opener(f: impl Fn(crate::focus::Block, &mut Window, &mut App) + 'static) {
+    OPENER.with(|s| *s.borrow_mut() = Some(Rc::new(f)));
+}
+
+/// Opens `block` in the focus view.
+pub fn expand(block: crate::focus::Block, window: &mut Window, cx: &mut App) {
+    let f = OPENER.with(|s| s.borrow().clone());
+    if let Some(f) = f {
+        f(block, window, cx);
+    }
 }
 
 /// A control's click as the UI tour presses it (`TERN_TOUR=1` only): the
@@ -527,14 +547,16 @@ pub fn segmented(
         .into_any_element()
 }
 
-/// Copy and Export ▾ for one block; the open menu lists each format
-/// ("Save as CSV") and "Save as…". `id` names the block (its state is
-/// kept under it). The open menu floats over what is below.
+/// Copy, Export ▾ and (given a block) Expand for one block; the open
+/// menu lists each format ("Save as CSV") and "Save as…". `id` names the
+/// block (its state is kept under it). The open menu floats over what is
+/// below.
 pub fn toolbar(
     id: &str,
     copy: Arc<str>,
     stem: String,
     formats: Vec<Format>,
+    focus: Option<crate::focus::Block>,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -573,10 +595,25 @@ pub fn toolbar(
             });
         }
     }
+    if let Some(block) = &focus {
+        let block = block.clone();
+        tour_hook(format!("{id}-expand"), move |window, cx| {
+            expand(block.clone(), window, cx)
+        });
+    }
     let row = div()
         .flex()
         .items_center()
         .gap(px(2.))
+        .children(focus.map(|block| {
+            tool(
+                SharedString::from(format!("{id}-expand")),
+                AssetIcon::Maximize2,
+                "Expand: open this block large, to edit, zoom and export",
+                p,
+            )
+            .on_click(move |_, window, cx| expand(block.clone(), window, cx))
+        }))
         .child({
             let copied = copied.clone();
             tool(
