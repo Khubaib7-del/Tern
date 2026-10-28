@@ -302,16 +302,19 @@ impl Workspace {
                     .text_color(p.muted)
                     .child(SharedString::from(request.summary.clone())),
             )
-            .when(!target.is_empty() && !write && request.tool != "run_command", |d| {
-                d.child(
-                    div()
-                        .ml(px(18.))
-                        .text_xs()
-                        .text_color(p.faint)
-                        .truncate()
-                        .child(SharedString::from(target)),
-                )
-            })
+            .when(
+                !target.is_empty() && !write && request.tool != "run_command",
+                |d| {
+                    d.child(
+                        div()
+                            .ml(px(18.))
+                            .text_xs()
+                            .text_color(p.faint)
+                            .truncate()
+                            .child(SharedString::from(target)),
+                    )
+                },
+            )
             .children(detail)
             .child(div().h(px(4.)))
             .children(rows);
@@ -355,8 +358,9 @@ impl Workspace {
                     p.permission_rules.push(rule.clone());
                 }
             });
-            self.model
-                .toast_info(format!("Added the rule {line}. Remove it in Settings › Permissions."));
+            self.model.toast_info(format!(
+                "Added the rule {line}. Remove it in Settings › Permissions."
+            ));
         }
         self.answer(answer, cx);
         if k >= 3 {

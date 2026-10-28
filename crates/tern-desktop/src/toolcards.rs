@@ -319,8 +319,7 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                 let at = match find(&cards, n) {
                     Some(i) => i,
                     None => {
-                        let args = if p["args"].is_null() { &Value::Null } else { &p["args"] };
-                        cards.push(ToolCard::new(n, step.max(1), tool, args));
+                        cards.push(ToolCard::new(n, step.max(1), tool, &p["args"]));
                         cards.len() - 1
                     }
                 };
@@ -383,7 +382,8 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
         for c in cards.iter_mut().filter(|c| c.state.open()) {
             c.state = CardState::Cancelled;
             if matches!(run.end, Some(RunEnd::Stopped(_))) {
-                c.error.get_or_insert_with(|| "The run stopped first.".into());
+                c.error
+                    .get_or_insert_with(|| "The run stopped first.".into());
             }
         }
     }
@@ -461,13 +461,22 @@ mod tests {
         assert!(g[0].cards.iter().all(|c| c.state == CardState::Queued));
         assert_eq!(g[0].cards[0].family, Family::Command);
         assert_eq!(g[0].cards[0].title, "pandoc a.md -o a.docx");
-        evs.push(ev("approval.requested", json!({"tool": "run_command", "call": 1, "summary": "Run it"})));
+        evs.push(ev(
+            "approval.requested",
+            json!({"tool": "run_command", "call": 1, "summary": "Run it"}),
+        ));
         let g = cards_of(&run(&evs));
         assert_eq!(g[0].cards[0].state, CardState::Waiting);
         assert_eq!(g[0].state(), CardState::Waiting);
         assert!(g[0].opens_by_itself());
-        evs.push(ev("approval.answered", json!({"tool": "run_command", "call": 1, "answer": "allow_once"})));
-        evs.push(ev("tool.started", json!({"tool": "run_command", "call": 1})));
+        evs.push(ev(
+            "approval.answered",
+            json!({"tool": "run_command", "call": 1, "answer": "allow_once"}),
+        ));
+        evs.push(ev(
+            "tool.started",
+            json!({"tool": "run_command", "call": 1}),
+        ));
         assert_eq!(cards_of(&run(&evs))[0].cards[0].state, CardState::Running);
         evs.push(ev(
             "tool.executed",
@@ -477,8 +486,14 @@ mod tests {
         assert_eq!(c.state, CardState::Done);
         assert_eq!(c.terminal_run, Some(7));
         assert_eq!(c.output, "Exit code 0");
-        evs.push(ev("approval.requested", json!({"tool": "file_write", "call": 2})));
-        evs.push(ev("approval.answered", json!({"tool": "file_write", "call": 2, "answer": "deny"})));
+        evs.push(ev(
+            "approval.requested",
+            json!({"tool": "file_write", "call": 2}),
+        ));
+        evs.push(ev(
+            "approval.answered",
+            json!({"tool": "file_write", "call": 2, "answer": "deny"}),
+        ));
         let c = &cards_of(&run(&evs))[0].cards[1];
         assert_eq!(c.state, CardState::Failed);
         assert_eq!(c.error.as_deref(), Some("You declined it."));
@@ -488,7 +503,10 @@ mod tests {
     fn open_cards_are_cancelled_when_the_run_ends() {
         let evs = vec![
             ev("model.replied", json!({})),
-            ev("tool.queued", json!({"step": 1, "calls": [{"call": 1, "tool": "run_python", "args": {"code": "1+1"}}]})),
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [{"call": 1, "tool": "run_python", "args": {"code": "1+1"}}]}),
+            ),
             ev("tool.started", json!({"tool": "run_python", "call": 1})),
             ev("run.cancelled", json!({"state": "cancelled"})),
         ];
@@ -502,9 +520,18 @@ mod tests {
     fn denials_and_old_runs() {
         let evs = vec![
             ev("model.replied", json!({})),
-            ev("sandbox.denied", json!({"tool": "run_command", "call": 1, "args": {"command": "bash"}, "reason": "not on the list"})),
-            ev("tool.executed", json!({"tool": "web_search", "args": {"query": "q"}})),
-            ev("tool.executed", json!({"tool": "web_search", "worker": 2, "args": {"query": "w"}})),
+            ev(
+                "sandbox.denied",
+                json!({"tool": "run_command", "call": 1, "args": {"command": "bash"}, "reason": "not on the list"}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "web_search", "args": {"query": "q"}}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "web_search", "worker": 2, "args": {"query": "w"}}),
+            ),
         ];
         let g = cards_of(&run(&evs));
         let all: Vec<&ToolCard> = g.iter().flat_map(|g| &g.cards).collect();

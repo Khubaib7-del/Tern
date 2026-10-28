@@ -2750,9 +2750,8 @@ impl Workspace {
         };
         // The tool calls of the run in progress, as cards (#75).
         let cards = match &self.model.phase {
-            crate::model::Phase::Working { run, .. } | crate::model::Phase::Approval { run, .. } => {
-                self.tool_cards(None, run, p, cx)
-            }
+            crate::model::Phase::Working { run, .. }
+            | crate::model::Phase::Approval { run, .. } => self.tool_cards(None, run, p, cx),
             _ => None,
         };
         let draft = self.model.paced_draft();

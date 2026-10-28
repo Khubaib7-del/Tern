@@ -18,8 +18,8 @@ use tern_agent::live::{self, RunState, Stream};
 use super::Workspace;
 use super::press::Capsule as _;
 use crate::assets;
-use crate::toolcards::{self, CardState, Family, StepGroup, ToolCard};
 use crate::theme::Palette;
+use crate::toolcards::{self, CardState, Family, StepGroup, ToolCard};
 
 /// Rows a diff shows before "N more".
 const DIFF_ROWS: usize = 400;
@@ -74,12 +74,22 @@ fn red(p: Palette) -> Hsla {
 }
 
 fn green(p: Palette) -> Hsla {
-    hsla(145. / 360., 0.45, if p.canvas.l < 0.5 { 0.55 } else { 0.35 }, 1.)
+    hsla(
+        145. / 360.,
+        0.45,
+        if p.canvas.l < 0.5 { 0.55 } else { 0.35 },
+        1.,
+    )
 }
 
 /// The approval yellow: an outline and a pulse, never a fill.
 pub(super) fn approval_yellow(p: Palette) -> Hsla {
-    hsla(46. / 360., 0.9, if p.canvas.l < 0.5 { 0.58 } else { 0.45 }, 1.)
+    hsla(
+        46. / 360.,
+        0.9,
+        if p.canvas.l < 0.5 { 0.58 } else { 0.45 },
+        1.,
+    )
 }
 
 fn state_ink(s: CardState, fam: Family, p: Palette) -> Hsla {
@@ -135,12 +145,11 @@ fn tail_chars(s: &str, max: usize) -> (&str, bool) {
     if n <= max {
         return (s, false);
     }
-    let start = s
-        .char_indices()
-        .nth(n - max)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let start = s[start..].find('\n').map(|j| start + j + 1).unwrap_or(start);
+    let start = s.char_indices().nth(n - max).map(|(i, _)| i).unwrap_or(0);
+    let start = s[start..]
+        .find('\n')
+        .map(|j| start + j + 1)
+        .unwrap_or(start);
     (&s[start..], true)
 }
 
@@ -222,7 +231,11 @@ impl Workspace {
                 p.text,
             ),
             t if t.starts_with("mcp__") => {
-                let server = t.trim_start_matches("mcp__").split("__").next().unwrap_or(t);
+                let server = t
+                    .trim_start_matches("mcp__")
+                    .split("__")
+                    .next()
+                    .unwrap_or(t);
                 super::brand_logo(server, size, p)
             }
             "show_in_panel" => div()
@@ -270,7 +283,13 @@ impl Workspace {
     }
 
     /// One step's cards: a folded row that opens into the cards.
-    fn tool_group(&self, key: String, g: &StepGroup, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn tool_group(
+        &self,
+        key: String,
+        g: &StepGroup,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let default = g.opens_by_itself();
         let open = self.is_open(&key, default);
         let state = g.state();
@@ -340,8 +359,10 @@ impl Workspace {
         p: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let default = matches!(c.state, CardState::Waiting | CardState::Failed | CardState::Running)
-            || matches!(c.family, Family::Write | Family::Command);
+        let default = matches!(
+            c.state,
+            CardState::Waiting | CardState::Failed | CardState::Running
+        ) || matches!(c.family, Family::Write | Family::Command);
         let open = self.is_open(&key, default);
         let stripe = family_ink(c.family, p);
         let waiting = c.state == CardState::Waiting;
@@ -542,12 +563,14 @@ impl Workspace {
                         match path {
                             Some(p) if p.exists() => {
                                 if let Err(e) = crate::reveal::open(&p) {
-                                    this.model.toast_error(format!("Couldn't open it: {e}"), None);
+                                    this.model
+                                        .toast_error(format!("Couldn't open it: {e}"), None);
                                 }
                             }
-                            _ => this
-                                .model
-                                .toast_error("The full output is no longer saved.".to_owned(), None),
+                            _ => this.model.toast_error(
+                                "The full output is no longer saved.".to_owned(),
+                                None,
+                            ),
                         }
                         cx.notify();
                     })),
@@ -763,7 +786,12 @@ impl Workspace {
         for (s, t) in lines {
             let color = match s {
                 Stream::Stdout => p.text,
-                Stream::Stderr => hsla(25. / 360., 0.6, if p.canvas.l < 0.5 { 0.65 } else { 0.40 }, 1.),
+                Stream::Stderr => hsla(
+                    25. / 360.,
+                    0.6,
+                    if p.canvas.l < 0.5 { 0.65 } else { 0.40 },
+                    1.,
+                ),
                 Stream::Tern => p.faint,
             };
             out = out.child(mono(t.trim_end_matches('\n').to_owned(), p).text_color(color));
@@ -896,18 +924,22 @@ impl Workspace {
         .into_iter()
         .flatten()
         .collect();
-        let switch = div().flex().items_center().gap_1().children(modes.into_iter().map(|(m, label)| {
-            Button::new(SharedString::from(format!("wp-mode-{label}")))
-                .capsule()
-                .label(label)
-                .ghost()
-                .xsmall()
-                .selected(mode == m)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.work.preview = m;
-                    cx.notify();
-                }))
-        }));
+        let switch = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .children(modes.into_iter().map(|(m, label)| {
+                Button::new(SharedString::from(format!("wp-mode-{label}")))
+                    .capsule()
+                    .label(label)
+                    .ghost()
+                    .xsmall()
+                    .selected(mode == m)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.work.preview = m;
+                        cx.notify();
+                    }))
+            }));
         let status = if waiting {
             "waiting for your approval"
         } else if w.done {
@@ -918,9 +950,11 @@ impl Workspace {
         let (shown, cut) = tail_chars(&w.text, PREVIEW_CHARS);
         let body: AnyElement = match mode {
             PreviewMode::Diff => self.diff_view(&w.path, &w.text, p),
-            PreviewMode::Rendered if is_md => super::bidi_markdown("write-preview", 0, shown.to_owned(), |t| {
-                crate::richmd::rich(t.selectable(true))
-            }),
+            PreviewMode::Rendered if is_md => {
+                super::bidi_markdown("write-preview", 0, shown.to_owned(), |t| {
+                    crate::richmd::rich(t.selectable(true))
+                })
+            }
             _ => {
                 let fence = if shown.contains("```") { "````" } else { "```" };
                 super::bidi_markdown(
@@ -940,7 +974,11 @@ impl Workspace {
                 .p_2()
                 .rounded_md()
                 .border_1()
-                .border_color(if waiting { approval_yellow(p) } else { p.border })
+                .border_color(if waiting {
+                    approval_yellow(p)
+                } else {
+                    p.border
+                })
                 .bg(p.canvas)
                 .child(
                     div()
@@ -971,7 +1009,9 @@ impl Workspace {
                         ),
                 )
                 .child(switch)
-                .when(cut, |d| d.child(mono("… the start is above; showing the end", p)))
+                .when(cut, |d| {
+                    d.child(mono("… the start is above; showing the end", p))
+                })
                 .child(div().min_w_0().child(body))
                 .into_any_element(),
         )

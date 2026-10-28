@@ -64,8 +64,8 @@ mod setup_view;
 mod study_view;
 mod timeline_view;
 mod toast_view;
-mod work_view;
 pub(crate) mod tour;
+mod work_view;
 pub use pet_view::Shell;
 
 use crate::layout::{Layout, Tab, Tabs};
@@ -681,9 +681,7 @@ impl Workspace {
         // show_in_panel requests (#75).
         let live_poll = cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(work_view::LIVE_POLL)
-                    .await;
+                cx.background_executor().timer(work_view::LIVE_POLL).await;
                 if this.update(cx, |this, cx| this.poll_live(cx)).is_err() {
                     break;
                 }
