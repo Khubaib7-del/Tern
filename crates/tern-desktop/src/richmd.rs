@@ -28,9 +28,10 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use gpui_kit::base::text::CodeBlock;
 use gpui_kit::component::text::{
     InlineElement, InlineRenderContext, MarkdownExtensions, MarkdownNode, MarkdownParseContext,
-    MarkdownPlugin, markdown_ast as mdast,
+    MarkdownPlugin, TableData, TextView, markdown_ast as mdast,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Image, ImageFormat, ObjectFit, SharedString, Window, div, img, px};
@@ -39,7 +40,7 @@ use crate::theme::Palette;
 
 /// Bumped when the plugins change what they parse, so a text view drops
 /// documents parsed by an older set.
-const PARSER_REVISION: u64 = 72_001;
+const PARSER_REVISION: u64 = 72_002;
 
 /// The plugins, built once and shared by every answer.
 pub fn extensions() -> MarkdownExtensions {
@@ -53,6 +54,74 @@ pub fn extensions() -> MarkdownExtensions {
             .plugin(Cite)
     })
     .clone()
+}
+
+/// A text view set up for answers: the plugins, and Copy · Export ▾ on
+/// every code block and table (`crate::blockexport`).
+pub fn rich(t: TextView) -> TextView {
+    t.markdown_extensions(extensions())
+        .code_block_actions(code_tools)
+        .table_actions(table_tools)
+}
+
+/// An answer's Markdown as the text view should read it: `\( \)`,
+/// `\[ \]` and bare `\begin{align}` formulas rewritten to dollar math
+/// (`crate::mathsrc`).
+pub fn prepare(markdown: &str) -> std::borrow::Cow<'_, str> {
+    crate::mathsrc::delimiters(markdown)
+}
+
+/// A code block's corner: its language, Copy and Export ▾ (a source file
+/// named by the language).
+fn code_tools(code: &CodeBlock, window: &mut Window, cx: &mut App) -> gpui_kit::AnyElement {
+    let p = Palette::get(is_dark(cx));
+    let lang = code.lang().map(|l| l.to_string()).unwrap_or_default();
+    let text = code.code();
+    let id = format!("code-{}", key(&lang, &text));
+    let (stem, formats) = crate::blockexport::code_formats(&lang, &text);
+    div()
+        .flex()
+        .items_start()
+        .gap_1()
+        .when(!lang.is_empty(), |d| {
+            d.child(
+                div()
+                    .pt(px(3.))
+                    .pr_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(SharedString::from(lang.clone())),
+            )
+        })
+        .child(crate::blockexport::toolbar(
+            &id,
+            Arc::<str>::from(&*text),
+            stem,
+            formats,
+            window,
+            cx,
+        ))
+        .into_any_element()
+}
+
+/// Under a table: Copy (as Markdown) and Export ▾ (CSV, Markdown, Excel).
+fn table_tools(table: &TableData, window: &mut Window, cx: &mut App) -> gpui_kit::AnyElement {
+    let id = format!("table-{}", key("t", &table.markdown));
+    let (stem, formats) =
+        crate::blockexport::table_formats(&table.headers, &table.rows, &table.markdown);
+    div()
+        .w_full()
+        .flex()
+        .justify_end()
+        .child(crate::blockexport::toolbar(
+            &id,
+            Arc::from(table.markdown.as_str()),
+            stem,
+            formats,
+            window,
+            cx,
+        ))
+        .into_any_element()
 }
 
 // ---------------------------------------------------------------- caches
@@ -146,9 +215,13 @@ fn is_dark(cx: &App) -> bool {
 
 // ------------------------------------------------------------------ math
 
-/// SVG units per em that formulas are drawn at: large enough to stay sharp
-/// at twice the size they are shown.
-const MATH_EM: f64 = 40.0;
+/// SVG units per em that formulas are drawn at, close to the size they
+/// are shown (#73): GPUI rasterises an SVG image at twice its own size, and
+/// the GPU's downscale of a much larger raster dropped thin strokes (one
+/// bar of an `=` vanished at 40). 16 keeps the downscale near 2x, which
+/// averages instead of skipping pixels. Exports draw larger
+/// (`blockexport::MATH_PNG_SCALE`).
+const MATH_EM: f64 = 16.0;
 const MATH_PAD: f64 = 2.0;
 
 /// Whether `$…$` holds a formula rather than prose between two dollar
@@ -173,7 +246,10 @@ pub fn typeset(latex: &str, display: bool) -> Option<Art> {
         use ratex_layout::{LayoutOptions, layout, to_display_list, validate_layout};
         use ratex_types::color::Color;
         use ratex_types::math_style::MathStyle;
-        let ast = ratex_parser::parser::parse(latex).ok()?;
+        // `align` and friends as RaTeX lays them out (`crate::mathsrc`).
+        let ast = crate::mathsrc::ratex_candidates(latex)
+            .iter()
+            .find_map(|c| ratex_parser::parser::parse(c).ok())?;
         let style = if display {
             MathStyle::Display
         } else {
@@ -192,7 +268,7 @@ pub fn typeset(latex: &str, display: bool) -> Option<Art> {
                 &ratex_svg::SvgOptions {
                     font_size: MATH_EM,
                     padding: MATH_PAD,
-                    stroke_width: 1.5,
+                    stroke_width: 1.0,
                     embed_glyphs: true,
                     font_dir: String::new(),
                 },
@@ -296,7 +372,18 @@ impl MarkdownPlugin for InlineMath {
     }
 }
 
-/// `$$…$$` on lines of its own.
+/// What a display formula node carries.
+#[derive(Clone, Debug)]
+struct DisplayFormula {
+    latex: String,
+    art: Option<Art>,
+    /// Its closing `$$` has come (a formula still streaming has none).
+    closed: bool,
+}
+
+/// `$$…$$` (and `\[…\]`, `\begin{align}…`, rewritten by
+/// `crate::mathsrc`) on lines of its own: a block with a Math header,
+/// Rendered | LaTeX, Copy and Export.
 #[derive(Debug)]
 struct DisplayMath;
 
@@ -309,18 +396,29 @@ impl MarkdownPlugin for DisplayMath {
         "tern-math-display"
     }
 
-    fn parse(&self, node: &mdast::Node, _cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+    fn parse(&self, node: &mdast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
         let mdast::Node::Math(m) = node else {
             return None;
         };
-        // Unreadable: the text view's own code block shows the source.
-        let art = typeset(m.value.trim(), true)?;
+        let closed = crate::mathsrc::math_closed(cx.node_source(node).unwrap_or_default());
+        let art = if closed {
+            typeset(m.value.trim(), true)
+        } else {
+            None
+        };
+        if closed && art.is_none() && !m.value.trim().is_empty() {
+            crate::crashlog::log_line(&format!(
+                "math: RaTeX could not read a display formula: {}",
+                crate::crashlog::tail(m.value.trim(), 300)
+            ));
+        }
         Some(
             MarkdownNode::new(
                 self.name().to_owned(),
-                Formula {
+                DisplayFormula {
                     latex: m.value.clone(),
-                    art: Some(art),
+                    art,
+                    closed,
                 },
             )
             .text(m.value.clone())
@@ -330,31 +428,126 @@ impl MarkdownPlugin for DisplayMath {
     }
 
     fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let art = node.data::<Formula>().and_then(|f| f.art.clone());
+        let dark = is_dark(cx);
+        let p = Palette::get(dark);
+        let f = node.data::<DisplayFormula>().cloned();
         let font = f32::from(window.text_style().font_size.to_pixels(window.rem_size()));
-        div()
-            .w_full()
-            .my_2()
-            .flex()
-            .justify_center()
-            .children(art.map(|art| {
-                let scale = font * 1.1 / MATH_EM as f32;
-                div()
-                    .id(SharedString::from(format!(
-                        "math-{}",
-                        key("d", node.as_text())
-                    )))
-                    .max_w_full()
-                    .overflow_x_scroll()
-                    .child(
-                        img(art.image(is_dark(cx)))
-                            .w(px(art.width * scale))
-                            .h(px(art.height * scale))
-                            .object_fit(ObjectFit::Fill)
-                            .flex_none(),
+        let latex = f
+            .as_ref()
+            .map(|f| f.latex.trim().to_owned())
+            .unwrap_or_default();
+        let art = f.as_ref().and_then(|f| f.art.clone());
+        let closed = f.as_ref().is_some_and(|f| f.closed);
+        let id = format!("math-{}", key("d", &latex));
+        let source_shown =
+            window.use_keyed_state(SharedString::from(format!("{id}-src")), cx, |_, _| false);
+        let show_source = art.is_none() || *source_shown.read(cx);
+        let svg = art
+            .as_ref()
+            .map(|a| String::from_utf8_lossy(a.light.bytes()).into_owned());
+        let (stem, formats) = crate::blockexport::math_formats(&latex, svg.as_deref());
+        let head = block_head(
+            "Math",
+            art.as_ref().map(|_| {
+                crate::blockexport::segmented(
+                    &id,
+                    ("Rendered", "LaTeX"),
+                    show_source,
+                    source_shown.clone(),
+                    cx,
+                )
+            }),
+            crate::blockexport::toolbar(&id, Arc::from(latex.as_str()), stem, formats, window, cx),
+            p,
+        );
+        let body = if show_source {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(source_text(&latex, p))
+                .when(closed && art.is_none(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child("Couldn't render this formula; showing its LaTeX."),
                     )
-            }))
+                })
+                .into_any_element()
+        } else {
+            let art = art.clone().expect("rendered mode has art");
+            let scale = font * 1.1 / MATH_EM as f32;
+            div()
+                .id(SharedString::from(format!("{id}-scroll")))
+                .w_full()
+                .overflow_x_scroll()
+                .flex()
+                .justify_center()
+                .child(
+                    img(art.image(dark))
+                        .w(px(art.width * scale))
+                        .h(px(art.height * scale))
+                        .object_fit(ObjectFit::Fill)
+                        .flex_none(),
+                )
+                .into_any_element()
+        };
+        block_card(p)
+            .child(head)
+            .child(div().px_3().pb_2().child(body))
     }
+}
+
+/// A rich block's frame, like the text view's code blocks.
+fn block_card(p: Palette) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .my_2()
+        .flex()
+        .flex_col()
+        .rounded_md()
+        .border_1()
+        .border_color(p.border)
+        .bg(p.raised)
+}
+
+/// A block's header: its label, an optional view toggle, its toolbar.
+fn block_head(
+    label: &'static str,
+    toggle: Option<gpui_kit::AnyElement>,
+    tools: gpui_kit::AnyElement,
+    p: Palette,
+) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .flex()
+        .items_start()
+        .gap_2()
+        .pl_3()
+        .pr_1()
+        .pt_1()
+        .pb_1()
+        .child(div().pt(px(3.)).text_xs().text_color(p.faint).child(label))
+        .children(toggle.map(|t| div().pt(px(1.)).child(t)))
+        .child(div().flex_1())
+        .child(tools)
+}
+
+/// Source text in the code font, kept as written (selectable by copying).
+fn source_text(source: &str, p: Palette) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .font_family(crate::assets::MONO_FONT)
+        .text_sm()
+        .text_color(p.text)
+        .whitespace_normal()
+        .children(
+            source
+                .lines()
+                .map(|l| div().min_h(px(16.)).child(SharedString::from(l.to_owned())))
+                .collect::<Vec<_>>(),
+        )
 }
 
 // --------------------------------------------------------------- mermaid
@@ -397,25 +590,78 @@ pub fn warm_up_svg_text(cx: &App) {
 }
 
 /// Draws Mermaid `source` for both themes, or `None` when merman cannot
-/// read it.
+/// read it (even after [`crate::mermaidsrc::tolerant`]'s rewrite).
+#[cfg(test)]
 pub fn draw_mermaid(source: &str) -> Option<Art> {
-    cached("mermaid", source, || {
-        let dark = mermaid_svg(source, true)?;
-        let light = mermaid_svg(source, false)?;
-        // Drawn at the size it is shown: the image is rasterised at its own
-        // size and the GPU's downscale of a wider raster drops thin lines.
-        let (w, h) = shown_size(svg_size(&dark)?);
-        Some(Art {
-            dark: svg_image(dark),
-            light: svg_image(light),
-            width: w,
-            height: h,
-            baseline: h,
-        })
+    draw_mermaid_or_error(source).ok()
+}
+
+/// What merman said about the diagrams it could not read, by source.
+fn mermaid_errors() -> &'static Mutex<HashMap<u64, String>> {
+    static E: OnceLock<Mutex<HashMap<u64, String>>> = OnceLock::new();
+    E.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// [`draw_mermaid`], or merman's one-line reason. As written first; when
+/// merman refuses it, as [`crate::mermaidsrc::tolerant`] rewrites it
+/// (labels quoted, comments dropped). Both errors go to `tern.log`.
+pub fn draw_mermaid_or_error(source: &str) -> Result<Art, String> {
+    let art = cached("mermaid", source, || {
+        let first = match draw_both(source) {
+            Ok(art) => return Some(art),
+            Err(e) => e,
+        };
+        crate::crashlog::log_line(&format!(
+            "mermaid: merman could not read a diagram: {first}"
+        ));
+        let error = match crate::mermaidsrc::tolerant(source) {
+            Some(fixed) => match draw_both(&fixed) {
+                Ok(art) => {
+                    crate::crashlog::log_line("mermaid: drawn after quoting its labels");
+                    return Some(art);
+                }
+                Err(e) => {
+                    crate::crashlog::log_line(&format!(
+                        "mermaid: still unreadable after quoting labels: {e}"
+                    ));
+                    e
+                }
+            },
+            None => first,
+        };
+        if let Ok(mut m) = mermaid_errors().lock() {
+            if m.len() > CACHE_MAX {
+                m.clear();
+            }
+            m.insert(key("mermaid", source), error);
+        }
+        None
+    });
+    art.ok_or_else(|| {
+        mermaid_errors()
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&key("mermaid", source)).cloned())
+            .unwrap_or_else(|| "Mermaid could not read this diagram".to_owned())
     })
 }
 
-fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
+fn draw_both(source: &str) -> Result<Art, String> {
+    let dark = mermaid_svg(source, true)?;
+    let light = mermaid_svg(source, false)?;
+    // Drawn at the size it is shown: the image is rasterised at its own
+    // size and the GPU's downscale of a wider raster drops thin lines.
+    let (w, h) = shown_size(svg_size(&dark).ok_or("the drawing has no size")?);
+    Ok(Art {
+        dark: svg_image(dark),
+        light: svg_image(light),
+        width: w,
+        height: h,
+        baseline: h,
+    })
+}
+
+fn mermaid_svg(source: &str, dark: bool) -> Result<String, String> {
     use merman::{
         Engine, MermaidConfig, OperationControl, RenderOutput, RenderRequest, Renderer, SvgRequest,
     };
@@ -435,9 +681,9 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
     };
     let out = renderer
         .render(RenderRequest::svg(source, OperationControl::new(), request))
-        .ok()?;
+        .map_err(|e| one_line(&e.to_string()))?;
     let RenderOutput::Svg(Some(svg)) = out else {
-        return None;
+        return Err("Mermaid drew nothing for this diagram".to_owned());
     };
     // The UI tour keeps each theme's drawing beside its scene log, to be
     // looked at outside the app.
@@ -448,7 +694,20 @@ fn mermaid_svg(source: &str, dark: bool) -> Option<String> {
         let theme = if dark { "dark" } else { "light" };
         let _ = std::fs::write(dir.join(format!("mermaid-{theme}.svg")), svg.svg());
     }
-    Some(sized(&solid_edges(svg.svg()), DIAGRAM_MAX_W))
+    Ok(sized(&solid_edges(svg.svg()), DIAGRAM_MAX_W))
+}
+
+/// The first line of an error, at most 160 characters.
+fn one_line(e: &str) -> String {
+    let l = e
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("unknown error");
+    match l.char_indices().nth(160) {
+        Some((i, _)) => format!("{}…", &l[..i]),
+        None => l.to_owned(),
+    }
 }
 
 /// The size a diagram of view-box size `(w, h)` is shown at: as drawn,
@@ -583,13 +842,17 @@ fn svg_size(svg: &str) -> Option<(f32, f32)> {
     view_box(&svg[start..end])
 }
 
-/// A drawn diagram.
+/// A finished ```` ```mermaid ```` block: its source and its drawing, or
+/// why it could not be drawn.
 #[derive(Clone, Debug)]
 struct Diagram {
-    art: Art,
+    source: String,
+    art: Result<Art, String>,
 }
 
-/// ```` ```mermaid ```` blocks.
+/// ```` ```mermaid ```` blocks: a block with a Mermaid header,
+/// Diagram | Code, Copy and Export. While the block streams it stays the
+/// text view's code block.
 #[derive(Debug)]
 struct Mermaid;
 
@@ -617,57 +880,98 @@ impl MarkdownPlugin for Mermaid {
         if !fence_closed(cx.node_source(node).unwrap_or_default()) {
             return None;
         }
-        let art = draw_mermaid(&code.value)?;
+        let art = draw_mermaid_or_error(&code.value);
         Some(
-            MarkdownNode::new(self.name().to_owned(), Diagram { art })
-                .text(code.value.clone())
-                .markdown(format!("```mermaid\n{}\n```", code.value))
-                .accessibility_label("Mermaid diagram"),
+            MarkdownNode::new(
+                self.name().to_owned(),
+                Diagram {
+                    source: code.value.clone(),
+                    art,
+                },
+            )
+            .text(code.value.clone())
+            .markdown(format!("```mermaid\n{}\n```", code.value))
+            .accessibility_label("Mermaid diagram"),
         )
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let dark = is_dark(cx);
         let p = Palette::get(dark);
-        let art = node.data::<Diagram>().map(|d| d.art.clone());
-        div()
-            .w_full()
-            .my_2()
-            .p_2()
-            .rounded_md()
-            .border_1()
-            .border_color(p.border)
-            .bg(p.raised)
-            .children(art.map(|art| {
-                let w = art.width.min(DIAGRAM_MAX_W);
-                let h = art.height * (w / art.width);
-                div()
-                    .id(SharedString::from(format!(
-                        "mermaid-{}",
-                        key("m", node.as_text())
-                    )))
-                    .w_full()
-                    .overflow_x_scroll()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        // Never wider than the answer column (a narrow
-                        // window shrinks it; Contain keeps its shape).
-                        img(art.image(dark))
-                            .w(px(w))
-                            .max_w_full()
-                            .h(px(h))
-                            .object_fit(ObjectFit::Contain)
-                            .flex_none(),
-                    )
-            }))
-            .child(
-                div()
-                    .pt_1()
-                    .text_xs()
-                    .text_color(p.faint)
-                    .child("Mermaid diagram · copy the answer for its source"),
-            )
+        let Some(d) = node.data::<Diagram>().cloned() else {
+            return div().into_any_element();
+        };
+        let id = format!("mermaid-{}", key("m", &d.source));
+        let code_shown =
+            window.use_keyed_state(SharedString::from(format!("{id}-code")), cx, |_, _| false);
+        let art = d.art.as_ref().ok().cloned();
+        let show_code = art.is_none() || *code_shown.read(cx);
+        let svg = art
+            .as_ref()
+            .map(|a| String::from_utf8_lossy(a.light.bytes()).into_owned());
+        let (stem, formats) = crate::blockexport::mermaid_formats(&d.source, svg.as_deref());
+        let head = block_head(
+            "Mermaid",
+            art.as_ref().map(|_| {
+                crate::blockexport::segmented(
+                    &id,
+                    ("Diagram", "Code"),
+                    show_code,
+                    code_shown.clone(),
+                    cx,
+                )
+            }),
+            crate::blockexport::toolbar(
+                &id,
+                Arc::from(d.source.as_str()),
+                stem,
+                formats,
+                window,
+                cx,
+            ),
+            p,
+        );
+        let body = if show_code {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(source_text(&d.source, p))
+                .children(d.art.as_ref().err().map(|e| {
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(format!(
+                            "Couldn't draw this diagram: {e}"
+                        )))
+                }))
+                .into_any_element()
+        } else {
+            let art = art.clone().expect("diagram mode has art");
+            let w = art.width.min(DIAGRAM_MAX_W);
+            let h = art.height * (w / art.width);
+            div()
+                .id(SharedString::from(format!("{id}-scroll")))
+                .w_full()
+                .overflow_x_scroll()
+                .flex()
+                .justify_center()
+                .child(
+                    // Never wider than the answer column (a narrow window
+                    // shrinks it; Contain keeps its shape).
+                    img(art.image(dark))
+                        .w(px(w))
+                        .max_w_full()
+                        .h(px(h))
+                        .object_fit(ObjectFit::Contain)
+                        .flex_none(),
+                )
+                .into_any_element()
+        };
+        block_card(p)
+            .child(head)
+            .child(div().px_3().pb_2().child(body))
+            .into_any_element()
     }
 }
 
@@ -905,6 +1209,38 @@ mod tests {
         let svg = String::from_utf8(art.light.bytes().to_vec()).unwrap();
         assert!(!svg.contains("foreignObject"), "resvg-safe labels");
         assert!(draw_mermaid("this is not mermaid at all {{{").is_none());
+    }
+
+    #[test]
+    fn the_models_bracket_formulas_and_align_are_typeset() {
+        // The exact formulas from the answer that showed raw LaTeX.
+        let text = crate::mathsrc::delimiters(crate::mathsrc::SAMPLE);
+        assert!(
+            typeset(
+                "\\alpha = \\text{softmax}\\left(\\frac{Q K^T}{\\sqrt{d_k}}\\right) V",
+                true
+            )
+            .is_some()
+        );
+        assert!(typeset("n \\times d_k", false).is_some());
+        assert!(
+            typeset(
+                "\\begin{align*}\nQ &= X W^Q \\\\\nK &= X W^K \\\\\nV &= X W^V\n\\end{align*}",
+                true
+            )
+            .is_some(),
+            "align* lays out as aligned"
+        );
+        assert!(typeset("a &= b \\\\ c &= d", true).is_some(), "bare rows");
+        assert!(text.contains("$$n \\times d_k$$"), "{text}");
+    }
+
+    #[test]
+    fn the_models_mermaid_is_drawn_after_quoting_its_labels() {
+        let art = draw_mermaid_or_error(crate::mermaidsrc::SAMPLE);
+        assert!(art.is_ok(), "{:?}", art.err());
+        let err = draw_mermaid_or_error("flowchart TD\n  A[[[ --> ").unwrap_err();
+        assert!(!err.is_empty() && !err.contains('\n'), "{err}");
     }
 
     #[test]

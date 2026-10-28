@@ -77,6 +77,21 @@ fn select_emoji_font(
     None
 }
 
+/// Tern patch: the first face, not yet used for this text, with the base
+/// face's style, weight and stretch that has `ch`.
+fn select_matching_fallback(
+    ch: char,
+    fonts: &[usvg::fontdb::ID],
+    db: &usvg::fontdb::Database,
+) -> Option<usvg::fontdb::ID> {
+    let base = db.face(*fonts.first()?)?;
+    db.faces()
+        .filter(|f| !fonts.contains(&f.id))
+        .filter(|f| f.style == base.style && f.weight == base.weight && f.stretch == base.stretch)
+        .find(|f| font_has_char(db, f.id, ch))
+        .map(|f| f.id)
+}
+
 /// When rendering SVGs, we render them at twice the size to get a higher-quality result.
 pub const SMOOTH_SVG_SCALE_FACTOR: f32 = 2.;
 
@@ -168,6 +183,16 @@ impl SvgRenderer {
                     {
                         return Some(id);
                     }
+                }
+
+                // Tern patch: usvg's default fallback takes a face that
+                // shares any one of style, weight and stretch with the base
+                // face (`&&` where `||` was meant), so a `→` missing from
+                // IBM Plex Sans was set in the first system face with that
+                // glyph, often a bold italic one (#73). A face matching all
+                // three goes first.
+                if let Some(id) = select_matching_fallback(ch, fonts, db.as_ref()) {
+                    return Some(id);
                 }
 
                 default_fallback_selection(ch, fonts, db)

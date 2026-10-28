@@ -30,6 +30,15 @@ fn icon(name: AssetIcon, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// A key the `/` and `@` menus take from the text field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuKey {
+    Up,
+    Down,
+    Pick,
+    Close,
+}
+
 fn mode_icon(m: Mode) -> AssetIcon {
     match m {
         Mode::Chat => AssetIcon::MessageSquare,
@@ -631,6 +640,30 @@ impl Workspace {
                 .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, window, cx| {
                     this.composer_keys(e, window, cx);
                 }))
+                // The text field binds Up, Down, Tab and Esc to its own
+                // actions, which run before any key listener; while the `/`
+                // or `@` menu is open they are the menu's (round 2: the `@`
+                // menu did not move with the arrow keys).
+                .capture_action(cx.listener(
+                    |this, _: &gpui_kit::component::input::MoveUp, window, cx| {
+                        this.menu_action(MenuKey::Up, window, cx)
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |this, _: &gpui_kit::component::input::MoveDown, window, cx| {
+                        this.menu_action(MenuKey::Down, window, cx)
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |this, _: &gpui_kit::component::input::IndentInline, window, cx| {
+                        this.menu_action(MenuKey::Pick, window, cx)
+                    },
+                ))
+                .capture_action(cx.listener(
+                    |this, _: &gpui_kit::component::input::Escape, window, cx| {
+                        this.menu_action(MenuKey::Close, window, cx)
+                    },
+                ))
                 .children(self.composer_menu(p, cx))
                 .children(self.link_field(p, cx))
                 .children(self.composer_note(p))
@@ -706,6 +739,36 @@ impl Workspace {
         )
     }
 
+    /// A text-field action (Up, Down, Tab, Esc) while the `/` or `@` menu
+    /// is open: the menu's, and the field never sees it. With no menu open
+    /// it goes on to the field.
+    fn menu_action(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
+        let slash = self.model.slash.is_some() && !self.model.slash_rows().is_empty();
+        let mention = self.model.mention.is_some();
+        if !slash && !mention {
+            return;
+        }
+        cx.stop_propagation();
+        match key {
+            MenuKey::Up if slash => self.model.move_slash(-1),
+            MenuKey::Down if slash => self.model.move_slash(1),
+            MenuKey::Pick if slash => {
+                self.choose_slash(None, window, cx);
+                return;
+            }
+            MenuKey::Close if slash => self.model.slash = None,
+            MenuKey::Up => self.model.move_mention(-1),
+            MenuKey::Down => self.model.move_mention(1),
+            MenuKey::Pick => {
+                self.choose_mention(None, window, cx);
+                return;
+            }
+            MenuKey::Close => self.model.mention = None,
+        }
+        self.scroll_menu_to_selected();
+        cx.notify();
+    }
+
     /// Esc closes a menu or stops the run; Tab queues a message while one
     /// runs; the `@` and `/` menus take their keys first.
     fn composer_keys(
@@ -726,17 +789,9 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // Backspace in an empty composer takes the last chip away (a
-        // transcribing one is cancelled).
-        if key == "backspace"
-            && !e.keystroke.modifiers.secondary()
-            && self.composer.read(cx).value().is_empty()
-            && self.model.remove_last_chip()
-        {
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
+        // Backspace never takes a chip away (round 2): a held Backspace
+        // that cleared an `@` query went on to remove the file it had
+        // attached. Chips go with their ×.
         if key == "escape" && self.cancel_recording() {
             cx.stop_propagation();
             cx.notify();
@@ -2523,6 +2578,39 @@ impl Workspace {
                         _ => item("am-other", AssetIcon::Ellipsis, label.into()),
                     });
                 }
+                // The answer as a Markdown file (#72 round 2): into the
+                // chat's folder, or wherever Save as… says.
+                let save_md = |save_as: bool| {
+                    cx.listener(
+                        move |this: &mut Self, _: &gpui_kit::ClickEvent, window, cx| {
+                            this.model.action_menu = None;
+                            if let Some(t) = this.model.entry_text(i) {
+                                let (stem, formats) = crate::blockexport::answer_formats(t);
+                                let job = crate::blockexport::Job {
+                                    stem,
+                                    formats: std::sync::Arc::new(formats),
+                                    pick: 0,
+                                    save_as,
+                                };
+                                this.save_block(job, window, cx);
+                            }
+                            cx.notify();
+                        },
+                    )
+                };
+                m = m
+                    .child(
+                        item(
+                            "am-save-md",
+                            AssetIcon::Download,
+                            "Save as Markdown (.md) in the chat's folder".into(),
+                        )
+                        .on_click(save_md(false)),
+                    )
+                    .child(
+                        item("am-save-as", AssetIcon::Save, "Save as…".into())
+                            .on_click(save_md(true)),
+                    );
                 m
             }
         };
@@ -2677,10 +2765,8 @@ impl Workspace {
                 .children(thinking)
                 .children(rollup)
                 .children(draft.map(|d| {
-                    super::bidi_markdown("answer", i, d.to_owned(), |t| {
-                        t.selectable(true)
-                            .motion(super::stream_motion())
-                            .markdown_extensions(crate::richmd::extensions())
+                    super::bidi_markdown("answer", i, crate::richmd::prepare(d).into_owned(), |t| {
+                        crate::richmd::rich(t.selectable(true).motion(super::stream_motion()))
                     })
                 }))
                 .when(behind, |d| d.child(show_all(p, cx)))

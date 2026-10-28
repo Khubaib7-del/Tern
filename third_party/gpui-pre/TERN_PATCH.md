@@ -27,6 +27,16 @@ changed except below. Search for "Tern patch".
   "panic in a function that cannot unwind" inside the window procedure).
   It logs a warning; notifying the root view only redraws the window.
 
+- `src/svg_renderer.rs`, the SVG fallback font (#73,
+  `select_matching_fallback`): usvg 0.46's `default_fallback_selector`
+  skips a face only when its style, weight *and* stretch all differ from
+  the base face, so any face sharing one of them qualifies. A character
+  IBM Plex Sans lacks (`→`, `∗`, `√` in a Mermaid label) was drawn in the
+  first system face with it, often a bold italic one, and the label's
+  text after it came out bold italic (gpt-oss's `Linear (d_model →
+  4*d_model)`). A face matching the base in all three is tried first;
+  usvg's own selector stays the last resort.
+
 The composer's right alignment, swapped arrow keys and selection on
 right-to-left text are in `third_party/gpui-base` (its TERN_PATCH.md).
 

@@ -100,6 +100,125 @@ pub fn sample_xlsx() -> Vec<u8> {
     out.into_inner()
 }
 
+/// A real Excel workbook (#72 round 2: a table in an answer, exported):
+/// one sheet named `sheet`, a bold-free header row, then `rows`. Cells
+/// that read as plain numbers are stored as numbers, the rest as inline
+/// strings. Opens in Excel, LibreOffice and Google Sheets.
+pub fn write_xlsx(sheet: &str, headers: &[String], rows: &[Vec<String>]) -> Vec<u8> {
+    use std::io::Write as _;
+    fn col_name(mut i: usize) -> String {
+        let mut s = Vec::new();
+        loop {
+            s.push(b'A' + (i % 26) as u8);
+            if i < 26 {
+                break;
+            }
+            i = i / 26 - 1;
+        }
+        s.reverse();
+        String::from_utf8(s).unwrap_or_default()
+    }
+    fn esc(s: &str) -> String {
+        let mut o = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '&' => o.push_str("&amp;"),
+                '<' => o.push_str("&lt;"),
+                '>' => o.push_str("&gt;"),
+                '"' => o.push_str("&quot;"),
+                '\t' | '\n' | '\r' => o.push(c),
+                c if (c as u32) < 0x20 => {}
+                c => o.push(c),
+            }
+        }
+        o
+    }
+    fn number(s: &str) -> Option<&str> {
+        let t = s.trim();
+        let digits = t.strip_prefix('-').unwrap_or(t);
+        // "007" and "1e5" stay text, as typed.
+        let plain = !digits.is_empty()
+            && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+            && digits.matches('.').count() <= 1
+            && !digits.starts_with('.')
+            && !digits.ends_with('.')
+            && !(digits.len() > 1 && digits.starts_with('0') && !digits.starts_with("0."));
+        (plain && t.parse::<f64>().is_ok()).then_some(t)
+    }
+    let mut data = String::new();
+    for (r, cells) in std::iter::once(headers)
+        .chain(rows.iter().map(Vec::as_slice))
+        .enumerate()
+    {
+        data.push_str(&format!("<row r=\"{}\">", r + 1));
+        for (c, v) in cells.iter().enumerate() {
+            let at = format!("{}{}", col_name(c), r + 1);
+            match number(v).filter(|_| r > 0) {
+                Some(n) => data.push_str(&format!("<c r=\"{at}\"><v>{n}</v></c>")),
+                None => data.push_str(&format!(
+                    "<c r=\"{at}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
+                    esc(v)
+                )),
+            }
+        }
+        data.push_str("</row>");
+    }
+    let name: String = sheet
+        .chars()
+        .filter(|c| !matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\'))
+        .take(31)
+        .collect();
+    let name = if name.trim().is_empty() {
+        "Sheet1".to_owned()
+    } else {
+        name
+    };
+    let parts = [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#.to_owned(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.to_owned(),
+        ),
+        (
+            "xl/workbook.xml",
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="{}" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+                esc(&name)
+            ),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_owned(),
+        ),
+        (
+            "xl/worksheets/sheet1.xml",
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{data}</sheetData></worksheet>"#
+            ),
+        ),
+    ];
+    let mut out = std::io::Cursor::new(Vec::new());
+    {
+        let mut z = zip::ZipWriter::new(&mut out);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (n, xml) in parts {
+            if z.start_file(n, opts).is_ok() {
+                let _ = z.write_all(xml.as_bytes());
+            }
+        }
+        let _ = z.finish();
+    }
+    out.into_inner()
+}
+
 /// `<!-- Tern: report.pdf → Markdown (PDF text, 12 pages) -->`.
 pub fn header(name: &str, how: &str, pages: Option<usize>) -> String {
     let pages = match pages {
@@ -1315,6 +1434,32 @@ mod tests {
         let c = html(b"<html><head><title>Notes</title></head><body><main><h1>Notes</h1><p>Hello <b>there</b>.</p></main></body></html>");
         assert!(c.markdown.contains("Notes"), "{}", c.markdown);
         assert!(c.markdown.contains("Hello"), "{}", c.markdown);
+    }
+
+    #[test]
+    fn a_written_workbook_reads_back() {
+        let headers = vec!["City".to_owned(), "Students <all>".to_owned()];
+        let rows = vec![
+            vec!["Lahore".to_owned(), "120".to_owned()],
+            vec!["Islamabad & Pindi".to_owned(), "007".to_owned()],
+        ];
+        let bytes = write_xlsx("Marks", &headers, &rows);
+        let mut z = open_zip(&bytes).unwrap();
+        for part in [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "xl/_rels/workbook.xml.rels",
+        ] {
+            assert!(zip_file(&mut z, part).is_some(), "{part}");
+        }
+        let sheet = zip_file(&mut z, "xl/worksheets/sheet1.xml").unwrap();
+        assert!(sheet.contains(r#"<c r="B2"><v>120</v></c>"#), "{sheet}");
+        assert!(sheet.contains("&lt;all&gt;"), "{sheet}");
+        let c = xlsx(&bytes).unwrap();
+        assert!(c.markdown.starts_with("## Marks"), "{}", c.markdown);
+        assert!(c.markdown.contains("Islamabad & Pindi"), "{}", c.markdown);
+        assert!(c.markdown.contains("007"), "{}", c.markdown);
+        assert!(c.markdown.contains("120"), "{}", c.markdown);
     }
 
     #[test]

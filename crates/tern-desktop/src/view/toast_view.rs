@@ -200,6 +200,7 @@ impl Workspace {
                 }
                 None => {}
             },
+            Retry::OpenFolder(path) => cx.reveal_path(&path),
             Retry::LocalModels => {
                 self.open_settings(crate::settings::Section::LocalModels, window, cx);
             }

@@ -1822,16 +1822,6 @@ impl Model {
         }
     }
 
-    /// Backspace in an empty composer: the last chip goes (a transcribing
-    /// one is cancelled). Returns whether one went.
-    pub fn remove_last_chip(&mut self) -> bool {
-        if let Some(job) = self.audio_pending.pop() {
-            job.ctl.cancel();
-            return true;
-        }
-        self.attachments.pop().is_some()
-    }
-
     /// Puts the open chat's composer away under `key` before another chat
     /// shows: `text` (what is typed), its attachments, and audio still
     /// being transcribed (it keeps going and lands there).
@@ -4042,7 +4032,7 @@ mod tests {
     }
 
     #[test]
-    fn chips_go_with_x_or_backspace_and_x_cancels_a_transcription() {
+    fn chips_go_only_with_x_and_x_cancels_a_transcription() {
         let mut m = ready();
         m.attachments.push(Attachment::paste(&"x".repeat(3)));
         let (id, ctl) = m.audio_started("memo.m4a".into(), None, None);
@@ -4053,11 +4043,14 @@ mod tests {
         m.audio_transcribed(id, Err(tern_agent::local_models::CANCELLED.into()));
         assert_eq!(m.toasts.shown().len(), toasts);
         assert!(m.attachments.len() == 1);
-        // Backspace: the transcribing chip first, then the attachments.
-        let (_, ctl) = m.audio_started("b.m4a".into(), None, None);
-        assert!(m.remove_last_chip() && ctl.is_cancelled());
-        assert!(m.remove_last_chip() && m.attachments.is_empty());
-        assert!(!m.remove_last_chip());
+        // Editing the text never takes a chip away (round 2): an `@`
+        // query typed, picked, then deleted leaves the attachment.
+        m.on_composer_text("see @x");
+        m.on_composer_text("see @");
+        m.on_composer_text("");
+        assert_eq!(m.attachments.len(), 1);
+        m.remove_attachment(0);
+        assert!(m.attachments.is_empty(), "the × removes it");
     }
 
     #[test]

@@ -26,6 +26,11 @@ except below. Search for "Tern patch".
   longest row for every row. A selection on right-to-left text is
   highlighted between its two caret positions, whichever is further left.
 
+- `src/text/node.rs` (`CodeBlock::render`): a code block with custom
+  actions (`TextView::code_block_actions`) gets the same 28 px top band
+  as one with its language label, so Tern's Copy · Export toolbar (#72
+  round 2) never covers the first line of code.
+
 With `gpui-pre`'s caret patch (`third_party/gpui-pre/TERN_PATCH.md`), this
 fixes the #68 composer. Typing `??` after Urdu puts the marks at the line's
 left end, the logical end of the text.

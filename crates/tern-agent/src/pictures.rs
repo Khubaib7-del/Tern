@@ -25,6 +25,32 @@ fn is_heic(bytes: &[u8]) -> bool {
         )
 }
 
+/// A PNG of `width` × `height` pixels from BGRA bytes (what an app
+/// renderer hands back), or `None` when the sizes do not match (#72 round
+/// 2: a formula or diagram in an answer, exported as a picture).
+pub fn png_from_bgra(width: u32, height: u32, bgra: &[u8]) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 || bgra.len() != width as usize * height as usize * 4 {
+        return None;
+    }
+    let mut rgba = bgra.to_vec();
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2);
+        // Premultiplied by the renderer: undo it, so edges keep their colour.
+        let a = px[3];
+        if a != 0 && a != 255 {
+            for c in &mut px[..3] {
+                *c = ((u16::from(*c) * 255 + u16::from(a) / 2) / u16::from(a)).min(255) as u8;
+            }
+        }
+    }
+    let img = image::RgbaImage::from_raw(width, height, rgba)?;
+    let mut out = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(img)
+        .write_to(&mut out, ImageFormat::Png)
+        .ok()?;
+    Some(out.into_inner())
+}
+
 /// `bytes` as PNG or JPEG within the limits, with its media type.
 pub fn prepare_bytes(name: &str, bytes: &[u8]) -> Result<(Vec<u8>, &'static str), String> {
     if is_heic(bytes) {
@@ -104,6 +130,16 @@ pub fn prepare(img: &ImageInput) -> Result<ImageInput, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bgra_pixels_become_a_png() {
+        // One opaque blue pixel, one transparent one.
+        let png = png_from_bgra(2, 1, &[255, 0, 0, 255, 0, 0, 0, 0]).unwrap();
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255]);
+        assert_eq!(img.get_pixel(1, 0).0[3], 0);
+        assert!(png_from_bgra(2, 2, &[0; 4]).is_none());
+    }
 
     fn encode(img: &DynamicImage, f: ImageFormat) -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());
