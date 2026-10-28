@@ -367,6 +367,8 @@ enum Act {
     /// #77: adds an allow path rule, as an older "Always allow" left it
     /// in Settings › Permissions (`./**`).
     WRule(&'static str),
+    /// #77: clears Settings › Permissions' rules, so a write asks again.
+    WRulesClear,
     /// #75: answers the approval card with option `k` (0 once, 1 for the
     /// chat, 2 always allow, 3 reject), if one is asked.
     WPick(usize),
@@ -1999,6 +2001,10 @@ impl Workspace {
                 Some(m) => self.set_approval_mode(m),
                 None => log(&format!("TOUR error no approval mode {id}")),
             },
+            Act::WRulesClear => {
+                log("TOUR note permission rules cleared");
+                self.save_ui_prefs(|p| p.permission_rules.clear());
+            }
             Act::WRule(pat) => {
                 let rule = tern_agent::PermissionRule::new(
                     tern_agent::permissions::RuleKind::Path,
@@ -2426,10 +2432,37 @@ impl Workspace {
                             .as_deref()
                             .map(|a| format!(" [{a}]"))
                             .unwrap_or_default()
-                    )
+                    ) + &c
+                        .cached
+                        .map(|a| format!(" cached({a}s)"))
+                        .unwrap_or_default()
+                        + &if c.children.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " inner[{}]",
+                                c.children
+                                    .iter()
+                                    .map(|k| format!(
+                                        "#{} {} {:?}{}",
+                                        k.call,
+                                        k.tool,
+                                        k.state,
+                                        k.cached.map(|_| " cached").unwrap_or_default()
+                                    ))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
                 })
             })
             .collect();
+        let (plan, graph) = tern_agent::planner::of_run(self.model.panel_run());
+        log(&format!(
+            "TOUR work {what} plan: {:?} graph: {:?}",
+            plan.map(|p| p.line()),
+            graph.map(|g| format!("{} · {} waves", g.line(), g.waves))
+        ));
         let runs: Vec<String> = tern_agent::live::runs()
             .iter()
             .map(|r| {
@@ -2765,6 +2798,10 @@ const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe FYP demo is on 14 Novem
 /// #76: the new file the work tour writes in Ask mode (six lines).
 const WORK_NOTES: &str = "# Reading notes\n\n- Self-RAG: retrieve on demand, critique the draft\n- FLARE: retrieve when the next sentence is unsure\n- Adaptive-RAG: route by question complexity\n- CRAG: grade documents, fall back to web search\n";
 /// #77: the new file the work tour asks for in a text tool block.
+/// #77: the code-mode script of the work tour: three reads and a write,
+/// one printed line back.
+const WORK_CODE_MODE: &str = "names = ['reading-notes.md', 'meeting-notes.md', 'todo.md']\ntotal = 0\nfor n in names:\n    total += len(file_read(n).split())\nfile_write('word-counts.md', '# Word counts\\n\\nThree notes, ' + str(total) + ' words in all.\\n')\nprint('words in 3 notes:', total)\n";
+
 const WORK_MEETING: &str = "# Meeting notes\n\n- Supervisor wants the FLARE baseline by Friday\n- Lab 3 is booked for the demo\n";
 /// #76: an answer with every block kind the focus view opens.
 const FOCUS_BLOCKS_A: &str = "Here is each kind.\n\n```python\ndef retrieve(query, k=5):\n    hits = index.search(embed(query), k)\n    return [h.text for h in hits if h.score > 0.3]\n```\n\n| Policy | Recall@5 | Latency (ms) |\n| --- | --- | --- |\n| Always retrieve | 0.71 | 420 |\n| FLARE | 0.78 | 610 |\n| Self-RAG | 0.81 | 1,150 |\n| No retrieval | 0.42 | 95 |\n\n$$\nP(\\text{retrieve} \\mid x) = \\sigma\\left(w^\\top h_x + b\\right)\n$$\n\n```mermaid\nflowchart LR\n    Q[Question] --> D{Unsure?}\n    D -- yes --> R[Retrieve]\n    D -- no --> A[Answer]\n    R --> A\n```\n";
@@ -3016,6 +3053,57 @@ fn focus_beats() -> Vec<Beat> {
             "tern-only",
             "Files › Outputs after summary.md → fyp-summary.md: the output follows the new name (no greyed Moved or deleted row), no \\\\?\\ in any path",
             Act::CFolderState("outputs after rename"),
+            3000,
+        ),
+        // #77: the planner, a parallel task graph, code mode with its
+        // calls nested under the script's card (a write inside still asks),
+        // and a result served from the tool cache.
+        b(Act::CTypePath("Tour: plan the reading review"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "x21-plan-card",
+            "tern-only",
+            "The plan card above the answer: Plan · Reading review, 3 of 3 done, each step's mark moved from pending to in progress to done as the model updated it; the plan calls have no tool cards of their own",
+            Act::WState("plan card"),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: compare the notes in parallel"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "x22-task-graph",
+            "tern-only",
+            "A task graph: five tasks in two waves, the four reads of wave 1 run at once, task e waits for a; the graph card shows each task's tool, what it waits for and Done; the calls nest under the run_tasks card",
+            Act::WState("task graph"),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::WRulesClear, 300),
+        b(Act::CTypePath("Tour: code mode word counts"), 200),
+        b(Act::CSend, 4500),
+        scene(
+            "x23-code-mode-write-waits",
+            "tern-only",
+            "Code mode: one run_python script reads three notes and writes word-counts.md; its calls show nested under the script's card, open because the write inside waits for its approval card (Ask mode)",
+            Act::WState("code mode waiting"),
+            3000,
+        ),
+        scene(
+            "x24-code-mode-done",
+            "tern-only",
+            "Approved: the script finishes, its four calls fold into one row under its card (4 tool calls inside: file_read ×3, file_write), and only the script's printed line went back to the model",
+            Act::WPick(0),
+            3500,
+        ),
+        b(Act::WState("code mode done"), 200),
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: read the todo list twice"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "x25-cache-hit",
+            "tern-only",
+            "The same file_read twice: the second card is marked cached (served from the tool cache, not run again)",
+            Act::WState("cache hit"),
             3000,
         ),
         b(Act::WApproval("workspace_write"), 300),
@@ -4750,6 +4838,88 @@ mod mock {
                         json!({"from": "summary.md", "to": "fyp-summary.md"}),
                     )],
                 )
+            });
+        }
+        // #77: the plan, updated as the steps go.
+        if user.contains("plan the reading review") {
+            let plan = |a: &str, b: &str, c: &str| {
+                (
+                    "plan".to_owned(),
+                    json!({"title": "Reading review", "steps": [
+                        {"title": "Gather the notes in the folder", "status": a},
+                        {"title": "Compare the RAG methods", "status": b},
+                        {"title": "Write a short review", "status": c}
+                    ]}),
+                )
+            };
+            return Some(match results.len() {
+                0 => (
+                    String::new(),
+                    vec![
+                        plan("in_progress", "pending", "pending"),
+                        ("files_list".to_owned(), json!({"path": "."})),
+                    ],
+                ),
+                1 | 2 => (
+                    String::new(),
+                    vec![
+                        plan("done", "in_progress", "pending"),
+                        ("file_read".to_owned(), json!({"path": "reading-notes.md"})),
+                    ],
+                ),
+                3 | 4 => (String::new(), vec![plan("done", "done", "done")]),
+                _ => (
+                    "Review: Self-RAG and FLARE both retrieve only when needed (Self-RAG critiques its draft, FLARE waits for an unsure sentence); Adaptive-RAG routes by question complexity and CRAG grades what it retrieved.".into(),
+                    Vec::new(),
+                ),
+            });
+        }
+        // #77: a task graph, four reads at once and one that waits.
+        if user.contains("compare the notes in parallel") {
+            return Some(if done {
+                (
+                    "Compared the notes: the reading notes cover four RAG methods, the meeting notes set the FLARE baseline for Friday, and the to-do list starts with the FLARE paper.".into(),
+                    Vec::new(),
+                )
+            } else {
+                (
+                    String::new(),
+                    vec![(
+                        "run_tasks".to_owned(),
+                        json!({"goal": "Compare the notes", "tasks": [
+                            {"id": "a", "tool": "files_list", "args": {"path": "."}},
+                            {"id": "b", "tool": "file_read", "args": {"path": "reading-notes.md"}},
+                            {"id": "c", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
+                            {"id": "d", "tool": "file_read", "args": {"path": "todo.md"}},
+                            {"id": "e", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["a"]}
+                        ]}),
+                    )],
+                )
+            });
+        }
+        // #77: code mode, one script calling the folder's tools.
+        if user.contains("code mode word counts") {
+            return Some(if done {
+                (format!("Counted the words: {line}"), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![(
+                        "run_python".to_owned(),
+                        json!({"code": super::WORK_CODE_MODE}),
+                    )],
+                )
+            });
+        }
+        // #77: the same read twice; the second comes from the cache.
+        if user.contains("read the todo list twice") {
+            let read = ("file_read".to_owned(), json!({"path": "todo.md"}));
+            return Some(match results.len() {
+                0 | 1 => (String::new(), vec![read]),
+                _ => (
+                    "Read todo.md twice; the second read came from the cache.".into(),
+                    Vec::new(),
+                ),
             });
         }
         if user.contains("every kind of block") {
