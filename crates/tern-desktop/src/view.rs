@@ -15,7 +15,7 @@ use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable a
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, Context, Entity, FontWeight, Hsla, ScrollHandle,
-    SharedString, Subscription, Task, Window, div, point, px, size, svg,
+    SharedString, Subscription, Task, Window, div, px, svg,
 };
 use tern_agent::Role;
 use tern_agent::attach::Source as AttachSource;

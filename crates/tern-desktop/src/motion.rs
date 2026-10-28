@@ -20,7 +20,6 @@ use gpui_kit::Hsla;
 use crate::theme::Palette;
 
 pub const UI: Duration = Duration::from_millis(200);
-pub const MARK: Duration = Duration::from_millis(700);
 pub const THEME: Duration = Duration::from_millis(800);
 pub const SHIMMER: Duration = Duration::from_millis(1600);
 
