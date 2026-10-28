@@ -200,7 +200,15 @@ impl Workspace {
                 }
                 None => {}
             },
-            Retry::OpenFolder(path) => cx.reveal_path(&path),
+            Retry::OpenFolder(path) => {
+                if let Err(e) = crate::reveal::reveal(&path) {
+                    self.model.toasts.error(
+                        format!("Couldn't open the folder: {e}"),
+                        None,
+                        Instant::now(),
+                    );
+                }
+            }
             Retry::LocalModels => {
                 self.open_settings(crate::settings::Section::LocalModels, window, cx);
             }

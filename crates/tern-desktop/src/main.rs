@@ -53,6 +53,7 @@ mod perf;
 mod pet;
 mod providers;
 mod restore;
+mod reveal;
 mod richmd;
 mod rows;
 mod runmap;
