@@ -1181,6 +1181,9 @@ impl Workspace {
                 } else {
                     self.pending = Some(reply);
                     self.model.ask_approval(req);
+                    // The approval card (a diff, a command) sits at the end
+                    // of the transcript: bring it into view.
+                    self.scroll.scroll_to_bottom();
                 }
             }
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
