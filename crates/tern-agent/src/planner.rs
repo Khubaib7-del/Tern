@@ -717,17 +717,16 @@ impl Tool for PlanTool {
         "plan"
     }
     fn summary(&self) -> &'static str {
-        "Show the user a short plan for a task with several steps, and update it as you go: send the whole list each time, each step with a title and a status (pending, in_progress or done), one step in progress. Skip it for simple questions."
+        "Show the user a plan for a task with several steps and update it as you go: send every step each time with its status (pending, in_progress or done)."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Analysis
     }
     fn input_schema(&self) -> Value {
         json!({"type": "object", "required": ["steps"], "properties": {
-            "title": {"type": "string"},
-            "steps": {"type": "array", "items": {"type": "object", "required": ["title", "status"], "properties": {
+            "steps": {"type": "array", "items": {"type": "object", "properties": {
                 "title": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}
+                "status": {"type": "string"}
             }}}
         }})
     }
@@ -762,7 +761,7 @@ impl Tool for RunTasksTool {
         "run_tasks"
     }
     fn summary(&self) -> &'static str {
-        "Run several tool calls as a task graph: tasks that do not wait for each other run in parallel, and a task's \"after\" lists the ids it needs; write {{id}} in its args to get that task's result. JSON: {\"tasks\": [{\"id\": \"a\", \"tool\": \"web_search\", \"args\": {...}}, {\"id\": \"b\", \"tool\": \"read_url\", \"args\": {\"url\": \"{{a}}\"}, \"after\": [\"a\"]}]}. At most 12 tasks."
+        "Run tool calls as a task graph; tasks that do not wait for each other run in parallel. Each task: {\"id\", \"tool\", \"args\", \"after\": [ids]}; {{id}} in args becomes that task's result. At most 12 tasks."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Analysis
@@ -772,13 +771,7 @@ impl Tool for RunTasksTool {
         // (a `tasks` sent as a JSON string is read first, see
         // [`prepare_args`]).
         json!({"type": "object", "properties": {
-            "goal": {"type": "string"},
-            "tasks": {"type": "array", "items": {"type": "object", "properties": {
-                "id": {"type": "string"},
-                "tool": {"type": "string"},
-                "args": {"type": "object"},
-                "after": {"type": "array", "items": {"type": "string"}}
-            }}}
+            "tasks": {"type": "array", "items": {"type": "object"}}
         }})
     }
     fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {

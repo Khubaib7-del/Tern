@@ -117,7 +117,7 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
 
 /// Code mode (#77), after the tool protocol when `run_python` is offered;
 /// the stubs follow it.
-pub const CODE_MODE: &str = "Code mode: inside `run_python` these tools are Python functions that return their result as text, so one script can call many tools (search several things, read the results, compare them) and only what it prints comes back to you. Print a short summary, not the raw results. Each call still asks the user when it needs approval.";
+pub const CODE_MODE: &str = "Code mode: in `run_python` these tools are Python functions that return text, so one script can call many tools and only what it prints comes back to you (print a short summary). Each call still asks the user when needed:";
 
 #[cfg(test)]
 mod tests {

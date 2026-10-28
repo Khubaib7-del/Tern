@@ -284,7 +284,8 @@ pub fn stubs(tools: &crate::tools::ToolRegistry) -> Vec<Stub> {
 }
 
 impl Stub {
-    /// `def web_search(query: str, limit: int = None) -> str:  # Search the web`
+    /// `def web_search(query: str, limit: int = None) -> str` (the tool
+    /// list above it in the prompt says what each does).
     pub fn line(&self) -> String {
         let params = self
             .params
@@ -298,7 +299,7 @@ impl Stub {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("def {}({params}) -> str:  # {}", self.name, self.summary)
+        format!("def {}({params}) -> str", self.name)
     }
 
     /// A call's arguments as the tool takes them: positional ones by the
