@@ -56,7 +56,11 @@ const DISPLAY_ENVS: &[&str] = &[
 /// `text` with `\( \)`, `\[ \]` and bare display environments rewritten to
 /// dollar math. Borrowed when there is nothing to rewrite.
 pub fn delimiters(text: &str) -> Cow<'_, str> {
-    if !text.contains("\\(") && !text.contains("\\[") && !text.contains("\\begin{") {
+    if !text.contains("\\(")
+        && !text.contains("\\[")
+        && !text.contains("\\begin{")
+        && !has_math_fence(text)
+    {
         return Cow::Borrowed(text);
     }
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
@@ -73,6 +77,13 @@ pub fn delimiters(text: &str) -> Cow<'_, str> {
             .take_while(|c| *c == '`' || *c == '~')
             .collect();
         if marker.len() >= 3 && !dollar_block {
+            // A ```latex fence that holds formulas, not a TeX document.
+            if fence.is_none() {
+                if let Some(next) = math_fence(&lines, i, &marker, &mut out) {
+                    i = next;
+                    continue;
+                }
+            }
             match &fence {
                 Some(f) if marker.starts_with(f.as_str()) && trimmed.len() == marker.len() => {
                     fence = None
@@ -104,6 +115,191 @@ pub fn delimiters(text: &str) -> Cow<'_, str> {
         i = rewrite_from(&lines, i, &mut out);
     }
     Cow::Owned(out)
+}
+
+/// Fence languages a model wraps formulas in.
+const MATH_FENCES: &[&str] = &["latex", "tex", "math", "katex"];
+
+/// Whether `text` has a fence opened with one of [`MATH_FENCES`].
+fn has_math_fence(text: &str) -> bool {
+    text.lines().any(|l| fence_lang(l.trim()).is_some())
+}
+
+/// The math language a fence line opens (` ```latex `), lower-cased.
+fn fence_lang(trimmed: &str) -> Option<String> {
+    let marker = trimmed
+        .chars()
+        .take_while(|c| *c == '`' || *c == '~')
+        .count();
+    if marker < 3 {
+        return None;
+    }
+    let lang = trimmed[marker..]
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c| c == '{' || c == '}' || c == '.')
+        .to_ascii_lowercase();
+    MATH_FENCES.contains(&lang.as_str()).then_some(lang)
+}
+
+/// What a math-language fence's body is.
+#[derive(Debug, PartialEq, Eq)]
+enum FenceBody {
+    /// A TeX document or macro code: stays a code block.
+    Code,
+    /// Prose and formulas with their own delimiters: read as Markdown.
+    Delimited,
+    /// One bare formula: a display math block.
+    Formula,
+}
+
+/// Sorts a ```latex fence's body (see [`FenceBody`]).
+fn fence_body(body: &str) -> FenceBody {
+    const DOCUMENT: &[&str] = &[
+        "\\documentclass",
+        "\\usepackage",
+        "\\begin{document}",
+        "\\newcommand",
+        "\\renewcommand",
+        "\\def\\",
+        "\\section",
+        "\\chapter",
+        "\\maketitle",
+        "\\input{",
+        "\\include{",
+    ];
+    let t = body.trim();
+    if t.is_empty() || DOCUMENT.iter().any(|d| t.contains(d)) {
+        return FenceBody::Code;
+    }
+    if t.contains("\\(") || t.contains("\\[") || t.contains('$') {
+        return FenceBody::Delimited;
+    }
+    if t.contains("\\begin{") {
+        // `\begin{align*}…` alone is a formula; with prose around it the
+        // Markdown pass lifts the environment out.
+        return if prose_outside(t) {
+            FenceBody::Delimited
+        } else {
+            FenceBody::Formula
+        };
+    }
+    if looks_mathy(t) && !prose_outside(t) {
+        FenceBody::Formula
+    } else {
+        FenceBody::Code
+    }
+}
+
+/// Whether `t` has a run of plain words outside `\text{…}` and other
+/// braces: "Where the score is" rather than `\frac{a}{b} = x`.
+fn prose_outside(t: &str) -> bool {
+    let mut flat = String::with_capacity(t.len());
+    let mut depth = 0i32;
+    let mut cmd = false;
+    for c in t.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '\\' => {
+                cmd = true;
+                flat.push(' ');
+                continue;
+            }
+            _ if depth > 0 => {}
+            c if cmd && c.is_ascii_alphabetic() => continue,
+            c => flat.push(c),
+        }
+        cmd = false;
+    }
+    // Three words of two or more letters in a row.
+    let mut run = 0;
+    for w in flat.split(|c: char| c.is_whitespace()) {
+        if w.is_empty() {
+            continue;
+        }
+        let word = w.trim_end_matches([',', '.', ':', ';']);
+        if word.len() >= 2 && word.chars().all(|c| c.is_alphabetic()) {
+            run += 1;
+            if run >= 3 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+/// A ```latex / ```tex / ```math / ```katex fence opened on line `start`
+/// whose body is math: writes it as Markdown math into `out` and returns
+/// the line after the fence. `None` (nothing written) leaves the fence a
+/// code block: another language, a TeX document, or one still streaming
+/// without delimiters yet.
+fn math_fence(lines: &[&str], start: usize, marker: &str, out: &mut String) -> Option<usize> {
+    let open = lines[start];
+    fence_lang(open.trim())?;
+    let indent: String = open
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let close = lines[start + 1..].iter().position(|l| {
+        let t = l.trim();
+        t.starts_with(marker) && t.chars().all(|c| c == marker.chars().next().unwrap_or('`'))
+    });
+    let end = close.map_or(lines.len(), |c| start + 1 + c);
+    let body_lines = &lines[start + 1..end];
+    let common = body_lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
+        .min()
+        .unwrap_or(0);
+    let body: String = body_lines
+        .iter()
+        .map(|l| {
+            let cut = common.min(l.len() - l.trim_start_matches([' ', '\t']).len());
+            &l[cut..]
+        })
+        .collect();
+    let kind = fence_body(&body);
+    let next = if close.is_some() {
+        end + 1
+    } else {
+        lines.len()
+    };
+    match kind {
+        FenceBody::Code => None,
+        // A bare formula is only known whole once its fence closes.
+        FenceBody::Formula if close.is_none() => None,
+        FenceBody::Formula => {
+            push_block(out, "", &indent, &body, true);
+            ensure_gap(lines, next, out);
+            Some(next)
+        }
+        FenceBody::Delimited => {
+            let inner = delimiters(&body);
+            for l in inner.split_inclusive('\n') {
+                if !l.trim().is_empty() {
+                    out.push_str(&indent);
+                }
+                out.push_str(l);
+            }
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            ensure_gap(lines, next, out);
+            Some(next)
+        }
+    }
+}
+
+/// A blank line after an unwrapped fence, so the text after it starts a
+/// paragraph of its own.
+fn ensure_gap(lines: &[&str], next: usize, out: &mut String) {
+    if lines.get(next).is_some_and(|l| !l.trim().is_empty()) {
+        out.push('\n');
+    }
 }
 
 /// Rewrites line `start` (and, for a display formula spanning lines, the
@@ -424,6 +620,90 @@ pub fn ratex_candidates(latex: &str) -> Vec<String> {
     out
 }
 
+/// Operators models write as if they were defined (`\\softmax`), and what
+/// each becomes when RaTeX does not know it. Anything else unknown becomes
+/// `\\operatorname{name}` (see [`lenient`]).
+const OPERATORS: &[(&str, &str)] = &[
+    ("softmax", "\\operatorname*{softmax}"),
+    ("argmax", "\\operatorname*{arg\\,max}"),
+    ("argmin", "\\operatorname*{arg\\,min}"),
+    ("sign", "\\operatorname{sign}"),
+    ("sgn", "\\operatorname{sgn}"),
+    ("ReLU", "\\operatorname{ReLU}"),
+    ("relu", "\\operatorname{ReLU}"),
+    ("GELU", "\\operatorname{GELU}"),
+    ("sigmoid", "\\operatorname{sigmoid}"),
+    ("diag", "\\operatorname{diag}"),
+    ("tr", "\\operatorname{tr}"),
+    ("Tr", "\\operatorname{Tr}"),
+    ("trace", "\\operatorname{trace}"),
+    ("rank", "\\operatorname{rank}"),
+    ("Var", "\\operatorname{Var}"),
+    ("Cov", "\\operatorname{Cov}"),
+    ("E", "\\mathbb{E}"),
+    ("Prob", "\\operatorname{P}"),
+    ("KL", "\\operatorname{KL}"),
+    ("LayerNorm", "\\operatorname{LayerNorm}"),
+    ("Attention", "\\operatorname{Attention}"),
+    ("MultiHead", "\\operatorname{MultiHead}"),
+    ("Concat", "\\operatorname{Concat}"),
+];
+
+/// The command a RaTeX "Undefined control sequence: \\name" error names.
+pub fn undefined_macro(error: &str) -> Option<&str> {
+    let at = error.find("Undefined control sequence: \\")?;
+    let rest = &error[at + "Undefined control sequence: \\".len()..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
+}
+
+/// `s` with the command `\\name` (not `\\namefoo`) replaced by `with`.
+pub fn replace_command(s: &str, name: &str, with: &str) -> String {
+    let pat = format!("\\{name}");
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut rest = s;
+    while let Some(p) = rest.find(&pat) {
+        let after = &rest[p + pat.len()..];
+        out.push_str(&rest[..p]);
+        if after.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            out.push_str(&pat);
+        } else {
+            out.push_str(with);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Parses `latex` with `parse`; when it stops at an unknown command, that
+/// command is defined as an operator ([`OPERATORS`], else
+/// `\\operatorname{name}`) and it tries again, a few times at most.
+pub fn lenient<T>(latex: &str, parse: impl Fn(&str) -> Result<T, String>) -> Option<T> {
+    let mut src = latex.to_owned();
+    for _ in 0..8 {
+        match parse(&src) {
+            Ok(t) => return Some(t),
+            Err(e) => {
+                let name = undefined_macro(&e)?.to_owned();
+                let with = OPERATORS
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map(|(_, w)| (*w).to_owned())
+                    .unwrap_or_else(|| format!("\\operatorname{{{name}}}"));
+                let next = replace_command(&src, &name, &with);
+                if next == src {
+                    return None;
+                }
+                src = next;
+            }
+        }
+    }
+    None
+}
+
 /// `s` without `cmd{…}` (its braced argument too).
 fn strip_command_arg(s: &str, cmd: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -482,9 +762,84 @@ fn top_level_amp(s: &str) -> bool {
 /// before (the tests and the UI tour use it).
 pub const SAMPLE: &str = "The attention is\n\n\\[ \\alpha = \\text{softmax}\\left(\\frac{Q K^T}{\\sqrt{d_k}}\\right) V \\]\n\nwhere:\n\n- \\(Q\\): Query matrix (\\(n \\times d_k\\))\n- \\(K\\): Key matrix\n\nThe projections:\n\n\\[\n\\begin{align*}\nQ &= X W^Q \\\\\nK &= X W^K \\\\\nV &= X W^V\n\\end{align*}\n\\]\n";
 
+/// The two answers ministral-8b wrote with formulas inside ```latex
+/// fences, which showed as code before (#74; tests and the UI tour).
+pub const FENCED_SAMPLE: &str = "Here is the attention formula in LaTeX:\n\n**Inline:**\n\n```latex\nThis is the attention score: \\( \\text{Attention}(q, k, v) = \\frac{\\exp(\\frac{q \\cdot k^T}{\\sqrt{d_k}})}{\\sum_{j=1}^D \\exp(\\frac{q \\cdot k_j^T}{\\sqrt{d_k}})} \\cdot v \\)\n```\n\n**Display Equation:**\n\n```latex\n\\[\n\\text{Attention}(q, k, v) = \\softmax_{\\text{scale and shift}} \\left( \\frac{q K^T}{\\sqrt{d_k}} \\right) V\n\\]\nWhere:\n\\[\n\\softmax(x)_i = \\frac{\\exp(x_i)}{\\sum_{j=1}^D \\exp(x_j)}\n\\]\n```\n";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ratex(s: &str) -> Result<(), String> {
+        ratex_parser::parser::parse(s)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn latex_fences_with_formulas_become_math() {
+        let out = delimiters(FENCED_SAMPLE);
+        assert!(!out.contains("```"), "{out}");
+        // Inline: the prose line keeps its formula inline.
+        assert!(
+            out.contains("This is the attention score: $$\\text{Attention}(q, k, v) = "),
+            "{out}"
+        );
+        // Display: two math blocks with "Where:" between them.
+        assert_eq!(out.lines().filter(|l| *l == "$$").count(), 4, "{out}");
+        assert!(
+            out.contains("$$\n\\text{Attention}(q, k, v) = \\softmax_{\\text{scale and shift}} \\left( \\frac{q K^T}{\\sqrt{d_k}} \\right) V\n$$\nWhere:\n$$\n\\softmax(x)_i = \\frac{\\exp(x_i)}{\\sum_{j=1}^D \\exp(x_j)}\n$$\n"),
+            "{out}"
+        );
+        assert!(out.contains("**Display Equation:**"), "{out}");
+    }
+
+    #[test]
+    fn both_fenced_samples_parse_with_operators_defined() {
+        let inline = "\\text{Attention}(q, k, v) = \\frac{\\exp(\\frac{q \\cdot k^T}{\\sqrt{d_k}})}{\\sum_{j=1}^D \\exp(\\frac{q \\cdot k_j^T}{\\sqrt{d_k}})} \\cdot v";
+        assert!(lenient(inline, ratex).is_some());
+        let d1 = "\\text{Attention}(q, k, v) = \\softmax_{\\text{scale and shift}} \\left( \\frac{q K^T}{\\sqrt{d_k}} \\right) V";
+        assert!(ratex(d1).is_err(), "\\softmax is not a RaTeX command");
+        assert!(lenient(d1, ratex).is_some());
+        let d2 = "\\softmax(x)_i = \\frac{\\exp(x_i)}{\\sum_{j=1}^D \\exp(x_j)}";
+        assert!(lenient(d2, ratex).is_some());
+        // Anything else unknown is an operator too.
+        assert!(lenient("\\Foo(x) + \\ReLU(y) + \\E[x]", ratex).is_some());
+        assert_eq!(
+            replace_command("\\softmax(x) \\softmaxed", "softmax", "S"),
+            "S(x) \\softmaxed"
+        );
+        assert_eq!(
+            undefined_macro("ParseError at position 3: Undefined control sequence: \\softmax"),
+            Some("softmax")
+        );
+    }
+
+    #[test]
+    fn latex_fences_that_are_code_stay_code() {
+        let doc = "```latex\n\\documentclass{article}\n\\usepackage{amsmath}\n\\begin{document}\n$x$\n\\end{document}\n```\n";
+        assert_eq!(delimiters(doc), doc);
+        let rust = "```rust\nlet x = \"\\\\(\";\n```\n";
+        assert_eq!(delimiters(rust), rust);
+        // Prose with commands but no formula delimiters is code too.
+        let prose = "```tex\nUse the \\emph command to stress a word in the text\n```\n";
+        assert_eq!(delimiters(prose), prose);
+    }
+
+    #[test]
+    fn a_bare_formula_fence_is_a_display_block() {
+        assert_eq!(
+            delimiters("See\n\n```math\nE = mc^2\n```\nnext\n"),
+            "See\n\n$$\nE = mc^2\n$$\n\nnext\n"
+        );
+        assert_eq!(
+            delimiters("```latex\n\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}\n```\n"),
+            "$$\n\\begin{align*}\na &= b \\\\\nc &= d\n\\end{align*}\n$$\n"
+        );
+        // Streaming, no fence close yet: still code until it closes.
+        let open = "```latex\nE = mc^2\n";
+        assert_eq!(delimiters(open), open);
+    }
 
     #[test]
     fn paren_and_bracket_delimiters_become_dollar_math() {
