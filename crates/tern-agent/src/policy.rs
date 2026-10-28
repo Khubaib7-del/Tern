@@ -30,7 +30,7 @@ use tern_core::EffectClass;
 use time::{Duration, OffsetDateTime};
 
 /// What the user's settings say about one effect class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     Allow,
