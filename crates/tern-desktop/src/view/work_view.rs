@@ -509,6 +509,14 @@ impl Workspace {
                     .child(SharedString::from(crate::toolcards::waiting_line(why))),
             );
         }
+        if let Some(why) = &c.allowed_because {
+            col = col.child(
+                div()
+                    .text_xs()
+                    .text_color(approval_yellow(p))
+                    .child(SharedString::from(why.clone())),
+            );
+        }
         if let Some(e) = &c.error {
             col = col.child(
                 div()
@@ -962,12 +970,17 @@ impl Workspace {
                         cx.notify();
                     }))
             }));
+        // #77: never read as saved before it is. The file on disk is the
+        // proof: "Saved" only once it holds exactly this text.
+        let saved = !waiting && w.done && self.preview_saved(&w.path, &w.text);
         let status = if waiting {
-            "waiting for your approval"
+            "Pending approval · not written yet"
+        } else if saved {
+            "Saved"
         } else if w.done {
-            "arguments complete"
+            "Not written yet"
         } else {
-            "writing…"
+            "writing… (not saved)"
         };
         let (shown, cut) = tail_chars(&w.text, PREVIEW_CHARS);
         let body: AnyElement = match mode {
@@ -1041,6 +1054,20 @@ impl Workspace {
                 .child(div().min_w_0().child(body))
                 .into_any_element(),
         )
+    }
+
+    /// Whether the previewed file is on disk with exactly `text` (#77).
+    fn preview_saved(&self, rel: &str, text: &str) -> bool {
+        let Some((_, root)) = self.model.workspace.as_ref() else {
+            return false;
+        };
+        let path = root.join(rel.trim().trim_start_matches("./"));
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() == text.len() as u64 => {
+                std::fs::read(&path).is_ok_and(|b| b == text.as_bytes())
+            }
+            _ => false,
+        }
     }
 
     // ----- The live poll -----

@@ -4,6 +4,15 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #77): #76 Windows test fixes (planner and code mode follow in the same PR)
+
+- **A new file in Ask mode always shows the approval card first** (step 7 of the #76 test). An older **Always allow writes in ./\*\*** (from a top-level write or rename card) added the relative rule `Allow · Path · ./**`, which matched every file in the folder of *every* chat, so a new file was written with no card. Now a relative `./…` allow rule no longer creates a new file in Ask mode (edits of existing files still follow it); only a rule that names the folder does. **Always allow writes** now adds a rule for this chat's folder (`D:/Codex/Tern testing/**`), not `./**`.
+- **A change that runs without a card says why**: its tool card reads "Ran without asking: allowed by your rule "…" (Settings › Permissions)" (or your tool setting, an earlier "for this chat", or the approval mode), so a skipped card is never silent. Settings › Tools showed `file_write` as "Auto (runs)" although it asks; it now shows "Auto (asks)".
+- **The Files tab never reads a pending write as saved**: its preview header says "Pending approval · not written yet" while the card waits, "Not written yet" until the file on disk holds the text, and "Saved" only then.
+- **Renames update Outputs and the Files tree**: after `file_rename` the output moves to the new name in the title bar's Outputs menu and the Files tab (no greyed "Moved or deleted" row left at the old name), and the tree drops the old entry at once.
+- **No `\\?\` in paths**: tooltips, toasts, Copy path, output paths and folder labels show `D:\Codex\Tern testing\summary.md`, not Windows' verbatim `\\?\D:\…`.
+- **UI tour**: `TERN_TOUR_ONLY=work` adds x17–x20: a new file asked for in a text ```` ```tool ```` block with the old `./**` rule present still waits for the card; Always allow adds the folder rule; a write that rule allows says so on its card; Outputs after a rename.
+
 ### Added (PR #76): block focus view, first-run intro, the flying tern, and the #75 test fixes
 
 From the Windows test of #75.

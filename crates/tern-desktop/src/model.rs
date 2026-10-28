@@ -1623,7 +1623,7 @@ impl Model {
             }
             Pick::Folder(dir) => {
                 // Opens the folder in the menu: the query becomes its path.
-                let mut shown = dir.display().to_string();
+                let mut shown = tern_agent::projects::plain_path(&dir).display().to_string();
                 if !shown.ends_with(['/', '\\']) {
                     shown.push(std::path::MAIN_SEPARATOR);
                 }

@@ -167,11 +167,12 @@ impl Workspace {
         };
         let target = request.target.clone().unwrap_or_default();
         let write = request.tool == "file_write";
-        let rule = tern_agent::PermissionRule::suggest(
+        let rule = tern_agent::PermissionRule::suggest_in(
             &request.tool,
             request.effect,
             request.target.as_deref(),
             &request.args,
+            self.model.workspace.as_ref().map(|(_, r)| r.as_path()),
         );
         let options: [String; 4] = if write {
             [
@@ -384,11 +385,12 @@ impl Workspace {
         {
             // "Always allow this": the rule is kept in Settings ›
             // Permissions, where it can be removed.
-            let rule = tern_agent::PermissionRule::suggest(
+            let rule = tern_agent::PermissionRule::suggest_in(
                 &request.tool,
                 request.effect,
                 request.target.as_deref(),
                 &request.args,
+                self.model.workspace.as_ref().map(|(_, r)| r.as_path()),
             );
             tern_agent::diag::note(&format!("approval: always allow -> rule {}", rule.line()));
             let line = rule.line();

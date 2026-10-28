@@ -532,7 +532,7 @@ impl Workspace {
         };
         let tip: SharedString = match (&self.model.workspace, locked) {
             (Some((_, path)), true) => {
-                format!("{}\n{}", path.display(), super::folders_view::FIXED).into()
+                format!("{}\n{}", tern_agent::projects::plain_path(path).display(), super::folders_view::FIXED).into()
             }
             (None, true) => "This chat has no folder; start a new chat to use one".into(),
             (_, false) => "Pick the folder this chat works in: Tern's file tools read only inside it. It is fixed once you send the first message".into(),

@@ -141,6 +141,10 @@ pub struct ToolCard {
     pub exit: Option<i64>,
     /// Why it waited for approval.
     pub asked_because: Option<String>,
+    /// A change that ran without a card, and the setting that let it
+    /// (your rule, your tool setting, an earlier approval, the mode), so
+    /// a skipped card is never silent (#77).
+    pub allowed_because: Option<String>,
 }
 
 impl ToolCard {
@@ -162,6 +166,7 @@ impl ToolCard {
             terminal_run: None,
             exit: None,
             asked_because: None,
+            allowed_because: None,
         }
     }
 
@@ -336,6 +341,11 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                 }
                 match s.event.as_str() {
                     "policy.decided" => {
+                        if p["decision"]["decision"] == "allow" {
+                            c.allowed_because = p["decision"]["because"]
+                                .as_str()
+                                .and_then(|b| allowed_line(tool, b));
+                        }
                         if p["decision"]["decision"] == "deny" {
                             c.state = CardState::Failed;
                             c.error = p["decision"]["reason"].as_str().map(str::to_owned);
@@ -423,6 +433,40 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
     groups
 }
 
+/// The line a card shows when a change ran without asking (#77): which
+/// setting allowed it, so a skipped approval card is never silent. Reads,
+/// searches and the like (allowed by their class) show nothing.
+pub fn allowed_line(tool: &str, because: &str) -> Option<String> {
+    let change = matches!(
+        tool,
+        "file_write" | "file_rename" | "run_command" | "vault_write"
+    ) || tool.starts_with("mcp__");
+    let b = because.trim();
+    if let Some(rest) = b.strip_prefix("your rule ") {
+        let rule = rest.strip_suffix(" allows it").unwrap_or(rest);
+        return Some(format!(
+            "Ran without asking: allowed by your rule {rule} (Settings › Permissions)"
+        ));
+    }
+    if !change {
+        return None;
+    }
+    if b.starts_with("you allowed") {
+        return Some(format!("Ran without asking: {b} in Settings › Tools"));
+    }
+    match b {
+        "approved for this session" => {
+            Some("Ran without asking: you chose \"for this chat\" earlier".to_owned())
+        }
+        "approved once" => None,
+        _ if b.starts_with("the approval mode is") => Some(format!("Ran without asking: {b}")),
+        _ if b.ends_with("steps are allowed") => {
+            Some(format!("Ran without asking: {b} in your settings"))
+        }
+        _ => None,
+    }
+}
+
 /// The line a waiting card shows. The approval card under it says what
 /// the call does, so a long reason (a tool's description) is not repeated.
 pub fn waiting_line(why: &str) -> String {
@@ -490,6 +534,42 @@ mod tests {
             r.push(e);
         }
         r
+    }
+
+    /// #77: a write that ran without a card says which rule allowed it.
+    #[test]
+    fn a_change_allowed_by_a_rule_says_so() {
+        let evs = vec![
+            ev("model.replied", json!({})),
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [
+                    {"call": 1, "tool": "file_write", "args": {"path": "notes.md"}},
+                    {"call": 2, "tool": "web_search", "args": {"query": "x"}}
+                ]}),
+            ),
+            ev(
+                "policy.decided",
+                json!({"tool": "file_write", "call": 1, "decision": {"decision": "allow",
+                       "because": "your rule \"Allow · Path · ./**\" allows it"}}),
+            ),
+            ev(
+                "policy.decided",
+                json!({"tool": "web_search", "call": 2, "decision": {"decision": "allow",
+                       "because": "network steps are allowed"}}),
+            ),
+        ];
+        let g = cards_of(&run(&evs));
+        let w = &g[0].cards[0];
+        assert_eq!(
+            w.allowed_because.as_deref(),
+            Some(
+                "Ran without asking: allowed by your rule \"Allow · Path · ./**\" (Settings › Permissions)"
+            )
+        );
+        assert!(g[0].cards[1].allowed_because.is_none());
+        assert!(allowed_line("file_write", "approved once").is_none());
+        assert!(allowed_line("file_write", "you allowed `file_write`").is_some());
     }
 
     #[test]

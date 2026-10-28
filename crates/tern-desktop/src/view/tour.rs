@@ -364,6 +364,9 @@ enum Act {
     WMode(crate::composer::Mode),
     /// #75: the approval mode by id (`ask`, `workspace_write`, ...).
     WApproval(&'static str),
+    /// #77: adds an allow path rule, as an older "Always allow" left it
+    /// in Settings › Permissions (`./**`).
+    WRule(&'static str),
     /// #75: answers the approval card with option `k` (0 once, 1 for the
     /// chat, 2 always allow, 3 reject), if one is asked.
     WPick(usize),
@@ -1996,6 +1999,19 @@ impl Workspace {
                 Some(m) => self.set_approval_mode(m),
                 None => log(&format!("TOUR error no approval mode {id}")),
             },
+            Act::WRule(pat) => {
+                let rule = tern_agent::PermissionRule::new(
+                    tern_agent::permissions::RuleKind::Path,
+                    pat,
+                    tern_agent::Mode::Allow,
+                );
+                log(&format!("TOUR note rule added {}", rule.line()));
+                self.save_ui_prefs(move |p| {
+                    if !p.permission_rules.contains(&rule) {
+                        p.permission_rules.push(rule.clone());
+                    }
+                });
+            }
             Act::WPick(k) => {
                 if self.pending.is_some() {
                     log(&format!("TOUR note approval card answered with option {}", k + 1));
@@ -2397,7 +2413,7 @@ impl Workspace {
             .flat_map(|g| {
                 g.cards.iter().map(move |c| {
                     format!(
-                        "s{}#{} {} {:?}{}",
+                        "s{}#{} {} {:?}{}{}",
                         g.step,
                         c.call,
                         c.tool,
@@ -2405,6 +2421,10 @@ impl Workspace {
                         c.error
                             .as_deref()
                             .map(|e| format!(" ({})", e.chars().take(80).collect::<String>()))
+                            .unwrap_or_default(),
+                        c.allowed_because
+                            .as_deref()
+                            .map(|a| format!(" [{a}]"))
                             .unwrap_or_default()
                     )
                 })
@@ -2430,8 +2450,26 @@ impl Workspace {
             .iter()
             .map(|r| r.line())
             .collect();
+        let outputs: Vec<String> = self
+            .model
+            .outputs
+            .iter()
+            .map(|o| {
+                format!(
+                    "{}{}",
+                    super::files_view::shown(&o.path),
+                    if o.path.exists() { "" } else { " (gone)" }
+                )
+            })
+            .collect();
+        let written = tern_agent::live::preview().map(|w| {
+            self.model
+                .workspace
+                .as_ref()
+                .is_some_and(|(_, r)| r.join(&w.path).exists())
+        });
         log(&format!(
-            "TOUR work {what}: mode={} phase_approval={} cards={cards:?} runs={runs:?} rules={rules:?} preview={:?}",
+            "TOUR work {what}: mode={} phase_approval={} cards={cards:?} runs={runs:?} rules={rules:?} preview={:?} preview_on_disk={written:?} outputs={outputs:?}",
             self.model.providers.prefs.approval().id(),
             self.pending.is_some(),
             tern_agent::live::preview().map(|w| (w.path, w.text.len(), w.done)),
@@ -2726,6 +2764,8 @@ const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe FYP demo is on 14 Novem
 
 /// #76: the new file the work tour writes in Ask mode (six lines).
 const WORK_NOTES: &str = "# Reading notes\n\n- Self-RAG: retrieve on demand, critique the draft\n- FLARE: retrieve when the next sentence is unsure\n- Adaptive-RAG: route by question complexity\n- CRAG: grade documents, fall back to web search\n";
+/// #77: the new file the work tour asks for in a text tool block.
+const WORK_MEETING: &str = "# Meeting notes\n\n- Supervisor wants the FLARE baseline by Friday\n- Lab 3 is booked for the demo\n";
 /// #76: an answer with every block kind the focus view opens.
 const FOCUS_BLOCKS_A: &str = "Here is each kind.\n\n```python\ndef retrieve(query, k=5):\n    hits = index.search(embed(query), k)\n    return [h.text for h in hits if h.score > 0.3]\n```\n\n| Policy | Recall@5 | Latency (ms) |\n| --- | --- | --- |\n| Always retrieve | 0.71 | 420 |\n| FLARE | 0.78 | 610 |\n| Self-RAG | 0.81 | 1,150 |\n| No retrieval | 0.42 | 95 |\n\n$$\nP(\\text{retrieve} \\mid x) = \\sigma\\left(w^\\top h_x + b\\right)\n$$\n\n```mermaid\nflowchart LR\n    Q[Question] --> D{Unsure?}\n    D -- yes --> R[Retrieve]\n    D -- no --> A[Answer]\n    R --> A\n```\n";
 
@@ -2932,6 +2972,50 @@ fn focus_beats() -> Vec<Beat> {
             "tern-only",
             "Approved: the file is renamed (no copy left behind) and the reply says so",
             Act::WPick(0),
+            3000,
+        ),
+        // #77 (step 7 of the #76 Windows test): the old relative rule
+        // "Always allow writes in ./**" no longer creates a new file
+        // without the card, through the text tool block too; a folder
+        // rule that does allow it says so on the card; renamed outputs
+        // follow their file.
+        b(Act::WState("after rename"), 200),
+        b(Act::WRule("./**"), 300),
+        b(Act::View(RunView::Files), 300),
+        b(
+            Act::CTypePath("Tour: write the meeting notes in a tool block"),
+            200,
+        ),
+        b(Act::CSend, 3000),
+        scene(
+            "x17-fence-new-file-waits",
+            "tern-only",
+            "A new file asked for in a ```tool text block, with the old ./** rule in Settings: the approval card still comes first (+4 −0), and the Files tab says Pending approval · not written yet",
+            Act::WState("fence new file waiting"),
+            3000,
+        ),
+        scene(
+            "x18-always-allow-folder",
+            "tern-only",
+            "Always allow writes in <this folder>/**: the rule names the chat's folder, not ./**; the file is written",
+            Act::WPick(2),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: write the todo list"), 200),
+        b(Act::CSend, 3000),
+        scene(
+            "x19-allowed-by-rule",
+            "tern-only",
+            "A new file the folder rule allows: no card, and its tool card says Ran without asking: allowed by your rule \"Allow · Path · …/Tern testing/**\" (Settings › Permissions)",
+            Act::WState("allowed by rule"),
+            3000,
+        ),
+        scene(
+            "x20-outputs-after-rename",
+            "tern-only",
+            "Files › Outputs after summary.md → fyp-summary.md: the output follows the new name (no greyed Moved or deleted row), no \\\\?\\ in any path",
+            Act::CFolderState("outputs after rename"),
             3000,
         ),
         b(Act::WApproval("workspace_write"), 300),
@@ -4622,6 +4706,35 @@ mod mock {
                     vec![(
                         "file_write".to_owned(),
                         json!({"path": "reading-notes.md", "text": super::WORK_NOTES}),
+                    )],
+                )
+            });
+        }
+        if user.contains("meeting notes in a tool block") {
+            // #77: a model without native tools asks in a text block; the
+            // same block a provider's own tool call becomes.
+            return Some(if done {
+                (line.clone(), Vec::new())
+            } else {
+                let args = json!({"path": "meeting-notes.md", "text": super::WORK_MEETING});
+                (
+                    format!(
+                        "```tool\n{}\n```",
+                        json!({"tool": "file_write", "args": args})
+                    ),
+                    Vec::new(),
+                )
+            });
+        }
+        if user.contains("write the todo list") {
+            return Some(if done {
+                (line.clone(), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![(
+                        "file_write".to_owned(),
+                        json!({"path": "todo.md", "text": "# To do\n\n- Read the FLARE paper\n- Draft the method section\n"}),
                     )],
                 )
             });

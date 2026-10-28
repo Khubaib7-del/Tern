@@ -491,7 +491,27 @@ impl PolicyGate {
             folder: folder.as_deref(),
             home,
         };
-        let rule = rule_verdict(&self.config.rules, &facts).map(|(m, r)| (m, r.line()));
+        // #77: a new file in Ask mode is never created on the word of a
+        // relative `./…` rule (the old "Always allow writes in ./**",
+        // which covered the folder of every chat): the card shows first.
+        // A rule naming the folder itself still allows it.
+        let creates = self.config.approval == ApprovalMode::Ask
+            && call.tool == "file_write"
+            && !facts.paths.is_empty()
+            && facts.paths.iter().all(|p| !p.exists());
+        let rule = match rule_verdict(&self.config.rules, &facts) {
+            Some((Mode::Allow, r)) if creates && r.every_folder() => {
+                let narrow: Vec<_> = self
+                    .config
+                    .rules
+                    .iter()
+                    .filter(|r| !(r.action == Mode::Allow && r.every_folder()))
+                    .cloned()
+                    .collect();
+                rule_verdict(&narrow, &facts).map(|(m, r)| (m, r.line()))
+            }
+            v => v.map(|(m, r)| (m, r.line())),
+        };
         if let Some((Mode::Deny, line)) = &rule {
             return Decision::Deny {
                 reason: format!(
@@ -607,11 +627,12 @@ impl PolicyGate {
                 true
             }
             ApprovalAnswer::AllowAlways => {
-                let rule = crate::permissions::PermissionRule::suggest(
+                let rule = crate::permissions::PermissionRule::suggest_in(
                     call.tool,
                     call.effect,
                     call.target,
                     call.args,
+                    self.folder.as_deref(),
                 );
                 if !self.config.rules.contains(&rule) {
                     self.config.rules.push(rule);
@@ -1007,6 +1028,77 @@ mod tests {
             g.check_full(&c, false, &facts, false),
             Decision::Allow { .. }
         ));
+    }
+
+    /// #77 (step 7 of the #76 Windows test): a new file in Ask mode
+    /// shows its card unless a rule names the folder; the old relative
+    /// `./**` rule no longer creates files silently, and says so when a
+    /// rule does allow it.
+    #[test]
+    fn ask_mode_new_file_write_asks_unless_a_rule_names_the_folder() {
+        use crate::permissions::{ApprovalMode, CallFacts, PermissionRule, RuleKind};
+        let dir = std::env::temp_dir().join(format!("tern-policy-77-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let new_file = dir.join("notes.md");
+        let _ = std::fs::remove_file(&new_file);
+        let a = json!({"path": "notes.md", "text": "# Notes\n"});
+        let c = call(
+            "file_write",
+            EffectClass::ExternalSideEffect,
+            Some("Tern testing/notes.md"),
+            &a,
+        );
+        let facts = CallFacts {
+            tool: "file_write",
+            paths: vec![new_file.clone()],
+            folder: Some(&dir),
+            ..CallFacts::default()
+        };
+        // No rule: the card.
+        let mut g = PolicyGate::default();
+        g.set_folder(Some(&dir));
+        assert_eq!(g.check_full(&c, false, &facts, true), Decision::Ask);
+        // The old "Always allow writes in ./**": still the card for a new file.
+        let every = PermissionRule::new(RuleKind::Path, "./**", Mode::Allow);
+        g.set_approval(ApprovalMode::Ask, vec![every.clone()]);
+        assert_eq!(g.check_full(&c, false, &facts, true), Decision::Ask);
+        // ... but it still covers an edit of a file that exists.
+        std::fs::write(&new_file, "old").unwrap();
+        match g.check_full(&c, false, &facts, true) {
+            Decision::Allow { because } => assert!(because.contains("./**"), "{because}"),
+            d => panic!("{d:?}"),
+        }
+        std::fs::remove_file(&new_file).unwrap();
+        // A rule naming this folder allows the new file, and says which rule.
+        let pat = format!("{}/**", crate::permissions::norm(&dir));
+        g.set_approval(
+            ApprovalMode::Ask,
+            vec![PermissionRule::new(
+                RuleKind::Path,
+                pat.clone(),
+                Mode::Allow,
+            )],
+        );
+        match g.check_full(&c, false, &facts, true) {
+            Decision::Allow { because } => {
+                assert!(because.starts_with("your rule"), "{because}");
+                assert!(because.contains(&pat), "{because}");
+            }
+            d => panic!("{d:?}"),
+        }
+        // Always allow on the card adds that folder rule, not `./**`.
+        let mut g = PolicyGate::default();
+        g.set_folder(Some(&dir));
+        assert!(g.answer(&c, ApprovalAnswer::AllowAlways));
+        assert_eq!(g.config().rules[0].pattern, pat);
+        // Workspace write still writes it without asking.
+        let mut g = PolicyGate::default();
+        g.set_approval(ApprovalMode::WorkspaceWrite, vec![every]);
+        assert!(matches!(
+            g.check_full(&c, false, &facts, true),
+            Decision::Allow { .. }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

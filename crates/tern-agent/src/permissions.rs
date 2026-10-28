@@ -214,6 +214,40 @@ impl PermissionRule {
         }
         Self::new(RuleKind::Tool, tool, Mode::Allow)
     }
+
+    /// [`Self::suggest`] with the chat's folder: a `./…` path rule is
+    /// written out under that folder (`D:/Codex/Tern testing/**`), so
+    /// "Always allow writes" covers this folder only, never the folder of
+    /// every chat (#77).
+    pub fn suggest_in(
+        tool: &str,
+        effect: EffectClass,
+        target: Option<&str>,
+        args: &Value,
+        folder: Option<&Path>,
+    ) -> Self {
+        let mut rule = Self::suggest(tool, effect, target, args);
+        if rule.kind == RuleKind::Path
+            && let Some(f) = folder
+            && let Some(rest) = rule.pattern.strip_prefix("./")
+        {
+            let mut base = norm(f);
+            if !base.ends_with('/') {
+                base.push('/');
+            }
+            rule.pattern = format!("{base}{rest}");
+        }
+        rule
+    }
+
+    /// Whether this is a relative `./` path rule: it applies inside the
+    /// folder of every chat, not one folder.
+    pub fn every_folder(&self) -> bool {
+        self.kind == RuleKind::Path && {
+            let p = self.pattern.trim();
+            p == "." || p.starts_with("./")
+        }
+    }
 }
 
 /// What the rules look at in one call.
@@ -548,6 +582,17 @@ mod tests {
             &json!({"path": "out/report.md", "text": ""}),
         );
         assert_eq!(s.pattern, "./out/**");
+        // With the chat's folder it covers that folder only (#77).
+        let s = PermissionRule::suggest_in(
+            "file_write",
+            EffectClass::ExternalSideEffect,
+            None,
+            &json!({"path": "notes.md", "text": ""}),
+            Some(Path::new(r"\\?\D:\Codex\Tern testing")),
+        );
+        assert_eq!(s.pattern, "D:/Codex/Tern testing/**");
+        assert!(!s.every_folder());
+        assert!(PermissionRule::new(RuleKind::Path, "./**", Mode::Allow).every_folder());
         let s = PermissionRule::suggest(
             "mcp__x__y",
             EffectClass::ExternalSideEffect,

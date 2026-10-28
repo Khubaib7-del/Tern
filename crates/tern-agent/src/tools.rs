@@ -173,7 +173,9 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
     BuiltinTool {
         name: "file_write",
         label: "Write a workspace file",
-        effect: EffectClass::Write,
+        // The tool's own class (#77): Settings › Tools showed "Auto
+        // (runs)" for it while it asked.
+        effect: EffectClass::ExternalSideEffect,
     },
     BuiltinTool {
         name: "file_rename",

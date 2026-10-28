@@ -1146,6 +1146,22 @@ impl Workspace {
                     }
                     self.model.files.reload();
                 }
+                // #77: a rename moves its output to the new name and the
+                // Files tree drops the old entry at once.
+                if ev.kind == "tool.executed" && ev.payload["tool"] == "file_rename" {
+                    if let Some((_, root)) = self.model.workspace.as_ref() {
+                        let a = &ev.payload["args"];
+                        let at = |k: &str| {
+                            let rel = a[k].as_str().unwrap_or_default().trim();
+                            tern_agent::projects::plain_path(
+                                &root.join(rel.strip_prefix("./").unwrap_or(rel)),
+                            )
+                        };
+                        let (from, to) = (at("from"), at("to"));
+                        tern_agent::chat::rename_output(&mut self.model.outputs, &from, &to);
+                    }
+                    self.model.files.reload();
+                }
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
