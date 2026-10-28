@@ -247,9 +247,14 @@ pub fn typeset(latex: &str, display: bool) -> Option<Art> {
         use ratex_types::color::Color;
         use ratex_types::math_style::MathStyle;
         // `align` and friends as RaTeX lays them out (`crate::mathsrc`).
+        // Unknown commands (`\\softmax`) are read as operators.
         let ast = crate::mathsrc::ratex_candidates(latex)
             .iter()
-            .find_map(|c| ratex_parser::parser::parse(c).ok())?;
+            .find_map(|c| {
+                crate::mathsrc::lenient(c, |s| {
+                    ratex_parser::parser::parse(s).map_err(|e| e.to_string())
+                })
+            })?;
         let style = if display {
             MathStyle::Display
         } else {

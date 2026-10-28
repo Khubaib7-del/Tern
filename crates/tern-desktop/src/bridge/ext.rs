@@ -28,6 +28,8 @@ pub enum ExtMsg {
         Vec<SessionSummary>,
         Option<String>,
     ),
+    /// A folder opened as a project: its id, name and folder.
+    Folder(Result<(ProjectId, String, PathBuf), String>),
     /// The prompts and resources the reviewed servers offer.
     Menu(mcp::Menu),
     /// A prompt filled in by its server, for the composer.
@@ -47,6 +49,7 @@ impl std::fmt::Debug for ExtMsg {
             Self::Projects(r, s, _) => {
                 write!(f, "Projects(ok: {}, {} chats)", r.is_ok(), s.len())
             }
+            Self::Folder(r) => write!(f, "Folder(ok: {})", r.is_ok()),
             Self::Menu(m) => write!(f, "Menu({} items)", m.items.len()),
             Self::Prompt(r) => write!(f, "Prompt(ok: {})", r.is_ok()),
             Self::Resource(r) => write!(f, "Resource(ok: {})", r.is_ok()),
@@ -83,6 +86,9 @@ pub enum ProjectChange {
     Root(ProjectId, Option<PathBuf>),
     Delete(ProjectId),
     Move(SessionId, ProjectId),
+    /// Opens a folder as a project: the project linked to it, made when
+    /// none is (#74). The window then files the chat there.
+    Folder(PathBuf),
     /// Only reload.
     Reload,
 }
@@ -313,7 +319,9 @@ impl Bridge {
         let tx = self.tx.clone();
         self.rt.spawn_blocking(move || {
             let mut note = None;
+            let mut folder = None;
             let r = tern_agent::open_store().and_then(|mut store| {
+                file_by_folder_once(&mut store);
                 let done = match change {
                     ProjectChange::New(name) => projects::create(&store, &name, None)
                         .map(|_| Some(format!("Made project “{}”.", name.trim()))),
@@ -336,6 +344,12 @@ impl Bridge {
                     }),
                     ProjectChange::Move(s, to) => projects::move_session(&mut store, s, to)
                         .map(|_| None),
+                    ProjectChange::Folder(dir) => {
+                        let r = projects::for_folder(&store, &dir);
+                        let shown = projects::plain_path(&dir);
+                        folder = Some(r.clone().map(|(id, name)| (id, name, shown)));
+                        r.map(|_| None)
+                    }
                     ProjectChange::Reload => Ok(None),
                 };
                 match done {
@@ -346,6 +360,9 @@ impl Bridge {
             });
             let recent = tern_agent::recent_sessions(RECENT).unwrap_or_default();
             let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Projects(r, recent, note))));
+            if let Some(f) = folder {
+                let _ = tx.send(Msg::Ext(Box::new(ExtMsg::Folder(f))));
+            }
         });
     }
 
@@ -368,6 +385,29 @@ impl Bridge {
                 }
             }
         });
+    }
+}
+
+/// Once per install (a marker file in the data folder): files Inbox
+/// chats that had a folder open under that folder's project, so chats
+/// from before folders were projects sit under their folder (#74).
+fn file_by_folder_once(store: &mut tern_agent::Store) {
+    let Ok(dir) = data() else { return };
+    let marker = dir.join("folders-filed");
+    if marker.exists() {
+        return;
+    }
+    match projects::file_chats_by_folder(store) {
+        Ok(n) => {
+            if n > 0 {
+                crate::crashlog::log_line(&format!(
+                    "projects: filed {n} chat(s) under their folders"
+                ));
+            }
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&marker, "1");
+        }
+        Err(e) => crate::crashlog::log_line(&format!("projects: filing chats by folder: {e}")),
     }
 }
 

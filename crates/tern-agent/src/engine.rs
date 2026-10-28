@@ -211,6 +211,22 @@ impl StoreSink {
         }
     }
 
+    /// Files the draft under another project before its row is written
+    /// (the folder picked under an empty chat's composer). `false` once
+    /// the chat has a row.
+    pub fn set_draft_project(&self, project: tern_core::ProjectId) -> bool {
+        match self.draft.lock() {
+            Ok(mut d) => match d.as_mut() {
+                Some(d) => {
+                    d.project = project;
+                    true
+                }
+                None => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     /// Whether session `id` is still a draft with no row.
     pub fn is_draft(&self, id: SessionId) -> bool {
         self.draft

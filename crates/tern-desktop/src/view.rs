@@ -42,7 +42,9 @@ mod editor_view;
 mod eval_view;
 mod explain_view;
 mod export_view;
+mod files_view;
 mod flow_view;
+mod folders_view;
 mod frame;
 mod git_view;
 mod library_view;
@@ -382,6 +384,10 @@ pub struct Workspace {
     toast_wake: Option<Task<()>>,
     /// The `@` menu's scroll, so the highlighted row stays in view.
     mention_scroll: ScrollHandle,
+    /// The Files tab's scroll (its long trees are culled against it).
+    files_scroll: ScrollHandle,
+    /// Checks the Files tab's folder for changes while it shows.
+    _folder_poll: Task<()>,
     /// The timeline tick under the pointer, and a smooth scroll in flight
     /// (from, to, started).
     rail_hover: Option<usize>,
@@ -655,6 +661,17 @@ impl Workspace {
                 }
             }
         });
+        // The Files tab's folder, re-read when it changes on disk (#74).
+        let folder_poll = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(files_view::FOLDER_POLL)
+                    .await;
+                if this.update(cx, |this, cx| this.poll_folder(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let mut model = Model::new();
         let look = crate::appearance::Appearance::from_prefs(&tern_agent::Preferences::load());
         model.dark = look.is_dark(system_dark(window));
@@ -835,6 +852,8 @@ impl Workspace {
             read_aloud_task: None,
             toast_wake: None,
             mention_scroll: ScrollHandle::new(),
+            files_scroll: ScrollHandle::new(),
+            _folder_poll: folder_poll,
             rail_hover: None,
             rail_auto: false,
             cmdk: None,
@@ -934,6 +953,8 @@ impl Workspace {
                 self.resume_retry = None;
                 self.chat_shown(&s);
                 self.session = Some(s);
+                // A new chat in a folder project opens in its folder.
+                self.default_folder(cx);
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 self.apply_restore(window, cx);
                 self.apply_pending_pick();
@@ -1012,6 +1033,7 @@ impl Workspace {
             Msg::Cont(m) => self.on_cont(*m, window, cx),
             Msg::Ext(m) => match *m {
                 crate::bridge::ExtMsg::Prompt(r) => self.prompt_ready(*r, window, cx),
+                crate::bridge::ExtMsg::Folder(r) => self.folder_opened(r, window, cx),
                 other => self.on_ext(other, cx),
             },
             Msg::Info(text) => self.model.toast_info(text),
@@ -1073,6 +1095,16 @@ impl Workspace {
             Msg::Event(e) => {
                 self.model.on_event(&e);
                 self.request_icons();
+                // A file the agent wrote is one of the chat's outputs.
+                let ev: &tern_core::EventEnvelope = &e;
+                if ev.kind == "tool.executed" && ev.payload["tool"] == "file_write" {
+                    let ws = self.model.workspace.as_ref().map(|(_, p)| p.clone());
+                    for o in tern_agent::chat::outputs_in(std::slice::from_ref(ev), ws.as_deref()) {
+                        self.model.outputs.retain(|x| x.path != o.path);
+                        self.model.outputs.push(o);
+                    }
+                    self.model.files.reload();
+                }
             }
             Msg::Icon(site, path) => self.model.icon_loaded(site, path),
             Msg::Attached(result) => self.model.attached(result),
@@ -2618,7 +2650,10 @@ impl Workspace {
         if fresh {
             self.switch_draft(None, cx);
         }
-        self.model.projects.new_in = None;
+        // From inside a folder project the new chat starts in that folder
+        // (#74); it can still pick another under the composer.
+        let folder = self.current_folder_project();
+        self.model.projects.new_in = folder.clone();
         self.model.new_chat();
         self.open_sources.clear();
         if fresh {
@@ -2627,7 +2662,10 @@ impl Workspace {
             self.session = None;
             self.current = None;
             self.model.phase = Phase::Connecting;
-            self.bridge.connect();
+            match folder {
+                Some(name) => self.bridge.connect_in(Some(name)),
+                None => self.bridge.connect(),
+            }
         }
         let text = self.model.restore_draft(self.current);
         self.composer.update(cx, |c, cx| {
@@ -3330,6 +3368,9 @@ impl Workspace {
                         .items_center()
                         .gap_1()
                         .occlude()
+                        .when(self.model.screen == Screen::Chat, |d| {
+                            d.child(self.outputs_button(p, cx))
+                        })
                         .child(self.search_button(cx))
                         .child(
                             Button::new("toggle-theme")
@@ -3898,15 +3939,21 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .when(self.model.sessions.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .px_2()
-                                .text_sm()
-                                .text_color(p.faint)
-                                .child("Your chats will show here."),
-                        )
-                    })
+                    // Folder projects fill the list even before their
+                    // first chat (#74).
+                    .when(
+                        self.model.sessions.is_empty()
+                            && self.model.projects.projects.iter().all(|pr| pr.row.inbox),
+                        |d| {
+                            d.child(
+                                div()
+                                    .px_2()
+                                    .text_sm()
+                                    .text_color(p.faint)
+                                    .child("Your chats will show here."),
+                            )
+                        },
+                    )
                     .children(rows),
             )
             .children(self.watches_section(p, cx))
@@ -5729,6 +5776,8 @@ impl Workspace {
         });
         let body: AnyElement = if view == RunView::Context {
             self.run_context(p)
+        } else if view == RunView::Files {
+            self.files_panel(p, cx)
         } else if run.is_empty() {
             div()
                 .text_sm()
@@ -5746,6 +5795,7 @@ impl Workspace {
                 RunView::Decisions => self.run_decisions(run, p),
                 RunView::Graph => self.run_graph(run, p, cx),
                 RunView::Context => self.run_context(p),
+                RunView::Files => self.files_panel(p, cx),
             }
         };
         div()
@@ -5762,14 +5812,18 @@ impl Workspace {
             .children(sub_switch)
             .children(pinned)
             .children(status)
-            .child(
+            .child(if view == RunView::Files {
+                // The Files tab scrolls itself (its tree is culled).
+                div().flex_1().min_h_0().child(body).into_any_element()
+            } else {
                 div()
                     .id("run-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scrollbar()
-                    .child(body),
-            )
+                    .child(body)
+                    .into_any_element()
+            })
             .child(
                 div()
                     .text_xs()
@@ -6485,7 +6539,8 @@ impl Render for Workspace {
                                                 .pb_1()
                                                 .child(b)
                                         }))
-                                        .child(self.composer(p, cx)),
+                                        .child(self.composer(p, cx))
+                                        .children(self.folder_tray(p, cx)),
                                 },
                                 Screen::Settings => d.child(self.settings_screen(p, window, cx)),
                                 Screen::Editor => d.child(self.editor_screen(p, cx)),

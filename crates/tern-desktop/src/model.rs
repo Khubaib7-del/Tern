@@ -282,6 +282,8 @@ pub enum RunView {
     Graph,
     /// What fills the context window, by kind.
     Context,
+    /// The files this chat made, and its folder's tree (#74).
+    Files,
 }
 
 impl RunView {
@@ -302,6 +304,7 @@ impl RunView {
             v.push(Self::Decisions);
         }
         v.push(Self::Context);
+        v.push(Self::Files);
         v
     }
 
@@ -316,6 +319,7 @@ impl RunView {
             Self::Decisions => "Decisions",
             Self::Graph => "Graph",
             Self::Context => "Context",
+            Self::Files => "Files",
         }
     }
 }
@@ -330,15 +334,17 @@ pub enum RailTab {
     Report,
     Graph,
     Context,
+    Files,
 }
 
 impl RailTab {
-    pub const ALL: [RailTab; 5] = [
+    pub const ALL: [RailTab; 6] = [
         Self::Plan,
         Self::Sources,
         Self::Report,
         Self::Graph,
         Self::Context,
+        Self::Files,
     ];
 
     /// The tab a view sits in.
@@ -351,6 +357,7 @@ impl RailTab {
             RunView::Report => Self::Report,
             RunView::Graph => Self::Graph,
             RunView::Context => Self::Context,
+            RunView::Files => Self::Files,
         }
     }
 
@@ -372,6 +379,7 @@ impl RailTab {
             Self::Report => "Report",
             Self::Graph => "Graph",
             Self::Context => "Context",
+            Self::Files => "Files",
         }
     }
 
@@ -730,6 +738,18 @@ pub struct Model {
     pub archive: crate::panels::ArchiveView,
     /// The chat's workspace folder or file: its name and path.
     pub workspace: Option<(String, PathBuf)>,
+    /// Files this chat made (the Files tab's Outputs), oldest first.
+    pub outputs: Vec<tern_agent::chat::Output>,
+    /// The chat folder's tree (the Files tab).
+    pub files: crate::files::FolderTree,
+    /// The title bar's Outputs popover is open.
+    pub outputs_open: bool,
+    /// The folder picker under an empty chat's composer is open.
+    pub folder_menu_open: bool,
+    /// The folder project whose ⋯ menu is open in the sidebar.
+    pub project_menu: Option<tern_core::ProjectId>,
+    /// An Outputs or Folder row whose menu (Reveal, Copy path) is open.
+    pub file_menu: Option<PathBuf>,
     /// The deep run is paused.
     pub paused: bool,
     /// The sidebar row whose ⋯ menu is open, and a delete waiting for its
@@ -895,6 +915,12 @@ impl Model {
             panels: Default::default(),
             archive: Default::default(),
             workspace: None,
+            outputs: Vec::new(),
+            files: Default::default(),
+            outputs_open: false,
+            folder_menu_open: false,
+            project_menu: None,
+            file_menu: None,
             chat_here: None,
             paused: false,
             row_menu: None,
@@ -2712,6 +2738,9 @@ impl Model {
             return;
         }
         self.entries.clear();
+        self.outputs.clear();
+        self.outputs_open = false;
+        self.folder_menu_open = false;
         // Nothing waits to go from another chat: no attachments and no
         // pictures (a new chat starts empty; an opened chat starts clean).
         self.attachments.clear();
@@ -2735,6 +2764,12 @@ impl Model {
         } else {
             self.phase = Phase::Connecting;
         }
+    }
+
+    /// Whether the chat's folder is fixed: it has a message, so its
+    /// context lives in that folder (#74). An empty chat can still pick.
+    pub fn folder_locked(&self) -> bool {
+        self.entries.iter().any(|e| matches!(e, Entry::User { .. }))
     }
 
     /// The working line while a turn runs: what it is doing, the phrase,
@@ -3658,7 +3693,7 @@ mod tests {
         let run = m.panel_run();
         assert_eq!(RunView::for_run(run)[1], RunView::Workers);
         assert_eq!(run.deep.as_ref().unwrap().workers[0].pages.len(), 1);
-        assert_eq!(RunView::for_run(&Run::new()).len(), 7);
+        assert_eq!(RunView::for_run(&Run::new()).len(), 8);
         // A normal turn after a deep one goes back to the summary.
         m.finish_turn(
             &outcome(TurnState::Completed, Some("A [1]."), None),

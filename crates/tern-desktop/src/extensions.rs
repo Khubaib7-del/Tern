@@ -145,10 +145,17 @@ pub enum TreeRow {
         /// Chats in it that the sidebar lists.
         shown: usize,
         has_rules: bool,
+        /// The folder it is linked to: a folder project (#74).
+        root: Option<std::path::PathBuf>,
     },
     /// A chat or sub-session, by index into the session list.
     Session(usize),
+    /// "Show more" under a folder project listing its first chats only.
+    More { id: ProjectId, hidden: usize },
 }
+
+/// Chats a folder project lists before "Show more".
+pub const FOLDER_CHATS: usize = 5;
 
 /// The sidebar's project folders.
 #[derive(Clone, Debug, Default)]
@@ -166,6 +173,8 @@ pub struct ProjectTree {
     pub confirm_delete: Option<ProjectId>,
     /// The project the next new chat goes into.
     pub new_in: Option<String>,
+    /// Folder projects showing all their chats ("Show more" pressed).
+    pub more: BTreeSet<ProjectId>,
 }
 
 impl ProjectTree {
@@ -224,9 +233,31 @@ impl ProjectTree {
                     .filter(|i| sessions[**i].parent.is_none())
                     .count(),
                 has_rules: p.tern_md.is_some(),
+                root: p.row.root.clone(),
             });
-            if !collapsed {
-                out.extend(mine.into_iter().map(TreeRow::Session));
+            if collapsed {
+                continue;
+            }
+            // A folder project lists its first chats (with their
+            // sub-sessions), then "Show more".
+            let cap = (!p.row.inbox && !self.more.contains(&p.row.id)).then_some(FOLDER_CHATS);
+            let mut top = 0;
+            let mut hidden = 0;
+            for i in mine {
+                if sessions[i].parent.is_none() {
+                    top += 1;
+                }
+                if cap.is_some_and(|c| top > c) {
+                    hidden += usize::from(sessions[i].parent.is_none());
+                    continue;
+                }
+                out.push(TreeRow::Session(i));
+            }
+            if hidden > 0 {
+                out.push(TreeRow::More {
+                    id: p.row.id,
+                    hidden,
+                });
             }
         }
         if inbox.is_none() && self.projects.is_empty() {
@@ -291,6 +322,7 @@ mod tests {
             .map(|r| match r {
                 TreeRow::Project { name, shown, .. } => format!("[{name} {shown}]"),
                 TreeRow::Session(i) => sessions[*i].title.clone(),
+                TreeRow::More { hidden, .. } => format!("+{hidden}"),
             })
             .collect();
         assert_eq!(
@@ -311,6 +343,51 @@ mod tests {
         assert!(matches!(&rows[1], TreeRow::Project { name, .. } if name == "Later"));
         t.toggle(fyp.row.id);
         assert!(t.collapsed.is_empty());
+    }
+
+    #[test]
+    fn a_folder_project_lists_five_chats_then_show_more() {
+        let mut codex = project("Codex", false);
+        codex.row.root = Some("/d/codex".into());
+        let inbox = project("Inbox", true);
+        let mut sessions: Vec<SessionSummary> = (0..7)
+            .map(|i| session(Some(codex.row.id), None, &format!("{}", 10 + i)))
+            .collect();
+        // A sub-session of the newest chat stays with it.
+        let sub = session(Some(codex.row.id), Some(sessions[6].id), "99");
+        sessions.push(sub);
+        let order = crate::continuity::tree(&sessions);
+        let mut t = ProjectTree {
+            projects: vec![inbox, codex.clone()],
+            ..Default::default()
+        };
+        let rows = t.rows(&sessions, &order);
+        let n_chats = rows
+            .iter()
+            .filter(|r| matches!(r, TreeRow::Session(i) if sessions[*i].parent.is_none()))
+            .count();
+        assert_eq!(n_chats, FOLDER_CHATS);
+        assert!(
+            rows.iter()
+                .any(|r| matches!(r, TreeRow::More { hidden: 2, .. }))
+        );
+        assert!(matches!(
+            &rows[0],
+            TreeRow::Project {
+                root: Some(_),
+                shown: 7,
+                ..
+            }
+        ));
+        t.more.insert(codex.row.id);
+        let rows = t.rows(&sessions, &order);
+        assert!(!rows.iter().any(|r| matches!(r, TreeRow::More { .. })));
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, TreeRow::Session(_)))
+                .count(),
+            8
+        );
     }
 
     #[test]

@@ -49,15 +49,34 @@ impl Workspace {
         let now = std::time::Instant::now();
         match written {
             Ok(()) => {
+                // One of the chat's outputs (the Files tab), kept with it.
+                let what = if job.save_as { "save as" } else { "export" };
+                if let Some(s) = self.session.as_mut()
+                    && let Err(e) = s.record_output(&path, what)
+                {
+                    crate::crashlog::log_line(&format!("outputs: {e}"));
+                }
+                self.model.outputs.retain(|o| o.path != path);
+                self.model
+                    .outputs
+                    .push(tern_agent::chat::Output::now(path.clone(), what));
+                self.model.files.reload();
                 self.model.toasts.info_with(
-                    format!("Saved {}", path.display()),
+                    // Without Windows' `\\?\` prefix (#74).
+                    format!(
+                        "Saved {}",
+                        tern_agent::projects::plain_path(&path).display()
+                    ),
                     crate::toast::Retry::OpenFolder(path),
                     now,
                 );
             }
             Err(e) => {
                 self.model.toasts.error(
-                    format!("Couldn't save {}: {e}", path.display()),
+                    format!(
+                        "Couldn't save {}: {e}",
+                        tern_agent::projects::plain_path(&path).display()
+                    ),
                     None,
                     now,
                 );

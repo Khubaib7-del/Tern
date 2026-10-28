@@ -138,6 +138,72 @@ pub struct ChatSession {
 /// call's number in the turn and the new text.
 pub type ReasoningSink = Arc<dyn Fn(u32, &str) + Send + Sync>;
 
+/// A file a chat made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub path: std::path::PathBuf,
+    /// What made it: `export`, `save as`, `file_write`.
+    pub what: String,
+    pub at: time::OffsetDateTime,
+}
+
+impl Output {
+    /// A file made just now.
+    pub fn now(path: std::path::PathBuf, what: &str) -> Self {
+        Self {
+            path,
+            what: what.to_owned(),
+            at: time::OffsetDateTime::now_utc(),
+        }
+    }
+
+    /// How long ago it was made, in seconds.
+    pub fn age_secs(&self) -> i64 {
+        (time::OffsetDateTime::now_utc() - self.at).whole_seconds()
+    }
+}
+
+/// The outputs in a chat's events (see [`ChatSession::outputs`]): saves
+/// recorded as `session.output`, and `file_write` calls that ran, read
+/// against the workspace open when they ran (`workspace` when the log
+/// has none before them).
+pub fn outputs_in(events: &[EventEnvelope], workspace: Option<&std::path::Path>) -> Vec<Output> {
+    let mut out: Vec<Output> = Vec::new();
+    let mut ws: Option<std::path::PathBuf> = None;
+    for e in events {
+        let found = match e.kind.as_str() {
+            "session.workspace" => {
+                ws = e.payload["path"].as_str().map(std::path::PathBuf::from);
+                None
+            }
+            "session.output" => e.payload["path"].as_str().map(|p| {
+                (
+                    std::path::PathBuf::from(p),
+                    e.payload["what"].as_str().unwrap_or("export").to_owned(),
+                )
+            }),
+            "tool.executed" if e.payload["tool"] == "file_write" => {
+                let rel = e.payload["args"]["path"].as_str().unwrap_or_default();
+                let base = ws.as_deref().or(workspace);
+                match (rel.is_empty(), base) {
+                    (false, Some(b)) => Some((b.join(rel), "file_write".to_owned())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((path, what)) = found {
+            out.retain(|o| o.path != path);
+            out.push(Output {
+                path,
+                what,
+                at: e.ts,
+            });
+        }
+    }
+    out
+}
+
 /// The path of the last `session.workspace` event, unless it closed it.
 pub fn last_workspace(events: &[EventEnvelope]) -> Option<String> {
     events
@@ -857,6 +923,50 @@ impl ChatSession {
             },
             serde_json::json!({"path": path}),
         ));
+    }
+
+    /// Files a chat that has no messages yet under `project`, whose folder
+    /// (`root`) gives it its TERN.md rules and skills from now on. Refused
+    /// once the chat has started: its folder is fixed then.
+    pub fn set_draft_project(
+        &mut self,
+        project: tern_core::ProjectId,
+        root: Option<&std::path::Path>,
+    ) -> Result<(), String> {
+        if !self.is_draft() || !self.sink.set_draft_project(project) {
+            return Err(
+                "This chat has started; its folder is fixed. Start a new chat to use another folder."
+                    .into(),
+            );
+        }
+        self.project = crate::rules::ProjectContext::load(root);
+        self.project.register(&mut self.tools);
+        Ok(())
+    }
+
+    /// Records a file this chat saved (a block exported, a Save as…), so
+    /// its Outputs list shows it when the chat is opened again.
+    pub fn record_output(&mut self, path: &std::path::Path, what: &str) -> Result<(), String> {
+        let size = std::fs::metadata(path).map(|m| m.len()).ok();
+        self.sink.record(EventEnvelope::new(
+            self.session,
+            "session.output",
+            EffectClass::Analysis,
+            format!("Saved {}", path.display()),
+            serde_json::json!({"path": path.display().to_string(), "what": what, "bytes": size}),
+        ))?;
+        Ok(())
+    }
+
+    /// The files this chat made, oldest first: what it saved
+    /// ([`Self::record_output`]) and what `file_write` wrote in its
+    /// workspace. One path appears once, at its latest write.
+    pub fn outputs(&self) -> Vec<Output> {
+        let events = self
+            .sink
+            .with_store(|s| s.replay(self.session, 0).unwrap_or_default())
+            .unwrap_or_default();
+        outputs_in(&events, self.workspace().map(|w| w.path()))
     }
 
     /// The chat's workspace, if one is open.
@@ -1977,5 +2087,47 @@ mod context_parts_tests {
         assert_eq!(m.conversation, 800 + 50);
         assert_eq!(m.total(), 1_650);
         assert_eq!(ContextParts::default().scaled_to(10, 2).conversation, 12);
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn outputs_are_saves_and_file_writes_newest_last() {
+        let ses = SessionId::new();
+        let ev = |kind: &str, payload: serde_json::Value| {
+            EventEnvelope::new(ses, kind, EffectClass::Analysis, "x", payload)
+        };
+        let events = vec![
+            ev("session.workspace", json!({"path": "/w"})),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_write", "args": {"path": "notes/a.md"}}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_read", "args": {"path": "b.md"}}),
+            ),
+            ev(
+                "session.output",
+                json!({"path": "/elsewhere/table-1.csv", "what": "export"}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_write", "args": {"path": "notes/a.md"}}),
+            ),
+        ];
+        let got = outputs_in(&events, None);
+        let paths: Vec<_> = got.iter().map(|o| o.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [
+                std::path::PathBuf::from("/elsewhere/table-1.csv"),
+                std::path::Path::new("/w").join("notes/a.md")
+            ]
+        );
+        assert_eq!(got[1].what, "file_write");
     }
 }
