@@ -198,6 +198,16 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         effect: EffectClass::Analysis,
     },
     BuiltinTool {
+        name: "plan",
+        label: "Show and update a plan in the chat",
+        effect: EffectClass::Analysis,
+    },
+    BuiltinTool {
+        name: "run_tasks",
+        label: "Run a task graph (independent steps in parallel)",
+        effect: EffectClass::Analysis,
+    },
+    BuiltinTool {
         name: "load_skill",
         label: "Load a skill",
         effect: EffectClass::Read,

@@ -500,12 +500,15 @@ pub enum ScriptEvent {
     Done(Result<ToolOutput, ToolError>),
 }
 
+/// What a program's run gives: its prints and its result.
+type Ran = Result<(String, Option<Snippet>), ToolError>;
+
 /// A code-mode program running in a worker (or in-process under tests).
 #[derive(Debug)]
 pub struct Script {
     calls: tokio::sync::mpsc::UnboundedReceiver<String>,
     answers: Option<tokio::sync::mpsc::UnboundedSender<String>>,
-    done: Option<tokio::task::JoinHandle<Result<(String, Option<Snippet>), ToolError>>>,
+    done: Option<tokio::task::JoinHandle<Ran>>,
 }
 
 impl Script {
@@ -583,9 +586,7 @@ impl Script {
     }
 }
 
-fn finish(
-    r: Result<Result<(String, Option<Snippet>), ToolError>, tokio::task::JoinError>,
-) -> Result<ToolOutput, ToolError> {
+fn finish(r: Result<Ran, tokio::task::JoinError>) -> Result<ToolOutput, ToolError> {
     let (printed, snippet) = r.map_err(|e| ToolError::Failed(e.to_string()))??;
     output_of(printed, snippet, true)
 }

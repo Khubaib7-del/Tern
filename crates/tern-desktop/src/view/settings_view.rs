@@ -75,6 +75,8 @@ fn tool_icon(name: &str) -> AssetIcon {
         "load_skill" => AssetIcon::Sparkles,
         "run_command" => AssetIcon::SquareTerminal,
         "run_python" => AssetIcon::FileCode,
+        "plan" => AssetIcon::ListChecks,
+        "run_tasks" => AssetIcon::Workflow,
         "show_in_panel" => AssetIcon::PanelRightClose,
         n if n.starts_with("vault") => AssetIcon::NotebookPen,
         n if n.starts_with("file") => AssetIcon::FileText,
