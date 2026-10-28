@@ -341,6 +341,25 @@ enum Act {
     /// #73: copies the files the tour saved from blocks into `exports/`
     /// beside the scene log, so the workflow uploads them.
     CCollectExports,
+    /// #74: opens a folder of the tour's files as a project (as Open
+    /// folder does after the dialog).
+    COpenFolder(&'static str),
+    /// #74: opens or closes the folder picker under the composer.
+    CFolderMenu,
+    /// #74: the right rail's Files tab.
+    CFiles,
+    /// #74: the title bar's Outputs popover, open or closed.
+    COutputs(bool),
+    /// #74: expands or collapses a folder in the Files tree (relative to
+    /// the chat's folder).
+    CExpand(&'static str),
+    /// #74: collapses or expands the sidebar project with this name.
+    CCollapse(&'static str),
+    /// #74: opens or closes the ⋯ menu of the sidebar project named so.
+    CProjectMenu(&'static str),
+    /// #74: a scene-log line with the chat's folder, whether it is fixed,
+    /// its outputs and the sidebar's project rows.
+    CFolderState(&'static str),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -1907,6 +1926,46 @@ impl Workspace {
                 });
             }
             Act::CCollectExports => self.tour_collect_exports(),
+            Act::COpenFolder(name) => {
+                self.bridge
+                    .projects(crate::bridge::ProjectChange::Folder(tour_files().join(name)));
+            }
+            Act::CFolderMenu => {
+                self.model.folder_menu_open = !self.model.folder_menu_open;
+                cx.notify();
+            }
+            Act::CFiles => self.show_files(cx),
+            Act::COutputs(open) => {
+                self.model.outputs_open = open;
+                cx.notify();
+            }
+            Act::CExpand(rel) => {
+                if let Some(root) = self.model.files.root.clone() {
+                    self.model.files.toggle(&root.join(rel));
+                }
+                cx.notify();
+            }
+            Act::CCollapse(name) | Act::CProjectMenu(name) => {
+                let id = self
+                    .model
+                    .projects
+                    .projects
+                    .iter()
+                    .find(|p| p.row.name == name)
+                    .map(|p| p.row.id);
+                match id {
+                    Some(id) if matches!(act, Act::CCollapse(_)) => {
+                        self.model.projects.toggle(id);
+                    }
+                    Some(id) => {
+                        self.model.project_menu =
+                            (self.model.project_menu != Some(id)).then_some(id);
+                    }
+                    None => log(&format!("TOUR error no project named {name}")),
+                }
+                cx.notify();
+            }
+            Act::CFolderState(what) => self.log_folder_state(what),
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -2269,6 +2328,61 @@ impl Workspace {
         }
     }
 
+    fn log_folder_state(&self, what: &str) {
+        let order = crate::continuity::tree(&self.model.sessions);
+        let rows: Vec<String> = self
+            .model
+            .projects
+            .rows(&self.model.sessions, &order)
+            .into_iter()
+            .map(|r| match r {
+                crate::extensions::TreeRow::Project {
+                    name,
+                    root,
+                    collapsed,
+                    shown,
+                    ..
+                } => format!(
+                    "[{name}{} {shown}{}]",
+                    if root.is_some() { " (folder)" } else { "" },
+                    if collapsed { " collapsed" } else { "" }
+                ),
+                crate::extensions::TreeRow::Session(i) => self.model.sessions[i].title.clone(),
+                crate::extensions::TreeRow::More { hidden, .. } => format!("show more {hidden}"),
+            })
+            .collect();
+        let outputs: Vec<String> = self
+            .model
+            .outputs
+            .iter()
+            .map(|o| format!("{} ({})", o.path.display(), o.what))
+            .collect();
+        let tree: Vec<String> = self
+            .model
+            .files
+            .rows()
+            .into_iter()
+            .filter_map(|r| match r {
+                crate::files::Row::Entry { depth, entry, .. } => {
+                    Some(format!("{}{}", "  ".repeat(depth), entry.name))
+                }
+                _ => None,
+            })
+            .collect();
+        log(&format!(
+            "TOUR folders {what}: workspace={:?} locked={} draft={} project_root={:?} outputs={outputs:?} sidebar={rows:?} tree={tree:?}",
+            self.model
+                .workspace
+                .as_ref()
+                .map(|(_, p)| p.display().to_string()),
+            self.model.folder_locked(),
+            self.session.as_ref().is_some_and(|s| s.is_draft()),
+            self.session
+                .as_ref()
+                .and_then(|s| s.project_root().map(|p| p.display().to_string())),
+        ));
+    }
+
     fn log_composer_state(&self, what: &str, cx: &mut Context<Self>) {
         use crate::model::Entry;
         let text = self.composer.read(cx).value().to_string();
@@ -2473,7 +2587,16 @@ fn unix_ms() -> u128 {
 /// OpenAI-compatible model on localhost, so attachments, transcripts,
 /// typed paths, and `file_read` go through the real code.
 fn composer_tour() -> bool {
-    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("composer")
+    matches!(
+        std::env::var("TERN_TOUR_ONLY").as_deref(),
+        Ok("composer" | "folders")
+    )
+}
+
+/// The folders tour (`TERN_TOUR_ONLY=folders`, #74): the composer tour's
+/// mock model and files, with only the folder, math-fence and Files scenes.
+fn folders_tour() -> bool {
+    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("folders")
 }
 
 /// The folder the composer tour's files live in.
@@ -2569,8 +2692,128 @@ const WEB_HITS: [(&str, &str, &str); 2] = [
     ),
 ];
 
+/// #74: the folders, math-in-fences and Files scenes.
+fn folder_beats() -> Vec<Beat> {
+    vec![
+        b(Act::COpenFolder("Codex"), 1500),
+        b(Act::COpenFolder("Tern testing"), 2000),
+        b(Act::CFolderState("tray"), 200),
+        scene(
+            "c51-folder-tray",
+            "tern-only",
+            "An empty chat: the folder tray under the composer (Tern testing), its picker open; Projects lists the two folders",
+            Act::CFolderMenu,
+            2500,
+        ),
+        b(Act::CFolderMenu, 600),
+        b(
+            Act::CTypePath(
+                "Write the attention formula in latex fences, inline and as a display equation",
+            ),
+            200,
+        ),
+        scene(
+            "c52-math-latex-fence",
+            "tern-only",
+            "ministral's ```latex fences: the prose line with its inline formula, two display Math blocks with Where: between (\\softmax as an operator)",
+            Act::CSend,
+            4500,
+        ),
+        b(Act::CFolderState("after first message"), 300),
+        scene(
+            "c53-folder-fixed",
+            "tern-only",
+            "After the first message: the folder chip has no ×, the tray is gone, the title bar names the fixed folder",
+            Act::Nothing,
+            2000,
+        ),
+        b(Act::CClick("math-", "-export"), 900),
+        scene(
+            "c54-math-saved",
+            "tern-only",
+            "The formula saved as LaTeX into the chat's folder",
+            Act::CClick("math-", "-save-0"),
+            2500,
+        ),
+        b(Act::ToastsClear, 400),
+        scene(
+            "c55-files-panel",
+            "tern-only",
+            "Files tab: Outputs (the saved formula, size and time) and the folder's tree; node_modules and .git hidden",
+            Act::CFiles,
+            2500,
+        ),
+        b(Act::CExpand("src"), 900),
+        scene(
+            "c55b-files-expanded",
+            "tern-only",
+            "src expanded in the tree",
+            Act::CFolderState("files"),
+            2000,
+        ),
+        scene(
+            "c56-outputs-popover",
+            "tern-only",
+            "The title bar's Outputs popover",
+            Act::COutputs(true),
+            2500,
+        ),
+        b(Act::COutputs(false), 400),
+        scene(
+            "c56b-files-light",
+            "tern-only",
+            "Light theme: the Files tab and the fixed folder chip",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 1200),
+        b(Act::CNewChat, 1500),
+        b(Act::CFolderState("new chat from a folder project"), 300),
+        b(Act::COpenFolder("Codex"), 1500),
+        b(Act::CTypePath("What is a TLB?"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "c57-sidebar-two-folders",
+            "tern-only",
+            "Sidebar: Codex and Tern testing as folder projects, each chat under its folder, the Inbox below",
+            Act::CFolderState("two folders"),
+            2500,
+        ),
+        scene(
+            "c57b-sidebar-collapsed",
+            "tern-only",
+            "Tern testing collapsed",
+            Act::CCollapse("Tern testing"),
+            2500,
+        ),
+        b(Act::CCollapse("Tern testing"), 500),
+        scene(
+            "c58-project-menu",
+            "tern-only",
+            "A folder project's ⋯ menu: Reveal, Rename, Remove from sidebar",
+            Act::CProjectMenu("Codex"),
+            2500,
+        ),
+        scene(
+            "c58b-sidebar-light",
+            "tern-only",
+            "The sidebar and the menu in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 800),
+        b(Act::CProjectMenu("Codex"), 400),
+    ]
+}
+
 /// The composer scenes.
 fn composer_script() -> Vec<Beat> {
+    if folders_tour() {
+        let mut v = vec![b(Act::Nothing, 4000), b(Act::CState("start"), 200)];
+        v.extend(folder_beats());
+        v.push(b(Act::Quit, 0));
+        return v;
+    }
     vec![
         b(Act::Nothing, 4000),
         b(Act::CState("start"), 200),
@@ -3290,6 +3533,19 @@ fn seed_composer(prefs: &mut tern_agent::Preferences) {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(dir.join("drafts"));
     let _ = std::fs::write(dir.join("tour-notes.md"), TOUR_NOTES);
+    // #74: two folders to open as projects.
+    let testing = dir.join("Tern testing");
+    for d in ["src", "node_modules/left-pad", ".git"] {
+        let _ = std::fs::create_dir_all(testing.join(d));
+    }
+    let _ = std::fs::write(testing.join("notes.md"), TOUR_NOTES);
+    let _ = std::fs::write(testing.join("marks.csv"), "name,marks\nAli,81\nSara,92\n");
+    let _ = std::fs::write(testing.join("src").join("main.rs"), "fn main() {}\n");
+    let _ = std::fs::write(testing.join("src").join("lib.rs"), "pub fn add() {}\n");
+    let _ = std::fs::write(testing.join("node_modules/left-pad/index.js"), "\n");
+    let _ = std::fs::write(testing.join(".git").join("HEAD"), "ref: refs/heads/main\n");
+    let _ = std::fs::create_dir_all(dir.join("Codex"));
+    let _ = std::fs::write(dir.join("Codex").join("README.md"), "# Codex\n");
     let _ = std::fs::write(dir.join("tour-plan.md"), TOUR_PLAN);
     let _ = std::fs::write(dir.join("drafts").join("chapter-2.md"), "# Chapter 2\n");
     let _ = std::fs::write(dir.join("photo.png"), mock::png(96, 64));
@@ -3676,6 +3932,10 @@ mod mock {
         }
         if has_tools && user.contains("Explain attention with the formula") {
             return (super::RICH_MATH_A.into(), None);
+        }
+        // #74: ministral's answer with its formulas in ```latex fences.
+        if has_tools && user.contains("in latex fences") {
+            return (crate::mathsrc::FENCED_SAMPLE.into(), None);
         }
         // #73: gpt-oss's answers that showed raw LaTeX and failed to draw.
         if has_tools && user.contains("attention formula in LaTeX") {
