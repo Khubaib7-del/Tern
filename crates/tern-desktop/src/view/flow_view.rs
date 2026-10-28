@@ -334,7 +334,7 @@ impl Workspace {
         })
     }
 
-    fn pick_needs_you(&mut self, k: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn pick_needs_you(&mut self, k: usize, window: &mut Window, cx: &mut Context<Self>) {
         let answer = match k {
             0 => ApprovalAnswer::AllowOnce,
             1 => ApprovalAnswer::AllowForSession,
