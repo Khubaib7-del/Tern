@@ -1261,6 +1261,76 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The UI tour's hand on the focus view (`tour::Act::Focus`).
+    pub(super) fn tour_focus(&mut self, what: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus.is_none() {
+            super::tour::log(&format!(
+                "TOUR error focus {what}: the focus view is not open"
+            ));
+            return;
+        }
+        match what {
+            "close" => self.close_focus(cx),
+            "save" => self.focus_save(window, cx),
+            "original" => self.focus_pick(0, window, cx),
+            "tb" => self.focus_direction(Dir::TB, window, cx),
+            "cell" => {
+                self.focus_cell_edit(Some(0), 0, window, cx);
+                if let Some(f) = self.focus.as_ref() {
+                    let field = f.cell.clone();
+                    field.update(cx, |c, cx| {
+                        c.set_value("Always retrieve (baseline)", window, cx)
+                    });
+                }
+                self.focus_cell_done(cx);
+            }
+            "addrow" => {
+                self.with_focus(cx, |f| {
+                    if let Some(t) = f.model.table.as_mut() {
+                        let r = t.add_row(None);
+                        t.set(Some(r), 0, "CRAG");
+                        t.set(Some(r), 1, "0.80");
+                        t.set(Some(r), 2, "700");
+                    }
+                });
+            }
+            "zoom" => self.with_focus(cx, |f| {
+                let [_, _, w, h] = f.stage.get();
+                f.model.view.zoom_at(1.6, (w / 2., h / 2.));
+            }),
+            "pan" => self.with_focus(cx, |f| f.model.view.pan_by(-120., 60.)),
+            "wrap" => {
+                if let Some(f) = self.focus.as_mut() {
+                    f.model.wrap = !f.model.wrap;
+                    let wrap = f.model.wrap;
+                    if let Some(e) = f.editor.clone() {
+                        e.update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+                    }
+                    cx.notify();
+                }
+            }
+            w if w.starts_with("sort") => {
+                let c = w[4..].parse().unwrap_or(0);
+                self.with_focus(cx, |f| f.model.sort_by(c));
+            }
+            other => super::tour::log(&format!("TOUR error focus: no action {other}")),
+        }
+        let state = self.focus.as_ref().map(|f| {
+            format!(
+                "{} edited={} versions={} zoom={}% note={:?}",
+                f.model.block.kind.label(),
+                f.model.edited(),
+                f.model.versions.count(),
+                f.model.view.percent(),
+                f.note.as_deref().unwrap_or("")
+            )
+        });
+        super::tour::log(&format!(
+            "TOUR focus {what}: {}",
+            state.unwrap_or_else(|| "closed".to_owned())
+        ));
+    }
+
     /// A sent picture's card, clickable to open it large.
     pub(super) fn sent_picture(
         &self,

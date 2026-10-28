@@ -374,6 +374,12 @@ enum Act {
     /// #75: a scene-log line with the cards, the Terminal's runs and the
     /// rules.
     WState(&'static str),
+    /// #76: drives the open focus view (`sort1`, `cell`, `addrow`,
+    /// `save`, `original`, `zoom`, `pan`, `tb`, `wrap`, `close`) and logs
+    /// its state.
+    Focus(&'static str),
+    /// #76: plays the first-run intro (the tour has it marked seen).
+    Intro,
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -2014,6 +2020,13 @@ impl Workspace {
                 cx.notify();
             }
             Act::WState(what) => self.log_work_state(what),
+            Act::Focus(what) => self.tour_focus(what, window, cx),
+            Act::Intro => {
+                self.intro = Some(std::time::Instant::now());
+                self.intro_cursor = Some((0.62, 0.4));
+                log("TOUR note intro started");
+                cx.notify();
+            }
             Act::CSearch(id) => {
                 self.choose_search(Some(id), cx);
                 log(&format!("TOUR note search service {id}"));
@@ -2659,7 +2672,7 @@ fn write_report() -> std::path::PathBuf {
 
 /// One scene-log line: to stdout, and to `TERN_TOUR_LOG` when set (a
 /// Windows release build has no console).
-fn log(line: &str) {
+pub(super) fn log(line: &str) {
     use std::io::Write as _;
     println!("{line}");
     let _ = std::io::stdout().flush();
@@ -2710,6 +2723,11 @@ const WORK_SCRIPT: &str = "import sys, time\nname = sys.argv[1] if len(sys.argv)
 const WORK_SUMMARY: &str = "# Summary\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE policy next\n- Evaluation last\n";
 /// The second draft (rejected in the tour): two lines change.
 const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE and Self-RAG policies next\n- Evaluation last\n";
+
+/// #76: the new file the work tour writes in Ask mode (six lines).
+const WORK_NOTES: &str = "# Reading notes\n\n- Self-RAG: retrieve on demand, critique the draft\n- FLARE: retrieve when the next sentence is unsure\n- Adaptive-RAG: route by question complexity\n- CRAG: grade documents, fall back to web search\n";
+/// #76: an answer with every block kind the focus view opens.
+const FOCUS_BLOCKS_A: &str = "Here is each kind.\n\n```python\ndef retrieve(query, k=5):\n    hits = index.search(embed(query), k)\n    return [h.text for h in hits if h.score > 0.3]\n```\n\n| Policy | Recall@5 | Latency (ms) |\n| --- | --- | --- |\n| Always retrieve | 0.71 | 420 |\n| FLARE | 0.78 | 610 |\n| Self-RAG | 0.81 | 1,150 |\n| No retrieval | 0.42 | 95 |\n\n$$\nP(\\text{retrieve} \\mid x) = \\sigma\\left(w^\\top h_x + b\\right)\n$$\n\n```mermaid\nflowchart LR\n    Q[Question] --> D{Unsure?}\n    D -- yes --> R[Retrieve]\n    D -- no --> A[Answer]\n    R --> A\n```\n";
 
 /// #75: the work-surface scenes.
 fn work_beats() -> Vec<Beat> {
@@ -2875,6 +2893,159 @@ fn work_beats() -> Vec<Beat> {
             2500,
         ),
         b(Act::Theme, 800),
+    ]
+    .into_iter()
+    .chain(focus_beats())
+    .collect()
+}
+
+/// #76: the reply that ends cut off, a new file and a rename through the
+/// approval card (+N −M, old → new), every block kind in the focus view,
+/// and the first-run intro.
+fn focus_beats() -> Vec<Beat> {
+    vec![
+        b(Act::WApproval("ask"), 300),
+        b(Act::CTypePath("Tour: write the reading notes"), 200),
+        b(Act::CSend, 3000),
+        scene(
+            "x01-new-file-approval",
+            "tern-only",
+            "A new file in Ask mode: the approval card before anything is written, the diff headed +6 −0",
+            Act::WState("new file waiting"),
+            3000,
+        ),
+        b(Act::WPick(0), 2500),
+        b(
+            Act::CTypePath("Tour: rename summary.md to fyp-summary.md"),
+            200,
+        ),
+        b(Act::CSend, 3000),
+        scene(
+            "x02-rename-card",
+            "tern-only",
+            "file_rename asks with the old and the new path (summary.md → fyp-summary.md)",
+            Act::WState("rename waiting"),
+            3000,
+        ),
+        scene(
+            "x03-renamed",
+            "tern-only",
+            "Approved: the file is renamed (no copy left behind) and the reply says so",
+            Act::WPick(0),
+            3000,
+        ),
+        b(Act::WApproval("workspace_write"), 300),
+        b(Act::CTypePath("Tour: a long conversion"), 200),
+        b(Act::CSend, 3500),
+        b(Act::CStop, 1500),
+        b(Act::WKill, 1000),
+        scene(
+            "x04-interrupted-note",
+            "tern-only",
+            "A reply cut off by Stop ends with its note: \"Interrupted: you stopped the reply.\"",
+            Act::WState("interrupted"),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::CNewChat, 1200),
+        b(Act::CTypePath("Tour: show me every kind of block"), 200),
+        b(Act::CSend, 6000),
+        scene(
+            "x05-focus-code",
+            "tern-only",
+            "Expand on a code block: the focus view over a frosted chat, an editor with line numbers, Wrap, Find, Ask about this, Copy · Export",
+            Act::CClick("code-", "-expand"),
+            3000,
+        ),
+        b(Act::Focus("wrap"), 1200),
+        b(Act::Focus("close"), 800),
+        scene(
+            "x06-focus-table",
+            "tern-only",
+            "A table in the focus view: filter, + Row, + Column, rename and remove columns, remove rows",
+            Act::CClick("table-", "-expand"),
+            2500,
+        ),
+        scene(
+            "x07-focus-table-sorted",
+            "tern-only",
+            "Sorted by the second column (numbers as numbers), a cell edited, a row added",
+            Act::Focus("sort1"),
+            1200,
+        ),
+        b(Act::Focus("cell"), 800),
+        b(Act::Focus("addrow"), 1500),
+        scene(
+            "x08-focus-saved",
+            "tern-only",
+            "Save to answer: version 2 in the answer, the original kept (Original · v2)",
+            Act::Focus("save"),
+            3000,
+        ),
+        b(Act::Focus("close"), 1500),
+        scene(
+            "x09-focus-math",
+            "tern-only",
+            "A formula in the focus view: LaTeX beside its live drawing, zoom controls",
+            Act::CClick("math-", "-expand"),
+            2500,
+        ),
+        b(Act::Focus("zoom"), 1500),
+        b(Act::Focus("close"), 800),
+        scene(
+            "x10-focus-mermaid",
+            "tern-only",
+            "A Mermaid diagram in the focus view: source beside the drawing, zoom, pan, fit, Left → right | Top ↓ bottom",
+            Act::CClick("mermaid-", "-expand"),
+            2500,
+        ),
+        scene(
+            "x11-focus-mermaid-tb",
+            "tern-only",
+            "Turned top to bottom from the toolbar (the source's first line follows), zoomed and panned",
+            Act::Focus("tb"),
+            1500,
+        ),
+        b(Act::Focus("zoom"), 800),
+        b(Act::Focus("pan"), 1500),
+        scene(
+            "x12-focus-mermaid-light",
+            "tern-only",
+            "The focus view in the light theme",
+            Act::Theme,
+            2500,
+        ),
+        b(Act::Theme, 800),
+        b(Act::Focus("close"), 800),
+        scene(
+            "x13-intro-field",
+            "tern-only",
+            "First-run intro: the dithered field reveals and leans to the cursor; the tern flies in",
+            Act::Intro,
+            1600,
+        ),
+        scene(
+            "x14-intro-flight",
+            "tern-only",
+            "The tern mid-flight with real wingbeats over the field",
+            Act::Nothing,
+            2400,
+        ),
+        scene(
+            "x15-intro-metal",
+            "tern-only",
+            "Settled, turning metal then white",
+            Act::Nothing,
+            1800,
+        ),
+        scene(
+            "x16-intro-lockup",
+            "tern-only",
+            "The mark slides aside and the wipe reveals TERN with Research · Study",
+            Act::Nothing,
+            3000,
+        ),
+        b(Act::Nothing, 1500),
     ]
 }
 
@@ -4441,6 +4612,35 @@ mod mock {
                     vec![cmd("bash -c 'curl https://example.com'".into())],
                 )
             });
+        }
+        if user.contains("reading notes") {
+            return Some(if done {
+                (line.clone(), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![(
+                        "file_write".to_owned(),
+                        json!({"path": "reading-notes.md", "text": super::WORK_NOTES}),
+                    )],
+                )
+            });
+        }
+        if user.contains("rename summary.md") {
+            return Some(if done {
+                (line.clone(), Vec::new())
+            } else {
+                (
+                    String::new(),
+                    vec![(
+                        "file_rename".to_owned(),
+                        json!({"from": "summary.md", "to": "fyp-summary.md"}),
+                    )],
+                )
+            });
+        }
+        if user.contains("every kind of block") {
+            return Some((super::FOCUS_BLOCKS_A.to_owned(), Vec::new()));
         }
         if user.contains("long conversion") {
             return Some(if done {
