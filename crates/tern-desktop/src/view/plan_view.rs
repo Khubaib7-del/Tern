@@ -20,7 +20,7 @@ use crate::theme::Palette;
 /// Steps a folded card still shows: the one in progress and the next.
 const FOLDED_STEPS: usize = 3;
 
-fn status_icon(s: StepStatus, p: Palette) -> AnyElement {
+fn status_icon(s: StepStatus, live: bool, p: Palette) -> AnyElement {
     let icon = |i: AssetIcon, ink: gpui_kit::Hsla| {
         div()
             .flex_none()
@@ -30,6 +30,8 @@ fn status_icon(s: StepStatus, p: Palette) -> AnyElement {
     };
     match s {
         StepStatus::Pending => icon(AssetIcon::CircleDashed, p.faint),
+        // The run ended with the step still open: a still mark, no spinner.
+        StepStatus::InProgress if !live => icon(AssetIcon::CircleDot, p.text),
         StepStatus::InProgress => div()
             .flex_none()
             .child(Spinner::new().xsmall().color(p.text))
@@ -51,6 +53,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let (plan, graph) = tern_agent::planner::of_run(run);
+        let live = run.end.is_none();
         if plan.is_none() && graph.is_none() {
             return None;
         }
@@ -63,8 +66,8 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .children(plan.map(|v| self.plan_block(format!("{base}-plan"), &v, p, cx)))
-                .children(graph.map(|v| self.plan_block(format!("{base}-graph"), &v, p, cx)))
+                .children(plan.map(|v| self.plan_block(format!("{base}-plan"), &v, live, p, cx)))
+                .children(graph.map(|v| self.plan_block(format!("{base}-graph"), &v, live, p, cx)))
                 .into_any_element(),
         )
     }
@@ -73,6 +76,7 @@ impl Workspace {
         &self,
         key: String,
         v: &PlanView,
+        live: bool,
         p: Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -171,7 +175,9 @@ impl Workspace {
             v.steps.iter().collect()
         };
         let hidden = n.saturating_sub(shown.len());
-        let rows = shown.into_iter().map(|s| self.plan_row(v.is_graph(), s, p));
+        let rows = shown
+            .into_iter()
+            .map(|s| self.plan_row(v.is_graph(), s, live, p));
         div()
             .id(SharedString::from(format!("plancard-{key}")))
             .flex()
@@ -208,7 +214,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn plan_row(&self, graph: bool, s: &PlanStep, p: Palette) -> AnyElement {
+    fn plan_row(&self, graph: bool, s: &PlanStep, live: bool, p: Palette) -> AnyElement {
         let ink = if s.status == StepStatus::InProgress {
             p.text
         } else {
@@ -219,7 +225,7 @@ impl Workspace {
             .items_center()
             .gap_2()
             .min_w_0()
-            .child(status_icon(s.status, p))
+            .child(status_icon(s.status, live, p))
             .when(graph, |d| {
                 d.child(
                     div()

@@ -339,7 +339,7 @@ impl StepGroup {
         ) || self
             .cards
             .iter()
-            .any(|c| matches!(c.family, Family::Write | Family::Command))
+            .any(|c| matches!(c.family, Family::Write | Family::Command) || !c.children.is_empty())
     }
 
     /// "web_search, read_url ×3".

@@ -4704,6 +4704,86 @@ mod mock {
             .collect()
     }
 
+    /// #77: the planner flows of the work tour, by the number of model
+    /// steps already taken after the tour message.
+    fn planner_decide(user: &str, steps: usize) -> Option<(String, Vec<(String, Value)>)> {
+        let answer = |t: &str| Some((t.to_owned(), Vec::new()));
+        if user.contains("plan the reading review") {
+            let plan = |a: &str, b: &str, c: &str| {
+                (
+                    "plan".to_owned(),
+                    json!({"title": "Reading review", "steps": [
+                        {"title": "Gather the notes in the folder", "status": a},
+                        {"title": "Compare the RAG methods", "status": b},
+                        {"title": "Write a short review", "status": c}
+                    ]}),
+                )
+            };
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![
+                        plan("in_progress", "pending", "pending"),
+                        ("files_list".to_owned(), json!({"path": "."})),
+                    ],
+                )),
+                1 => Some((
+                    String::new(),
+                    vec![
+                        plan("done", "in_progress", "pending"),
+                        ("file_read".to_owned(), json!({"path": "reading-notes.md"})),
+                    ],
+                )),
+                2 => Some((String::new(), vec![plan("done", "done", "done")])),
+                _ => answer(
+                    "Review: Self-RAG and FLARE both retrieve only when needed (Self-RAG critiques its own draft, FLARE waits for an unsure sentence); Adaptive-RAG routes by question complexity and CRAG grades what it retrieved.",
+                ),
+            };
+        }
+        if user.contains("compare the notes in parallel") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![(
+                        "run_tasks".to_owned(),
+                        json!({"goal": "Compare the notes", "tasks": [
+                            {"id": "a", "tool": "files_list", "args": {"path": "."}},
+                            {"id": "b", "tool": "file_read", "args": {"path": "reading-notes.md"}},
+                            {"id": "c", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
+                            {"id": "d", "tool": "file_read", "args": {"path": "todo.md"}},
+                            {"id": "e", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["a"]}
+                        ]}),
+                    )],
+                )),
+                _ => answer(
+                    "Compared the notes: the reading notes cover four RAG methods, the meeting notes set the FLARE baseline for Friday, and the to-do list starts with the FLARE paper.",
+                ),
+            };
+        }
+        if user.contains("code mode word counts") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![(
+                        "run_python".to_owned(),
+                        json!({"code": super::WORK_CODE_MODE}),
+                    )],
+                )),
+                _ => answer(
+                    "One script read the three notes and wrote word-counts.md; only its printed total came back to me.",
+                ),
+            };
+        }
+        if user.contains("read the todo list twice") {
+            let read = ("file_read".to_owned(), json!({"path": "todo.md"}));
+            return match steps {
+                0 | 1 => Some((String::new(), vec![read])),
+                _ => answer("Read todo.md twice; the second read came from the cache."),
+            };
+        }
+        None
+    }
+
     /// #75: the work tour's replies: several calls in one step, and a
     /// short answer once the results are back. `None` for other messages.
     fn work_decide(req: &Value) -> Option<(String, Vec<(String, Value)>)> {
@@ -4712,6 +4792,24 @@ mod mock {
             return None;
         }
         let last_user = msgs.iter().rposition(|m| m["role"] == "user")?;
+        // #77: flows of several steps follow the tour message, whatever
+        // came back after it (tool results may arrive as user text).
+        if let Some(at) = msgs
+            .iter()
+            .rposition(|m| m["role"] == "user" && text_of(m).contains("Tour: "))
+        {
+            let steps = msgs[at + 1..]
+                .iter()
+                .filter(|m| m["role"] == "assistant")
+                .count();
+            if let Some(r) = planner_decide(&text_of(&msgs[at]), steps) {
+                super::log(&format!(
+                    "TOUR mock planner {:?} step={steps}",
+                    text_of(&msgs[at]).chars().take(60).collect::<String>()
+                ));
+                return Some(r);
+            }
+        }
         let user = text_of(&msgs[last_user]);
         if !user.contains("Tour: ") {
             return None;
@@ -4838,88 +4936,6 @@ mod mock {
                         json!({"from": "summary.md", "to": "fyp-summary.md"}),
                     )],
                 )
-            });
-        }
-        // #77: the plan, updated as the steps go.
-        if user.contains("plan the reading review") {
-            let plan = |a: &str, b: &str, c: &str| {
-                (
-                    "plan".to_owned(),
-                    json!({"title": "Reading review", "steps": [
-                        {"title": "Gather the notes in the folder", "status": a},
-                        {"title": "Compare the RAG methods", "status": b},
-                        {"title": "Write a short review", "status": c}
-                    ]}),
-                )
-            };
-            return Some(match results.len() {
-                0 => (
-                    String::new(),
-                    vec![
-                        plan("in_progress", "pending", "pending"),
-                        ("files_list".to_owned(), json!({"path": "."})),
-                    ],
-                ),
-                1 | 2 => (
-                    String::new(),
-                    vec![
-                        plan("done", "in_progress", "pending"),
-                        ("file_read".to_owned(), json!({"path": "reading-notes.md"})),
-                    ],
-                ),
-                3 | 4 => (String::new(), vec![plan("done", "done", "done")]),
-                _ => (
-                    "Review: Self-RAG and FLARE both retrieve only when needed (Self-RAG critiques its draft, FLARE waits for an unsure sentence); Adaptive-RAG routes by question complexity and CRAG grades what it retrieved.".into(),
-                    Vec::new(),
-                ),
-            });
-        }
-        // #77: a task graph, four reads at once and one that waits.
-        if user.contains("compare the notes in parallel") {
-            return Some(if done {
-                (
-                    "Compared the notes: the reading notes cover four RAG methods, the meeting notes set the FLARE baseline for Friday, and the to-do list starts with the FLARE paper.".into(),
-                    Vec::new(),
-                )
-            } else {
-                (
-                    String::new(),
-                    vec![(
-                        "run_tasks".to_owned(),
-                        json!({"goal": "Compare the notes", "tasks": [
-                            {"id": "a", "tool": "files_list", "args": {"path": "."}},
-                            {"id": "b", "tool": "file_read", "args": {"path": "reading-notes.md"}},
-                            {"id": "c", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
-                            {"id": "d", "tool": "file_read", "args": {"path": "todo.md"}},
-                            {"id": "e", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["a"]}
-                        ]}),
-                    )],
-                )
-            });
-        }
-        // #77: code mode, one script calling the folder's tools.
-        if user.contains("code mode word counts") {
-            return Some(if done {
-                (format!("Counted the words: {line}"), Vec::new())
-            } else {
-                (
-                    String::new(),
-                    vec![(
-                        "run_python".to_owned(),
-                        json!({"code": super::WORK_CODE_MODE}),
-                    )],
-                )
-            });
-        }
-        // #77: the same read twice; the second comes from the cache.
-        if user.contains("read the todo list twice") {
-            let read = ("file_read".to_owned(), json!({"path": "todo.md"}));
-            return Some(match results.len() {
-                0 | 1 => (String::new(), vec![read]),
-                _ => (
-                    "Read todo.md twice; the second read came from the cache.".into(),
-                    Vec::new(),
-                ),
             });
         }
         if user.contains("every kind of block") {
