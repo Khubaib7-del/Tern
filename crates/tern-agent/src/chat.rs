@@ -254,6 +254,21 @@ pub fn rename_output(
     true
 }
 
+/// What the model is told about the chat's workspace. A folder's name is
+/// said with how paths work inside it (#79: in a folder named `New` the
+/// model listed `New` and wrote `New/review.md`).
+pub fn workspace_line(ws: &crate::workspace::Workspace) -> String {
+    let name = ws.name();
+    if ws.is_file() {
+        return format!(
+            "The user opened the file `{name}` as this chat's workspace. Use files_list, file_read and file_search to look at it; paths are relative to its folder."
+        );
+    }
+    format!(
+        "The user opened the folder `{name}` as this chat's workspace, and you are already inside it. Use files_list, file_read and file_search to look at it. Every path you give a file tool is relative to this folder: \"\" (or \".\") is `{name}` itself and \"notes.md\" is a file directly in it. Do not start a path with `{name}/`: that would mean a folder named `{name}` inside it. `file_write` makes any folders a new path needs."
+    )
+}
+
 /// The path of the last `session.workspace` event, unless it closed it.
 pub fn last_workspace(events: &[EventEnvelope]) -> Option<String> {
     events
@@ -1212,11 +1227,7 @@ impl ChatSession {
             extra.push(line.to_owned());
         }
         if let Some(ws) = &self.workspace {
-            extra.push(format!(
-                "The user opened {} `{}` as this chat's workspace. Use files_list, file_read and file_search to look at it; paths are relative to it.",
-                if ws.is_file() { "the file" } else { "the folder" },
-                ws.name()
-            ));
+            extra.push(workspace_line(ws));
         }
         if let Some(u) = crate::prompts::user_block(self.harness) {
             extra.push(u);

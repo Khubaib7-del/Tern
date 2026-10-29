@@ -1654,6 +1654,7 @@ impl Workspace {
                     budget: Some(crate::model::BudgetStop {
                         used: 231_400,
                         limit: Some(240_000),
+                        calls: None,
                     }),
                 });
                 self.scroll.scroll_to_bottom();

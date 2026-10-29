@@ -187,7 +187,10 @@ impl Provider {
             },
             StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimited {
                 provider,
-                retry_after,
+                // #79: a wait stated only in the message ("try again in
+                // 41.87s") is the wait.
+                retry_after: retry_after
+                    .or_else(|| crate::retry::stated_wait(&body).map(|d| d.as_secs())),
                 detail,
             },
             StatusCode::NOT_FOUND => ProviderError::NotFound {

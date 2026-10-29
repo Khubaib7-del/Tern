@@ -421,6 +421,26 @@ pub fn program_stem(p: &str) -> String {
     lower
 }
 
+/// What to use instead of a shell command that only makes, moves or
+/// copies files (#79), or `None` for any other program.
+fn file_tool_instead(stem: &str) -> Option<&'static str> {
+    Some(match stem {
+        "mkdir" | "md" | "touch" | "new-item" | "ni" => {
+            "`file_write` creates the file and any missing parent folders in its path (write \"notes/today.md\" and the notes folder is made), so write the file directly."
+        }
+        "mv" | "move" | "ren" | "rename" | "move-item" => {
+            "rename or move a file with `file_rename` (from, to); missing folders in `to` are made."
+        }
+        "cp" | "copy" | "xcopy" | "copy-item" => {
+            "read the file with `file_read`, then write the copy with `file_write`."
+        }
+        "rm" | "del" | "erase" | "rmdir" | "rd" | "remove-item" => {
+            "Tern does not delete files; tell the user which file to remove."
+        }
+        _ => return None,
+    })
+}
+
 /// Checks a command against the policy and resolves its program.
 /// `cwd` is a folder inside the chat's folder (relative), or `None`.
 pub fn prepare(
@@ -443,6 +463,14 @@ pub fn prepare(
     {
         return Err(Denial::new(format!(
             "`{first}` is not a workbench program. To list a folder or read a file use `files_list` or `file_read` instead; a full path outside the chat's folder asks the user first."
+        )));
+    }
+    if !policy.programs.iter().any(|p| program_stem(p) == stem)
+        && let Some(instead) = file_tool_instead(&stem)
+    {
+        // #79: the model ran `mkdir New` to make a folder before writing.
+        return Err(Denial::new(format!(
+            "`{first}` is not a workbench program, and it is not needed: {instead}"
         )));
     }
     if !policy.programs.iter().any(|p| program_stem(p) == stem) {
@@ -748,6 +776,25 @@ pub async fn run_hosted(policy: &SandboxPolicy, p: &Prepared, host: Option<Host>
         p.cwd.display(),
         policy.summary()
     ));
+    // #79: a folder that is gone (moved, renamed, deleted) made Windows
+    // say "The directory name is invalid. (os error 267)".
+    if !p.cwd.is_dir() {
+        let why = format!(
+            "the folder {} is not there any more (moved, renamed or deleted), so nothing ran. Open the folder again for this chat.",
+            p.cwd.display()
+        );
+        live::push_output(id, Stream::Tern, &format!("Could not start: {why}\n"));
+        live::finish_run(id, RunState::Failed, None);
+        crate::diag::note(&format!("sandbox: run {id} could not start: {why}"));
+        return Outcome {
+            run: id,
+            state: RunState::Failed,
+            exit: None,
+            stdout: String::new(),
+            stderr: format!("could not start: {why}"),
+            took: started.elapsed(),
+        };
+    }
     let mut cmd = tokio::process::Command::new(&p.program);
     cmd.args(&p.args)
         .current_dir(&p.cwd)
@@ -987,6 +1034,36 @@ mod tests {
         assert!(e.reason.contains("program list"), "{}", e.reason);
         assert_eq!(program_stem("C:\\Py\\Python.EXE"), "python");
         assert!(prepare(&p, "", &[], None).is_err());
+        // #79: making a folder points at `file_write`, which makes it.
+        let e = prepare(&p, "mkdir New", &[], None).unwrap_err();
+        assert!(
+            e.reason
+                .contains("`file_write` creates the file and any missing parent folders"),
+            "{}",
+            e.reason
+        );
+        let e = prepare(&p, "mv a.md b.md", &[], None).unwrap_err();
+        assert!(e.reason.contains("`file_rename`"), "{}", e.reason);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_is_gone_says_so_instead_of_os_error_267() {
+        let d = tempfile::tempdir().unwrap();
+        let folder = d.path().join("gone");
+        std::fs::create_dir_all(&folder).unwrap();
+        let p = policy(&folder);
+        let prep = prepare(&p, "git status", &[], None);
+        std::fs::remove_dir_all(&folder).unwrap();
+        // `git` may be missing on the machine; only a prepared run is run.
+        if let Ok(prep) = prep {
+            let out = run(&p, &prep).await;
+            assert_eq!(out.state, RunState::Failed);
+            assert!(
+                out.stderr.contains("is not there any more"),
+                "{}",
+                out.stderr
+            );
+        }
     }
 
     #[test]

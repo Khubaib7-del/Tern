@@ -579,6 +579,36 @@ impl Workspace {
             format!("This run has used {} tokens.", compact(stop.used))
         };
         let can = self.model.can_send() && self.session.is_some();
+        // #79: a stop at the model- or tool-call limit continues on the
+        // same model; it is not a token raise, and nothing switches models.
+        if let Some(calls) = stop.calls {
+            let model = self
+                .session
+                .as_ref()
+                .map(|s| s.model().to_owned())
+                .unwrap_or_default();
+            let line = if model.is_empty() {
+                format!("{} Continue picks up where it stopped.", calls.line())
+            } else {
+                format!(
+                    "{} Continue picks up where it stopped, with {model}.",
+                    calls.line()
+                )
+            };
+            let actions = vec![
+                Button::new("budget-continue")
+                    .capsule()
+                    .label("Continue")
+                    .primary()
+                    .small()
+                    .disabled(!can)
+                    .tooltip("Give the run room for as many calls again and resume it")
+                    .on_click(cx.listener(|this, _, _, cx| this.raise_and_resume(2.0, cx)))
+                    .into_any_element(),
+                self.budget_stop_button(cx),
+            ];
+            return Some(self.budget_frame(p, offer.progress.clone(), line, actions));
+        }
         let raise = |id: &'static str, f: f64, primary: bool| {
             let label = if limit > 0 {
                 format!(
@@ -596,89 +626,118 @@ impl Workspace {
                 .on_click(cx.listener(move |this, _, _, cx| this.raise_and_resume(f, cx)));
             if primary { b.primary() } else { b.ghost() }
         };
+        let actions = vec![
+            raise("budget-raise-1", 1.5, true).into_any_element(),
+            raise("budget-raise-2", 2.0, false).into_any_element(),
+            self.budget_stop_button(cx),
+        ];
+        Some(self.budget_frame(p, offer.progress.clone(), line, actions))
+    }
+
+    /// The budget card's Stop: forgets the paused run.
+    fn budget_stop_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        Button::new("budget-stop")
+            .capsule()
+            .label("Stop")
+            .ghost()
+            .small()
+            .tooltip("Forget the paused run")
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(s) = &this.session {
+                    let _ = s.discard_checkpoint();
+                }
+                this.model.resume_offer = None;
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// "Paused at a safe point", what was used, and the card's buttons.
+    fn budget_frame(
+        &self,
+        p: Palette,
+        progress: String,
+        line: String,
+        actions: Vec<AnyElement>,
+    ) -> AnyElement {
         let pause = div()
             .flex_none()
             .flex()
             .gap(px(3.))
             .child(div().w(px(3.)).h(px(11.)).rounded(px(1.)).bg(p.text))
             .child(div().w(px(3.)).h(px(11.)).rounded(px(1.)).bg(p.text));
-        Some(
-            div()
-                .id("budget-card")
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(p.border)
-                .bg(p.raised)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_sm()
-                        .child(pause)
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Paused at a safe point"),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_xs()
-                                .text_color(p.faint)
-                                .child(SharedString::from(offer.progress.clone())),
-                        ),
-                )
-                .child(
-                    div()
-                        .ml(px(17.))
-                        .text_sm()
-                        .text_color(p.muted)
-                        .child(SharedString::from(line)),
-                )
-                .child(
-                    div()
-                        .ml(px(17.))
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(raise("budget-raise-1", 1.5, true))
-                        .child(raise("budget-raise-2", 2.0, false))
-                        .child(
-                            Button::new("budget-stop")
-                                .capsule()
-                                .label("Stop")
-                                .ghost()
-                                .small()
-                                .tooltip("Forget the paused run")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(s) = &this.session {
-                                        let _ = s.discard_checkpoint();
-                                    }
-                                    this.model.resume_offer = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .into_any_element(),
-        )
+        div()
+            .id("budget-card")
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.raised)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_sm()
+                    .child(pause)
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Paused at a safe point"),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(p.faint)
+                            .child(SharedString::from(progress)),
+                    ),
+            )
+            .child(
+                div()
+                    .ml(px(17.))
+                    .text_sm()
+                    .text_color(p.muted)
+                    .child(SharedString::from(line)),
+            )
+            .child(
+                div()
+                    .ml(px(17.))
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(actions),
+            )
+            .into_any_element()
     }
 
     fn raise_and_resume(&mut self, factor: f64, cx: &mut Context<Self>) {
+        let calls = self
+            .model
+            .resume_offer
+            .as_ref()
+            .and_then(|o| o.budget)
+            .and_then(|b| b.calls);
         let Some(s) = self.session.as_mut() else {
             return;
         };
         match s.raise_budget(factor) {
             Ok(limit) => {
-                self.model.toast_info(format!(
-                    "Limit raised to {} tokens · resumed from the checkpoint",
-                    compact(limit)
-                ));
+                let note = match calls {
+                    Some(_) => format!(
+                        "Continuing with {} · resumed from the checkpoint",
+                        s.model()
+                    ),
+                    None => format!(
+                        "Limit raised to {} tokens · resumed from the checkpoint",
+                        compact(limit)
+                    ),
+                };
+                self.model.toast_info(note);
                 self.resume_run(cx);
             }
             Err(e) => self

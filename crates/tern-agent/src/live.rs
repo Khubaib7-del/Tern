@@ -261,6 +261,29 @@ pub fn clear_preview() {
     with(|b| b.preview = None);
 }
 
+/// A file was renamed from `from` to `to` (paths relative to the chat's
+/// folder): a preview of `from` follows it to `to` (#79: after a script
+/// wrote notes.md and renamed it to hello.md, the panel kept "notes.md
+/// Not written"). Returns whether the preview moved.
+pub fn rename_preview(from: &str, to: &str) -> bool {
+    let norm = |p: &str| {
+        let p = p.trim().replace('\\', "/");
+        p.strip_prefix("./").unwrap_or(&p).to_owned()
+    };
+    let (from, to) = (norm(from), norm(to));
+    let mut moved = false;
+    with(|b| {
+        if let Some(w) = b.preview.as_mut()
+            && (norm(&w.path) == from
+                || (cfg!(windows) && norm(&w.path).eq_ignore_ascii_case(&from)))
+        {
+            w.path = to.clone();
+            moved = true;
+        }
+    });
+    moved
+}
+
 /// Asks the window to show a tab (and a file in it).
 pub fn request_panel(tab: &str, path: Option<&str>) {
     with(|b| {
@@ -339,6 +362,20 @@ mod tests {
         assert!(p.is_none() && t.is_none());
         let (_, t) = partial_write_args(r#"{"path":"a","text":"cut \"#);
         assert_eq!(t.as_deref(), Some("cut "));
+    }
+
+    #[test]
+    fn a_preview_follows_its_file_when_renamed() {
+        preview_write("./drafts/notes-79.md", "hello", true);
+        assert!(!rename_preview("other.md", "x.md"));
+        assert!(rename_preview("drafts\\notes-79.md", "drafts/hello-79.md"));
+        let w = preview().unwrap();
+        assert_eq!(
+            (w.path.as_str(), w.text.as_str()),
+            ("drafts/hello-79.md", "hello")
+        );
+        clear_preview();
+        assert!(!rename_preview("drafts/hello-79.md", "y.md"));
     }
 
     #[test]
