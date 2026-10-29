@@ -389,6 +389,15 @@ enum Act {
     Focus(&'static str),
     /// #76: plays the first-run intro (the tour has it marked seen).
     Intro,
+    /// #82 (`TERN_TOUR_ONLY=scholarly`): an academic question answered
+    /// from recorded service answers (`scholar::replay_search`) and two
+    /// read papers (`scholar::read_output`), through the real events.
+    ScholarTurn,
+    /// #82: the scholarly answer finished, with quotes and locators.
+    ScholarFinish,
+    /// #82: scrolls Settings › Search & Crawlers to the Scholarly sources
+    /// card.
+    ScholarCard,
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -463,6 +472,9 @@ fn script() -> Vec<Beat> {
     }
     if composer_tour() {
         return composer_script();
+    }
+    if scholar_tour() {
+        return scholar_script();
     }
     use crate::onboarding::Step;
     let mut v = vec![
@@ -1363,6 +1375,134 @@ impl Workspace {
             search: Some("Tavily".into()),
             context_window: Some(200_000),
         });
+    }
+
+    /// #82: a scholarly turn from recorded answers: `scholar_search`
+    /// replayed over Semantic Scholar's and OpenAlex's recorded answers,
+    /// then two `paper_read`s over recorded PDF text, sent as the events
+    /// a real turn sends.
+    fn tour_scholar_turn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use tern_agent::scholar::{self as sc, Paper, Service};
+        self.model.set_mode(crate::composer::Mode::Chat, None);
+        if self.model.start_turn(SCHOLAR_Q).is_none() {
+            log("TOUR scholar turn not started");
+            return;
+        }
+        self.start_ticker(cx);
+        self.tour_event(
+            "turn.started",
+            "Started",
+            json!({"mode": "chat"}),
+            window,
+            cx,
+        );
+        let args = json!({"query": SCHOLAR_QUERY});
+        self.tour_event(
+            "tool.started",
+            "Searching papers",
+            json!({"tool": "scholar_search", "args": args}),
+            window,
+            cx,
+        );
+        let out = sc::replay_search(
+            SCHOLAR_QUERY,
+            &[
+                (Service::SemanticScholar, SCHOLAR_S2),
+                (Service::OpenAlex, SCHOLAR_OA),
+            ],
+        );
+        log(&format!(
+            "TOUR scholar search found={} kept={} first={:?}",
+            out.meta["found"],
+            out.meta["papers"].as_array().map_or(0, Vec::len),
+            out.content.lines().next().unwrap_or_default()
+        ));
+        self.tour_event(
+            "tool.executed",
+            "Searched papers",
+            json!({"tool": "scholar_search", "args": args, "meta": out.meta}),
+            window,
+            cx,
+        );
+        // The same search for a question no paper answers.
+        let none = sc::replay_search(
+            "chimera telepathy in octopus sleep",
+            &[(Service::SemanticScholar, SCHOLAR_S2)],
+        );
+        log(&format!(
+            "TOUR scholar chimera first={:?}",
+            none.content.lines().next().unwrap_or_default()
+        ));
+        let flare = Paper {
+            title: "Active Retrieval Augmented Generation".into(),
+            authors: vec![
+                "Zhengbao Jiang".into(),
+                "Frank F. Xu".into(),
+                "Luyu Gao".into(),
+            ],
+            year: Some(2023),
+            venue: Some("EMNLP".into()),
+            doi: Some("10.18653/v1/2023.emnlp-main.495".into()),
+            arxiv: Some("2305.06983".into()),
+            citations: Some(620),
+            oa_pdf: Some("https://arxiv.org/pdf/2305.06983".into()),
+            found_by: vec![Service::SemanticScholar, Service::OpenAlex],
+            ..Paper::default()
+        };
+        let selfrag = Paper {
+            title: "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection"
+                .into(),
+            authors: vec![
+                "Akari Asai".into(),
+                "Zeqiu Wu".into(),
+                "Yizhong Wang".into(),
+            ],
+            year: Some(2023),
+            venue: Some("ICLR".into()),
+            arxiv: Some("2310.11511".into()),
+            citations: Some(910),
+            oa_pdf: Some("https://arxiv.org/pdf/2310.11511".into()),
+            found_by: vec![Service::SemanticScholar],
+            ..Paper::default()
+        };
+        for (paper, pdf, url) in [
+            (flare, SCHOLAR_FLARE_PDF, "https://arxiv.org/pdf/2305.06983"),
+            (
+                selfrag,
+                SCHOLAR_SELFRAG_PDF,
+                "https://arxiv.org/pdf/2310.11511",
+            ),
+        ] {
+            let args = json!({"paper": url, "question": SCHOLAR_Q});
+            self.tour_event(
+                "tool.started",
+                "Reading a paper",
+                json!({"tool": "paper_read", "args": args}),
+                window,
+                cx,
+            );
+            let read = sc::read_output(paper, pdf, url, SCHOLAR_Q);
+            log(&format!(
+                "TOUR scholar read url={url} sufficiency={} passages={}",
+                read.meta["sufficiency"],
+                read.meta["passages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|p| p["locator"].to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+            self.tour_event(
+                "tool.executed",
+                "Read a paper",
+                json!({"tool": "paper_read", "args": args, "meta": read.meta}),
+                window,
+                cx,
+            );
+        }
+        self.request_icons();
+        self.on_msg(Msg::Text(1, SCHOLAR_A.into()), window, cx);
     }
 
     fn tour_event(
@@ -2305,6 +2445,23 @@ impl Workspace {
                     self.model.run_panel_opens_itself()
                 ));
                 cx.notify();
+            }
+            Act::ScholarTurn => self.tour_scholar_turn(window, cx),
+            Act::ScholarFinish => {
+                self.tour_event("turn.finished", "Answered", json!({"state": "completed"}), window, cx);
+                self.model.finish_turn(&outcome(SCHOLAR_A), context(18_400, 520));
+                self.model.reveal_all();
+                self.scroll.scroll_to_bottom();
+            }
+            Act::ScholarCard => {
+                // The anchor's scroll lands on the next frame
+                // (`ScrollAnchor::scroll_to` uses `on_next_frame`).
+                self.settings_inputs.scholar_anchor.scroll_to(window, cx);
+                log(&format!(
+                    "TOUR scholar-card section={:?} services={}",
+                    self.model.settings.section,
+                    tern_agent::scholar::Service::ALL.len()
+                ));
             }
             Act::Quit => {
                 let t = self.tour.as_ref().map(|t| t.started.elapsed().as_secs_f32());
@@ -3320,6 +3477,85 @@ fn focus_beats() -> Vec<Beat> {
         b(Act::Nothing, 1500),
     ]
 }
+
+/// The scholarly tour (`TERN_TOUR_ONLY=scholarly`, #82): an academic
+/// question answered from recorded scholarly answers, its paper sources
+/// inline and in the Sources ledger, then Settings › Search & Crawlers'
+/// Scholarly sources card.
+fn scholar_tour() -> bool {
+    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("scholarly")
+}
+
+fn scholar_script() -> Vec<Beat> {
+    vec![
+        b(Act::Nothing, 1500),
+        b(Act::Connect, 1500),
+        scene(
+            "sch01-searching",
+            "tern-only",
+            "Scholarly: an academic question, papers searched and read",
+            Act::ScholarTurn,
+            2600,
+        ),
+        scene(
+            "sch02-answer",
+            "tern-only",
+            "Scholarly: the answer quotes papers with page and section",
+            Act::ScholarFinish,
+            2600,
+        ),
+        scene(
+            "sch03-sources",
+            "tern-only",
+            "Scholarly: the answer's paper sources inline, with logos",
+            Act::OpenSources,
+            3000,
+        ),
+        scene(
+            "sch04-ledger",
+            "tern-only",
+            "Scholarly: the Sources ledger's paper rows (authors, year, venue, PDF)",
+            Act::View(RunView::Ledger),
+            3200,
+        ),
+        scene(
+            "sch05-settings",
+            "tern-only",
+            "Settings › Search & Crawlers",
+            Act::Settings(Section::Search),
+            2600,
+        ),
+        scene(
+            "sch06-scholar-card",
+            "tern-only",
+            "Settings › Search & Crawlers › Scholarly sources card",
+            Act::ScholarCard,
+            3200,
+        ),
+        b(Act::Quit, 0),
+    ]
+}
+
+const SCHOLAR_Q: &str =
+    "Does retrieving only when the model is unsure beat retrieving before every sentence?";
+const SCHOLAR_QUERY: &str = "active retrieval augmented generation when to retrieve";
+/// What Semantic Scholar answered for the tour's query (recorded shape).
+const SCHOLAR_S2: &str = r#"{"data": [
+ {"paperId": "s2-flare", "title": "Active Retrieval Augmented Generation", "externalIds": {"ArXiv": "2305.06983", "DOI": "10.18653/v1/2023.emnlp-main.495"}, "year": 2023, "venue": "EMNLP", "citationCount": 620, "authors": [{"name": "Zhengbao Jiang"}, {"name": "Frank F. Xu"}, {"name": "Luyu Gao"}, {"name": "Zhiqing Sun"}, {"name": "Qian Liu"}, {"name": "Jane Dwivedi-Yu"}, {"name": "Yiming Yang"}, {"name": "Jamie Callan"}, {"name": "Graham Neubig"}], "abstract": "Active retrieval augmented generation decides when and what to retrieve during generation. FLARE retrieves when the upcoming sentence contains low-confidence tokens, instead of retrieving once or for every sentence.", "openAccessPdf": {"url": "https://arxiv.org/pdf/2305.06983"}},
+ {"paperId": "s2-selfrag", "title": "Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection", "externalIds": {"ArXiv": "2310.11511"}, "year": 2023, "venue": "ICLR", "citationCount": 910, "authors": [{"name": "Akari Asai"}, {"name": "Zeqiu Wu"}, {"name": "Yizhong Wang"}, {"name": "Avirup Sil"}, {"name": "Hannaneh Hajishirzi"}], "abstract": "Self-RAG trains a model to retrieve on demand with reflection tokens: retrieval augmented generation that decides when to retrieve and critiques its own generation.", "openAccessPdf": {"url": "https://arxiv.org/pdf/2310.11511"}},
+ {"paperId": "s2-rag", "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks", "externalIds": {"ArXiv": "2005.11401"}, "year": 2020, "venue": "NeurIPS", "citationCount": 9000, "authors": [{"name": "Patrick Lewis"}, {"name": "Ethan Perez"}, {"name": "Aleksandra Piktus"}], "abstract": "Retrieval augmented generation combines a retriever with a generator and retrieves passages for every output it generates."}
+]}"#;
+/// What OpenAlex answered for the tour's query (recorded shape).
+const SCHOLAR_OA: &str = r#"{"results": [
+ {"id": "https://openalex.org/W4389523905", "doi": "https://doi.org/10.18653/v1/2023.emnlp-main.495", "display_name": "Active Retrieval Augmented Generation", "publication_year": 2023, "cited_by_count": 540, "primary_location": {"source": {"display_name": "Empirical Methods in Natural Language Processing"}}, "best_oa_location": {"pdf_url": "https://aclanthology.org/2023.emnlp-main.495.pdf"}, "ids": {"arxiv": "https://arxiv.org/abs/2305.06983"}},
+ {"id": "https://openalex.org/W4401043240", "doi": "https://doi.org/10.18653/v1/2024.naacl-long.389", "display_name": "Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity", "publication_year": 2024, "cited_by_count": 210, "authorships": [{"author": {"display_name": "Soyeong Jeong"}}, {"author": {"display_name": "Jinheon Baek"}}, {"author": {"display_name": "Sukmin Cho"}}, {"author": {"display_name": "Sung Ju Hwang"}}, {"author": {"display_name": "Jong C. Park"}}], "primary_location": {"source": {"display_name": "NAACL"}}, "best_oa_location": {"pdf_url": "https://aclanthology.org/2024.naacl-long.389.pdf"}, "abstract_inverted_index": {"Adaptive": [0], "retrieval": [1, 8], "augmented": [2], "generation": [3], "decides": [4], "when": [5], "to": [6], "use": [7], "by": [9], "question": [10], "complexity.": [11]}}
+]}"#;
+/// The PDF text `paper_read` got for FLARE, with page markers.
+const SCHOLAR_FLARE_PDF: &str = "[page 1]\nAbstract\nWe propose Forward-Looking Active REtrieval augmented generation (FLARE), a method that iteratively uses a prediction of the upcoming sentence to anticipate future content, which is then used as a query to retrieve relevant documents to regenerate the sentence if it contains low-confidence tokens.\n[page 4]\n3 Method\nFLARE retrieves only when the model is unsure: if any token of the upcoming sentence has a probability lower than a threshold, it retrieves documents and regenerates the sentence; otherwise the sentence is kept without retrieval.\n[page 7]\n5 Results\nFLARE outperforms single-time retrieval and retrieving before every sentence on all four long-form generation tasks, while retrieving for fewer sentences.\n";
+/// The PDF text `paper_read` got for Self-RAG.
+const SCHOLAR_SELFRAG_PDF: &str = "[page 1]\nAbstract\nSelf-RAG retrieves on demand: a retrieve token decides whether retrieval helps the next segment, so the model does not retrieve before every sentence.\n[page 9]\n5 Results\nRetrieving on demand outperforms retrieving a fixed number of passages before every generation on six tasks, including open-domain QA and long-form generation.\n";
+/// The tour's scholarly answer, quoting the read papers with locators.
+const SCHOLAR_A: &str = "Mostly yes. Retrieving only when the model is unsure matches or beats retrieving before every sentence, and it retrieves less.\n\n- **FLARE** retrieves when a token of the upcoming sentence falls below a confidence threshold: \"otherwise the sentence is kept without retrieval\" (p. 4, §3 Method). It \"outperforms single-time retrieval and retrieving before every sentence on all four long-form generation tasks\" (p. 7, §5 Results) [1].\n- **Self-RAG** learns a retrieve token instead of a threshold, and \"retrieving on demand outperforms retrieving a fixed number of passages before every generation on six tasks\" (p. 9, §5 Results) [2].\n\nBoth gains are on long-form tasks; for short factual questions the papers I read do not compare the two, so there is not enough evidence to say the same holds there.";
 
 /// The folders tour (`TERN_TOUR_ONLY=folders`, #74): the composer tour's
 /// mock model and files, with only the folder, math-fence and Files scenes.
