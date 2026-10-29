@@ -125,7 +125,7 @@ impl Default for FunnelConfig {
     fn default() -> Self {
         Self {
             relevance_weight: 0.8,
-            min_coverage: 0.5,
+            min_coverage: 0.6,
             keep: 10,
             this_year: 2026,
         }

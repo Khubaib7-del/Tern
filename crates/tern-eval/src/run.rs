@@ -15,8 +15,8 @@ use tern_study::quiz::{Question, QuestionKind};
 use crate::report::{Better, EvalRun, Failure, Metric, REPORT_FORMAT, SuiteResult, Unit};
 use crate::subject::{GateAnswer, GateCall, Subject};
 use crate::suite::{
-    CaseSource, Cases, ClaimCase, Constraint, Level, QuizCase, ResearchCase, SafetyCase,
-    SafetyCheck, SafetyExpect, Suite,
+    CaseSource, Cases, ClaimCase, Constraint, EvidenceExpect, Level, QuizCase, ResearchCase,
+    SafetyCase, SafetyCheck, SafetyExpect, ScholarlyCase, Suite,
 };
 
 /// The fewest trials a published result should have.
@@ -121,6 +121,7 @@ pub async fn run_suite(suite: &Suite, subject: &dyn Subject, trials: usize) -> S
         Cases::Quiz(cs) => quiz(&mut r, cs, subject, trials, &mut used).await,
         Cases::Decision(cs) => decision(&mut r, cs, subject, trials).await,
         Cases::Safety(cs) => safety(&mut r, cs, subject, trials, &mut used).await,
+        Cases::Scholarly(cs) => scholarly(&mut r, cs, trials),
     }
     r.input_tokens = used.input;
     r.output_tokens = used.output;
@@ -1006,6 +1007,237 @@ async fn safety(
         canary.metric(
             "canary_resisted",
             "Live model ignored the injection",
+            Better::Higher,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+}
+
+/// A gold or not-kept paper named in a case, as a merge key.
+fn paper_key(g: &str) -> String {
+    use tern_research::scholar as sch;
+    let t = g.trim();
+    if let Some(d) = sch::normalize_doi(t) {
+        if let Some(id) = d.strip_prefix("10.48550/arxiv.") {
+            return format!("arxiv:{}", sch::strip_version(id));
+        }
+        return format!("doi:{d}");
+    }
+    if let Some(a) = t
+        .to_ascii_lowercase()
+        .strip_prefix("arxiv:")
+        .map(str::to_owned)
+    {
+        return format!("arxiv:{}", sch::strip_version(&a));
+    }
+    format!("title:{}", sch::normalize_title(t))
+}
+
+/// Scholarly cases: recorded answers through Tern's own parsers, merge,
+/// rerank funnel, PDF locators, claim support and snowball stop rule.
+/// Offline and live runs are the same: nothing here calls a model.
+fn scholarly(r: &mut SuiteResult, cases: &[ScholarlyCase], trials: usize) {
+    use tern_research::scholar::funnel::{self, FunnelConfig};
+    use tern_research::scholar::snowball::{Snowball, StopRule};
+    use tern_research::scholar::{self as sch, Service, parse};
+    r.headline = "evidence_accuracy".into();
+    let mut recall = Ratio::new(trials);
+    let mut evidence = Ratio::new(trials);
+    let mut dedupe = Ratio::new(trials);
+    let mut retracted = Ratio::new(trials);
+    let mut locator = Ratio::new(trials);
+    let mut claims = Ratio::new(trials);
+    let mut stop = Ratio::new(trials);
+    // A fixed year keeps recency, and so the ranking, the same every run.
+    let cfg = FunnelConfig {
+        this_year: 2026,
+        ..FunnelConfig::default()
+    };
+    for t in 0..trials {
+        for c in cases {
+            let mut why: Vec<String> = Vec::new();
+            if !c.recorded.is_empty() {
+                let mut all = Vec::new();
+                for (svc, body) in &c.recorded {
+                    let Some(service) = Service::parse(svc) else {
+                        continue;
+                    };
+                    let text = match body {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    match parse::answer(service, &text) {
+                        Ok(ps) => all.extend(ps),
+                        Err(e) => why.push(e),
+                    }
+                }
+                let papers = sch::merge_all(all);
+                let ranked = funnel::rank(&c.question, &papers, &cfg);
+                let kept: Vec<&sch::Paper> =
+                    ranked.kept().into_iter().map(|i| &papers[i]).collect();
+                let top: Vec<Vec<String>> = kept.iter().take(c.k).map(|p| p.keys()).collect();
+                if !c.gold.is_empty() {
+                    let found = c
+                        .gold
+                        .iter()
+                        .filter(|g| {
+                            let k = paper_key(g);
+                            top.iter().any(|ks| ks.contains(&k))
+                        })
+                        .count();
+                    recall.add_n(t, found as u64, c.gold.len() as u64);
+                    if found < c.gold.len() {
+                        why.push(format!(
+                            "{} of {} gold papers in the top {}",
+                            found,
+                            c.gold.len(),
+                            c.k
+                        ));
+                    }
+                }
+                if let Some(want) = c.expect {
+                    let got = if ranked.sufficiency.is_enough() {
+                        EvidenceExpect::Enough
+                    } else {
+                        EvidenceExpect::NotEnough
+                    };
+                    evidence.add(t, got == want);
+                    if got != want {
+                        why.push(format!("expected {}, got {}", want.label(), got.label()));
+                    }
+                }
+                if let Some(n) = c.unique {
+                    dedupe.add(t, papers.len() == n);
+                    if papers.len() != n {
+                        why.push(format!(
+                            "{} papers after merging, expected {n}",
+                            papers.len()
+                        ));
+                    }
+                }
+                for g in &c.not_kept {
+                    let k = paper_key(g);
+                    let out = !kept.iter().any(|p| p.keys().contains(&k));
+                    retracted.add(t, out);
+                    if !out {
+                        why.push(format!("{g} was kept"));
+                    }
+                }
+            }
+            if !c.pages.is_empty() {
+                for q in &c.quotes {
+                    let got = sch::pdf::locate(&c.pages, &q.text);
+                    let ok = match (&got, q.page) {
+                        (None, None) => true,
+                        (Some(l), Some(p)) => l.page == Some(p) && l.section == q.section,
+                        _ => false,
+                    };
+                    locator.add(t, ok);
+                    if !ok {
+                        why.push(format!(
+                            "“{}” located at {:?}, expected page {:?} {:?}",
+                            clip(&q.text, 60),
+                            got.map(|l| l.label()),
+                            q.page,
+                            q.section
+                        ));
+                    }
+                }
+                let passages: Vec<String> = sch::pdf::passages(&c.pages, &c.id)
+                    .into_iter()
+                    .map(|p| p.text)
+                    .collect();
+                for cl in &c.claims {
+                    let (_, s) = funnel::support(&cl.text, &passages, 0.6);
+                    let got = if s.is_enough() {
+                        EvidenceExpect::Enough
+                    } else {
+                        EvidenceExpect::NotEnough
+                    };
+                    claims.add(t, got == cl.expect);
+                    if got != cl.expect {
+                        why.push(format!(
+                            "claim “{}”: expected {}, got {}",
+                            clip(&cl.text, 60),
+                            cl.expect.label(),
+                            got.label()
+                        ));
+                    }
+                }
+            }
+            if let Some(sb) = &c.snowball {
+                let seeds = parse::semantic_scholar(&sb.seed);
+                let mut ball = Snowball::new(&c.question, seeds, StopRule::default());
+                for round in &sb.rounds {
+                    if ball.done() {
+                        break;
+                    }
+                    ball.round(parse::semantic_scholar_links(round));
+                }
+                let got_round = ball.rounds.len();
+                let got_stop = ball
+                    .stopped()
+                    .and_then(|s| serde_json::to_value(s).ok())
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let found_ok = sb.found.is_none_or(|n| n == ball.found.len());
+                let ok = got_round == sb.stop_round && got_stop == sb.stop && found_ok;
+                stop.add(t, ok);
+                if !ok {
+                    why.push(format!(
+                        "snowball stopped after round {got_round} ({got_stop}, {} found), expected round {} ({})",
+                        ball.found.len(),
+                        sb.stop_round,
+                        sb.stop
+                    ));
+                }
+            }
+            r.attempted += 1;
+            if why.is_empty() {
+                r.passed += 1;
+            } else {
+                r.failures.push(Failure {
+                    case: c.id.clone(),
+                    trial: t + 1,
+                    expected: "every check passes".into(),
+                    got: format!("{} check(s) failed", why.len()),
+                    why: why.join("; "),
+                });
+            }
+        }
+    }
+    r.metrics = [
+        evidence.metric(
+            "evidence_accuracy",
+            "Enough / not enough evidence right",
+            Better::Higher,
+        ),
+        recall.metric("recall_at_k", "Gold papers in the top k", Better::Higher),
+        dedupe.metric(
+            "dedupe_accuracy",
+            "One paper across services",
+            Better::Higher,
+        ),
+        retracted.metric(
+            "retracted_excluded",
+            "Retracted papers kept out",
+            Better::Higher,
+        ),
+        locator.metric(
+            "locator_accuracy",
+            "Quotes found at their page and section",
+            Better::Higher,
+        ),
+        claims.metric(
+            "claim_support_accuracy",
+            "Claims judged supported / not enough evidence right",
+            Better::Higher,
+        ),
+        stop.metric(
+            "snowball_stop_accuracy",
+            "Snowballing stops where it should",
             Better::Higher,
         ),
     ]

@@ -272,6 +272,11 @@ pub fn locate(pages: &[String], quote: &str) -> Option<Locator> {
         return None;
     }
     let heads = sections(pages);
+    // Text from the references on is a bibliography entry, not a passage.
+    let end = heads
+        .iter()
+        .find(|h| END.contains(&bare(&h.title).as_str()))
+        .map(|h| (h.page, h.line));
     for (pi, page) in pages.iter().enumerate() {
         let lines: Vec<&str> = page.lines().collect();
         // The quote may run across lines: test each line with the text
@@ -285,6 +290,9 @@ pub fn locate(pages: &[String], quote: &str) -> Option<Locator> {
             .last()
             .unwrap_or(0);
         let page_no = pi as u32 + 1;
+        if end.is_some_and(|e| (page_no, line_at) >= e) {
+            return None;
+        }
         let section = heads
             .iter()
             .rev()
