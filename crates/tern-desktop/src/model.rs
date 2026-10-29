@@ -156,8 +156,8 @@ pub fn retry_phrase(run: &Run, elapsed: std::time::Duration) -> String {
 /// What the working line shows while `tool` runs.
 fn tool_activity(tool: &str) -> Activity {
     match tool {
-        "web_search" => Activity::Searching,
-        "read_url" | "file_read" | "vault_read" => Activity::Reading,
+        "web_search" | "scholar_search" | "paper_snowball" => Activity::Searching,
+        "read_url" | "file_read" | "vault_read" | "paper_read" => Activity::Reading,
         _ => Activity::Tool,
     }
 }
@@ -181,6 +181,9 @@ pub fn tool_phrase_via(tool: &str, detail: Option<&str>, service: Option<&str>) 
     };
     match (tool, detail) {
         ("web_search", _) => "Searching the web…".to_owned(),
+        ("scholar_search", _) => "Searching papers…".to_owned(),
+        ("paper_read", _) => "Reading a paper…".to_owned(),
+        ("paper_snowball", _) => "Following citations…".to_owned(),
         ("read_url", Some(site)) => format!("Fetching {}…", clip(site)),
         ("read_url", None) => "Fetching a page…".to_owned(),
         ("file_read" | "vault_read", Some(file)) => format!("Reading {}…", clip(file)),

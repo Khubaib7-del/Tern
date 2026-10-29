@@ -21,6 +21,9 @@ use crate::assets;
 use crate::model::Screen;
 use crate::theme::Palette;
 
+/// Source rows the Ledger view draws before it counts the rest.
+const LEDGER_ROWS: usize = 80;
+
 /// Daily and weekly, the intervals the Watches screen offers.
 const EVERY: [(u32, &str); 2] = [(24, "Daily"), (168, "Weekly")];
 
@@ -267,54 +270,99 @@ impl Workspace {
                 .into_any_element();
         }
         let section = |title: &'static str| div().pt_3().text_xs().text_color(p.faint).child(title);
-        let sources = ledger.sources.iter().enumerate().map(|(k, s)| {
-            let url = s.url.clone();
-            let pg = page_of_entry(s);
-            let mut why = format!("{} · {}", s.fate.label(), s.reason.label());
-            if let Some(w) = s.worker {
-                why.push_str(&format!(" · worker {w}"));
-            }
-            if !s.detail.is_empty() && s.fate == SourceFate::Failed {
-                why.push_str(&format!(" · {}", s.detail));
-            }
-            div()
-                .id(SharedString::from(format!("ledger-src-{k}")))
-                .flex()
-                .items_start()
-                .gap_2()
-                .px_1()
-                .py(px(3.))
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|d| d.bg(p.hover))
-                .child(div().pt(px(1.)).child(self.site_icon(&pg, 14., p)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
+        // A long ledger (many scholarly searches) draws its first rows and
+        // a count; the rest stay in the report and `tern ledger`.
+        let more = ledger.sources.len().saturating_sub(LEDGER_ROWS);
+        let sources = ledger
+            .sources
+            .iter()
+            .take(LEDGER_ROWS)
+            .enumerate()
+            .map(|(k, s)| {
+                let url = s.url.clone();
+                let pg = page_of_entry(s);
+                let paper = s.paper.as_ref();
+                let icon = match paper.and_then(|pp| pp.found_by.first()) {
+                    Some(svc) => div()
+                        .size(px(14.))
+                        .flex_none()
                         .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .text_color(if s.fate == SourceFate::Read {
-                                    p.text
-                                } else {
-                                    p.muted
-                                })
-                                .child(SharedString::from(pg.label().to_owned())),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_xs()
-                                .text_color(p.faint)
-                                .child(SharedString::from(why)),
-                        ),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| this.browse(&url, window, cx)))
-        });
+                        .items_center()
+                        .justify_center()
+                        .child(super::service_logo(svc.id(), 12., p, p.text))
+                        .into_any_element(),
+                    None => self.site_icon(&pg, 14., p),
+                };
+                let meta = paper.map(|pp| pp.meta_line()).filter(|m| !m.is_empty());
+                let pdf = paper.and_then(|pp| pp.oa_pdf.clone());
+                let mut why = format!("{} · {}", s.fate.label(), s.reason.label());
+                if let Some(w) = s.worker {
+                    why.push_str(&format!(" · worker {w}"));
+                }
+                if !s.detail.is_empty() && s.fate == SourceFate::Failed {
+                    why.push_str(&format!(" · {}", s.detail));
+                }
+                div()
+                    .id(SharedString::from(format!("ledger-src-{k}")))
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .px_1()
+                    .py(px(3.))
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .child(div().pt(px(1.)).child(icon))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(if s.fate == SourceFate::Read {
+                                        p.text
+                                    } else {
+                                        p.muted
+                                    })
+                                    .child(SharedString::from(pg.label().to_owned())),
+                            )
+                            .when_some(meta, |d, m| {
+                                d.child(
+                                    div()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(p.muted)
+                                        .child(SharedString::from(m)),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(p.faint)
+                                    .child(SharedString::from(why)),
+                            )
+                            .when_some(pdf, |d, pdf| {
+                                d.child(
+                                    div()
+                                        .id(SharedString::from(format!("ledger-pdf-{k}")))
+                                        .text_xs()
+                                        .text_color(p.accent)
+                                        .cursor_pointer()
+                                        .child("Open-access PDF")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.browse(&pdf, window, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.browse(&url, window, cx)))
+            });
         let lanes = ledger.lanes.iter().map(|l| {
             let tokens = l.tokens_in + l.tokens_out;
             let mut detail = format!(
@@ -369,6 +417,15 @@ impl Workspace {
             )
             .child(section("Sources"))
             .children(sources)
+            .when(more > 0, |d| {
+                d.child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(format!("{more} more in the run report"))),
+                )
+            })
             .child(section("Budget"))
             .children(lanes)
             .into_any_element()

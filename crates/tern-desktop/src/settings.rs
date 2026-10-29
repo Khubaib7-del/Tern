@@ -512,6 +512,12 @@ pub struct SettingsState {
     pub crawler_editing: Option<tern_agent::crawlers::Crawler>,
     /// Each reader's last test or key result.
     pub crawler_notes: Vec<(tern_agent::crawlers::Crawler, Line)>,
+    /// Search › Scholarly sources (#81): each service and whether a key
+    /// or email is saved, the row whose field is open, and each row's
+    /// last result.
+    pub scholar_keys: Vec<(tern_agent::scholar::Service, bool)>,
+    pub scholar_editing: Option<tern_agent::scholar::Service>,
+    pub scholar_notes: Vec<(tern_agent::scholar::Service, Line)>,
     /// The page cache's size, measured when the page opens or after a
     /// clear (never per frame).
     pub cache_size: Option<u64>,
@@ -550,6 +556,24 @@ impl SettingsState {
     /// Whether a key is saved for reader `c`.
     pub fn crawler_has_key(&self, c: tern_agent::crawlers::Crawler) -> bool {
         self.crawler_keys.iter().any(|(k, on)| *k == c && *on)
+    }
+
+    /// The last result for scholarly service `s`.
+    pub fn scholar_note(&self, s: tern_agent::scholar::Service) -> Option<&Line> {
+        self.scholar_notes
+            .iter()
+            .find(|(k, _)| *k == s)
+            .map(|(_, l)| l)
+    }
+
+    pub fn set_scholar_note(&mut self, s: tern_agent::scholar::Service, l: Line) {
+        self.scholar_notes.retain(|(k, _)| *k != s);
+        self.scholar_notes.push((s, l));
+    }
+
+    /// Whether a key or email is saved for scholarly service `s`.
+    pub fn scholar_has_key(&self, s: tern_agent::scholar::Service) -> bool {
+        self.scholar_keys.iter().any(|(k, on)| *k == s && *on)
     }
 
     /// Opens a section; a pending delete confirmation is dropped.

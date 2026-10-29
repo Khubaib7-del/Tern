@@ -242,6 +242,7 @@ impl Workspace {
                     self.bridge.load_providers();
                 }
                 self.bridge.crawlers_load();
+                self.bridge.scholar_load();
                 self.measure_cache();
                 let typed = self.searx_input.read(cx).value().to_string();
                 if typed.is_empty()
@@ -1820,6 +1821,7 @@ impl Workspace {
             );
         }
         body.push(self.crawlers_card(p, cx));
+        body.push(self.scholar_card(p, cx));
         let cache = tern_agent::platform::AppPaths::discover()
             .ok()
             .map(|a| a.crawl_cache());
