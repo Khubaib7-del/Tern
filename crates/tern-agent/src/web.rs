@@ -157,13 +157,19 @@ impl Tool for WebSearchTool {
                 ));
             }
             for (i, h) in hits.iter().enumerate() {
+                // A site's ad copy is not content to quote (#80).
+                let snippet = if crate::webintent::is_boilerplate(&h.snippet) {
+                    "(snippet left out: the site's own marketing text)"
+                } else {
+                    h.snippet.as_str()
+                };
                 out.push_str(&format!(
                     "{}. {} ({})\n   {}\n   {}\n",
                     i + 1,
                     h.title,
                     h.site,
                     h.url,
-                    h.snippet
+                    snippet
                 ));
             }
             let mut meta = json!({ "query": q, "asked": asked, "tried": tried, "service": service, "results": hits.len(),

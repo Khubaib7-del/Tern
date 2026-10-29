@@ -614,15 +614,38 @@ impl Tool for FilesList {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let raw = path_arg(&args);
-                let rows = match ws.outside(&raw) {
-                    Some(p) => list_outside(&p)?,
+                let outside = ws.outside(&raw);
+                let rows = match &outside {
+                    Some(p) => list_outside(p)?,
                     None => ws.list(&raw)?,
                 };
-                Ok(ToolOutput::text(if rows.is_empty() {
+                // Inside a code-mode script the listing is a list of
+                // dicts (#80), not lines of text.
+                let entries: Vec<Value> = rows
+                    .iter()
+                    .map(|r| {
+                        let is_dir = r.ends_with('/');
+                        let path = r.trim_end_matches('/');
+                        let full = if outside.is_some() {
+                            PathBuf::from(path)
+                        } else {
+                            ws.root().join(path)
+                        };
+                        let size = if is_dir {
+                            0
+                        } else {
+                            std::fs::metadata(&full).map(|m| m.len()).unwrap_or(0)
+                        };
+                        json!({"path": r, "size": size, "is_dir": is_dir})
+                    })
+                    .collect();
+                let mut out = ToolOutput::text(if rows.is_empty() {
                     "The folder is empty.".to_owned()
                 } else {
                     rows.join("\n")
-                }))
+                });
+                out.meta = json!({"py": entries});
+                Ok(out)
             })
             .await
             .map_err(|e| ToolError::Failed(e.to_string()))?

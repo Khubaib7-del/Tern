@@ -157,6 +157,8 @@ pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and noth
 /// ([`crate::rules::effective`]) is built from this same function.
 pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
     let mut s = String::from(BASE);
+    s.push(' ');
+    s.push_str(RENDERING);
     if let Some(b) = base {
         s.push_str("\n\n");
         s.push_str(b);
@@ -184,14 +186,30 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
     s
 }
 
+/// What Tern draws from an answer's Markdown (#80: asked for a
+/// flowchart, a model said it had no tools to draw one).
+pub const RENDERING: &str = "Tern renders Markdown: tables, math ($...$, $$...$$) and ```mermaid fenced blocks, drawn as diagrams. To draw a diagram, flowchart, sequence, mind map or chart, answer with a ```mermaid block; never say you cannot draw.";
+
 /// Code mode (#77), after the tool protocol when `run_python` is offered;
 /// the stubs follow it.
-pub const CODE_MODE: &str = "Code mode: `run_python` has no file system, OS or network access (open(), pathlib, os do not work); inside it these tools are Python functions that return text, the only way to reach files and the web, so one script can call many tools and only what it prints comes back to you (print a short summary). Each call still asks the user when needed:";
+pub const CODE_MODE: &str = "Code mode: `run_python` has no file system, OS or network access (open() and os do not work; pathlib's read_text, write_text and iterdir go through the file tools); inside it these tools are Python functions, already defined (never define or assign them yourself), that return what each line says (text unless noted). They are the only way to reach files and the web, so one script can call many tools and only what it prints comes back to you (print a short summary). A failed call raises ToolError with the reason; never print that something was saved unless the call returned. Each call still asks the user when needed:";
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_prompt_says_mermaid_blocks_are_drawn() {
+        // With tools and without: "draw a flowchart" is a ```mermaid block.
+        let none = system_prompt(None, &ToolRegistry::new());
+        assert!(none.starts_with(BASE));
+        assert!(
+            none.contains("```mermaid fenced blocks, drawn as diagrams"),
+            "{none}"
+        );
+        assert!(none.contains("never say you cannot draw"));
+    }
 
     #[test]
     fn every_block_in_a_reply_is_a_call() {

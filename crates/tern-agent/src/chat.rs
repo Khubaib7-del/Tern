@@ -278,6 +278,10 @@ pub fn workspace_line(ws: &crate::workspace::Workspace) -> String {
     )
 }
 
+/// What a folder chat in Chat mode is told (#80): it can read the folder
+/// but not change it, and a change is Act mode's job.
+pub const CHAT_FOLDER_NOTE: &str = "Chat mode: you can read this folder but not change it. There is no file_write, file_edit, file_rename or run_command in this chat, so never plan or call them (not in run_tasks, not inside run_python), never write a script for the user to run, and never tell the user to create, paste or edit a file by hand. When the user asks for a change to files, reply in one short sentence that it needs Act mode; Tern shows a button that switches to Act and runs the request.";
+
 /// The path of the last `session.workspace` event, unless it closed it.
 pub fn last_workspace(events: &[EventEnvelope]) -> Option<String> {
     events
@@ -1237,6 +1241,14 @@ impl ChatSession {
         }
         if let Some(ws) = &self.workspace {
             extra.push(workspace_line(ws));
+            // A folder chat in Chat mode reads but never changes (#80: the
+            // model planned `file_write`, then told the user to create the
+            // file by hand).
+            if self.turn_mode == Some(crate::workspace::TurnMode::Chat)
+                && self.tools.hidden("file_write")
+            {
+                extra.push(CHAT_FOLDER_NOTE.to_owned());
+            }
         }
         if let Some(u) = crate::prompts::user_block(self.harness) {
             extra.push(u);

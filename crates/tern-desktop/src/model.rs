@@ -870,6 +870,7 @@ impl ResumeOffer {
         match self.kind {
             tern_agent::OfferKind::Resume => "Resume",
             tern_agent::OfferKind::Retry => "Retry failed workers",
+            tern_agent::OfferKind::Again => "Retry",
         }
     }
 }
