@@ -363,7 +363,7 @@ enum Act {
     /// #75: the composer's mode (Act lets the model write and run).
     WMode(crate::composer::Mode),
     /// The needs-Act card's "Switch to Act and run" (#80).
-    WSwitchToAct,
+    WNeedsActRun,
     /// #75: the approval mode by id (`ask`, `workspace_write`, ...).
     WApproval(&'static str),
     /// #77: adds an allow path rule, as an older "Always allow" left it
@@ -2002,7 +2002,7 @@ impl Workspace {
                 self.model.set_mode(m, None);
                 cx.notify();
             }
-            Act::WSwitchToAct => {
+            Act::WNeedsActRun => {
                 if self.model.needs_act.is_none() {
                     log("TOUR error no needs-Act card to click");
                 }
@@ -3203,7 +3203,7 @@ fn focus_beats() -> Vec<Beat> {
             "x32-switched-to-act",
             "tern-only",
             "Switch to Act and run: the composer's mode chip says Act and the same message runs again; review-80.md is written (card Saved) and listed in Outputs",
-            Act::WSwitchToAct,
+            Act::WNeedsActRun,
             4500,
         ),
         b(Act::WState("act after switch"), 300),
