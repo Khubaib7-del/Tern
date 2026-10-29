@@ -39,7 +39,7 @@ pub enum ScholarError {
     Http(String, u16, String),
     #[error("could not reach {0}: {1}")]
     Network(String, String),
-    #[error("{0} sent more than {} MB", MAX_BYTES / 1_048_576)]
+    #[error("{0} sent more than {max} MB", max = MAX_BYTES / 1_048_576)]
     TooBig(String),
     #[error("`{0}` is not a valid address")]
     BadUrl(String),
