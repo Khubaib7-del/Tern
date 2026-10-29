@@ -271,6 +271,20 @@ impl ToolRegistry {
         self.mode = Some(mode);
     }
 
+    /// The turn's mode, when one was set.
+    pub fn mode(&self) -> Option<crate::workspace::TurnMode> {
+        self.mode
+    }
+
+    /// Whether `name` is registered but left out by the turn's mode (#80:
+    /// `file_write` in a Chat-mode chat with a folder), so the model
+    /// asking for it means the request needs another mode.
+    pub fn hidden(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .is_some_and(|t| !self.shown(t.as_ref()))
+    }
+
     fn shown(&self, t: &dyn Tool) -> bool {
         self.mode.is_none_or(|m| m.allows(t.effect()))
     }
@@ -284,6 +298,11 @@ impl ToolRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.names().next().is_none()
+    }
+
+    /// Every registered tool's name, the ones the mode hides included.
+    pub fn registered(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.tools.keys().copied()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {

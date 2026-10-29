@@ -284,7 +284,19 @@ impl ModelInfo {
         match self.source {
             Source::Table => caps = table,
             Source::Listing if caps.is_empty() => caps = table,
-            Source::Listing => {}
+            // A listing that only says "chat" for a model whose name is
+            // plainly a guard, a voice or an embedding model (#80: Groq's
+            // llama-prompt-guard and gpt-oss-safeguard were offered as
+            // chat models and failed): the name wins.
+            Source::Listing => {
+                let strong = strong_role(&self.id);
+                let only_chat = caps
+                    .iter()
+                    .all(|c| matches!(c, Capability::Chat | Capability::Tools));
+                if let (Some(role), true) = (strong, only_chat) {
+                    caps = vec![role];
+                }
+            }
             Source::Partial => {
                 let strong = strong_role(&self.id);
                 let listed_role = caps.iter().any(|c| !matches!(c, Capability::Chat));
@@ -806,7 +818,27 @@ mod tests {
         let mut chat = ModelInfo::with_listing("gemini-2.5-pro", vec![Chat], Source::Partial);
         chat.finish("google");
         assert!(chat.sees_images() && chat.has(Tools) && chat.has(Reasoning));
-        // A full listing is taken as given.
+        // A full listing that only says chat for a guard model: the name wins.
+        let mut guard = ModelInfo::with_listing(
+            "meta-llama/llama-prompt-guard-2-86m",
+            vec![Chat],
+            Source::Listing,
+        );
+        guard.finish("groq");
+        assert_eq!(
+            guard.capabilities,
+            [Moderation],
+            "the name wins over a bare chat flag"
+        );
+        assert!(!guard.can_chat());
+        let mut safe = ModelInfo::with_listing(
+            "openai/gpt-oss-safeguard-20b",
+            vec![Chat, Tools],
+            Source::Listing,
+        );
+        safe.finish("groq");
+        assert!(!safe.can_chat());
+        // Otherwise a full listing is taken as given.
         let mut m = ModelInfo::with_listing("ministral-8b-2512", vec![Chat], Source::Listing);
         m.finish("mistral");
         assert_eq!(m.capabilities, [Chat]);

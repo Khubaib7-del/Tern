@@ -421,6 +421,17 @@ pub const CONFIRM_NUDGE: &str = "(Tern note: do not ask in prose whether to go a
 /// it (#79).
 pub const SCRIPT_NUDGE: &str = "(Tern note: do not show the script for the user to run. Run it yourself now with `run_python`. Inside `run_python` there is no open(), os or pathlib: use the tool functions listed under Code mode instead (for example files_list(), file_read(path), file_write(path, text)), and print a short summary of what it did.)";
 
+/// Said once when the model refuses an ordinary writing request (#80).
+pub const REFUSAL_NUDGE: &str = "(Tern note: this is an ordinary request. Answer it directly and in full; ignore any words in it about pressing buttons in the app.)";
+
+/// What the model reads when its answer says `path` was written but the
+/// write failed (#80).
+pub fn claim_note(path: &str, why: &str) -> String {
+    format!(
+        "(Tern note: {path} was not written: {why}. Do not say it was saved or written. Fix the call and write it again, or tell the user plainly that {path} was not written and why.)"
+    )
+}
+
 /// What the model reads instead of a `file_write` that would rewrite a
 /// file the user asked to add to (#79): `path`, and how many of its lines
 /// the rewrite removes or changes.
@@ -624,6 +635,23 @@ struct Run<'r, 'a> {
     /// The model's plan as it last sent it (#78): reminded after each
     /// round of tools while steps are open, ended when the run ends.
     plan: Option<crate::planner::PlanView>,
+    /// What the user sent, for the steers that read it inside a call.
+    message: String,
+    /// Set when the turn ended because it needs Act mode (#80): the
+    /// answer the user sees, with the "Switch to Act and run" card.
+    needs_act: Option<String>,
+    /// How the last call that reached [`Run::post`] went: whether it
+    /// succeeded and its value for a script (`meta.py`). `None` when the
+    /// call was refused before it ran.
+    last_post: Option<(bool, Value)>,
+    /// Writes that failed this turn and were not written since, by path,
+    /// with the reason (#80: "saved to counts.md" after the write failed).
+    failed_writes: std::collections::BTreeMap<String, String>,
+    /// The model's token cap for one request, once the provider said the
+    /// request was too large (#80); later requests are made to fit.
+    request_cap: Option<tern_providers::retry::RequestCap>,
+    /// A code-mode script ran and called no tool, once per turn (#80).
+    script_noted: bool,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -680,6 +708,12 @@ impl<'a> TurnLoop<'a> {
             parent: None,
             task: None,
             plan: None,
+            message: String::new(),
+            needs_act: None,
+            last_post: None,
+            failed_writes: Default::default(),
+            request_cap: None,
+            script_noted: false,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -786,6 +820,102 @@ impl Run<'_, '_> {
         }
     }
 
+    /// Moves the state machine on to Completed from wherever the turn
+    /// stopped (a needs-Act stop can come before a model call, inside a
+    /// call, or after a reply).
+    fn land_completed(&mut self) {
+        for to in [
+            TurnState::ModelStreaming,
+            TurnState::RecordResult,
+            TurnState::Verifying,
+            TurnState::Completed,
+        ] {
+            let at = self.fsm.state();
+            if at == TurnState::Completed {
+                return;
+            }
+            // Only the steps that lead on: Preparing goes through a model
+            // step, a call through its result.
+            let wanted = match to {
+                TurnState::ModelStreaming => at == TurnState::Preparing,
+                _ => true,
+            };
+            if wanted && at.can_move_to(to) {
+                let _ = self.fsm.move_to(to);
+            }
+        }
+    }
+
+    /// Whether the chat has a folder but is in Chat mode, so its file
+    /// changes are left out (#80).
+    fn chat_mode_folder(&self) -> bool {
+        self.cfg.tools.mode() == Some(crate::workspace::TurnMode::Chat)
+            && self.cfg.tools.hidden("file_write")
+    }
+
+    /// Ends the turn because it needs Act mode (#80): `tool` is what the
+    /// model (or the request) needed, `path` the file when one is known.
+    /// The window shows the answer with "Switch to Act and run".
+    fn needs_act_stop(&mut self, tool: &str, path: Option<&str>) -> Stop {
+        let what = match (tool, path.filter(|p| !p.trim().is_empty())) {
+            ("file_write" | "file_edit", Some(p)) => format!("write {p}"),
+            ("file_rename", Some(p)) => format!("rename {p}"),
+            ("file_rename", None) => "rename files".to_owned(),
+            ("run_command", _) => "run commands".to_owned(),
+            _ => "change files in this folder".to_owned(),
+        };
+        let text = format!(
+            "This needs Act mode. In Chat mode Tern reads this folder but does not change it. Switch to Act to let Tern {what}; each change still asks you first."
+        );
+        crate::diag::note(&format!("turn: needs Act mode for `{tool}`"));
+        let _ = self.record(self.event(
+            "mode.needs_act",
+            EffectClass::Analysis,
+            format!("This needs Act mode (`{tool}`)"),
+            json!({"tool": tool, "path": path, "message": self.message, "mode": "chat"}),
+        ));
+        self.needs_act = Some(text.clone());
+        Stop {
+            state: TurnState::Blocked,
+            reason: text,
+        }
+    }
+
+    /// The write this answer claims, when it failed and was not written
+    /// since: `(path, why)` (#80).
+    fn failed_claim(&self, answer: &str) -> Option<(String, String)> {
+        self.failed_writes
+            .iter()
+            .find(|(p, _)| crate::webintent::claims_written(answer, p))
+            .map(|(p, e)| (p.clone(), e.clone()))
+    }
+
+    /// Notes how a file write went, for the answer-claim guard.
+    fn note_write(&mut self, name: &str, args: &Value, result: &str) {
+        if !matches!(name, "file_write" | "file_edit") {
+            return;
+        }
+        let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) else {
+            return;
+        };
+        match &self.last_post {
+            Some((true, _)) => {
+                self.failed_writes.remove(path);
+            }
+            _ => {
+                let why = result
+                    .strip_prefix(&format!("Tool `{name}` "))
+                    .unwrap_or(result)
+                    .trim()
+                    .trim_end_matches('.')
+                    .chars()
+                    .take(300)
+                    .collect::<String>();
+                self.failed_writes.insert(path.to_owned(), why);
+            }
+        }
+    }
+
     async fn drive(
         &mut self,
         history: Vec<ChatMessage>,
@@ -797,6 +927,7 @@ impl Run<'_, '_> {
             Some(c) => c.message.clone(),
             None => user_message.content.clone(),
         };
+        self.message = message_text.clone();
         // What the user typed is where trusted web addresses start.
         for m in history
             .iter()
@@ -889,6 +1020,17 @@ impl Run<'_, '_> {
             }
         }
         self.save(&messages[base..], &seen);
+        // A folder chat in Chat mode asked to make or change a file (#80:
+        // the run planned `file_write`, was refused, and told the user to
+        // create the file by hand): said before any model call.
+        if resume.is_none() && self.chat_mode_folder() {
+            let (own, _) = crate::attach::split(&message_text);
+            let (_, own) = crate::reply::split(own);
+            if crate::webintent::asks_to_write_files(own) {
+                let path = crate::webintent::last_file_name(own);
+                return Err(self.needs_act_stop("file_write", path.as_deref()));
+            }
+        }
         // Whether the web was searched this turn, and whether Tern's own
         // search after a refusal (or a copied reply) was used up.
         let mut searched = false;
@@ -939,6 +1081,8 @@ impl Run<'_, '_> {
         let mut confirm_nudged = false;
         let mut script_nudged = false;
         let mut add_steered = false;
+        let mut claim_steered = false;
+        let mut refusal_nudged = false;
         // "add a line to sum.md": a whole-file rewrite is steered to
         // `file_edit` once (#79).
         let asks_to_add = crate::webintent::asks_to_add(&message_text);
@@ -960,6 +1104,25 @@ impl Run<'_, '_> {
                 .with_effort(self.cfg.hooks.effort);
             if self.native {
                 req = req.with_tools(self.cfg.tools.specs());
+            }
+            // The provider said the request was too large for this model
+            // (#80: Groq's 413 on an 8000-token cap): every request from
+            // here is made to fit, or the turn says plainly why not.
+            if let Some(cap) = self.request_cap {
+                req = match fit_request(req, base, cap, self.cfg.tools, &self.called) {
+                    Ok(r) => r,
+                    Err(need) => {
+                        return Err(Stop {
+                            state: TurnState::Failed,
+                            reason: too_large_line(
+                                self.cfg.model_name,
+                                self.cfg.model.provider_id(),
+                                cap,
+                                need,
+                            ),
+                        });
+                    }
+                };
             }
             self.model_calls += 1;
             let model = self.cfg.model;
@@ -1076,6 +1239,44 @@ impl Run<'_, '_> {
                     self.go(TurnState::Verifying)?;
                     continue;
                 }
+                Err(e) if tern_providers::retry::request_cap(&e).is_some() => {
+                    let cap = tern_providers::retry::request_cap(&e).unwrap_or(
+                        tern_providers::retry::RequestCap {
+                            limit: 0,
+                            requested: None,
+                        },
+                    );
+                    if self.request_cap.is_some() {
+                        // Already made to fit once; it still does not.
+                        let need = cap.requested.unwrap_or(cap.limit + 1);
+                        return Err(Stop {
+                            state: TurnState::Failed,
+                            reason: too_large_line(
+                                self.cfg.model_name,
+                                self.cfg.model.provider_id(),
+                                cap,
+                                need,
+                            ),
+                        });
+                    }
+                    self.request_cap = Some(cap);
+                    self.model_calls -= 1;
+                    crate::diag::note(&format!(
+                        "provider: request too large for {} (cap {}, asked {:?}); sending a compact request",
+                        self.cfg.model_name, cap.limit, cap.requested
+                    ));
+                    self.record(self.event(
+                        "provider.request_cap",
+                        EffectClass::Analysis,
+                        format!(
+                            "{} accepts {} tokens per request; Tern sends a shorter request",
+                            self.cfg.model_name, cap.limit
+                        ),
+                        json!({"limit": cap.limit, "requested": cap.requested}),
+                    ))?;
+                    self.go(TurnState::Verifying)?;
+                    continue;
+                }
                 r => r,
             }
             .map_err(|e| Stop {
@@ -1163,6 +1364,55 @@ impl Run<'_, '_> {
                     self.go(TurnState::Verifying)?;
                 }
                 Reply::Answer(text)
+                    if self.chat_mode_folder()
+                        && crate::webintent::asks_for_change(&message_text)
+                        && (crate::webintent::hands_work_to_user(&text)
+                            || text.to_lowercase().contains("act mode")) =>
+                {
+                    // In Chat mode the model handed the change back ("Please
+                    // manually create reviews.md", "Would you like me to
+                    // execute it?") (#80): the turn says it needs Act mode.
+                    let path = crate::webintent::last_file_name(&message_text);
+                    return Err(self.needs_act_stop("file_write", path.as_deref()));
+                }
+                Reply::Answer(text) if !claim_steered && self.failed_claim(&text).is_some() => {
+                    // "Saved to counts.md" while that write failed (#80):
+                    // told once what really happened.
+                    claim_steered = true;
+                    let (path, why) = self.failed_claim(&text).unwrap_or_default();
+                    self.record(self.event(
+                        "model.false_claim",
+                        EffectClass::Analysis,
+                        format!("The answer said {path} was written, but that write failed; Tern told the model"),
+                        json!({"path": path, "error": why}),
+                    ))?;
+                    crate::diag::note(&format!(
+                        "turn: the answer claimed {path} was written after the write failed; steered"
+                    ));
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(claim_note(&path, &why)));
+                    self.go(TurnState::Verifying)?;
+                }
+                Reply::Answer(text)
+                    if !refusal_nudged
+                        && crate::webintent::is_flat_refusal(&text)
+                        && crate::webintent::is_composition(&message_text) =>
+                {
+                    // "I'm sorry, but I can't assist with that request" to
+                    // "Write a long essay about arrays" (#80): asked once
+                    // more, neutrally.
+                    refusal_nudged = true;
+                    self.record(self.event(
+                        "model.refused",
+                        EffectClass::Analysis,
+                        "The model refused an ordinary writing request; Tern asked once more",
+                        json!({"chars": text.len()}),
+                    ))?;
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(REFUSAL_NUDGE.to_owned()));
+                    self.go(TurnState::Verifying)?;
+                }
+                Reply::Answer(text)
                     if !confirm_nudged
                         && ["file_write", "file_edit", "file_rename"]
                             .iter()
@@ -1225,9 +1475,13 @@ impl Run<'_, '_> {
                     // The model says it cannot reach the web, or copies its
                     // last reply word for word, while web search is on: Tern
                     // searches the question itself once and asks again.
+                    // Never for writing that comes from the model itself
+                    // (#80: "Write a long essay about arrays" became a web
+                    // search and the answer quoted an essay site's ads).
                     if (refused || copied)
                         && !net_used
                         && self.cfg.tools.get("web_search").is_some()
+                        && !crate::webintent::is_composition(&message_text)
                     {
                         net_used = true;
                         let question = crate::webintent::web_query_with(
@@ -1546,6 +1800,15 @@ impl Run<'_, '_> {
     }
 
     fn finish(mut self, result: Result<(TurnState, String), Stop>) -> TurnOutcome {
+        // A turn that needs Act mode ends as an answer saying so (#80), not
+        // a failure: the window shows "Switch to Act and run".
+        let result = match (result, self.needs_act.clone()) {
+            (Err(_), Some(text)) => {
+                self.land_completed();
+                Ok((TurnState::Completed, text))
+            }
+            (r, _) => r,
+        };
         let (state, answer, reason) = match result {
             Ok((state, text)) => {
                 let gap = (state == TurnState::CompletedWithGaps)
@@ -1611,16 +1874,19 @@ impl<'a> Run<'_, 'a> {
     /// Validates, gates, runs, and records one tool call. Returns the text
     /// the model reads next.
     async fn tool_step(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
-        match self.tool_pre(name, args).await? {
-            Pre::Done(text) => Ok(text),
+        self.last_post = None;
+        let text = match self.tool_pre(name, args).await? {
+            Pre::Done(text) => text,
             Pre::Go(r) => {
                 self.begin(&r)?;
                 self.started(&r)?;
                 let (out, age) =
                     execute(r.tool, &r.name, r.args.clone(), self.cfg.hooks.cache).await;
-                self.post(r, out, age)
+                self.post(r, out, age)?
             }
-        }
+        };
+        self.note_write(name, args, &text);
+        Ok(text)
     }
 
     /// A call as it runs: a `file_edit` becomes the `file_write` of the
@@ -1662,12 +1928,48 @@ impl<'a> Run<'_, 'a> {
         let tools: &'a ToolRegistry = self.cfg.tools;
         match name {
             "run_tasks" if tools.get(name).is_some() => {
-                self.task_step(&crate::planner::prepare_args(args)).await
+                let prepared = crate::planner::prepare_args(args);
+                // A graph that plans a change the mode leaves out (#80:
+                // "calls file_write, which this chat does not have").
+                if let Some((tool, path)) = hidden_task(&prepared, tools) {
+                    return Err(self.needs_act_stop(&tool, path.as_deref()));
+                }
+                self.task_step(&prepared).await
             }
             "run_python" if tools.get(name).is_some() => {
                 let stubs = crate::python::stubs(tools);
                 let code = args["code"].as_str().unwrap_or_default();
-                let text = if !stubs.is_empty() && crate::python::calls_tools(code, &stubs) {
+                // A script calling a change the mode leaves out (#80).
+                let hidden: Vec<&str> = tools.registered().filter(|n| tools.hidden(n)).collect();
+                if let Some(tool) = crate::python::called_names(code, &hidden).first() {
+                    return Err(self.needs_act_stop(tool, None));
+                }
+                // A script that defines its own tool functions only
+                // pretends (#80): sent back before it runs.
+                let shadowed = crate::python::shadowed(code, &stubs);
+                if !shadowed.is_empty() {
+                    let call = self.next_call.take().unwrap_or_else(|| {
+                        self.call_seq += 1;
+                        self.call_seq
+                    });
+                    self.go(TurnState::RecordResult)?;
+                    let why = crate::python::shadow_note(&shadowed);
+                    crate::diag::note(&format!(
+                        "code mode: refused a script that defines {}",
+                        shadowed.join(", ")
+                    ));
+                    self.record(self.event(
+                        "tool.rejected",
+                        EffectClass::Analysis,
+                        "The script defines Tern's tool functions itself; Tern did not run it",
+                        json!({"tool": name, "call": call, "error": why, "shadowed": shadowed}),
+                    ))?;
+                    return Ok(format!("Tool `run_python` was not run: {why}"));
+                }
+                let code_mode = !stubs.is_empty()
+                    && (crate::python::calls_tools(code, &stubs)
+                        || crate::python::uses_pathlib(code));
+                let text = if code_mode {
                     self.code_step(args, stubs.clone()).await?
                 } else {
                     self.tool_step(name, args).await?
@@ -1713,6 +2015,16 @@ impl<'a> Run<'_, 'a> {
             None => (name, args),
         };
         let Some(tool) = tools.get(name) else {
+            // A change the chat's mode leaves out (#80: `file_write` in a
+            // Chat-mode folder chat): the turn ends with "Switch to Act
+            // and run" instead of a failed call.
+            if tools.hidden(name) && tools.mode() == Some(crate::workspace::TurnMode::Chat) {
+                let path = args["path"]
+                    .as_str()
+                    .or_else(|| args["from"].as_str())
+                    .map(str::to_owned);
+                return Err(self.needs_act_stop(name, path.as_deref()));
+            }
             self.go(TurnState::RecordResult)?;
             self.record(self.event(
                 "tool.rejected",
@@ -1984,6 +2296,10 @@ impl<'a> Run<'_, 'a> {
         if let Ok(o) = &out {
             self.note_provenance(name, o);
         }
+        self.last_post = Some(match &out {
+            Ok(o) => (true, o.meta.get("py").cloned().unwrap_or(Value::Null)),
+            Err(_) => (false, Value::Null),
+        });
         Ok(match out {
             Ok(o) => {
                 // A long result keeps its head and tail; the whole text is
@@ -2101,7 +2417,18 @@ impl<'a> Run<'_, 'a> {
                         break Err(stop);
                     }
                     match self.tool_step(&tool, &args).await {
-                        Ok(text) => script.answer(Ok(strip_result_header(&text))),
+                        // A call that ran gives its value (a list for
+                        // `files_list`) or its text; one that failed or
+                        // was refused raises ToolError in the script
+                        // (#80: a failed write came back as text and the
+                        // script printed "saved").
+                        Ok(text) => match self.last_post.take() {
+                            Some((true, py)) if !py.is_null() => script.answer(Ok(py)),
+                            Some((true, _)) => {
+                                script.answer(Ok(Value::String(strip_result_header(&text))))
+                            }
+                            _ => script.answer(Err(crate::python::tool_error(&text))),
+                        },
                         Err(stop) => {
                             script.answer(Err(stop.reason.clone()));
                             script.stop();
@@ -2119,7 +2446,17 @@ impl<'a> Run<'_, 'a> {
             o.meta["inner_calls"] = json!(inner);
             o
         });
-        self.post(r, out, None)
+        let text = self.post(r, out, None)?;
+        // A script that called none of the tools while the user asked for
+        // a file action did nothing to the folder (#80: "code mode: 0 tool
+        // calls" and an answer saying draft.md was written): said once.
+        if inner == 0 && !self.script_noted && crate::webintent::asks_for_file_change(&self.message)
+        {
+            self.script_noted = true;
+            crate::diag::note("code mode: the script called no tools; told the model");
+            return Ok(format!("{text}\n\n{}", crate::python::NO_CALLS_NOTE));
+        }
+        Ok(text)
     }
 
     /// A task graph (#77): the tasks in waves, a wave's reads and
@@ -2345,6 +2682,138 @@ async fn execute(
         }
     }
     (out, None)
+}
+
+/// Characters per token, for the estimates that fit a request under a
+/// provider's cap.
+const CHARS_PER_TOKEN: usize = 4;
+
+/// Tools a compact request keeps besides the ones the turn already used.
+const CORE_TOOLS: &[&str] = &[
+    "files_list",
+    "file_read",
+    "file_write",
+    "file_edit",
+    "web_search",
+    "read_url",
+];
+
+/// `text` cut to about `max` characters: its head and tail.
+fn squeeze(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max * 2 / 3).collect();
+    let tail: String = text.chars().skip(n - max / 3).collect();
+    format!("{head}\n[… cut to fit the model's request limit …]\n{tail}")
+}
+
+/// A request made to fit a provider's token cap (#80): the earlier chat
+/// cut to its last exchange, long messages to their head and tail, the
+/// tool list to one line each (and only the tools the turn needs), and
+/// the reply's room to what is left. `Err` with the tokens it would need
+/// when even that does not fit.
+pub fn fit_request(
+    mut req: ChatRequest,
+    base: usize,
+    cap: tern_providers::retry::RequestCap,
+    tools: &ToolRegistry,
+    called: &[String],
+) -> Result<ChatRequest, u64> {
+    let keep = |n: &str| CORE_TOOLS.contains(&n) || called.iter().any(|c| c == n);
+    // The system prompt: Tern's opening and the chat's instructions stay;
+    // the tool list becomes one line per tool.
+    if let Some(sys) = req.system.take() {
+        let head = sys
+            .split("\n\nYou can use these tools:\n")
+            .next()
+            .unwrap_or(&sys)
+            .to_owned();
+        let mut out = squeeze(&head, 3_000);
+        if !tools.is_empty() {
+            out.push_str("\n\nYou can use these tools:\n");
+            for n in tools.names().filter(|n| keep(n)) {
+                if let Some(t) = tools.get(n) {
+                    let first = t.summary().split(". ").next().unwrap_or_default();
+                    out.push_str(&format!("- {n}: {}\n", squeeze(first, 120)));
+                }
+            }
+            out.push_str(
+                "To use one, reply with only a ```tool block holding {\"tool\": \"<name>\", \"args\": {...}}. Never say a file was saved unless its tool result says so.",
+            );
+        }
+        req.system = Some(out);
+    }
+    req.tools.retain(|t| keep(&t.name));
+    for t in &mut req.tools {
+        t.description = squeeze(t.description.split(". ").next().unwrap_or_default(), 120);
+    }
+    let base = base.min(req.messages.len());
+    let turn = req.messages.split_off(base);
+    let earlier = req.messages.len();
+    let mut messages: Vec<ChatMessage> = req
+        .messages
+        .drain(earlier.saturating_sub(2)..)
+        .map(|mut m| {
+            m.content = squeeze(&m.content, 600);
+            m
+        })
+        .collect();
+    for (i, mut m) in turn.into_iter().enumerate() {
+        m.content = squeeze(&m.content, if i == 0 { 4_000 } else { 2_000 });
+        messages.push(m);
+    }
+    req.messages = messages;
+    let chars = req.system.as_deref().map_or(0, |s| s.chars().count())
+        + req
+            .messages
+            .iter()
+            .map(|m| m.content.chars().count() + 8)
+            .sum::<usize>()
+        + req
+            .tools
+            .iter()
+            .map(|t| t.name.len() + t.description.len() + t.parameters.to_string().len())
+            .sum::<usize>();
+    let input = (chars / CHARS_PER_TOKEN + 64) as u64;
+    let floor = 256u64;
+    if input + floor > cap.limit {
+        return Err(input + floor);
+    }
+    let room = cap.limit - input - 32;
+    req.max_tokens = req.max_tokens.min(room.min(u64::from(u32::MAX)) as u32);
+    Ok(req)
+}
+
+/// The line for a request that cannot fit a model's cap (#80).
+pub fn too_large_line(
+    model: &str,
+    provider: &str,
+    cap: tern_providers::retry::RequestCap,
+    need: u64,
+) -> String {
+    let name = tern_providers::find(provider).map_or(provider, |s| s.name);
+    format!(
+        "{model} on your {name} plan accepts {} tokens per request; this chat needs about {need}. Pick a model with a larger limit or start a new chat.",
+        cap.limit
+    )
+}
+
+/// The first task of a graph whose tool the turn's mode leaves out, with
+/// its file when it names one (#80).
+fn hidden_task(args: &Value, tools: &ToolRegistry) -> Option<(String, Option<String>)> {
+    let graph =
+        crate::planner::read_graph(args, &|t: &str| tools.get(t).is_some() || tools.hidden(t))
+            .ok()?;
+    graph
+        .tasks
+        .into_iter()
+        .find(|t| tools.hidden(&t.tool))
+        .map(|t| {
+            let path = t.args["path"].as_str().map(str::to_owned);
+            (t.tool, path)
+        })
 }
 
 /// A call's text without the "Result of `x`:" line the model gets, for

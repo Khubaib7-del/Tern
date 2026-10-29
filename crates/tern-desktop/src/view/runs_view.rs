@@ -102,6 +102,7 @@ impl Workspace {
             tern_agent::OfferKind::Retry => {
                 "Run the failed workers again; workers that finished keep their notes"
             }
+            tern_agent::OfferKind::Again => "Run this turn again from where it stopped",
         };
         let about_search = offer.about_search;
         Some(

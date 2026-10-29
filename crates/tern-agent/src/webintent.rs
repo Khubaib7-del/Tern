@@ -598,8 +598,331 @@ pub fn has_python_fence(reply: &str) -> bool {
     })
 }
 
+/// A word that looks like a file name: `review.md`, `notes/2026/today.md`,
+/// `.md` (a kind of file).
+fn names_a_file(t: &str) -> bool {
+    t.split_whitespace().any(|w| {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_');
+        w.rsplit_once('.').is_some_and(|(stem, ext)| {
+            (stem.is_empty() || !stem.ends_with('.'))
+                && (1..=5).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                && ext.chars().any(|c| c.is_ascii_alphabetic())
+                && !stem.chars().all(|c| c.is_ascii_digit())
+        })
+    })
+}
+
+/// Whether a message asks Tern to change files in the chat's folder (#80):
+/// a change verb and a file ("write a short review of sum.md to
+/// review.md", "rename draft.md to hello.md", "save the counts to a
+/// file"). A question about how to do it ("how do I create a file in
+/// Python?") and writing that names no file ("write a long essay about
+/// arrays") are not.
+pub fn asks_for_file_change(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let first = t.split_whitespace().next().unwrap_or_default();
+    if matches!(
+        first,
+        "how" | "what" | "why" | "explain" | "can" | "could" | "is" | "does" | "do" | "which"
+    ) && t.contains('?')
+    {
+        return false;
+    }
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let change = has(&[
+        "write", "save", "create", "make", "add", "append", "edit", "update", "rename", "move",
+        "delete", "remove", "insert", "replace", "mkdir", "touch",
+    ]);
+    let file = names_a_file(&t) || has(&["file", "files", "folder", "folders", "directory"]);
+    change && file
+}
+
+/// Whether a message plainly asks to make or change a file in the folder,
+/// strictly enough to answer "this needs Act mode" before any model call
+/// (#80): a file and a verb that only means changing files ("save",
+/// "create", "rename", "delete", "append"...), or "write"/"add" with "to"
+/// or "into" a file. "Write a short review of sum.md" (which could be an
+/// answer in the chat) is left to the model.
+pub fn asks_to_write_files(text: &str) -> bool {
+    if !asks_for_file_change(text) || !names_a_file(&text.to_lowercase()) {
+        return false;
+    }
+    let t = text.to_lowercase();
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    has(&[
+        "save", "create", "rename", "move", "delete", "remove", "append", "mkdir", "touch",
+    ]) || (has(&["write", "add", "put", "edit", "update", "insert"]) && has(&["to", "into", "in"]))
+}
+
+/// The last file name a message mentions (`review.md`), if any.
+pub fn last_file_name(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .rev()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '/'))
+        .find(|w| names_a_file(&w.to_lowercase()) && !w.starts_with('.'))
+        .map(str::to_owned)
+}
+
+/// Whether a reply hands the user the work Tern was asked to do (#80, in
+/// Chat mode: "Please manually create a file named reviews.md and paste
+/// the content", "Would you like me to execute it?").
+pub fn hands_work_to_user(reply: &str) -> bool {
+    let r = reply.to_lowercase().replace(['’', '‘'], "'");
+    const SIGNS: &[&str] = &[
+        "manually create",
+        "create it manually",
+        "create the file manually",
+        "please create a file",
+        "you can create a file",
+        "create a file named",
+        "create a new file named",
+        "paste the content",
+        "paste this content",
+        "paste the following",
+        "copy and paste",
+        "save it as",
+        "save this as",
+        "would you like me to execute",
+        "would you like me to run",
+        "you can run this script",
+        "run this script",
+        "run the script",
+        "don't have the ability to create",
+        "do not have the ability to create",
+        "can't create files",
+        "cannot create files",
+        "don't have access to file_write",
+        "does not have file_write",
+        "i can't write",
+        "i cannot write",
+    ];
+    SIGNS.iter().any(|s| r.contains(s))
+}
+
+/// Whether a message asks for writing or explaining that comes from the
+/// model itself ("write a long essay about arrays", "explain recursion",
+/// "write a poem"), not a lookup of current facts (#80: Tern searched the
+/// web for "Write a long essay about arrays," and the model quoted an
+/// essay site's ad copy). Asking about something current ("write a
+/// summary of today's news") is a lookup.
+pub fn is_composition(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let current = has(&[
+        "today",
+        "todays",
+        "latest",
+        "news",
+        "current",
+        "currently",
+        "now",
+        "recent",
+        "recently",
+        "price",
+        "prices",
+        "weather",
+        "score",
+        "scores",
+        "yesterday",
+        "tonight",
+        "week",
+        "2025",
+        "2026",
+        "2027",
+    ]);
+    if current || asks_for_web(text) {
+        return false;
+    }
+    let writing = has(&["write", "compose", "draft", "draw", "describe", "explain"])
+        && has(&[
+            "essay",
+            "poem",
+            "story",
+            "email",
+            "letter",
+            "article",
+            "paragraph",
+            "song",
+            "speech",
+            "outline",
+            "haiku",
+            "limerick",
+            "joke",
+            "explanation",
+            "diagram",
+            "flowchart",
+            "chart",
+            "about",
+        ]);
+    writing || first_word_is(&t, &["explain", "describe", "compose", "draft"])
+}
+
+fn first_word_is(t: &str, list: &[&str]) -> bool {
+    t.split_whitespace()
+        .next()
+        .is_some_and(|w| list.contains(&w.trim_matches(|c: char| !c.is_alphanumeric())))
+}
+
+/// Whether a reply refuses outright ("I'm sorry, but I can't assist with
+/// that request"), with nothing else in it.
+pub fn is_flat_refusal(reply: &str) -> bool {
+    let r = reply.to_lowercase().replace(['’', '‘'], "'");
+    r.chars().count() < 240
+        && [
+            "can't assist with that",
+            "cannot assist with that",
+            "can't help with that",
+            "cannot help with that",
+            "unable to assist with",
+            "can't comply",
+            "cannot comply",
+            "i won't be able to help",
+        ]
+        .iter()
+        .any(|s| r.contains(s))
+}
+
+/// Whether a reply says `path` was saved, written or created (#80:
+/// "Word counts have been saved to counts.md" after the write failed).
+pub fn claims_written(reply: &str, path: &str) -> bool {
+    let r = reply.to_lowercase();
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_lowercase();
+    if name.is_empty() || !r.contains(&name) {
+        return false;
+    }
+    [
+        "saved",
+        "written",
+        "wrote",
+        "created",
+        "has been",
+        "successfully",
+        "updated",
+        "stored",
+        "renamed",
+    ]
+    .iter()
+    .any(|w| r.contains(w))
+        && ![
+            "not saved",
+            "not written",
+            "was not",
+            "wasn't",
+            "failed",
+            "could not",
+            "couldn't",
+        ]
+        .iter()
+        .any(|w| r.contains(w))
+}
+
+/// Whether a search snippet is a site's own marketing rather than content
+/// (#80: "these expertly composed essays about Array will provide you with
+/// everything you're looking for"). Such a snippet is left out of the
+/// results the model reads.
+pub fn is_boilerplate(snippet: &str) -> bool {
+    let s = snippet.to_lowercase().replace(['’', '‘'], "'");
+    const SIGNS: &[&str] = &[
+        "expertly composed",
+        "everything you're looking for",
+        "everything you are looking for",
+        "essay examples",
+        "free essay",
+        "essay samples",
+        "our writers",
+        "our experts",
+        "order now",
+        "buy now",
+        "sign up now",
+        "click here",
+        "best deals",
+        "free trial",
+        "get your paper",
+        "plagiarism-free",
+        "plagiarism free",
+    ];
+    SIGNS.iter().any(|x| s.contains(x))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn file_changes_compositions_and_handed_back_work_are_told_apart() {
+        use super::*;
+        assert!(asks_for_file_change(
+            "List the files here, then write a short review of sum.md to review.md"
+        ));
+        assert!(asks_for_file_change(
+            "Make a plan, then read every .md file here one by one and write a one-paragraph review of each to reviews.md"
+        ));
+        assert!(asks_for_file_change("rename draft.md to hello.md"));
+        assert!(!asks_for_file_change("Write a long essay about arrays"));
+        assert!(!asks_for_file_change("How do I create a file in Python?"));
+        assert!(!asks_for_file_change("read sum.md"));
+        assert!(!asks_for_file_change("what is 3.5 times 2"));
+        assert!(asks_to_write_files(
+            "List the files here, then write a short review of sum.md to review.md"
+        ));
+        assert!(asks_to_write_files(
+            "Write today's notes to notes/2026/today.md"
+        ));
+        assert!(asks_to_write_files("rename draft.md to hello.md"));
+        assert!(!asks_to_write_files("Write a short review of sum.md"));
+        assert!(!asks_to_write_files("read sum.md"));
+        assert_eq!(
+            last_file_name("write a review of sum.md to review.md").as_deref(),
+            Some("review.md")
+        );
+        assert!(hands_work_to_user(
+            "Please manually create a file named reviews.md and paste the content"
+        ));
+        assert!(hands_work_to_user("Would you like me to execute it?"));
+        assert!(!hands_work_to_user("Wrote review.md with four lines."));
+        assert!(is_composition("Write a long essay about arrays"));
+        assert!(is_composition(
+            "Write a long essay about arrays, then press Stop."
+        ));
+        assert!(is_composition("explain recursion"));
+        assert!(is_composition(
+            "Draw a flowchart with brackets and colons in the labels"
+        ));
+        assert!(!is_composition("write a summary of today's news"));
+        assert!(!is_composition("who won the 2026 world cup"));
+        assert!(!is_composition("search the web for array essays"));
+        assert!(!is_composition("tell me who founded LangChain"));
+        assert!(is_flat_refusal(
+            "I'm sorry, but I can't assist with that request."
+        ));
+        assert!(!is_flat_refusal("Arrays are contiguous blocks of memory."));
+        assert!(claims_written(
+            "Word counts have been saved to counts.md",
+            "counts.md"
+        ));
+        assert!(claims_written(
+            "The word counts were successfully saved to `counts.md`.",
+            "notes/counts.md"
+        ));
+        assert!(!claims_written(
+            "counts.md was not written: text is empty",
+            "counts.md"
+        ));
+        assert!(!claims_written("Saved the summary.", "counts.md"));
+        assert!(is_boilerplate(
+            "...these expertly composed essays about Array will provide you with everything you're looking for."
+        ));
+        assert!(!is_boilerplate(
+            "An array is a data structure consisting of a collection of elements."
+        ));
+    }
 
     #[test]
     fn adding_and_script_requests_are_told_apart() {

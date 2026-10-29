@@ -191,6 +191,53 @@ pub fn is_rate_window(text: &str) -> bool {
     .any(|n| t.contains(n))
 }
 
+/// A request too large for the model's per-request or per-minute token
+/// cap (#80: Groq's HTTP 413 "Request too large for model ... on tokens
+/// per minute (TPM): Limit 8000, Requested 17096"). Waiting does not
+/// help; a smaller request might.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestCap {
+    /// Tokens the provider accepts in one request.
+    pub limit: u64,
+    /// Tokens this request asked for, when the provider said.
+    pub requested: Option<u64>,
+}
+
+/// The cap a provider error states, when it says the request was too
+/// large: HTTP 413, or the words "request too large" / "reduce your
+/// message size", with "Limit N" in the text.
+pub fn request_cap(e: &ProviderError) -> Option<RequestCap> {
+    let (status, text) = match e {
+        ProviderError::Http { status, body, .. } => (*status, body.as_str()),
+        ProviderError::RateLimited { detail, .. } | ProviderError::SpendCap { detail, .. } => {
+            (429, detail.as_str())
+        }
+        _ => return None,
+    };
+    let t = text.to_ascii_lowercase();
+    let too_large = status == 413
+        || t.contains("request too large")
+        || t.contains("reduce your message size")
+        || t.contains("request entity too large");
+    if !too_large {
+        return None;
+    }
+    let number_after = |key: &str| -> Option<u64> {
+        let at = t.find(key)? + key.len();
+        let digits: String = t[at..]
+            .trim_start_matches([' ', ':'])
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == ',')
+            .filter(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    };
+    Some(RequestCap {
+        limit: number_after("limit")?,
+        requested: number_after("requested"),
+    })
+}
+
 /// The wait a provider's message states in words: "try again in 41.87s",
 /// "in 1m30.5s", "in 250ms", "in 20 seconds" (rounded up to whole
 /// seconds). `None` when it states none.
@@ -434,6 +481,29 @@ fn jitter() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_too_large_states_its_cap() {
+        let e = ProviderError::Http {
+            provider: "Groq",
+            status: 413,
+            body: r#"{"error":{"message":"Request too large for model `openai/gpt-oss-120b` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 17096, please reduce your message size and try again.","type":"tokens","code":"rate_limit_exceeded"}}"#.into(),
+        };
+        assert_eq!(
+            request_cap(&e),
+            Some(RequestCap {
+                limit: 8000,
+                requested: Some(17096)
+            })
+        );
+        assert_eq!(classify(&e), Class::Terminal, "never retried as it is");
+        let other = ProviderError::Http {
+            provider: "Groq",
+            status: 400,
+            body: "max_tokens must be less than or equal to 512".into(),
+        };
+        assert_eq!(request_cap(&other), None);
+    }
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
 

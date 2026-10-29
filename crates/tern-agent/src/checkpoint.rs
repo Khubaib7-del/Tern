@@ -168,6 +168,9 @@ pub enum OfferKind {
     Resume,
     /// Run the failed parts again; finished work is kept.
     Retry,
+    /// A quick turn that failed: run it again from where it stopped (#80:
+    /// a plain chat error offered "Retry failed workers", with no workers).
+    Again,
 }
 
 /// The banner for a stopped or failed run: one line that says what
@@ -190,6 +193,7 @@ impl RunOffer {
         match self.kind {
             OfferKind::Resume => "Resume",
             OfferKind::Retry => "Retry failed workers",
+            OfferKind::Again => "Retry",
         }
     }
 
@@ -385,10 +389,10 @@ impl RunCheckpoint {
                 format!("This run was interrupted: {question}"),
             ),
         };
-        let kind = if kind == OfferKind::Retry && !retry && self.mode == RunMode::Deep {
-            OfferKind::Resume
-        } else {
-            kind
+        let kind = match kind {
+            OfferKind::Retry if self.mode == RunMode::Quick => OfferKind::Again,
+            OfferKind::Retry if !retry => OfferKind::Resume,
+            k => k,
         };
         Some(RunOffer {
             kind,
@@ -703,6 +707,22 @@ mod tests {
                 .starts_with("Run failed: No search service answered")
         );
         assert!(o.about_search());
+    }
+
+    #[test]
+    fn a_failed_quick_turn_offers_retry_without_workers() {
+        let c = RunCheckpoint {
+            session: "s".into(),
+            turn: "t".into(),
+            mode: RunMode::Quick,
+            message: "Write a long essay about arrays".into(),
+            stage: Stage::Started,
+            ..RunCheckpoint::default()
+        };
+        if let Some(o) = c.offer(Some((TurnState::Failed, Some("Groq: Request too large")))) {
+            assert_eq!(o.kind, OfferKind::Again);
+            assert_eq!(o.action(), "Retry");
+        }
     }
 
     #[test]

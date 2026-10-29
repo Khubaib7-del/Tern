@@ -137,7 +137,7 @@ pub fn worker_main() -> Option<i32> {
         Some(stubs) => {
             use std::io::{BufRead as _, Write as _};
             let stdin = std::io::stdin();
-            let mut host = move |tool: &str, args: Value| -> Result<String, String> {
+            let mut host = move |tool: &str, args: Value| -> Result<Value, String> {
                 let line = json!({"tool": tool, "args": args});
                 {
                     let mut out = std::io::stdout().lock();
@@ -164,22 +164,55 @@ pub fn worker_main() -> Option<i32> {
     Some(if s.error.is_some() { 1 } else { 0 })
 }
 
-/// An answer line from Tern: `{"ok": "..."}` or `{"err": "..."}`.
-fn read_answer(line: &str) -> Result<String, String> {
+/// An answer line from Tern: `{"ok": "..."}` (a tool's text), `{"value":
+/// ...}` (a tool's result as a Python value, #80: `files_list()` is a list
+/// of dicts) or `{"err": "..."}` (raised in the script).
+fn read_answer(line: &str) -> Result<Value, String> {
     let v: Value = serde_json::from_str(line.trim()).map_err(|e| e.to_string())?;
-    match (v["ok"].as_str(), v["err"].as_str()) {
-        (Some(ok), _) => Ok(ok.to_owned()),
-        (_, Some(err)) => Err(err.to_owned()),
-        _ => Err("Tern sent an answer the script could not read".into()),
+    if let Some(ok) = v.get("ok").and_then(Value::as_str) {
+        return Ok(Value::String(ok.to_owned()));
+    }
+    if let Some(value) = v.get("value") {
+        return Ok(value.clone());
+    }
+    match v["err"].as_str() {
+        Some(err) => Err(err.to_owned()),
+        None => Err("Tern sent an answer the script could not read".into()),
     }
 }
 
-/// The answer line for a call's result.
-pub fn answer_line(r: &Result<String, String>) -> String {
+/// The answer line for a call's result: text as `ok`, any other value as
+/// `value`.
+pub fn answer_line(r: &Result<Value, String>) -> String {
     match r {
-        Ok(s) => json!({"ok": s}).to_string(),
+        Ok(Value::String(s)) => json!({"ok": s}).to_string(),
+        Ok(v) => json!({"value": v}).to_string(),
         Err(e) => json!({"err": e}).to_string(),
     }
+}
+
+/// A JSON value as the Python value a script gets back.
+fn to_python(v: &Value) -> MontyObject {
+    match v {
+        Value::Null => MontyObject::none(),
+        Value::Bool(b) => MontyObject::bool(*b),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => MontyObject::int(i),
+            None => MontyObject::float(n.as_f64().unwrap_or_default()),
+        },
+        Value::String(s) => MontyObject::string(s.clone()),
+        Value::Array(a) => MontyObject::list(a.iter().map(to_python)),
+        Value::Object(m) => MontyObject::dict(
+            m.iter()
+                .map(|(k, v)| (MontyObject::string(k.clone()), to_python(v))),
+        ),
+    }
+}
+
+/// How a failed tool call is raised inside a script (#80: a failed
+/// `file_write` came back as text, the script printed "saved" anyway).
+pub fn tool_error(message: &str) -> String {
+    format!("ToolError: {}", message.trim().trim_end_matches('.'))
 }
 
 // ----- Code mode (#77) -----
@@ -201,6 +234,20 @@ pub struct Stub {
     pub params: Vec<Param>,
     /// The tool's summary, its first sentence.
     pub summary: String,
+    /// What the function returns, as the prompt shows it (`str`, or
+    /// `list[dict]` with its keys).
+    #[serde(default)]
+    pub returns: String,
+}
+
+/// What a tool's function returns inside a script, when it is not its
+/// text (#80: a script could not use `files_list`'s lines as a list).
+fn returns_of(tool: &str) -> &'static str {
+    match tool {
+        "files_list" => "list  # of {\"path\": str, \"size\": int, \"is_dir\": bool}",
+        "file_read" => "str  # the file's text",
+        _ => "str",
+    }
 }
 
 /// Tools a script cannot call: code mode itself, the graph, the plan,
@@ -278,6 +325,7 @@ pub fn stubs(tools: &crate::tools::ToolRegistry) -> Vec<Stub> {
                 name: t.name().to_owned(),
                 params,
                 summary,
+                returns: returns_of(t.name()).to_owned(),
             }
         })
         .collect()
@@ -299,7 +347,12 @@ impl Stub {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        format!("def {}({params}) -> str", self.name)
+        let returns = if self.returns.is_empty() {
+            "str"
+        } else {
+            self.returns.as_str()
+        };
+        format!("def {}({params}) -> {returns}", self.name)
     }
 
     /// A call's arguments as the tool takes them: positional ones by the
@@ -406,11 +459,77 @@ pub fn os_hint(result: &str, stubs: &[Stub]) -> Option<String> {
         "(Tern note: run_python has no file system, OS or network access: open(), pathlib, os and the like do not work. Put the data in the code itself.)".to_owned()
     } else {
         format!(
-            "(Tern note: run_python has no file system, OS or network access: open(), pathlib (Path.iterdir, Path.read_text), os and the like do not work there. Reach files and the web only through the functions Tern provides inside the script: {}. For example:\n{}\nThen print a short summary.)",
+            "(Tern note: run_python has no file system, OS or network access: open(), os and the like do not work there (in Act mode with a folder, pathlib's read_text, write_text and iterdir go through the file tools). Reach files and the web only through the functions Tern provides inside the script: {}. For example:\n{}\nThen print a short summary.)",
             names.join(", "),
             example(stubs)
         )
     })
+}
+
+/// The tool functions a program defines or assigns itself (#80:
+/// ministral wrote `def file_write(path, text): return "File written
+/// successfully"` and called that, so nothing was written). A script that
+/// does is not run.
+pub fn shadowed(code: &str, stubs: &[Stub]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in code.lines() {
+        let l = line.trim_start();
+        let l = l.strip_prefix("async ").unwrap_or(l);
+        for s in stubs {
+            let n = s.name.as_str();
+            let hit = if let Some(rest) = l.strip_prefix("def ") {
+                rest.trim_start()
+                    .strip_prefix(n)
+                    .is_some_and(|r| r.trim_start().starts_with('('))
+            } else if let Some(rest) = l.strip_prefix(n) {
+                let r = rest.trim_start();
+                (r.starts_with('=') && !r.starts_with("=="))
+                    || r.starts_with(", ")
+                    || r.starts_with(':')
+            } else {
+                l.starts_with("import ") && l.ends_with(&format!(" as {n}"))
+            };
+            if hit && !out.iter().any(|o| o == n) {
+                out.push(n.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Added once to a code-mode script's result when it called no tool while
+/// the user asked for a file action (#80).
+pub const NO_CALLS_NOTE: &str = "(Tern note: this script called none of Tern's tool functions, so no file was read, written or renamed. Do not say it was. To change the folder, run a script that calls the functions themselves, for example file_write(\"draft.md\", \"hello\") and file_rename(\"draft.md\", \"hello.md\"), or call the tools directly.)";
+
+/// What the model reads instead of running a script that defines its
+/// own tool functions.
+pub fn shadow_note(names: &[String]) -> String {
+    let list = names
+        .iter()
+        .map(|n| format!("{n}()"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Tern did not run this script: it defines {list} itself. Those functions already exist inside run_python and do the real work (file_write(path, text) writes the file, file_rename(from, to) renames it), and a function you define instead only pretends. Remove your definitions and call the functions directly, then print what they returned."
+    )
+}
+
+/// The names in `names` that a program calls (`name(` outside a longer
+/// name).
+pub fn called_names<'n>(code: &str, names: &[&'n str]) -> Vec<&'n str> {
+    names
+        .iter()
+        .copied()
+        .filter(|n| {
+            let pat = format!("{n}(");
+            code.match_indices(&pat).any(|(i, _)| {
+                !code[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            })
+        })
+        .collect()
 }
 
 /// Whether a program calls any of the stubs (`name(` outside a longer
@@ -470,7 +589,7 @@ pub fn run_script(
     limit: Duration,
     stubs: &[Stub],
     stream: bool,
-    host: &mut dyn FnMut(&str, Value) -> Result<String, String>,
+    host: &mut dyn FnMut(&str, Value) -> Result<Value, String>,
 ) -> Snippet {
     let mut printed = String::new();
     let runner = match MontyRun::new(
@@ -549,7 +668,7 @@ pub fn run_script(
                         calls += 1;
                         let args = stub.args_of(&c.args);
                         match host(&stub.name, args) {
-                            Ok(text) => MontyObject::string(text).into(),
+                            Ok(v) => to_python(&v).into(),
                             Err(e) => MontyException::new(ExcType::RuntimeError, Some(e)).into(),
                         }
                     }
@@ -557,8 +676,48 @@ pub fn run_script(
                 c.resume(result, out!())
             }
             RunProgress::OsCall(o) => {
-                let e = o.function_call.on_no_handler();
-                o.resume(e, out!())
+                // pathlib's read_text, write_text and iterdir reach the
+                // folder through the chat's file tools (#80: a script in
+                // Act mode wrote `Path(...).read_text()` and failed with
+                // "OS function not implemented"). The rest stays closed.
+                match os_as_tool(&o.function_call, stubs) {
+                    Some(_) if calls >= MAX_SCRIPT_CALLS => {
+                        let e = MontyException::new(
+                            ExcType::RuntimeError,
+                            Some(format!(
+                                "a script can call tools at most {MAX_SCRIPT_CALLS} times"
+                            )),
+                        );
+                        o.resume(e, out!())
+                    }
+                    Some((tool, args, listing)) => {
+                        calls += 1;
+                        let r: ExtFunctionResult = match host(tool, args) {
+                            Ok(v) if listing => MontyObject::list(
+                                v.as_array()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|e| e["path"].as_str())
+                                    .map(|p| MontyObject::path(p.trim_end_matches('/'))),
+                            )
+                            .into(),
+                            Ok(Value::String(t)) if tool == "file_read" => {
+                                MontyObject::string(t).into()
+                            }
+                            // `write_text` gives the number of characters.
+                            Ok(_) if tool == "file_write" => {
+                                MontyObject::int(write_len(&o.function_call)).into()
+                            }
+                            Ok(v) => to_python(&v).into(),
+                            Err(e) => MontyException::new(ExcType::OSError, Some(e)).into(),
+                        };
+                        o.resume(r, out!())
+                    }
+                    None => {
+                        let e = o.function_call.on_no_handler();
+                        o.resume(e, out!())
+                    }
+                }
             }
             RunProgress::ResolveFutures(_) => {
                 return Snippet {
@@ -569,6 +728,58 @@ pub fn run_script(
             }
         };
     }
+}
+
+/// The file tool an OS call stands for in code mode, when the chat has it:
+/// `(tool, args, is a listing)`.
+fn os_as_tool(
+    call: &monty_types::OsFunctionCall,
+    stubs: &[Stub],
+) -> Option<(&'static str, Value, bool)> {
+    use monty_types::OsFunctionCall as Os;
+    let has = |n: &str| stubs.iter().any(|s| s.name == n);
+    // Monty roots relative paths at `/`: in code mode that root is the
+    // chat's folder.
+    let rel = |p: &str| {
+        p.trim_start_matches('/')
+            .trim_start_matches("./")
+            .to_owned()
+    };
+    match call {
+        Os::ReadText(p) if has("file_read") => Some(("file_read", json!({"path": rel(p)}), false)),
+        Os::WriteText(a) if has("file_write") => Some((
+            "file_write",
+            json!({"path": rel(&a.path), "text": a.data}),
+            false,
+        )),
+        Os::AppendText(a) if has("file_edit") => Some((
+            "file_edit",
+            json!({"path": rel(&a.path), "append": a.data}),
+            false,
+        )),
+        Os::Iterdir(p) if has("files_list") => {
+            let p = rel(p);
+            let p = if p == "." { String::new() } else { p };
+            Some(("files_list", json!({"path": p}), true))
+        }
+        _ => None,
+    }
+}
+
+/// The characters a `write_text` call wrote.
+fn write_len(call: &monty_types::OsFunctionCall) -> i64 {
+    match call {
+        monty_types::OsFunctionCall::WriteText(a) => a.data.chars().count() as i64,
+        _ => 0,
+    }
+}
+
+/// Whether a program reaches for files through pathlib, which code mode
+/// routes to the chat's file tools (#80).
+pub fn uses_pathlib(code: &str) -> bool {
+    [".read_text(", ".write_text(", ".iterdir(", ".append_text("]
+        .iter()
+        .any(|n| code.contains(n))
 }
 
 /// What a running script did next.
@@ -601,7 +812,7 @@ impl Script {
                 run_script_in_worker(&exe, &code, &stubs, call_tx, answer_rx).await
             }),
             None => tokio::task::spawn_blocking(move || {
-                let mut host = |tool: &str, args: Value| -> Result<String, String> {
+                let mut host = |tool: &str, args: Value| -> Result<Value, String> {
                     let line = json!({"tool": tool, "args": args}).to_string();
                     call_tx
                         .send(line)
@@ -653,8 +864,9 @@ impl Script {
         }
     }
 
-    /// Answers the call the script is waiting on.
-    pub fn answer(&self, r: Result<String, String>) {
+    /// Answers the call the script is waiting on: the tool's text, its
+    /// value, or an error raised in the script.
+    pub fn answer(&self, r: Result<Value, String>) {
         if let Some(a) = &self.answers {
             let _ = a.send(answer_line(&r));
         }
@@ -928,6 +1140,7 @@ mod tests {
             name: n.into(),
             params: Vec::new(),
             summary: String::new(),
+            returns: String::new(),
         };
         let stubs = [
             stub("files_list"),
@@ -975,6 +1188,128 @@ mod tests {
         );
         assert_eq!(example(&[stub("web_search")]).lines().count(), 2);
         assert_eq!(example(&[]), "");
+    }
+
+    #[test]
+    fn scripts_that_define_tool_functions_are_found() {
+        let stub = |n: &str| Stub {
+            name: n.into(),
+            params: Vec::new(),
+            summary: String::new(),
+            returns: String::new(),
+        };
+        let stubs = [stub("file_write"), stub("file_rename"), stub("files_list")];
+        let code = "def file_write(path, text):\n    return 'File written successfully'\nfile_rename = lambda a, b: 'ok'\nfile_write('draft.md', 'hi')\nnames = files_list()";
+        assert_eq!(shadowed(code, &stubs), ["file_write", "file_rename"]);
+        assert!(shadowed("x = files_list()\nfile_write('a.md', 'b')", &stubs).is_empty());
+        assert!(shadowed("if file_write == None:\n    pass", &stubs).is_empty());
+        assert!(shadow_note(&["file_write".into()]).contains("already exist"));
+        assert_eq!(
+            called_names(
+                "file_write('a', 'b')\nmy_file_rename(1)",
+                &["file_write", "file_rename"]
+            ),
+            ["file_write"]
+        );
+    }
+
+    #[test]
+    fn tool_values_come_back_as_python_values_and_errors_raise() {
+        let stub = |n: &str, returns: &str| Stub {
+            name: n.into(),
+            params: vec![Param {
+                name: "path".into(),
+                ty: "str".into(),
+                required: false,
+            }],
+            summary: String::new(),
+            returns: returns.into(),
+        };
+        let stubs = [
+            stub("files_list", returns_of("files_list")),
+            stub("file_write", "str"),
+        ];
+        assert!(
+            stubs[0]
+                .line()
+                .starts_with("def files_list(path: str = None) -> list  # of {")
+        );
+        let mut host = |tool: &str, _args: Value| -> Result<Value, String> {
+            match tool {
+                "files_list" => Ok(json!([
+                    {"path": "a.md", "size": 12, "is_dir": false},
+                    {"path": "notes/", "size": 0, "is_dir": true}
+                ])),
+                _ => Err(tool_error("Tool `file_write` bad input: `text` is empty.")),
+            }
+        };
+        let s = run_script(
+            "files = [f['path'] for f in files_list() if not f['is_dir']]\nprint(files, files_list()[0]['size'])",
+            Duration::from_secs(5),
+            &stubs,
+            false,
+            &mut host,
+        );
+        assert_eq!(s.error, None, "{s:?}");
+        assert_eq!(s.printed.trim(), "['a.md'] 12");
+        // A failed call raises unless the script catches it.
+        let s = run_script(
+            "file_write('counts.md', '')\nprint('saved')",
+            Duration::from_secs(5),
+            &stubs,
+            false,
+            &mut host,
+        );
+        let err = s.error.unwrap();
+        assert!(
+            err.contains("ToolError: Tool `file_write` bad input"),
+            "{err}"
+        );
+        assert!(!s.printed.contains("saved"));
+        assert_eq!(
+            read_answer(&answer_line(&Ok(json!([1, 2])))).unwrap(),
+            json!([1, 2])
+        );
+        assert_eq!(
+            read_answer(&answer_line(&Ok(json!("text")))).unwrap(),
+            json!("text")
+        );
+    }
+
+    #[test]
+    fn pathlib_reaches_the_folder_through_the_file_tools() {
+        let stub = |n: &str| Stub {
+            name: n.into(),
+            params: Vec::new(),
+            summary: String::new(),
+            returns: String::new(),
+        };
+        let stubs = [stub("files_list"), stub("file_read"), stub("file_write")];
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut host = |tool: &str, args: Value| -> Result<Value, String> {
+            calls.borrow_mut().push((tool.to_owned(), args.clone()));
+            match tool {
+                "files_list" => Ok(json!([{"path": "a.md", "size": 3, "is_dir": false}])),
+                "file_read" => Ok(json!("one two three")),
+                _ => Ok(json!("Wrote counts.md.")),
+            }
+        };
+        let s = run_script(
+            "from pathlib import Path\nn = 0\nfor p in Path('.').iterdir():\n    n += len(p.read_text().split())\nPath('counts.md').write_text(str(n))\nprint(n)",
+            Duration::from_secs(5),
+            &stubs,
+            false,
+            &mut host,
+        );
+        assert_eq!(s.error, None, "{s:?}");
+        assert_eq!(s.printed.trim(), "3");
+        let calls = calls.into_inner();
+        let tools: Vec<&str> = calls.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(tools, ["files_list", "file_read", "file_write"]);
+        assert_eq!(calls[1].1["path"], "a.md");
+        assert_eq!(calls[2].1, json!({"path": "counts.md", "text": "3"}));
+        assert!(uses_pathlib("Path('a').read_text()"));
+        assert!(!uses_pathlib("print(1)"));
     }
 
     #[test]

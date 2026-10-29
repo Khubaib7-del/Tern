@@ -498,6 +498,7 @@ pub struct ChatSlot {
     pub resume_offer: Option<ResumeOffer>,
     pub cut_off: bool,
     pub continue_offer: bool,
+    pub needs_act: Option<NeedsAct>,
     pub tool_doing: Option<(String, Option<String>)>,
     pub search_down: Option<String>,
     pub wiki_empty: Option<String>,
@@ -549,6 +550,7 @@ impl Default for ChatSlot {
             resume_offer: None,
             cut_off: false,
             continue_offer: false,
+            needs_act: None,
             tool_doing: None,
             search_down: None,
             wiki_empty: None,
@@ -693,6 +695,9 @@ pub struct Model {
     pub tool_doing: Option<(String, Option<String>)>,
     /// The last answer was cut off: the composer offers Continue.
     pub continue_offer: bool,
+    /// The last turn needs Act mode (#80): the card offers "Switch to Act
+    /// and run" with the message to send again.
+    pub needs_act: Option<NeedsAct>,
     /// Web search failed the last deep run's check: the stop reason. The
     /// banner offers Wikipedia or the address field.
     pub search_down: Option<String>,
@@ -870,6 +875,30 @@ impl ResumeOffer {
         match self.kind {
             tern_agent::OfferKind::Resume => "Resume",
             tern_agent::OfferKind::Retry => "Retry failed workers",
+            tern_agent::OfferKind::Again => "Retry",
+        }
+    }
+}
+
+/// A turn that needs Act mode (#80): what to send again, and what it
+/// needed (`file_write` and its path).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NeedsAct {
+    pub message: String,
+    pub tool: String,
+    pub path: Option<String>,
+}
+
+impl NeedsAct {
+    /// The card's line.
+    pub fn line(&self) -> String {
+        match (self.tool.as_str(), self.path.as_deref()) {
+            ("file_write" | "file_edit", Some(p)) => {
+                format!("This needs Act mode to write {p}.")
+            }
+            ("file_rename", _) => "This needs Act mode to rename files.".to_owned(),
+            ("run_command", _) => "This needs Act mode to run commands.".to_owned(),
+            _ => "This needs Act mode to change files in this folder.".to_owned(),
         }
     }
 }
@@ -940,6 +969,7 @@ impl Model {
             cut_off: false,
             tool_doing: None,
             continue_offer: false,
+            needs_act: None,
             search_down: None,
             wiki_empty: None,
             local_failed: None,
@@ -1198,6 +1228,7 @@ impl Model {
         self.inserted = None;
         self.cut_off = false;
         self.continue_offer = false;
+        self.needs_act = None;
         self.search_down = None;
         self.wiki_empty = None;
         let chips = attachments
@@ -1986,6 +2017,7 @@ impl Model {
         swap(&mut self.resume_offer, &mut slot.resume_offer);
         swap(&mut self.cut_off, &mut slot.cut_off);
         swap(&mut self.continue_offer, &mut slot.continue_offer);
+        swap(&mut self.needs_act, &mut slot.needs_act);
         swap(&mut self.tool_doing, &mut slot.tool_doing);
         swap(&mut self.search_down, &mut slot.search_down);
         swap(&mut self.wiki_empty, &mut slot.wiki_empty);
@@ -2076,6 +2108,15 @@ impl Model {
 
     /// An event from the running turn.
     pub fn on_event(&mut self, e: &EventEnvelope) {
+        // The turn needs Act mode (#80): its answer says so, and the card
+        // offers to switch and send the message again.
+        if e.kind == "mode.needs_act" {
+            self.needs_act = Some(NeedsAct {
+                message: e.payload["message"].as_str().unwrap_or_default().to_owned(),
+                tool: e.payload["tool"].as_str().unwrap_or_default().to_owned(),
+                path: e.payload["path"].as_str().map(str::to_owned),
+            });
+        }
         if e.kind == tern_agent::compact::EVENT {
             self.compacted = tern_agent::compact::last(std::slice::from_ref(e));
             self.compact_pending = true;
@@ -2408,6 +2449,9 @@ impl Model {
         }
         if self.continue_offer && !self.is_busy() {
             v.push(Notice::Continue);
+        }
+        if self.needs_act.is_some() && !self.is_busy() {
+            v.push(Notice::NeedsAct);
         }
         if self.inserted.is_some() {
             v.push(Notice::Inserted);
