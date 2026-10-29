@@ -62,6 +62,35 @@ pub fn of_run(run: &Run) -> Ledger {
                     }
                     b.step(query, StepUse::Search, worker, (0, 0), 0, 1, at);
                 }
+                Some("scholar_search" | "paper_snowball") => {
+                    let query = p["meta"]["query"].as_str().unwrap_or_default();
+                    for row in p["meta"]["papers"].as_array().into_iter().flatten() {
+                        let Ok(paper) =
+                            serde_json::from_value::<tern_research::scholar::Paper>(row.clone())
+                        else {
+                            continue;
+                        };
+                        let url = str_of(row, "link");
+                        let site = url::Url::parse(url)
+                            .map(|u| tern_crawl::site_of(&u))
+                            .unwrap_or_default();
+                        b.considered(url, &site, &paper.title, worker, query, at);
+                        b.paper(url, worker, paper);
+                    }
+                    b.step(query, StepUse::Search, worker, (0, 0), 0, 1, at);
+                }
+                Some("paper_read") => {
+                    if let Some(page) = &s.page {
+                        let hit = p["meta"]["cached"] == true;
+                        b.read(&page.url, &page.site, &page.title, worker, hit, at);
+                        if let Ok(paper) = serde_json::from_value::<tern_research::scholar::Paper>(
+                            p["meta"]["paper"].clone(),
+                        ) {
+                            b.paper(&page.url, worker, paper);
+                        }
+                        b.step(&page.url, StepUse::Read, worker, (0, 0), 1, 0, at);
+                    }
+                }
                 Some("read_url") => {
                     if let Some(page) = &s.page {
                         let hit = p["meta"]["crawl"]["cache"] == "hit";

@@ -562,6 +562,7 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
     if let Some(c) = search {
         tools.register(WebSearchTool(Arc::new(c), None));
         tools.register(ReadUrlTool::default());
+        crate::scholar::register(&mut tools, Arc::new(crate::scholar::Scholar::new(secrets)));
     }
     if let Some(root) = &opts.vault {
         let v = crate::vault::Vault::at(root);
@@ -731,6 +732,8 @@ impl ChatSession {
         if let Some(c) = &search {
             tools.register(WebSearchTool(c.clone(), Some(decider.clone())));
             tools.register(ReadUrlTool::default());
+            // Scholarly search (#81) goes with web search: same switch.
+            crate::scholar::register(&mut tools, Arc::new(crate::scholar::Scholar::new(secrets)));
         }
         // A vault that cannot be opened only leaves its tools out.
         if let Some(root) = &opts.vault {
@@ -1123,10 +1126,15 @@ impl ChatSession {
                 self.tools
                     .register(WebSearchTool(c.clone(), Some(self.decider.clone())));
                 self.tools.register(ReadUrlTool::default());
+                crate::scholar::register(
+                    &mut self.tools,
+                    Arc::new(crate::scholar::Scholar::new(secrets)),
+                );
             }
             None => {
                 self.tools.unregister("web_search");
                 self.tools.unregister("read_url");
+                crate::scholar::unregister(&mut self.tools);
             }
         }
         self.search = search;

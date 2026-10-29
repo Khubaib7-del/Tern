@@ -504,7 +504,9 @@ pub fn web_query(text: &str) -> Option<String> {
 pub fn call_detail(name: &str, args: &Value) -> Option<String> {
     let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::trim);
     let d = match name {
-        "web_search" | "vault_search" => s("query").map(str::to_owned),
+        "web_search" | "vault_search" | "scholar_search" => s("query").map(str::to_owned),
+        "paper_read" => s("paper").map(str::to_owned),
+        "paper_snowball" => s("topic").map(str::to_owned),
         "read_url" => s("url").map(|u| {
             let rest = u.split("://").nth(1).unwrap_or(u);
             rest.split('/')

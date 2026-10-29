@@ -189,7 +189,7 @@ impl Service {
 }
 
 /// One paper, as one or more services described it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paper {
     pub title: String,
     #[serde(default)]

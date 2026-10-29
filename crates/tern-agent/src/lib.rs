@@ -78,6 +78,7 @@ pub mod results;
 pub mod rules;
 pub mod run;
 pub mod sandbox;
+pub mod scholar;
 pub mod search;
 pub mod side;
 pub mod skill_author;

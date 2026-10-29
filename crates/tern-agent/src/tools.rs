@@ -160,6 +160,21 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         effect: EffectClass::Network,
     },
     BuiltinTool {
+        name: "scholar_search",
+        label: "Search scholarly papers (Semantic Scholar, OpenAlex, arXiv, Crossref, CORE)",
+        effect: EffectClass::Network,
+    },
+    BuiltinTool {
+        name: "paper_read",
+        label: "Read a paper's open-access PDF with page and section locators",
+        effect: EffectClass::Network,
+    },
+    BuiltinTool {
+        name: "paper_snowball",
+        label: "Follow a paper's references and citations (stops at saturation)",
+        effect: EffectClass::Network,
+    },
+    BuiltinTool {
         name: "vault_search",
         label: "Search your vault notes",
         effect: EffectClass::Read,

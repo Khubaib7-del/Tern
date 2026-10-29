@@ -873,7 +873,22 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                         step.note = with_worker(&step.note, w);
                     }
                 }
-                "read_url" => {
+                "scholar_search" | "paper_snowball" => {
+                    step.kind = StepKind::Search;
+                    step.verb = "Searched papers";
+                    step.target = args["query"]
+                        .as_str()
+                        .or_else(|| args["topic"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    if let Some(n) = p["meta"]["results"].as_u64() {
+                        step.note = plural(n as usize, "paper");
+                    }
+                    if let Some(w) = p["worker"].as_u64() {
+                        step.note = with_worker(&step.note, w);
+                    }
+                }
+                "read_url" | "paper_read" => {
                     step.kind = StepKind::Read;
                     step.verb = "Read";
                     step.target = page

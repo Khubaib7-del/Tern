@@ -25,6 +25,7 @@ pub mod icon;
 pub mod pdf;
 pub mod remote;
 pub mod robots;
+pub mod scholar;
 pub mod search;
 
 pub use extract::Anchor;
@@ -33,6 +34,7 @@ pub use icon::{SourceIcon, TERN_CRAWL, TERN_READER, site_of};
 pub use pdf::{PdfError, PdfText};
 pub use remote::{RemoteKind, RemoteReader};
 pub use robots::Robots;
+pub use scholar::{ApiAnswer, ApiRequest, ScholarError, ScholarHttp};
 pub use search::{
     KEYLESS_SEARCH, SEARCH_CATALOG, SearchClient, SearchError, SearchHit, SearchSpec, find_search,
 };

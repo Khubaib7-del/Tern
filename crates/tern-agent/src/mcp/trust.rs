@@ -456,9 +456,12 @@ fn server_flags(cfg: &ServerConfig) -> Vec<Flag> {
 }
 
 /// Built-in tool names an MCP tool must not imitate.
-const BUILT_IN: [&str; 6] = [
+const BUILT_IN: [&str; 9] = [
     "web_search",
     "read_url",
+    "scholar_search",
+    "paper_read",
+    "paper_snowball",
     "load_skill",
     "vault_search",
     "vault_read",

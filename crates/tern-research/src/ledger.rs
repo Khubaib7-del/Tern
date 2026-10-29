@@ -97,6 +97,10 @@ pub struct SourceEntry {
     /// Milliseconds since the run started.
     #[serde(default)]
     pub at_ms: u64,
+    /// The paper this source is, when a scholarly search found it (#81):
+    /// authors, year, venue, DOI, citations, open-access PDF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<crate::scholar::Paper>,
 }
 
 /// What kind of step a budget row is.
@@ -339,7 +343,18 @@ impl LedgerBuilder {
                 format!("from “{query}”")
             },
             at_ms,
+            paper: None,
         });
+    }
+
+    /// Attaches a scholarly paper's metadata to the source at `url`.
+    pub fn paper(&mut self, url: &str, worker: Option<usize>, paper: crate::scholar::Paper) {
+        if let Some(e) = self.find(url, worker) {
+            match &mut e.paper {
+                Some(p) => p.absorb(paper),
+                None => e.paper = Some(paper),
+            }
+        }
     }
 
     /// A page read, from the cache or live.
@@ -471,6 +486,7 @@ impl LedgerBuilder {
                 reason,
                 detail: detail.unwrap_or_default().to_owned(),
                 at_ms,
+                paper: None,
             }),
         }
     }
