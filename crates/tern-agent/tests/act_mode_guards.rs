@@ -81,9 +81,6 @@ impl Answer {
     fn new(a: ApprovalAnswer) -> Self {
         Self(a, Mutex::default())
     }
-    fn asked(&self) -> Vec<ApprovalRequest> {
-        self.1.lock().unwrap().clone()
-    }
 }
 impl Approver for Answer {
     fn ask<'a>(&'a self, req: &'a ApprovalRequest) -> BoxFuture<'a, ApprovalAnswer> {
