@@ -87,7 +87,7 @@ pub fn parse_calls(text: &str) -> Vec<(String, Value)> {
 pub const BASE: &str = "You are Tern, a careful research and study assistant. Answer plainly and say when you are unsure.";
 
 /// How to ask for a tool, after the tool list.
-pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and nothing else:\n```tool\n{\"tool\": \"<name>\", \"args\": {...}}\n```\nYou will get the result in the next message. To run several independent calls at once (for example two searches), put one block after another in the same reply; all the results come back together. When you have enough, reply with the final answer and no tool block.\nOnly use and mention the tools listed above. A tool that changes something (a file write or rename, a command) shows the user an approval card with the diff or the old and new path, so call it directly: never ask first in prose (no \"Shall I save it?\", no numbered options). Rename or move a file with `file_rename` when it is listed, never by writing a copy. Never say a file was saved, renamed or a command ran unless its tool result says so; when a tool failed, was declined or was stopped, say exactly what its result says. To read a file or list a folder outside the working folder, call `file_read` or `files_list` with its full path: Tern asks the user, so do not refuse it.";
+pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and nothing else:\n```tool\n{\"tool\": \"<name>\", \"args\": {...}}\n```\nYou will get the result in the next message. To run several independent calls at once (for example two searches), put one block after another in the same reply; all the results come back together. When you have enough, reply with the final answer and no tool block.\nOnly use and mention the tools listed above. A tool that changes something (a file write, edit or rename, a command) shows the user an approval card with the diff or the old and new path, and that card is the confirmation: when the user asks for a change, call the tool directly, never ask first in prose (no \"Shall I save it?\", no \"Would you like me to proceed?\", no numbered options). To add or change a few lines use `file_edit` when it is listed, not a rewrite. When the user asks to read, show or open a file, call `file_read` even if you wrote or read it earlier (it is cheap); never answer from memory. Rename or move a file with `file_rename` when it is listed, never by writing a copy. Never say a file was saved, renamed or a command ran unless its tool result says so; when a tool failed, was declined or was stopped, say exactly what its result says. To read a file or list a folder outside the working folder, call `file_read` or `files_list` with its full path: Tern asks the user, so do not refuse it.";
 
 /// The system prompt for one turn. The effective instructions view
 /// ([`crate::rules::effective`]) is built from this same function.
@@ -109,6 +109,11 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
                 s.push_str(CODE_MODE);
                 s.push('\n');
                 s.push_str(&crate::python::stub_text(&stubs));
+                let example = crate::python::example(&stubs);
+                if !example.is_empty() {
+                    s.push_str("\nFor example:\n");
+                    s.push_str(&example);
+                }
             }
         }
     }
@@ -117,7 +122,7 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
 
 /// Code mode (#77), after the tool protocol when `run_python` is offered;
 /// the stubs follow it.
-pub const CODE_MODE: &str = "Code mode: in `run_python` these tools are Python functions that return text, so one script can call many tools and only what it prints comes back to you (print a short summary). Each call still asks the user when needed:";
+pub const CODE_MODE: &str = "Code mode: `run_python` has no file system, OS or network access (open(), pathlib, os do not work); inside it these tools are Python functions that return text, the only way to reach files and the web, so one script can call many tools and only what it prints comes back to you (print a short summary). Each call still asks the user when needed:";
 
 #[cfg(test)]
 mod tests {

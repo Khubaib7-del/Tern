@@ -7,6 +7,7 @@
 //! | `file_read` | Read | Reads a text file inside the workspace, or by a full path the user typed (asks for a file outside it) |
 //! | `file_search` | Read | Finds lines containing words, across text files |
 //! | `file_write` | External side effect (asks) | Writes a text file inside the workspace; Act mode only |
+//! | `file_edit` | External side effect (asks) | Replaces one exact passage or adds lines at the end; shown and approved as the `file_write` of the new text |
 //!
 //! Every relative path is resolved against the workspace root and checked
 //! after following symlinks, so `..` and links that point out are refused.
@@ -34,11 +35,12 @@ const MAX_HITS: usize = 40;
 const MAX_FILE_BYTES: u64 = 2_000_000;
 
 /// The tool names, so a chat can take them out again.
-pub const TOOL_NAMES: [&str; 6] = [
+pub const TOOL_NAMES: [&str; 7] = [
     "files_list",
     "file_read",
     "file_search",
     "file_write",
+    "file_edit",
     "file_rename",
     "run_command",
 ];
@@ -260,6 +262,63 @@ impl Workspace {
         Ok(self.rel(&p))
     }
 
+    /// The whole text of a file after a `file_edit` (#78): `find` (exact,
+    /// once) replaced by `replace`, or `append` added at the end on its
+    /// own line. A missing file can only be appended to (it is created).
+    pub fn edited(&self, rel: &str, args: &Value) -> Result<String, String> {
+        let p = self.resolve(rel).map_err(|e| match e {
+            ToolError::Failed(m) | ToolError::BadInput(m) => m,
+            ToolError::TimedOut => "timed out".into(),
+        })?;
+        if p.is_dir() {
+            return Err("that is a folder; give a file inside it".into());
+        }
+        let old = if p.exists() {
+            if std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
+                return Err("that file is too large to edit".into());
+            }
+            std::fs::read_to_string(&p).map_err(|_| "that file is not text".to_owned())?
+        } else {
+            String::new()
+        };
+        let s = |k: &str| args.get(k).and_then(Value::as_str);
+        if let Some(add) = s("append").filter(|a| !a.trim().is_empty()) {
+            let mut text = old.clone();
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(add);
+            if (old.is_empty() || old.ends_with('\n')) && !add.ends_with('\n') {
+                text.push('\n');
+            }
+            return Ok(text);
+        }
+        let Some(find) = s("find").filter(|f| !f.is_empty()) else {
+            return Err("give `append` (the lines to add at the end) or `find` and `replace` (an exact passage of the file and its new text)".into());
+        };
+        if !p.exists() {
+            return Err(format!(
+                "there is no file at {rel}; create it with `file_write`"
+            ));
+        }
+        let replace = s("replace").unwrap_or_default();
+        // Windows line endings: a `find` written with \n still matches.
+        let (find, replace) = if old.contains("\r\n") && !find.contains('\r') {
+            (find.replace('\n', "\r\n"), replace.replace('\n', "\r\n"))
+        } else {
+            (find.to_owned(), replace.to_owned())
+        };
+        match old.matches(find.as_str()).count() {
+            1 => Ok(old.replacen(find.as_str(), &replace, 1)),
+            0 => Err(format!(
+                "`find` is not in {rel}; read it with `file_read` and copy the passage exactly"
+            )),
+            n => Err(format!(
+                "`find` is in {rel} {n} times; give a longer passage that is there once"
+            )),
+        }
+    }
+
     /// Renames `from` to `to`, both inside the workspace. `to` must not
     /// exist (nothing is overwritten) and its folder must.
     pub fn rename(&self, from: &str, to: &str) -> Result<(String, String), ToolError> {
@@ -288,6 +347,7 @@ impl Workspace {
         tools.register(FileRead(self.clone()));
         tools.register(FileSearch(self.clone()));
         tools.register(FileWrite(self.clone()));
+        tools.register(FileEdit(self.clone()));
         tools.register(FileRename(self.clone()));
         crate::workbench::register(self, tools);
     }
@@ -677,12 +737,83 @@ impl Tool for FileWrite {
     fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
         self.0.resolve(&path_arg(args)).into_iter().collect()
     }
+    fn check(&self, args: &Value) -> Option<String> {
+        // A new file with no text (#78: a task graph wrote an empty
+        // counts.md and the card showed +0 -0): sent back, never asked.
+        let empty = args["text"].as_str().is_none_or(|t| t.trim().is_empty());
+        let new = self
+            .0
+            .resolve(&path_arg(args))
+            .is_ok_and(|p| std::fs::metadata(&p).ok().is_none_or(|m| m.len() == 0));
+        (empty && new).then(|| {
+            format!(
+                "`text` is empty, so {} was not created. Send the file's whole content in `text`; to add lines to a file that has some, use `file_edit` with `append`",
+                path_arg(args)
+            )
+        })
+    }
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         let ws = self.0.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let p = ws.write(&path_arg(&args), args["text"].as_str().unwrap_or_default())?;
                 Ok(ToolOutput::text(format!("Wrote {p}.")))
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
+        })
+    }
+}
+
+/// `file_edit` (#78): a small change to a file without sending all of
+/// it: one exact passage replaced, or lines added at the end. The turn
+/// runs it as the `file_write` of the whole new text ([`Tool::expand`]),
+/// so the user approves it on the same card with a +N -M diff and the
+/// same permission rules apply.
+#[derive(Debug, Clone)]
+struct FileEdit(Arc<Workspace>);
+
+impl Tool for FileEdit {
+    fn name(&self) -> &'static str {
+        "file_edit"
+    }
+    fn summary(&self) -> &'static str {
+        "Change part of a text file in the chat's workspace: `append` adds lines at the end; `find` (an exact passage that is in the file once) is replaced by `replace`. Use it to add a line or fix a passage instead of rewriting the file. The user approves the diff."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::ExternalSideEffect
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["path"], "additionalProperties": false,
+               "properties": {"path": {"type": "string"}, "append": {"type": "string"},
+                              "find": {"type": "string"}, "replace": {"type": "string"}}})
+    }
+    fn target(&self, args: &Value) -> Option<String> {
+        Some(format!("{}/{}", self.0.name(), path_arg(args)))
+    }
+    fn confined(&self, args: &Value) -> bool {
+        self.0.resolve(&path_arg(args)).is_ok()
+    }
+    fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
+        self.0.resolve(&path_arg(args)).into_iter().collect()
+    }
+    fn expand(&self, args: &Value) -> Option<Result<(&'static str, Value), String>> {
+        let path = path_arg(args);
+        Some(
+            self.0
+                .edited(&path, args)
+                .map(|text| ("file_write", json!({"path": path, "text": text}))),
+        )
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        // Outside a turn (a turn runs it as a `file_write`).
+        let ws = self.0.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let path = path_arg(&args);
+                let text = ws.edited(&path, &args).map_err(ToolError::Failed)?;
+                let p = ws.write(&path, &text)?;
+                Ok(ToolOutput::text(format!("Edited {p}.")))
             })
             .await
             .map_err(|e| ToolError::Failed(e.to_string()))?
@@ -882,5 +1013,59 @@ mod tests {
         Workspace::unregister(&mut tools);
         tools.set_mode(TurnMode::Act);
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn edits_append_or_replace_once_and_empty_new_files_are_refused() {
+        let (d, w) = ws();
+        let w = Arc::new(w);
+        let mut tools = ToolRegistry::new();
+        w.register(&mut tools);
+        let edit = tools.get("file_edit").unwrap();
+        // Append: one line at the end, on its own line.
+        let (name, args) = edit
+            .expand(&json!({"path": "README.md", "append": "A new line."}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "file_write");
+        assert_eq!(
+            args["text"],
+            "# Demo\nPaging maps virtual pages.\nA new line.\n"
+        );
+        // Find and replace, exactly once.
+        let (_, args) = edit
+            .expand(&json!({"path": "README.md", "find": "virtual", "replace": "logical"}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args["text"], "# Demo\nPaging maps logical pages.\n");
+        let e = edit
+            .expand(&json!({"path": "README.md", "find": "nowhere", "replace": "x"}))
+            .unwrap()
+            .unwrap_err();
+        assert!(e.contains("is not in README.md"), "{e}");
+        std::fs::write(d.path().join("twice.md"), "a a").unwrap();
+        let e = w
+            .edited("twice.md", &json!({"find": "a", "replace": "b"}))
+            .unwrap_err();
+        assert!(e.contains("2 times"), "{e}");
+        assert!(w.edited("README.md", &json!({})).is_err());
+        assert!(w.edited("../x.md", &json!({"append": "x"})).is_err());
+        // A new file with no text goes back to the model.
+        let write = tools.get("file_write").unwrap();
+        let why = write
+            .check(&json!({"path": "counts.md", "text": "  "}))
+            .unwrap();
+        assert!(why.contains("was not created"), "{why}");
+        assert!(
+            write
+                .check(&json!({"path": "counts.md", "text": "3"}))
+                .is_none()
+        );
+        // Emptying a file that has text is a change the card shows.
+        assert!(
+            write
+                .check(&json!({"path": "README.md", "text": ""}))
+                .is_none()
+        );
     }
 }

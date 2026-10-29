@@ -46,7 +46,7 @@ fn on_disk(tool: &str) -> bool {
 pub fn changes_files(tool: &str) -> bool {
     matches!(
         tool,
-        "file_write" | "file_rename" | "vault_write" | "run_command" | "export"
+        "file_write" | "file_edit" | "file_rename" | "vault_write" | "run_command" | "export"
     ) || tool.starts_with("mcp__")
 }
 

@@ -98,6 +98,19 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     fn timeout(&self) -> Duration {
         Duration::from_secs(30)
     }
+    /// What is wrong with a call that its schema cannot say (a new file
+    /// with no text), as the line the model gets back; the user is never
+    /// asked about it.
+    fn check(&self, _args: &Value) -> Option<String> {
+        None
+    }
+    /// A call that is another tool's call in another form: `file_edit`
+    /// becomes the `file_write` of the whole new text, so it shows the
+    /// same approval card and diff (#78). `Err` is the line the model
+    /// gets back.
+    fn expand(&self, _args: &Value) -> Option<Result<(&'static str, Value), String>> {
+        None
+    }
     /// Whether running the same call twice is harmless.
     fn idempotent(&self) -> bool {
         matches!(self.effect(), EffectClass::Read | EffectClass::Analysis)
@@ -175,6 +188,11 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         label: "Write a workspace file",
         // The tool's own class (#77): Settings › Tools showed "Auto
         // (runs)" for it while it asked.
+        effect: EffectClass::ExternalSideEffect,
+    },
+    BuiltinTool {
+        name: "file_edit",
+        label: "Edit or add lines to a workspace file",
         effect: EffectClass::ExternalSideEffect,
     },
     BuiltinTool {

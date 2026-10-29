@@ -175,9 +175,13 @@ impl Workspace {
             v.steps.iter().collect()
         };
         let hidden = n.saturating_sub(shown.len());
+        // One id column for the card: as wide as its longest id, at most
+        // 96 px, so the titles line up.
+        let longest = v.steps.iter().map(|s| s.id.chars().count()).max();
+        let id_w = (longest.unwrap_or(1) as f32 * 7.4 + 2.).clamp(22., 96.);
         let rows = shown
             .into_iter()
-            .map(|s| self.plan_row(v.is_graph(), s, live, p));
+            .map(|s| self.plan_row(v.is_graph(), v.ended, id_w, s, live, p));
         div()
             .id(SharedString::from(format!("plancard-{key}")))
             .flex()
@@ -214,7 +218,15 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn plan_row(&self, graph: bool, s: &PlanStep, live: bool, p: Palette) -> AnyElement {
+    fn plan_row(
+        &self,
+        graph: bool,
+        ended: bool,
+        id_w: f32,
+        s: &PlanStep,
+        live: bool,
+        p: Palette,
+    ) -> AnyElement {
         let ink = if s.status == StepStatus::InProgress {
             p.text
         } else {
@@ -227,10 +239,13 @@ impl Workspace {
             .min_w_0()
             .child(status_icon(s.status, live, p))
             .when(graph, |d| {
+                // One line, cut with an ellipsis (#78: "read_sum" wrapped a
+                // letter at a time in a 22 px column).
                 d.child(
                     div()
                         .flex_none()
-                        .w(px(22.))
+                        .w(px(id_w))
+                        .truncate()
                         .font_family(crate::assets::MONO_FONT)
                         .text_xs()
                         .text_color(p.faint)
@@ -265,6 +280,17 @@ impl Workspace {
                         .text_xs()
                         .text_color(p.faint)
                         .child(s.status.label()),
+                )
+            })
+            // A plan the run ended before the model finished it (#78):
+            // its open steps say so, without claiming they were skipped.
+            .when(!graph && ended && s.status == StepStatus::Skipped, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child("Not marked done"),
                 )
             })
             .into_any_element()

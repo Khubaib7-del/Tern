@@ -433,8 +433,167 @@ pub fn same_reply(reply: &str, previous: &str) -> bool {
     a.chars().count() >= 40 && a == b
 }
 
+/// Text file extensions a "read sum.md" names (#78).
+const FILE_EXTS: &[&str] = &[
+    "md", "markdown", "txt", "csv", "tsv", "json", "jsonl", "yaml", "yml", "toml", "xml", "html",
+    "htm", "tex", "bib", "log", "ini", "cfg", "py", "rs", "js", "ts", "tsx", "jsx", "java", "c",
+    "h", "cpp", "hpp", "go", "rb", "sh", "ps1", "sql", "css", "org", "rst",
+];
+
+/// A word that looks like a file name in the folder: `sum.md`,
+/// `notes/a.txt`, with a text extension.
+fn file_name(word: &str) -> Option<String> {
+    let w = word.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '(' | ')' | ',' | ';' | ':' | '?' | '!' | '*' | '<' | '>'
+        )
+    });
+    let w = w.strip_suffix('.').unwrap_or(w);
+    let (stem, ext) = w.rsplit_once('.')?;
+    let stem_ok = !stem.is_empty()
+        && !stem.starts_with('/')
+        && !stem.contains("..")
+        && !stem.contains(':')
+        && stem
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ' '));
+    (stem_ok && FILE_EXTS.contains(&ext.to_ascii_lowercase().as_str())).then(|| w.to_owned())
+}
+
+/// The file in the chat's folder a message plainly asks to see ("read
+/// sum.md", "show me notes/todo.md", "what's in review.md?") (#78): Tern
+/// reads it before the model answers, so the answer is the file as it is
+/// now and never the model's memory of it.
+pub fn file_to_read(text: &str) -> Option<String> {
+    const VERBS: &[&str] = &[
+        "read", "reread", "show", "open", "display", "print", "cat", "view", "see",
+    ];
+    const FILLER: &[&str] = &[
+        "me", "us", "the", "file", "contents", "content", "of", "again", "now", "please", "in",
+        "out", "back", "full", "whole", "current", "latest", "text", "what's", "whats", "what",
+        "is", "inside",
+    ];
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.to_lowercase().replace(['’', '‘'], "'"))
+        .collect();
+    let raw: Vec<&str> = text.split_whitespace().collect();
+    for (i, w) in raw.iter().enumerate() {
+        let Some(name) = file_name(w) else {
+            continue;
+        };
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            let prev = words[j].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+            if VERBS.contains(&prev) {
+                return Some(name);
+            }
+            // "what's in sum.md"
+            if prev == "in" && j > 0 {
+                let before = words[j - 1].trim_matches(|c: char| !c.is_alphanumeric() && c != '\'');
+                if matches!(before, "what's" | "whats" | "is") {
+                    return Some(name);
+                }
+            }
+            if !FILLER.contains(&prev) || i - j > 4 {
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// Whether a message asks for a change to a file ("add a line to
+/// sum.md", "write the list to todo.md", "fix the title in a.md") (#78).
+pub fn asks_for_change(text: &str) -> bool {
+    let t = text.to_lowercase();
+    const VERBS: &[&str] = &[
+        "add", "append", "write", "save", "create", "make", "update", "edit", "change", "fix",
+        "insert", "put", "rename", "replace", "remove", "delete", "correct",
+    ];
+    t.split(|c: char| !c.is_alphanumeric())
+        .any(|w| VERBS.contains(&w))
+}
+
+/// Whether a reply asks the user in prose to confirm a change instead of
+/// calling the tool ("Would you like me to proceed with adding this
+/// line?") (#78). In Act mode the approval card is the confirmation.
+pub fn asks_to_proceed(reply: &str) -> bool {
+    let r = reply.to_lowercase().replace(['’', '‘'], "'");
+    if r.chars().count() > 1_500 || !r.contains('?') {
+        return false;
+    }
+    const ASKS: &[&str] = &[
+        "would you like me to",
+        "would you like to proceed",
+        "shall i",
+        "should i",
+        "do you want me to",
+        "want me to go ahead",
+        "want me to proceed",
+        "can i proceed",
+        "may i proceed",
+        "may i go ahead",
+        "should we proceed",
+        "confirm that you",
+        "please confirm",
+        "proceed with",
+        "go ahead and",
+        "let me know if you",
+    ];
+    const CHANGES: &[&str] = &[
+        "add", "append", "writ", "sav", "creat", "updat", "edit", "chang", "insert", "renam",
+        "replac", "proceed", "go ahead", "apply",
+    ];
+    ASKS.iter().any(|a| r.contains(a)) && CHANGES.iter().any(|c| r.contains(c))
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_plain_ask_to_see_a_file_names_it() {
+        assert_eq!(file_to_read("read sum.md").as_deref(), Some("sum.md"));
+        assert_eq!(
+            file_to_read("Show me the file notes/todo.md please").as_deref(),
+            Some("notes/todo.md")
+        );
+        assert_eq!(
+            file_to_read("what's in review.md?").as_deref(),
+            Some("review.md")
+        );
+        assert_eq!(
+            file_to_read("Read \"sum.md\" again").as_deref(),
+            Some("sum.md")
+        );
+        assert_eq!(file_to_read("open counts.csv."), Some("counts.csv".into()));
+        assert_eq!(file_to_read("what is node.js used for"), None);
+        assert_eq!(
+            file_to_read("I read about react.js yesterday and liked it"),
+            None
+        );
+        assert_eq!(file_to_read("add a line to sum.md"), None);
+        assert_eq!(file_to_read("read the paper on RAG"), None);
+    }
+
+    #[test]
+    fn prose_confirmations_of_a_change_are_spotted() {
+        assert!(asks_for_change("add a line to sum.md"));
+        assert!(asks_for_change("Write the counts to counts.md"));
+        assert!(!asks_for_change("what is in sum.md?"));
+        assert!(asks_to_proceed(
+            "I will add \"Reviewed on Oct 29\" to the end of sum.md. Would you like me to proceed with adding this line?"
+        ));
+        assert!(asks_to_proceed("Shall I save it as notes.md?"));
+        assert!(asks_to_proceed("Do you want me to update the file?"));
+        assert!(!asks_to_proceed("I added the line to sum.md."));
+        assert!(!asks_to_proceed(
+            "Which file do you mean, sum.md or review.md?"
+        ));
+    }
+
     use super::*;
 
     #[test]

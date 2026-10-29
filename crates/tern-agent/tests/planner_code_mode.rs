@@ -246,7 +246,16 @@ async fn the_plan_tool_logs_each_update_and_has_no_tool_card_noise() {
         .await;
     assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
     let plans = of_kind(&sink, "plan.updated");
-    assert_eq!(plans.len(), 2);
+    // The two updates, then (#78) the plan as the run left it: the model
+    // never marked the last step done, so it ended there.
+    assert_eq!(plans.len(), 3);
+    assert_eq!(plans[2].payload["ended"], true);
+    assert_eq!(plans[2].payload["steps"][1]["status"], "skipped");
+    assert!(
+        plans[2]
+            .user_summary
+            .starts_with("Plan · ended at 1 of 2 done")
+    );
     assert_eq!(plans[1].payload["kind"], "plan");
     assert_eq!(plans[1].payload["steps"][0]["status"], "done");
     assert_eq!(plans[1].payload["steps"][1]["status"], "in_progress");
