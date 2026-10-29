@@ -136,6 +136,9 @@ pub struct ChatSession {
     /// Full copies of long tool results, which the model sees cut in the
     /// middle and reads in ranges with `read_result` (#72).
     results: Option<Arc<crate::results::ResultStore>>,
+    /// Searches, fetches and reads kept for this chat (#77); web results
+    /// also on disk, shared by every chat.
+    cache: crate::toolcache::ToolCache,
 }
 
 /// Where a front end takes a reply's reasoning as it streams: the model
@@ -190,14 +193,25 @@ pub fn outputs_in(events: &[EventEnvelope], workspace: Option<&std::path::Path>)
                 let rel = e.payload["args"]["path"].as_str().unwrap_or_default();
                 let base = ws.as_deref().or(workspace);
                 match (rel.is_empty(), base) {
-                    (false, Some(b)) => Some((b.join(rel), "file_write".to_owned())),
+                    (false, Some(b)) => Some((join_rel(b, rel), "file_write".to_owned())),
                     _ => None,
                 }
+            }
+            // #77: a rename moves the output to its new name.
+            "tool.executed" if e.payload["tool"] == "file_rename" => {
+                if let Some(b) = ws.as_deref().or(workspace) {
+                    let a = &e.payload["args"];
+                    if let (Some(from), Some(to)) = (a["from"].as_str(), a["to"].as_str()) {
+                        rename_output(&mut out, &join_rel(b, from), &join_rel(b, to));
+                    }
+                }
+                None
             }
             _ => None,
         };
         if let Some((path, what)) = found {
-            out.retain(|o| o.path != path);
+            let path = crate::projects::plain_path(&path);
+            out.retain(|o| !same_file(&o.path, &path));
             out.push(Output {
                 path,
                 what,
@@ -206,6 +220,38 @@ pub fn outputs_in(events: &[EventEnvelope], workspace: Option<&std::path::Path>)
         }
     }
     out
+}
+
+/// `rel` under the chat's folder, as the user reads it (no `\\?\`).
+fn join_rel(base: &std::path::Path, rel: &str) -> std::path::PathBuf {
+    let rel = rel.trim();
+    let rel = rel.strip_prefix("./").unwrap_or(rel);
+    crate::projects::plain_path(&base.join(rel))
+}
+
+/// Whether two spellings name one file (`\\?\` or not, `/` or `\`, and
+/// case on Windows).
+pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    crate::projects::folder_key(a) == crate::projects::folder_key(b)
+}
+
+/// After `from` was renamed to `to` (#77): the output listed at `from`
+/// now lists at `to`, and a stale entry for `to` goes. Returns whether an
+/// output moved.
+pub fn rename_output(
+    outputs: &mut Vec<Output>,
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> bool {
+    let to = crate::projects::plain_path(to);
+    if !outputs.iter().any(|o| same_file(&o.path, from)) {
+        return false;
+    }
+    outputs.retain(|o| same_file(&o.path, from) || !same_file(&o.path, &to));
+    for o in outputs.iter_mut().filter(|o| same_file(&o.path, from)) {
+        o.path = to.clone();
+    }
+    true
 }
 
 /// The path of the last `session.workspace` event, unless it closed it.
@@ -776,6 +822,12 @@ impl ChatSession {
             compacted: None,
             compact_skip: None,
             calls_at_compaction: None,
+            cache: match &paths {
+                Some(p) => crate::toolcache::ToolCache::with_dir(
+                    crate::toolcache::ToolCache::dir_in(&p.data_dir),
+                ),
+                None => crate::toolcache::ToolCache::memory(),
+            },
             results,
             ledger: UsageLedger::default(),
             tools,
@@ -1353,6 +1405,7 @@ impl ChatSession {
                 prefetch: true,
                 retry: None,
                 results: self.results.as_deref(),
+                cache: Some(&self.cache),
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1721,6 +1774,7 @@ impl ChatSession {
                     prefetch: false,
                     retry: None,
                     results: self.results.as_deref(),
+                    cache: Some(&self.cache),
                 };
                 TurnLoop {
                     session: self.session,
@@ -2151,5 +2205,51 @@ mod output_tests {
             ]
         );
         assert_eq!(got[1].what, "file_write");
+    }
+
+    /// #77: renamed outputs follow their file; Windows' `\\?\` never
+    /// shows in an output's path.
+    #[test]
+    fn a_rename_moves_the_output_and_paths_are_plain() {
+        let ses = SessionId::new();
+        let ev = |kind: &str, payload: serde_json::Value| {
+            EventEnvelope::new(ses, kind, EffectClass::Analysis, "x", payload)
+        };
+        let events = vec![
+            ev(
+                "session.workspace",
+                json!({"path": r"\\?\D:\Codex\Tern testing"}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_write", "args": {"path": "notes.md"}}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_rename", "args": {"from": "notes.md", "to": "summary.md"}}),
+            ),
+            ev(
+                "tool.executed",
+                json!({"tool": "file_rename", "args": {"from": "summary.md", "to": "sum.md"}}),
+            ),
+        ];
+        let got = outputs_in(&events, None);
+        assert_eq!(got.len(), 1);
+        let shown = got[0].path.to_string_lossy().replace('\\', "/");
+        assert!(!shown.contains('?'), "{shown}");
+        assert!(shown.ends_with("Tern testing/sum.md"), "{shown}");
+        // The window's own list moves the same way.
+        let mut outs = vec![Output::now("/w/a.md".into(), "file_write")];
+        assert!(rename_output(
+            &mut outs,
+            std::path::Path::new("/w/a.md"),
+            std::path::Path::new("/w/b.md")
+        ));
+        assert_eq!(outs[0].path, std::path::PathBuf::from("/w/b.md"));
+        assert!(!rename_output(
+            &mut outs,
+            std::path::Path::new("/w/zzz.md"),
+            std::path::Path::new("/w/c.md")
+        ));
     }
 }

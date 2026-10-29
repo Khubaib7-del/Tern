@@ -74,6 +74,15 @@ pub(super) fn family_ink(fam: Family, p: Palette) -> Hsla {
     hsla(h, s, if p.canvas.l < 0.5 { 0.62 } else { 0.40 }, 1.)
 }
 
+/// The tool cards' done green and failed red, for the plan card (#77).
+pub(super) fn done_green(p: Palette) -> Hsla {
+    green(p)
+}
+
+pub(super) fn fail_red(p: Palette) -> Hsla {
+    red(p)
+}
+
 fn red(p: Palette) -> Hsla {
     hsla(0.0, 0.65, if p.canvas.l < 0.5 { 0.62 } else { 0.45 }, 1.)
 }
@@ -341,6 +350,17 @@ impl Workspace {
                     .text_color(p.faint)
                     .child(SharedString::from(g.tools_line())),
             )
+            .when_some(g.cached_note(), |d, note| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .child(gpui_kit::component::Icon::new(AssetIcon::Clock).xsmall())
+                        .child(SharedString::from(note)),
+                )
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_open(k2.clone(), default);
                 cx.notify();
@@ -398,6 +418,17 @@ impl Workspace {
                     .text_color(p.text)
                     .child(SharedString::from(c.tool.clone())),
             )
+            .children(c.task.as_ref().map(|t| {
+                div()
+                    .flex_none()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(SharedString::from(format!("task {t}")))
+            }))
             .child(
                 div()
                     .flex_1()
@@ -408,6 +439,30 @@ impl Workspace {
                     .text_color(p.muted)
                     .child(SharedString::from(c.title.clone())),
             )
+            .children(c.cached.map(|age| {
+                // #77: served from the tool cache, not run again.
+                div()
+                    .id(SharedString::from(format!("tc-cached-{key}")))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(p.border)
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(gpui_kit::component::Icon::new(AssetIcon::Clock).xsmall())
+                    .child("cached")
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(SharedString::from(format!(
+                            "Same call as before: {} (not run again)",
+                            tern_agent::toolcache::age_line(std::time::Duration::from_secs(age))
+                        )))
+                        .build(window, cx)
+                    })
+            }))
             .child(
                 div()
                     .flex_none()
@@ -431,6 +486,7 @@ impl Workspace {
                 cx.notify();
             }));
         let body = open.then(|| self.card_body(&key, c, p, cx));
+        let inner = (!c.children.is_empty()).then(|| self.inner_cards(&key, c, p, cx));
         let card = div()
             .id(SharedString::from(format!("tcard-{key}")))
             .relative()
@@ -459,7 +515,8 @@ impl Workspace {
                     }),
             )
             .child(head)
-            .children(body);
+            .children(body)
+            .children(inner);
         if waiting && !self.reduced_motion {
             card.with_animation(
                 SharedString::from(format!("tcard-pulse-{key}")),
@@ -473,6 +530,79 @@ impl Workspace {
         } else {
             card.into_any_element()
         }
+    }
+
+    /// The calls a code-mode script or a task graph made (#77): one row
+    /// that opens into their cards, open by itself when one waits for
+    /// you or failed.
+    fn inner_cards(
+        &self,
+        key: &str,
+        c: &ToolCard,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let ikey = format!("{key}-in");
+        let default = c.opens_inner();
+        let open = self.is_open(&ikey, default);
+        let state = c.inner_state().unwrap_or(CardState::Done);
+        let fam = c
+            .children
+            .first()
+            .map(|k| k.family)
+            .unwrap_or(Family::Other);
+        let k2 = ikey.clone();
+        let row = div()
+            .id(SharedString::from(format!("tin-{key}")))
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .min_w_0()
+            .text_xs()
+            .text_color(p.faint)
+            .cursor_pointer()
+            .hover(|d| d.text_color(p.text))
+            .child(
+                gpui_kit::component::Icon::new(if open {
+                    AssetIcon::ChevronDown
+                } else {
+                    AssetIcon::ChevronRight
+                })
+                .xsmall(),
+            )
+            .child(state_icon(state, p, fam))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(c.inner_line())),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.toggle_open(k2.clone(), default);
+                cx.notify();
+            }));
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(row)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .pl_3()
+                        .border_l_1()
+                        .border_color(p.border)
+                        .children(
+                            c.children
+                                .iter()
+                                .map(|k| self.tool_card(format!("{key}-k{}", k.call), k, p, cx)),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     fn card_body(&self, key: &str, c: &ToolCard, p: Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -507,6 +637,14 @@ impl Workspace {
                     .text_xs()
                     .text_color(approval_yellow(p))
                     .child(SharedString::from(crate::toolcards::waiting_line(why))),
+            );
+        }
+        if let Some(why) = &c.allowed_because {
+            col = col.child(
+                div()
+                    .text_xs()
+                    .text_color(approval_yellow(p))
+                    .child(SharedString::from(why.clone())),
             );
         }
         if let Some(e) = &c.error {
@@ -962,10 +1100,16 @@ impl Workspace {
                         cx.notify();
                     }))
             }));
+        // #77: never read as saved before it is. The file on disk is the
+        // proof: "Saved" only once it holds exactly this text.
+        let saved = !waiting && w.done && self.preview_saved(&w.path, &w.text);
+        // Short, so the file's name keeps its room in the header.
         let status = if waiting {
-            "waiting for your approval"
+            "Pending approval"
+        } else if saved {
+            "Saved"
         } else if w.done {
-            "arguments complete"
+            "Not written"
         } else {
             "writing…"
         };
@@ -1016,15 +1160,17 @@ impl Workspace {
                         .child(
                             div()
                                 .flex_1()
-                                .min_w_0()
+                                .min_w(px(64.))
                                 .truncate()
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(SharedString::from(w.path.clone())),
                         )
-                        .child({
+                        // Once saved the file on disk is the text, so a
+                        // diff against it would read +0 −0.
+                        .when(!saved, |row| {
                             let d = self.diff_for(&w.path, &w.text);
-                            diff_counts(d.added, d.removed, p).flex_none()
+                            row.child(diff_counts(d.added, d.removed, p).flex_none())
                         })
                         .child(
                             div()
@@ -1041,6 +1187,20 @@ impl Workspace {
                 .child(div().min_w_0().child(body))
                 .into_any_element(),
         )
+    }
+
+    /// Whether the previewed file is on disk with exactly `text` (#77).
+    fn preview_saved(&self, rel: &str, text: &str) -> bool {
+        let Some((_, root)) = self.model.workspace.as_ref() else {
+            return false;
+        };
+        let path = root.join(rel.trim().trim_start_matches("./"));
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() == text.len() as u64 => {
+                std::fs::read(&path).is_ok_and(|b| b == text.as_bytes())
+            }
+            _ => false,
+        }
     }
 
     // ----- The live poll -----

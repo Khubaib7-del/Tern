@@ -88,6 +88,10 @@ impl TurnState {
                 | (ApprovalRequested, Executing)
                 | (ApprovalRequested, Blocked)
                 | (Executing, RecordResult)
+                // A task graph's wave or a code-mode script (#77) asks for
+                // the next call while earlier ones run; each call still goes
+                // through the policy gate on its own.
+                | (Executing, ToolRequested)
                 | (RecordResult, ModelStreaming)
                 | (RecordResult, ToolRequested)
                 | (RecordResult, Verifying)
@@ -206,6 +210,28 @@ mod tests {
         .unwrap();
         assert_eq!(m.state(), Completed);
         assert_eq!(m.history().len(), 11);
+    }
+
+    /// #77: a script's inner call or a graph's next task is requested
+    /// while the outer call runs, and still meets the gate.
+    #[test]
+    fn nested_calls_go_back_through_the_gate() {
+        let m = run(&[
+            Preparing,
+            ModelStreaming,
+            ToolRequested,
+            PolicyCheck,
+            Executing,
+            ToolRequested,
+            PolicyCheck,
+            ApprovalRequested,
+            Executing,
+            RecordResult,
+            ModelStreaming,
+        ])
+        .unwrap();
+        assert_eq!(m.state(), ModelStreaming);
+        assert!(!Executing.can_move_to(PolicyCheck));
     }
 
     #[test]

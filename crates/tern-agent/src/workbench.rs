@@ -56,6 +56,9 @@ pub fn register(ws: &Arc<Workspace>, tools: &mut ToolRegistry) {
 pub fn register_always(tools: &mut ToolRegistry) {
     tools.register(ShowInPanel);
     tools.register(crate::python::RunPython);
+    // #77: the visible plan and the task graph.
+    tools.register(crate::planner::PlanTool);
+    tools.register(crate::planner::RunTasksTool);
 }
 
 #[derive(Debug, Clone)]

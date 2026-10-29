@@ -184,7 +184,10 @@ impl Workspace {
         let menu_open = self.model.project_menu == Some(id);
         let confirming = self.model.projects.confirm_delete == Some(id);
         let chat_name = name.clone();
-        let full: SharedString = root.display().to_string().into();
+        let full: SharedString = tern_agent::projects::plain_path(&root)
+            .display()
+            .to_string()
+            .into();
         let row = div()
             .id(SharedString::from(format!("project-{id}")))
             .group("project-row")
@@ -552,7 +555,10 @@ impl Workspace {
         for (id, name, root) in folders {
             let selected =
                 current.as_deref() == Some(tern_agent::projects::folder_key(&root).as_str());
-            let path: SharedString = root.display().to_string().into();
+            let path: SharedString = tern_agent::projects::plain_path(&root)
+                .display()
+                .to_string()
+                .into();
             let (n2, r2) = (name.clone(), root.clone());
             m = m.child(
                 row(SharedString::from(format!("folder-pick-{id}")), selected)

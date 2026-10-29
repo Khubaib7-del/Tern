@@ -532,7 +532,7 @@ impl Workspace {
         };
         let tip: SharedString = match (&self.model.workspace, locked) {
             (Some((_, path)), true) => {
-                format!("{}\n{}", path.display(), super::folders_view::FIXED).into()
+                format!("{}\n{}", tern_agent::projects::plain_path(path).display(), super::folders_view::FIXED).into()
             }
             (None, true) => "This chat has no folder; start a new chat to use one".into(),
             (_, false) => "Pick the folder this chat works in: Tern's file tools read only inside it. It is fixed once you send the first message".into(),
@@ -2756,8 +2756,19 @@ impl Workspace {
             | crate::model::Phase::Approval { run, .. } => self.tool_cards(None, run, p, cx),
             _ => None,
         };
+        // The plan and task graph as they change (#77).
+        let plan = match &self.model.phase {
+            crate::model::Phase::Working { run, .. }
+            | crate::model::Phase::Approval { run, .. } => self.plan_cards(None, run, p, cx),
+            _ => None,
+        };
         let draft = self.model.paced_draft();
-        if thinking.is_none() && rollup.is_none() && draft.is_none() && cards.is_none() {
+        if thinking.is_none()
+            && rollup.is_none()
+            && draft.is_none()
+            && cards.is_none()
+            && plan.is_none()
+        {
             return None;
         }
         let i = self.model.entries.len();
@@ -2772,6 +2783,7 @@ impl Workspace {
                 .gap_2()
                 .children(thinking)
                 .children(rollup)
+                .children(plan)
                 .children(cards)
                 .children(draft.map(|d| {
                     super::bidi_markdown("answer", i, crate::richmd::prepare(d).into_owned(), |t| {

@@ -162,9 +162,11 @@ async fn reopened_chat_brings_back_turns_and_history() {
     // workbench tools every chat has since #75: `run_python` and
     // `show_in_panel`, and the tool rules since #76: approval cards
     // instead of prose questions, `file_rename`, no invented actions,
-    // full paths outside the folder), at four characters a token.
+    // full paths outside the folder), and since #77 `plan`, `run_tasks`
+    // and code mode's line with the stubs (`def file_read(path: str) ->
+    // str`), at four characters a token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (702, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (956, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))

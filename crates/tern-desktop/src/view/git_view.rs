@@ -157,7 +157,11 @@ impl Workspace {
             .editor
             .vault
             .as_ref()
-            .map(|v| v.root().display().to_string())
+            .map(|v| {
+                tern_agent::projects::plain_path(v.root())
+                    .display()
+                    .to_string()
+            })
             .unwrap_or_default();
 
         let header = row()

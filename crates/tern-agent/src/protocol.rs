@@ -102,9 +102,22 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
         s.push_str(&tools.describe());
         s.push_str("\n\n");
         s.push_str(TOOL_PROTOCOL);
+        if tools.get("run_python").is_some() {
+            let stubs = crate::python::stubs(tools);
+            if !stubs.is_empty() {
+                s.push_str("\n\n");
+                s.push_str(CODE_MODE);
+                s.push('\n');
+                s.push_str(&crate::python::stub_text(&stubs));
+            }
+        }
     }
     s
 }
+
+/// Code mode (#77), after the tool protocol when `run_python` is offered;
+/// the stubs follow it.
+pub const CODE_MODE: &str = "Code mode: in `run_python` these tools are Python functions that return text, so one script can call many tools and only what it prints comes back to you (print a short summary). Each call still asks the user when needed:";
 
 #[cfg(test)]
 mod tests {

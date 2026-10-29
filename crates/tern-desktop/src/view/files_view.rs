@@ -25,6 +25,11 @@ fn icon(name: AssetIcon, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
+/// A path as the user reads it: never Windows' `\\?\` prefix (#77).
+pub(crate) fn shown(path: &Path) -> String {
+    tern_agent::projects::plain_path(path).display().to_string()
+}
+
 /// Outputs the popover lists before "Show all in Files".
 const POPOVER_ROWS: usize = 8;
 
@@ -51,7 +56,7 @@ impl Workspace {
         self.model.file_menu = None;
         if !path.exists() {
             self.model
-                .toast_error(format!("{} was moved or deleted.", path.display()), None);
+                .toast_error(format!("{} was moved or deleted.", shown(path)), None);
         } else if let Err(e) = crate::reveal::open(path) {
             self.model
                 .toast_error(format!("Couldn't open it: {e}"), None);
@@ -95,7 +100,7 @@ impl Workspace {
                 div().w(px(14.)).into_any_element()
             }
         });
-        let tip: SharedString = path.display().to_string().into();
+        let tip: SharedString = shown(&path).into();
         let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
         let is_dir = path.is_dir() && dir.is_some();
         let row = div()
@@ -239,9 +244,7 @@ impl Workspace {
                 item("copy", AssetIcon::Copy, "Copy path").on_click(cx.listener(
                     move |this, _, _, cx| {
                         this.model.file_menu = None;
-                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                            b.display().to_string(),
-                        ));
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(shown(&b)));
                         this.model.toast_info("Copied the path.");
                         cx.notify();
                     },
@@ -411,8 +414,19 @@ impl Workspace {
         let root_name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| root.display().to_string());
-        let (r1, tip) = (root.clone(), SharedString::from(root.display().to_string()));
+            .unwrap_or_else(|| {
+                tern_agent::projects::plain_path(&root)
+                    .display()
+                    .to_string()
+            });
+        let (r1, tip) = (
+            root.clone(),
+            SharedString::from(
+                tern_agent::projects::plain_path(&root)
+                    .display()
+                    .to_string(),
+            ),
+        );
         col = col.child(
             div()
                 .id("files-root")

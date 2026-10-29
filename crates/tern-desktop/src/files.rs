@@ -293,8 +293,10 @@ pub fn ago(secs: i64) -> String {
 /// A path shown short: inside `root` relative to it, else the full path.
 pub fn short_path(path: &Path, root: Option<&Path>) -> String {
     match root.and_then(|r| path.strip_prefix(r).ok()) {
-        Some(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
-        _ => path.display().to_string(),
+        Some(rel) if !rel.as_os_str().is_empty() => {
+            tern_agent::projects::plain_path(rel).display().to_string()
+        }
+        _ => tern_agent::projects::plain_path(path).display().to_string(),
     }
 }
 

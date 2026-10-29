@@ -173,7 +173,9 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
     BuiltinTool {
         name: "file_write",
         label: "Write a workspace file",
-        effect: EffectClass::Write,
+        // The tool's own class (#77): Settings › Tools showed "Auto
+        // (runs)" for it while it asked.
+        effect: EffectClass::ExternalSideEffect,
     },
     BuiltinTool {
         name: "file_rename",
@@ -193,6 +195,16 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
     BuiltinTool {
         name: "show_in_panel",
         label: "Show a tab in the right panel",
+        effect: EffectClass::Analysis,
+    },
+    BuiltinTool {
+        name: "plan",
+        label: "Show and update a plan in the chat",
+        effect: EffectClass::Analysis,
+    },
+    BuiltinTool {
+        name: "run_tasks",
+        label: "Run a task graph (independent steps in parallel)",
         effect: EffectClass::Analysis,
     },
     BuiltinTool {

@@ -56,6 +56,7 @@ mod palette_view;
 mod panels_view;
 mod permissions_view;
 mod pet_view;
+mod plan_view;
 mod press;
 mod read_aloud_view;
 mod runmap_view;
@@ -1143,6 +1144,22 @@ impl Workspace {
                     for o in tern_agent::chat::outputs_in(std::slice::from_ref(ev), ws.as_deref()) {
                         self.model.outputs.retain(|x| x.path != o.path);
                         self.model.outputs.push(o);
+                    }
+                    self.model.files.reload();
+                }
+                // #77: a rename moves its output to the new name and the
+                // Files tree drops the old entry at once.
+                if ev.kind == "tool.executed" && ev.payload["tool"] == "file_rename" {
+                    if let Some((_, root)) = self.model.workspace.as_ref() {
+                        let a = &ev.payload["args"];
+                        let at = |k: &str| {
+                            let rel = a[k].as_str().unwrap_or_default().trim();
+                            tern_agent::projects::plain_path(
+                                &root.join(rel.strip_prefix("./").unwrap_or(rel)),
+                            )
+                        };
+                        let (from, to) = (at("from"), at("to"));
+                        tern_agent::chat::rename_output(&mut self.model.outputs, &from, &to);
                     }
                     self.model.files.reload();
                 }
@@ -4190,6 +4207,11 @@ impl Workspace {
                     .gap_2()
                     .children(thought.as_ref().map(|th| self.thinking_done(i, th, p, cx)))
                     .children(self.rollup(Some(i), run, p, cx))
+                    .children(if folded {
+                        None
+                    } else {
+                        self.plan_cards(Some(i), run, p, cx)
+                    })
                     .children(if folded {
                         None
                     } else {

@@ -364,7 +364,11 @@ impl Workspace {
                         .text_xs()
                         .text_color(p.faint)
                         .truncate()
-                        .child(SharedString::from(v.root().display().to_string())),
+                        .child(SharedString::from(
+                            tern_agent::projects::plain_path(v.root())
+                                .display()
+                                .to_string(),
+                        )),
                 )
             });
 
