@@ -43,7 +43,9 @@ impl Default for RetryPolicy {
             retries: 4,
             base: Duration::from_secs(1),
             max_delay: Duration::from_secs(32),
-            max_wait: Duration::from_secs(120),
+            // #79: a stated wait up to a minute is waited out (with the
+            // countdown); a longer one stops with the provider's words.
+            max_wait: Duration::from_secs(60),
         }
     }
 }
@@ -86,7 +88,11 @@ pub fn classify(e: &ProviderError) -> Class {
             } else {
                 Class::Transient {
                     reason: "rate limited",
-                    retry_after: retry_after.map(Duration::from_secs),
+                    // The wait a provider states only in words (Groq: "try
+                    // again in 41.87s") counts like a `Retry-After` (#79).
+                    retry_after: retry_after
+                        .map(Duration::from_secs)
+                        .or_else(|| stated_wait(detail)),
                 }
             }
         }
@@ -139,6 +145,12 @@ pub fn classify(e: &ProviderError) -> Class {
 /// your current quota"; others mention billing or credits.
 pub fn is_spend_cap(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
+    // A per-minute or per-day limit that clears by itself is a rate limit,
+    // even when the message also sells a bigger plan (#79: Groq's TPM
+    // limit says "Upgrade to Dev Tier ... /settings/billing").
+    if is_rate_window(&t) {
+        return false;
+    }
     [
         "usage limit",
         "spend limit",
@@ -154,6 +166,100 @@ pub fn is_spend_cap(text: &str) -> bool {
     ]
     .iter()
     .any(|n| t.contains(n))
+}
+
+/// Whether a provider's words describe a limit on requests or tokens per
+/// minute, hour or day ("Rate limit reached ... tokens per minute (TPM)
+/// ... Please try again in 41.87s"): it clears by itself.
+pub fn is_rate_window(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "rate limit reached",
+        "rate_limit_exceeded",
+        "tokens per minute",
+        "requests per minute",
+        "tokens per day",
+        "requests per day",
+        "per minute",
+        "(tpm)",
+        "(rpm)",
+        "(tpd)",
+        "(rpd)",
+        "try again in",
+    ]
+    .iter()
+    .any(|n| t.contains(n))
+}
+
+/// The wait a provider's message states in words: "try again in 41.87s",
+/// "in 1m30.5s", "in 250ms", "in 20 seconds" (rounded up to whole
+/// seconds). `None` when it states none.
+pub fn stated_wait(text: &str) -> Option<Duration> {
+    let t = text.to_ascii_lowercase();
+    let at = t.find("try again in")? + "try again in".len();
+    let rest = t[at..].trim_start();
+    let mut secs = 0f64;
+    let mut num = String::new();
+    let mut any = false;
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() || c == '.' {
+            num.push(c);
+            continue;
+        }
+        if num.is_empty() {
+            if c == ' ' {
+                continue;
+            }
+            break;
+        }
+        let n: f64 = num.parse().ok()?;
+        num.clear();
+        let mut unit = String::from(c);
+        while let Some(&d) = chars.peek() {
+            if d.is_ascii_alphabetic() {
+                unit.push(d);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        let unit = unit.trim().to_owned();
+        let f = match unit.as_str() {
+            "ms" => 0.001,
+            "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+            "h" | "hr" | "hour" | "hours" => 3600.0,
+            "" => {
+                // "in 20 seconds": a space before the unit.
+                let mut u = String::new();
+                while let Some(&d) = chars.peek() {
+                    if d.is_ascii_alphabetic() {
+                        u.push(d);
+                        chars.next();
+                    } else if u.is_empty() && d == ' ' {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                match u.as_str() {
+                    "ms" => 0.001,
+                    "s" | "sec" | "secs" | "second" | "seconds" => 1.0,
+                    "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+                    "h" | "hr" | "hour" | "hours" => 3600.0,
+                    _ => return None,
+                }
+            }
+            _ => break,
+        };
+        secs += n * f;
+        any = true;
+        if !chars.peek().is_some_and(|d| d.is_ascii_digit()) {
+            break;
+        }
+    }
+    (any && secs.is_finite() && secs >= 0.0).then(|| Duration::from_secs(secs.ceil() as u64))
 }
 
 /// A stream error event that says the service is busy (Anthropic's
@@ -439,6 +545,62 @@ mod tests {
                 detail: String::new()
             }),
             Class::SpendCap
+        );
+    }
+
+    #[test]
+    fn a_per_minute_limit_is_waited_out_even_when_it_mentions_billing() {
+        let groq = "Rate limit reached for model `openai/gpt-oss-120b` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 6521, Requested 7062. Please try again in 41.87s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing";
+        assert!(!is_spend_cap(groq));
+        assert!(is_rate_window(groq));
+        assert_eq!(
+            classify(&limited(None, groq)),
+            Class::Transient {
+                reason: "rate limited",
+                retry_after: Some(Duration::from_secs(42)),
+            }
+        );
+        // A header wins over the words.
+        assert!(matches!(
+            classify(&limited(Some(5), groq)),
+            Class::Transient { retry_after: Some(d), .. } if d == Duration::from_secs(5)
+        ));
+        assert_eq!(
+            stated_wait("Please try again in 1m30.5s."),
+            Some(Duration::from_secs(91))
+        );
+        assert_eq!(
+            stated_wait("try again in 250ms"),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(
+            stated_wait("Try again in 20 seconds"),
+            Some(Duration::from_secs(20))
+        );
+        assert_eq!(stated_wait("try again later"), None);
+        assert_eq!(stated_wait("no wait here"), None);
+        // A real quota stays terminal.
+        assert!(is_spend_cap(
+            "You exceeded your current quota, please check your plan and billing details."
+        ));
+        // A wait longer than a minute gives up at once by default.
+        assert_eq!(
+            next_delay(
+                RetryPolicy::default(),
+                1,
+                Some(Duration::from_secs(432)),
+                0.5
+            ),
+            None
+        );
+        assert!(
+            next_delay(
+                RetryPolicy::default(),
+                1,
+                Some(Duration::from_secs(42)),
+                0.5
+            )
+            .is_some()
         );
     }
 

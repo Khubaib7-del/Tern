@@ -461,9 +461,17 @@ pub fn read_graph(args: &Value, known: &dyn Fn(&str) -> bool) -> Result<Graph, S
             ));
         };
         if NOT_IN_GRAPH.contains(&tool.as_str()) {
-            return Err(format!(
-                "task \"{id}\" calls `{tool}`, which cannot run inside a task graph"
-            ));
+            // #79: said so the model calls it on its own next, instead of
+            // sending the same graph again.
+            return Err(if tool == "run_python" {
+                format!(
+                    "task \"{id}\" calls `run_python`, which cannot run inside a task graph. Call `run_python` separately, as its own tool call outside `run_tasks`; its script can call the tool functions (file_read, file_write, ...) itself, so it can do the other tasks' work too"
+                )
+            } else {
+                format!(
+                    "task \"{id}\" calls `{tool}`, which cannot run inside a task graph. Call `{tool}` separately, as its own tool call outside `run_tasks`"
+                )
+            });
         }
         if !known(&tool) {
             return Err(format!(

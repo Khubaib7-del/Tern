@@ -439,6 +439,8 @@ impl Workspace {
                     .text_color(p.muted)
                     .child(SharedString::from(c.title.clone())),
             )
+            // #79: +N −M on a write's card, asked or not.
+            .children(c.diff.map(|(a, r)| diff_counts(a, r, p).flex_none()))
             .children(c.cached.map(|age| {
                 // #77: served from the tool cache, not run again.
                 div()
@@ -1005,7 +1007,7 @@ impl Workspace {
             .files
             .root
             .as_ref()
-            .map(|r| r.join(path))
+            .map(|r| r.join(tern_agent::workspace::unroot_path(r, path)))
             .and_then(|f| std::fs::read_to_string(f).ok());
         let d = tern_agent::diff::line_diff(old.as_deref(), text, 3);
         *self.work.diff_cache.borrow_mut() = Some((path.to_owned(), h, d.clone()));
@@ -1194,7 +1196,8 @@ impl Workspace {
         let Some((_, root)) = self.model.workspace.as_ref() else {
             return false;
         };
-        let path = root.join(rel.trim().trim_start_matches("./"));
+        // #79: `New/review.md` in a folder named New is `review.md`.
+        let path = root.join(tern_agent::workspace::unroot_path(root, rel));
         match std::fs::metadata(&path) {
             Ok(m) if m.len() == text.len() as u64 => {
                 std::fs::read(&path).is_ok_and(|b| b == text.as_bytes())

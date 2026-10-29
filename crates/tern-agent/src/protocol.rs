@@ -48,12 +48,76 @@ pub fn parse(text: &str) -> Reply {
     let Some(name) = json.get("tool").and_then(Value::as_str) else {
         return Reply::Malformed("the tool block needs a \"tool\" name".into());
     };
-    Reply::Tool {
-        name: name.to_owned(),
-        args: json
-            .get("args")
+    let (name, args) = unwrap_call(
+        name.to_owned(),
+        json.get("args")
             .cloned()
             .unwrap_or(Value::Object(Default::default())),
+    );
+    Reply::Tool { name, args }
+}
+
+/// The real call inside a wrapped one (#79). Some models put the whole
+/// call where its name goes: a tool named `tool` whose arguments are
+/// `{"tool": "file_read", "args": {...}}` (codestral), or a name that is
+/// itself that JSON object, sometimes with a stray `}` after it
+/// (ministral). Anything else is returned as it came.
+pub fn unwrap_call(name: String, args: Value) -> (String, Value) {
+    let mut name = name;
+    let mut args = args;
+    // Twice at most: a wrapper inside a wrapper.
+    for _ in 0..2 {
+        let trimmed = name.trim();
+        if trimmed.starts_with('{') {
+            let mut it = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+            let Some(Ok(inner)) = it.next() else {
+                break;
+            };
+            let Some(real) = call_name(&inner) else {
+                break;
+            };
+            let inner_args = call_args(&inner);
+            let empty = args.as_object().is_none_or(|o| o.is_empty());
+            if let Some(a) = inner_args.filter(|_| empty) {
+                args = a;
+            }
+            name = real;
+            continue;
+        }
+        if matches!(trimmed, "tool" | "tool_call" | "function" | "call")
+            && let Some(real) = call_name(&args)
+        {
+            let inner = call_args(&args).unwrap_or(Value::Object(Default::default()));
+            name = real;
+            args = inner;
+            continue;
+        }
+        break;
+    }
+    (name, args)
+}
+
+/// The tool a wrapped call names (`tool` or `name`).
+fn call_name(v: &Value) -> Option<String> {
+    ["tool", "name"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(Value::as_str))
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+}
+
+/// A wrapped call's arguments (`args`, `arguments` or `parameters`); a
+/// JSON string holding an object is read as that object.
+fn call_args(v: &Value) -> Option<Value> {
+    let a = ["args", "arguments", "parameters"]
+        .iter()
+        .find_map(|k| v.get(*k))?;
+    match a {
+        Value::String(s) => serde_json::from_str::<Value>(s)
+            .ok()
+            .filter(Value::is_object),
+        Value::Object(_) => Some(a.clone()),
+        _ => None,
     }
 }
 
@@ -71,7 +135,7 @@ pub fn parse_calls(text: &str) -> Vec<(String, Value)> {
         if let Ok(json) = serde_json::from_str::<Value>(body[..end].trim())
             && let Some(name) = json.get("tool").and_then(Value::as_str)
         {
-            out.push((
+            out.push(unwrap_call(
                 name.to_owned(),
                 json.get("args")
                     .cloned()
@@ -174,6 +238,48 @@ mod tests {
                 args: json!({})
             }
         );
+    }
+
+    #[test]
+    fn wrapped_calls_are_unwrapped() {
+        // codestral: a tool named `tool` carrying the real call.
+        let r = format!(
+            "```tool\n{}\n```",
+            json!({"tool": "tool", "args": {"tool": "file_read", "args": {"path": "sum.md"}}})
+        );
+        assert_eq!(
+            parse_calls(&r),
+            vec![("file_read".to_owned(), json!({"path": "sum.md"}))]
+        );
+        assert_eq!(
+            parse(&r),
+            Reply::Tool {
+                name: "file_read".into(),
+                args: json!({"path": "sum.md"})
+            }
+        );
+        // ministral: the name is the call itself, with a stray brace.
+        let (n, a) = unwrap_call(
+            r#"{"tool": "file_read", "args": {"path": "counts.md"}}}"#.into(),
+            json!({}),
+        );
+        assert_eq!((n.as_str(), a), ("file_read", json!({"path": "counts.md"})));
+        // Arguments given beside such a name are kept.
+        let (n, a) = unwrap_call(r#"{"name": "files_list"}"#.into(), json!({"path": "src"}));
+        assert_eq!((n.as_str(), a), ("files_list", json!({"path": "src"})));
+        // `arguments` as a JSON string.
+        let (n, a) = unwrap_call(
+            "function".into(),
+            json!({"name": "web_search", "arguments": "{\"query\": \"rag\"}"}),
+        );
+        assert_eq!((n.as_str(), a), ("web_search", json!({"query": "rag"})));
+        // Plain calls, and a `tool` with nothing inside, are left alone.
+        let (n, a) = unwrap_call("file_read".into(), json!({"path": "a"}));
+        assert_eq!((n.as_str(), a), ("file_read", json!({"path": "a"})));
+        let (n, _) = unwrap_call("tool".into(), json!({"x": 1}));
+        assert_eq!(n, "tool");
+        let (n, _) = unwrap_call("{not json".into(), json!({}));
+        assert_eq!(n, "{not json");
     }
 
     #[test]

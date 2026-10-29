@@ -111,6 +111,12 @@ pub trait Tool: Send + Sync + std::fmt::Debug {
     fn expand(&self, _args: &Value) -> Option<Result<(&'static str, Value), String>> {
         None
     }
+    /// The text a call replaces: for `file_write`, the file as it is now
+    /// (`None` when there is no such file). The turn shows +N −M from it
+    /// and steers a rewrite of a file the user asked to add to (#79).
+    fn old_text(&self, _args: &Value) -> Option<String> {
+        None
+    }
     /// Whether running the same call twice is harmless.
     fn idempotent(&self) -> bool {
         matches!(self.effect(), EffectClass::Read | EffectClass::Analysis)

@@ -794,6 +794,45 @@ pub struct ResumeOffer {
 pub struct BudgetStop {
     pub used: u64,
     pub limit: Option<u64>,
+    /// Set when it stopped at its limit of model or tool calls instead
+    /// (#79): the card offers Continue on the same model, not a token
+    /// raise.
+    pub calls: Option<CallLimit>,
+}
+
+/// "The turn reached its limit of 12 model calls."
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallLimit {
+    pub n: u32,
+    /// Tool calls rather than model calls.
+    pub tools: bool,
+}
+
+impl CallLimit {
+    /// The limit a stop reason names, if it is a call limit.
+    pub fn of(reason: &str) -> Option<Self> {
+        let tools = reason.contains(" tool calls");
+        if !tools && !reason.contains(" model calls") {
+            return None;
+        }
+        let at = reason.find("limit of ")? + "limit of ".len();
+        let n = reason[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .ok()?;
+        Some(Self { n, tools })
+    }
+
+    /// "The turn reached its limit of 12 model calls."
+    pub fn line(&self) -> String {
+        format!(
+            "The turn reached its limit of {} {} calls.",
+            self.n,
+            if self.tools { "tool" } else { "model" }
+        )
+    }
 }
 
 impl ResumeOffer {
@@ -805,10 +844,14 @@ impl ResumeOffer {
         ended: Option<(TurnState, Option<&str>)>,
     ) -> Option<Self> {
         let o = ck.offer(ended)?;
-        let budget = matches!(ended, Some((TurnState::BudgetExceeded, _))).then(|| BudgetStop {
-            used: ck.tokens_in + ck.tokens_out,
-            limit: ck.deep.as_ref().map(|d| d.plan.budget.tokens),
-        });
+        let budget = match ended {
+            Some((TurnState::BudgetExceeded, why)) => Some(BudgetStop {
+                used: ck.tokens_in + ck.tokens_out,
+                limit: ck.deep.as_ref().map(|d| d.plan.budget.tokens),
+                calls: why.and_then(CallLimit::of),
+            }),
+            _ => None,
+        };
         Some(Self {
             budget,
             about_search: o.about_search(),
@@ -3367,6 +3410,25 @@ mod tests {
             model_calls: 1,
             tool_calls: 0,
         }
+    }
+
+    #[test]
+    fn a_call_limit_stop_is_told_from_a_token_stop() {
+        let c = CallLimit::of("The turn reached its limit of 12 model calls.").unwrap();
+        assert_eq!(
+            c,
+            CallLimit {
+                n: 12,
+                tools: false
+            }
+        );
+        assert_eq!(c.line(), "The turn reached its limit of 12 model calls.");
+        let t = CallLimit::of("The turn reached its limit of 24 tool calls.").unwrap();
+        assert!(t.tools && t.n == 24);
+        assert_eq!(
+            CallLimit::of("The turn used 310000 tokens, over its limit of 300000."),
+            None
+        );
     }
 
     #[test]

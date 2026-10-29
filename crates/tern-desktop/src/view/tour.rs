@@ -376,6 +376,8 @@ enum Act {
     WApprovalMenu,
     /// #75: kills the workbench's running commands (the Terminal's Kill).
     WKill,
+    /// #79: deletes a file in the chat's folder, as if outside Tern.
+    WDelete(&'static str),
     /// #75: a scene-log line with the cards, the Terminal's runs and the
     /// rules.
     WState(&'static str),
@@ -1654,6 +1656,7 @@ impl Workspace {
                     budget: Some(crate::model::BudgetStop {
                         used: 231_400,
                         limit: Some(240_000),
+                        calls: None,
                     }),
                 });
                 self.scroll.scroll_to_bottom();
@@ -2038,6 +2041,13 @@ impl Workspace {
                         let killed = tern_agent::live::kill(r.id);
                         log(&format!("TOUR note kill run {} ({}): {killed}", r.id, r.command));
                     }
+                }
+                cx.notify();
+            }
+            Act::WDelete(name) => {
+                if let Some((_, root)) = self.model.workspace.as_ref() {
+                    let gone = std::fs::remove_file(root.join(name)).is_ok();
+                    log(&format!("TOUR note deleted {name} outside Tern: {gone}"));
                 }
                 cx.notify();
             }
@@ -2802,6 +2812,9 @@ const WORK_NOTES: &str = "# Reading notes\n\n- Self-RAG: retrieve on demand, cri
 /// one printed line back.
 const WORK_CODE_MODE: &str = "names = ['reading-notes.md', 'meeting-notes.md', 'todo.md']\ntotal = 0\nfor n in names:\n    total += len(file_read(n).split())\nfile_write('word-counts.md', '# Word counts\\n\\nThree notes, ' + str(total) + ' words in all.\\n')\nprint('words in 3 notes:', total)\n";
 
+/// #79: code mode writes a file, then renames it.
+const WORK_WRITE_RENAME: &str = "file_write('draft-79.md', '# Draft\\n\\nHello from the tour.\\n')\nfile_rename('draft-79.md', 'hello-79.md')\nprint('renamed draft-79.md to hello-79.md')\n";
+
 const WORK_MEETING: &str = "# Meeting notes\n\n- Supervisor wants the FLARE baseline by Friday\n- Lab 3 is booked for the demo\n";
 /// #76: an answer with every block kind the focus view opens.
 const FOCUS_BLOCKS_A: &str = "Here is each kind.\n\n```python\ndef retrieve(query, k=5):\n    hits = index.search(embed(query), k)\n    return [h.text for h in hits if h.score > 0.3]\n```\n\n| Policy | Recall@5 | Latency (ms) |\n| --- | --- | --- |\n| Always retrieve | 0.71 | 420 |\n| FLARE | 0.78 | 610 |\n| Self-RAG | 0.81 | 1,150 |\n| No retrieval | 0.42 | 95 |\n\n$$\nP(\\text{retrieve} \\mid x) = \\sigma\\left(w^\\top h_x + b\\right)\n$$\n\n```mermaid\nflowchart LR\n    Q[Question] --> D{Unsure?}\n    D -- yes --> R[Retrieve]\n    D -- no --> A[Answer]\n    R --> A\n```\n";
@@ -3137,6 +3150,28 @@ fn focus_beats() -> Vec<Beat> {
         ),
         b(Act::WState("edit done"), 200),
         b(Act::WApproval("workspace_write"), 300),
+        // #79: a script writes a file and renames it: the Files tab's
+        // preview follows the new name; then an output deleted outside
+        // Tern leaves Outputs and its counts.
+        b(Act::ToastsClear, 300),
+        b(Act::View(RunView::Files), 300),
+        b(Act::CTypePath("Tour: code mode write then rename"), 200),
+        b(Act::CSend, 4500),
+        scene(
+            "x29-preview-after-rename",
+            "tern-only",
+            "Code mode wrote draft-79.md and renamed it to hello-79.md: the Files tab's preview is headed hello-79.md and says Saved (not draft-79.md Not written), and Outputs lists hello-79.md",
+            Act::WState("preview after rename"),
+            3000,
+        ),
+        b(Act::WDelete("word-counts.md"), 2600),
+        scene(
+            "x30-outputs-pruned",
+            "tern-only",
+            "word-counts.md was deleted outside Tern: within two seconds it leaves Outputs (no greyed Moved or deleted row), and the Outputs count and the title bar's file count drop by one; the Outputs header has its own refresh button",
+            Act::WState("outputs pruned"),
+            3000,
+        ),
         b(Act::CTypePath("Tour: a long conversion"), 200),
         b(Act::CSend, 3500),
         b(Act::CStop, 1500),
@@ -4836,6 +4871,19 @@ mod mock {
                     )],
                 )),
                 _ => answer("Added \"Book Lab 3 for the demo\" to todo.md."),
+            };
+        }
+        // #79: a script that writes a file, then renames it.
+        if user.contains("code mode write then rename") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![(
+                        "run_python".to_owned(),
+                        json!({"code": super::WORK_WRITE_RENAME}),
+                    )],
+                )),
+                _ => answer("Wrote draft-79.md, then renamed it to hello-79.md."),
             };
         }
         if user.contains("read the todo list twice") {

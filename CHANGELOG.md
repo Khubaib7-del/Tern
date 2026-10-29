@@ -4,6 +4,22 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #79): Act mode hardening from the #78 Windows test
+
+- **Outputs only lists files that are there**: an output whose file was deleted, or moved away outside Tern, leaves the title bar's Outputs menu and the Files tab within two seconds (and when a chat is shown or Outputs is opened), and the counts on Outputs and the title bar's file icon count only files that exist. The Outputs header has its own **Refresh** button, like the Folder's; it says how many outputs it removed.
+- **A folder named like a path is the folder** (a chat folder called `New`: the model listed `New` and wrote `New/review.md`, and the approval asked for `D:/Codex/New/New/**`). The system prompt names the chat's folder and says paths are relative to it and must not start with its name; a path whose first segment is the folder's own name (and no real subfolder of that name exists) means the folder. `file_write` makes the folders a path needs, inside the chat's folder only; a `mkdir` the command rules refuse tells the model so, and a command whose working folder is gone says that instead of Windows' "The directory name is invalid".
+- **No write preview for a refused call**: a `file_write` sent back to the model (empty text, a rewrite of a file you asked to add to) no longer opens a "Writing… +0 −0" preview in the Files tab.
+- **Call limits on a plan turn, and Continue on the same model**: in Act mode a turn with an open plan gets twice the model calls and tool calls. When a turn stops at a call limit, its card says which limit and which model, and **Continue** resumes on the same model. (The switch to `ministral-3b` in the test was the model picker used on the paused card; Tern has no automatic fallback.)
+- **Wrapped tool calls run**: a call to a tool named `tool` with the real call in its arguments (codestral), or a tool name that is itself a JSON call (ministral, stray braces included), runs as the call inside.
+- **Per-minute rate limits are retried**: a 429 that says "tokens per minute" or "requests per minute" and "try again in 41.87s" waits the stated time (at most 60 s) and retries; only a real quota or billing error stops the turn.
+- **A printed script is run, not shown**: in Act mode with a folder, when the user asked for a script that does something and the model answers with a Python block and "how to use this script", it is told once to run it with `run_python` and the tool functions (`file_write(path, text)`, …). A Python answer to a plain question is left alone.
+- **"Add a line" keeps the file**: a `file_write` that rewrites a file the user asked to add to and drops existing lines goes back to the model ("Call `file_edit` on sum.md …") without a card; a whole-file write that only adds runs. Every write's card shows **+N −M**, also when a rule or "for this chat" allowed it with no card.
+- **The Files tab's preview follows a rename**: after a script writes `notes.md` and renames it to `hello.md`, the preview is `hello.md` · Saved, not `notes.md` · Not written; the preview and its diff read the file at the folder-relative path.
+- **`run_python` in a task graph**: the refusal tells the model to call `run_python` separately.
+- **The Interrupted note wraps** inside the chat column instead of running past the composer.
+- **Mermaid log**: a diagram drawn after its labels were quoted logs one line; merman's error is logged only when quoting did not help.
+- **UI tour**: `TERN_TOUR_ONLY=work` adds x29 (code mode writes then renames: the preview follows the new name) and x30 (a file deleted outside Tern leaves Outputs and the counts drop).
+
 ### Fixed (PR #78): planner and code mode fixes from the #77 Windows test
 
 - **A plan the model stops updating no longer freezes** (the plan card sat at "0 of 3 done" for a whole run with `ministral-14b-2512`). After every round of tools that did not update the plan, the model reads one line saying where the plan stands and to call `plan` when a step is finished; the `plan` tool's description says the same. When the run ends with steps still open, Tern logs the plan once more as **ended**: the card reads "Plan · ended at 1 of 3 done" and the open steps say **Not marked done** (shown as skipped, never as done: Tern does not guess which steps the model finished). Chats logged before this show the same once their run has ended.

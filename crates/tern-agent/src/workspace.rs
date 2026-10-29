@@ -101,8 +101,8 @@ impl Workspace {
     /// Resolves a path the model gave (relative to the root, `/`
     /// separated) to a path inside the workspace, or says why not.
     pub fn resolve(&self, rel: &str) -> Result<PathBuf, ToolError> {
-        let rel = rel.trim();
-        let rel = rel.strip_prefix("./").unwrap_or(rel);
+        let rel = self.unroot(rel);
+        let rel = rel.as_str();
         let p = Path::new(rel);
         if p.is_absolute() || p.has_root() {
             return Err(ToolError::Failed(
@@ -120,19 +120,31 @@ impl Workspace {
             self.root.join(p)
         };
         // Follow links for anything that exists; a new file is checked by
-        // its folder.
+        // the nearest folder above it that exists (#79: `file_write`
+        // creates the folders in between).
         let real = if joined.exists() {
             joined
                 .canonicalize()
                 .map_err(|e| ToolError::Failed(e.to_string()))?
         } else {
-            let parent = joined
-                .parent()
-                .ok_or_else(|| ToolError::Failed("No folder for that path.".into()))?;
-            let parent = parent
+            let mut base = joined.as_path();
+            let mut tail = Vec::new();
+            loop {
+                tail.push(base.file_name().unwrap_or_default().to_owned());
+                base = base
+                    .parent()
+                    .ok_or_else(|| ToolError::Failed("No folder for that path.".into()))?;
+                if base.exists() {
+                    break;
+                }
+            }
+            let mut real = base
                 .canonicalize()
                 .map_err(|_| ToolError::Failed("That folder does not exist.".into()))?;
-            parent.join(joined.file_name().unwrap_or_default())
+            for t in tail.iter().rev() {
+                real.push(t);
+            }
+            real
         };
         if !real.starts_with(&self.root) {
             return Err(ToolError::Failed(
@@ -149,6 +161,18 @@ impl Workspace {
             )));
         }
         Ok(real)
+    }
+
+    /// `rel` without a first segment that repeats the folder's own name,
+    /// when the folder has nothing by that name (#79: in a folder named
+    /// `New` the model listed `New` and wrote `New/review.md`, which would
+    /// have made `New/New`). See [`unroot_path`].
+    pub fn unroot(&self, rel: &str) -> String {
+        if self.only.is_some() {
+            let rel = rel.trim();
+            return rel.strip_prefix("./").unwrap_or(rel).to_owned();
+        }
+        unroot_path(&self.root, rel)
     }
 
     fn rel(&self, p: &Path) -> String {
@@ -256,6 +280,13 @@ impl Workspace {
         if p.is_dir() {
             return Err(ToolError::Failed("That is a folder.".into()));
         }
+        // Missing folders in the path are made (#79: the model tried
+        // `run_command mkdir` first).
+        if let Some(dir) = p.parent()
+            && !dir.is_dir()
+        {
+            std::fs::create_dir_all(dir).map_err(|e| ToolError::Failed(e.to_string()))?;
+        }
         let tmp = p.with_extension("tern-tmp");
         std::fs::write(&tmp, text).map_err(|e| ToolError::Failed(e.to_string()))?;
         std::fs::rename(&tmp, &p).map_err(|e| ToolError::Failed(e.to_string()))?;
@@ -320,7 +351,8 @@ impl Workspace {
     }
 
     /// Renames `from` to `to`, both inside the workspace. `to` must not
-    /// exist (nothing is overwritten) and its folder must.
+    /// exist (nothing is overwritten); missing folders on its path are
+    /// made.
     pub fn rename(&self, from: &str, to: &str) -> Result<(String, String), ToolError> {
         let a = self.resolve(from)?;
         if !a.exists() {
@@ -336,6 +368,11 @@ impl Workspace {
             return Err(ToolError::Failed(format!(
                 "{to} already exists; nothing was renamed."
             )));
+        }
+        if let Some(dir) = b.parent()
+            && !dir.is_dir()
+        {
+            std::fs::create_dir_all(dir).map_err(|e| ToolError::Failed(e.to_string()))?;
         }
         std::fs::rename(&a, &b).map_err(|e| ToolError::Failed(e.to_string()))?;
         Ok((self.rel(&a), self.rel(&b)))
@@ -358,6 +395,32 @@ impl Workspace {
             tools.unregister(n);
         }
     }
+}
+
+/// A path the model gave, relative to the folder `root`, without a first
+/// segment that repeats the folder's own name when `root` has nothing by
+/// that name (#79): in a folder named `New`, `New` is the folder itself and
+/// `New/review.md` is `review.md`. A leading `./` is dropped too. Names
+/// match without case on Windows and macOS.
+pub fn unroot_path(root: &Path, rel: &str) -> String {
+    let t = rel.trim();
+    let t = t.strip_prefix("./").unwrap_or(t);
+    let Some(name) = root.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return t.to_owned();
+    };
+    let (first, rest) = match t.find(['/', '\\']) {
+        Some(i) => (&t[..i], &t[i + 1..]),
+        None => (t, ""),
+    };
+    let same = if cfg!(windows) || cfg!(target_os = "macos") {
+        first.eq_ignore_ascii_case(&name)
+    } else {
+        first == name
+    };
+    if first.is_empty() || !same || root.join(first).exists() {
+        return t.to_owned();
+    }
+    rest.trim_start_matches(['/', '\\']).to_owned()
 }
 
 /// Reads a text file at a full path, with the same limits as a
@@ -496,7 +559,11 @@ macro_rules! tool {
                 $schema
             }
             fn target(&self, args: &Value) -> Option<String> {
-                Some(format!("{}/{}", self.0.name(), path_arg(args)))
+                Some(format!(
+                    "{}/{}",
+                    self.0.name(),
+                    self.0.unroot(&path_arg(args))
+                ))
             }
             fn call<'a>(&'a self, $args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
                 let $ws = self.0.clone();
@@ -531,7 +598,7 @@ impl Tool for FilesList {
         let raw = path_arg(args);
         Some(match self.0.outside(&raw) {
             Some(p) => p.display().to_string(),
-            None => format!("{}/{}", self.0.name(), raw),
+            None => format!("{}/{}", self.0.name(), self.0.unroot(&raw)),
         })
     }
     fn asks_because(&self, args: &Value) -> Option<String> {
@@ -617,8 +684,8 @@ impl Tool for FileRename {
         Some(format!(
             "{}/{} -> {}",
             self.0.name(),
-            args["from"].as_str().unwrap_or_default(),
-            args["to"].as_str().unwrap_or_default()
+            self.0.unroot(args["from"].as_str().unwrap_or_default()),
+            self.0.unroot(args["to"].as_str().unwrap_or_default())
         ))
     }
     fn confined(&self, args: &Value) -> bool {
@@ -640,10 +707,12 @@ impl Tool for FileRename {
         let ws = self.0.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let (a, b) = ws.rename(
-                    args["from"].as_str().unwrap_or_default(),
-                    args["to"].as_str().unwrap_or_default(),
-                )?;
+                let from = args["from"].as_str().unwrap_or_default();
+                let (a, b) = ws.rename(from, args["to"].as_str().unwrap_or_default())?;
+                // The Files tab's preview of the old name follows it (#79).
+                if !crate::live::rename_preview(&ws.unroot(from), &b) {
+                    crate::live::rename_preview(&a, &b);
+                }
                 Ok(ToolOutput::text(format!("Renamed {a} to {b}.")))
             })
             .await
@@ -673,7 +742,7 @@ impl Tool for FileRead {
         let raw = path_arg(args);
         Some(match self.0.outside(&raw) {
             Some(p) => p.display().to_string(),
-            None => format!("{}/{}", self.0.name(), raw),
+            None => format!("{}/{}", self.0.name(), self.0.unroot(&raw)),
         })
     }
     fn asks_because(&self, args: &Value) -> Option<String> {
@@ -719,7 +788,7 @@ impl Tool for FileWrite {
         "file_write"
     }
     fn summary(&self) -> &'static str {
-        "Write a text file in the chat's workspace (creates or replaces it). The user sees the text as it is written and a diff before it is saved, and approves the write unless the approval mode allows it."
+        "Write a text file in the chat's workspace (creates or replaces it; missing folders in the path are created, so no mkdir is needed). The user sees the text as it is written and a diff before it is saved, and approves the write unless the approval mode allows it."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::ExternalSideEffect
@@ -729,13 +798,24 @@ impl Tool for FileWrite {
                "properties": {"path": {"type": "string"}, "text": {"type": "string"}}})
     }
     fn target(&self, args: &Value) -> Option<String> {
-        Some(format!("{}/{}", self.0.name(), path_arg(args)))
+        Some(format!(
+            "{}/{}",
+            self.0.name(),
+            self.0.unroot(&path_arg(args))
+        ))
     }
     fn confined(&self, args: &Value) -> bool {
         self.0.resolve(&path_arg(args)).is_ok()
     }
     fn rule_paths(&self, args: &Value) -> Vec<PathBuf> {
         self.0.resolve(&path_arg(args)).into_iter().collect()
+    }
+    fn old_text(&self, args: &Value) -> Option<String> {
+        let p = self.0.resolve(&path_arg(args)).ok()?;
+        if std::fs::metadata(&p).ok()?.len() > MAX_FILE_BYTES {
+            return None;
+        }
+        std::fs::read_to_string(&p).ok()
     }
     fn check(&self, args: &Value) -> Option<String> {
         // A new file with no text (#78: a task graph wrote an empty
@@ -789,7 +869,11 @@ impl Tool for FileEdit {
                               "find": {"type": "string"}, "replace": {"type": "string"}}})
     }
     fn target(&self, args: &Value) -> Option<String> {
-        Some(format!("{}/{}", self.0.name(), path_arg(args)))
+        Some(format!(
+            "{}/{}",
+            self.0.name(),
+            self.0.unroot(&path_arg(args))
+        ))
     }
     fn confined(&self, args: &Value) -> bool {
         self.0.resolve(&path_arg(args)).is_ok()
@@ -891,6 +975,37 @@ mod tests {
         assert!(w.read("README.md").unwrap().contains("Paging"));
         let hits = w.search("virtual PAGES");
         assert_eq!(hits, ["README.md:2: Paging maps virtual pages."]);
+    }
+
+    #[test]
+    fn a_first_segment_naming_the_folder_is_the_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("New");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("sum.md"), "x").unwrap();
+        assert_eq!(unroot_path(&root, "New"), "");
+        assert_eq!(unroot_path(&root, "New/review.md"), "review.md");
+        assert_eq!(unroot_path(&root, "./New\\a/b.md"), "a/b.md");
+        assert_eq!(unroot_path(&root, "src/New/x.md"), "src/New/x.md");
+        assert_eq!(unroot_path(&root, "notes.md"), "notes.md");
+        // A real subfolder of that name is kept.
+        std::fs::create_dir_all(root.join("New")).unwrap();
+        assert_eq!(unroot_path(&root, "New/review.md"), "New/review.md");
+        let w = Workspace::open(&root).unwrap();
+        assert_eq!(w.unroot("./sum.md"), "sum.md");
+    }
+
+    #[test]
+    fn writes_make_missing_folders_but_never_outside() {
+        let (d, w) = ws();
+        assert_eq!(w.write("a/b/c.md", "hi").unwrap(), "a/b/c.md");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a/b/c.md")).unwrap(),
+            "hi"
+        );
+        assert!(w.write("../x/y.md", "no").is_err());
+        assert_eq!(w.rename("a/b/c.md", "z/c.md").unwrap().1, "z/c.md");
+        assert!(d.path().join("z/c.md").is_file());
     }
 
     #[test]

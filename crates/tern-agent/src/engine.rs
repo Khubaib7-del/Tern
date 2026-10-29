@@ -416,6 +416,20 @@ pub const FILE_NUDGE: &str = "(Tern note: the attached files are already in this
 /// the user asked for (#78).
 pub const CONFIRM_NUDGE: &str = "(Tern note: do not ask in prose whether to go ahead. The user asked for this change: call the tool now (`file_edit` to add or change a few lines, `file_write` for a new file or a full rewrite). Tern shows the user an approval card with the diff, and that card is the confirmation. Ask in prose only when you cannot tell which file or what text the user means.)";
 
+/// Said once when, in Act mode with a folder, the user asked for a script
+/// that makes a file and the model printed the script instead of running
+/// it (#79).
+pub const SCRIPT_NUDGE: &str = "(Tern note: do not show the script for the user to run. Run it yourself now with `run_python`. Inside `run_python` there is no open(), os or pathlib: use the tool functions listed under Code mode instead (for example files_list(), file_read(path), file_write(path, text)), and print a short summary of what it did.)";
+
+/// What the model reads instead of a `file_write` that would rewrite a
+/// file the user asked to add to (#79): `path`, and how many of its lines
+/// the rewrite removes or changes.
+pub fn add_nudge(path: &str, removed: usize) -> String {
+    format!(
+        "Tern did not run this `file_write`: the user asked to add to {path}, and this call would replace its whole text ({removed} of its lines would be removed or changed). Call `file_edit` on {path} with `append` (only the new lines) to add at the end, or with `find` and `replace` to insert next to an exact passage."
+    )
+}
+
 /// What a message plainly asks Tern to read before the model answers: the
 /// file at a full path it names (when that file exists), and a web search
 /// when it says to use the web. `previous` is the user's previous
@@ -738,6 +752,33 @@ impl Run<'_, '_> {
         Ok(())
     }
 
+    /// Whether the turn works through an open plan in Act mode (the file
+    /// tools are offered): it gets twice the call limits (#79: a plan
+    /// turn stopped at 12 model calls with steps still open).
+    fn plan_room(&self) -> bool {
+        self.plan.as_ref().is_some_and(|p| p.open()) && self.cfg.tools.get("file_write").is_some()
+    }
+
+    /// The model calls this turn may make now.
+    fn model_limit(&self) -> u32 {
+        let n = self.cfg.budget.max_model_calls;
+        if self.plan_room() {
+            n.saturating_mul(2)
+        } else {
+            n
+        }
+    }
+
+    /// The tool calls this turn may make now.
+    fn tool_limit(&self) -> u32 {
+        let n = self.cfg.budget.max_tool_calls;
+        if self.plan_room() {
+            n.saturating_mul(2)
+        } else {
+            n
+        }
+    }
+
     fn over_budget(reason: String) -> Stop {
         Stop {
             state: TurnState::BudgetExceeded,
@@ -896,15 +937,20 @@ impl Run<'_, '_> {
         let mut empty_retried = false;
         let mut file_nudged = false;
         let mut confirm_nudged = false;
+        let mut script_nudged = false;
+        let mut add_steered = false;
+        // "add a line to sum.md": a whole-file rewrite is steered to
+        // `file_edit` once (#79).
+        let asks_to_add = crate::webintent::asks_to_add(&message_text);
 
         loop {
             self.check_cancel()?;
             self.take_steering(&mut messages)?;
             let b = self.cfg.budget;
-            if self.model_calls >= b.max_model_calls {
+            let limit = self.model_limit();
+            if self.model_calls >= limit {
                 return Err(Self::over_budget(format!(
-                    "The turn reached its limit of {} model calls.",
-                    b.max_model_calls
+                    "The turn reached its limit of {limit} model calls."
                 )));
             }
             self.go(TurnState::ModelStreaming)?;
@@ -1144,6 +1190,33 @@ impl Run<'_, '_> {
                     messages.push(ChatMessage::user(CONFIRM_NUDGE.to_owned()));
                     self.go(TurnState::Verifying)?;
                 }
+                Reply::Answer(text)
+                    if !script_nudged
+                        && self.cfg.tools.get("run_python").is_some()
+                        && self.cfg.tools.get("file_write").is_some()
+                        && !self.called.iter().any(|c| c == "run_python")
+                        && crate::webintent::asks_for_script(&message_text)
+                        && crate::webintent::has_python_fence(&text) =>
+                {
+                    // "Write one python script that ... saves counts.md"
+                    // answered with the script in prose and "How to use
+                    // this script" (#79): in Act mode with a folder Tern
+                    // runs it, so the model is told once to call
+                    // `run_python` with the tool functions.
+                    script_nudged = true;
+                    self.record(self.event(
+                        "model.printed_script",
+                        EffectClass::Analysis,
+                        "The model printed a script instead of running it; Tern told it to run it with run_python",
+                        json!({"chars": text.len()}),
+                    ))?;
+                    crate::diag::note(
+                        "turn: the model printed a script instead of running it; told it to use run_python",
+                    );
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(SCRIPT_NUDGE.to_owned()));
+                    self.go(TurnState::Verifying)?;
+                }
                 Reply::Answer(text) => {
                     let refused = crate::webintent::is_refusal(&text);
                     let copied = previous_answer
@@ -1256,7 +1329,23 @@ impl Run<'_, '_> {
                     // and all the results go back together.
                     // A `file_edit` is queued as the `file_write` it
                     // becomes, so its card is the write's from the start.
-                    let calls: Vec<(String, Value)> = protocol::parse_calls(&reply.text)
+                    let raw = protocol::parse_calls(&reply.text);
+                    // A `file_write` that rewrites a file the user asked to
+                    // add to goes back once, toward `file_edit` (#79). One
+                    // that keeps the whole old text and adds to its end is
+                    // an append already (+N -0) and runs.
+                    let steer = if asks_to_add && !add_steered {
+                        raw.iter().enumerate().find_map(|(i, (n, a))| {
+                            (n == "file_write")
+                                .then(|| self.rewrite_note(a))
+                                .flatten()
+                                .map(|why| (i, why))
+                        })
+                    } else {
+                        None
+                    };
+                    add_steered |= steer.is_some();
+                    let calls: Vec<(String, Value)> = raw
                         .into_iter()
                         .map(|(n, a)| self.expand_call(n, a))
                         .collect();
@@ -1307,6 +1396,21 @@ impl Run<'_, '_> {
                         }
                         self.called.push(name.clone());
                         searched |= name == "web_search";
+                        if let Some((_, why)) = steer.as_ref().filter(|(at, _)| *at == i) {
+                            self.go(TurnState::RecordResult)?;
+                            crate::live::clear_preview();
+                            self.record(self.event(
+                                "tool.rejected",
+                                EffectClass::Analysis,
+                                "A `file_write` would have rewritten a file the user asked to add to; Tern asked for `file_edit`",
+                                json!({"tool": name, "call": first + i as u32, "error": why, "args": brief_args(args)}),
+                            ))?;
+                            crate::diag::note(
+                                "turn: a file_write would rewrite a file the user asked to add to; steered to file_edit",
+                            );
+                            results.push(why.clone());
+                            continue;
+                        }
                         self.next_call = Some(first + i as u32);
                         results.push(self.dispatch(name, args).await?);
                     }
@@ -1530,6 +1634,28 @@ impl<'a> Run<'_, 'a> {
         }
     }
 
+    /// Why a `file_write` should be a `file_edit` (#79): the file has
+    /// text, and the new text does not keep all of it at the start (an
+    /// append would). `None` for a new or empty file, or an append.
+    fn rewrite_note(&self, args: &Value) -> Option<String> {
+        self.cfg.tools.get("file_edit")?;
+        let old = self.cfg.tools.get("file_write")?.old_text(args)?;
+        let new = args["text"].as_str().unwrap_or_default();
+        let kept = old.trim_end();
+        if kept.is_empty()
+            || new
+                .replace("\r\n", "\n")
+                .starts_with(&kept.replace("\r\n", "\n"))
+        {
+            return None;
+        }
+        let d = crate::diff::line_diff(Some(&old), new, 0);
+        Some(add_nudge(
+            args["path"].as_str().unwrap_or_default(),
+            d.removed.max(1),
+        ))
+    }
+
     /// A call the model asked for: a task graph and a script that calls
     /// tools (code mode) run their own calls; the rest is one call (#77).
     async fn dispatch(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
@@ -1602,6 +1728,11 @@ impl<'a> Run<'_, 'a> {
         };
         if let Err(e) = validate(&tool.input_schema(), args) {
             self.go(TurnState::RecordResult)?;
+            // #79: a refused write never keeps the live preview its
+            // streamed arguments opened.
+            if name == "file_write" {
+                crate::live::clear_preview();
+            }
             self.record(self.event(
                 "tool.rejected",
                 tool.effect(),
@@ -1616,6 +1747,9 @@ impl<'a> Run<'_, 'a> {
             // Never asked about (#78: an approval card for an empty new
             // file): the model gets the line and sends it again.
             self.go(TurnState::RecordResult)?;
+            if name == "file_write" {
+                crate::live::clear_preview();
+            }
             self.record(self.event(
                 "tool.rejected",
                 tool.effect(),
@@ -1624,10 +1758,13 @@ impl<'a> Run<'_, 'a> {
             ))?;
             return Ok(Pre::Done(format!("Tool `{name}` bad input: {why}.")));
         }
-        if self.tool_calls >= self.cfg.budget.max_tool_calls {
+        let limit = self.tool_limit();
+        if self.tool_calls >= limit {
+            if name == "file_write" {
+                crate::live::clear_preview();
+            }
             return Err(Self::over_budget(format!(
-                "The turn reached its limit of {} tool calls.",
-                self.cfg.budget.max_tool_calls
+                "The turn reached its limit of {limit} tool calls."
             )));
         }
 
@@ -1642,6 +1779,9 @@ impl<'a> Run<'_, 'a> {
         }
         if let Some(why) = tool.refuses(args) {
             self.go(TurnState::RecordResult)?;
+            if name == "file_write" {
+                crate::live::clear_preview();
+            }
             let what = tool.target(args).unwrap_or_else(|| name.to_owned());
             if name == "run_command" {
                 crate::sandbox::note_denied(&what, std::path::Path::new(""), &why);
@@ -1789,11 +1929,23 @@ impl<'a> Run<'_, 'a> {
     /// Logs that the call is running.
     fn started(&mut self, r: &Ready<'_>) -> Result<(), Stop> {
         let task = std::mem::replace(&mut self.task, r.task.clone());
+        let mut payload = json!({"tool": r.name, "call": r.call, "args": brief_args(&r.args)});
+        if r.name == "file_write" {
+            // +N −M against the file as it is before the write (#79), so
+            // the card shows it however the write was allowed.
+            let old = r.tool.old_text(&r.args);
+            let d = crate::diff::line_diff(
+                old.as_deref(),
+                r.args["text"].as_str().unwrap_or_default(),
+                0,
+            );
+            payload["diff"] = json!({"added": d.added, "removed": d.removed});
+        }
         let res = self.record(self.event(
             "tool.started",
             r.tool.effect(),
             format!("Running `{}`", r.name),
-            json!({"tool": r.name, "call": r.call, "args": brief_args(&r.args)}),
+            payload,
         ));
         self.task = task;
         res
@@ -2276,8 +2428,12 @@ fn stream_write_preview(
         return;
     }
     e.2 = e.1.len();
-    if let (Some(path), text) = crate::live::partial_write_args(&e.1) {
-        crate::live::preview_write(&path, text.as_deref().unwrap_or_default(), false);
+    // #79: no preview until there is text to show (an empty write is
+    // sent back before it runs, and its preview read "+0 −0 writing…").
+    if let (Some(path), Some(text)) = crate::live::partial_write_args(&e.1)
+        && !text.is_empty()
+    {
+        crate::live::preview_write(&path, &text, false);
     }
 }
 
@@ -2301,8 +2457,10 @@ fn stream_fence_preview(streamed: &str, writes: &Mutex<HashMap<usize, (String, S
         return;
     }
     e.2 = streamed.len();
-    if let (Some(path), text) = crate::live::partial_write_args(fence) {
-        crate::live::preview_write(&path, text.as_deref().unwrap_or_default(), false);
+    if let (Some(path), Some(text)) = crate::live::partial_write_args(fence)
+        && !text.is_empty()
+    {
+        crate::live::preview_write(&path, &text, false);
     }
 }
 

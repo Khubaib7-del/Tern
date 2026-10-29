@@ -550,8 +550,80 @@ pub fn asks_to_proceed(reply: &str) -> bool {
     ASKS.iter().any(|a| r.contains(a)) && CHANGES.iter().any(|c| r.contains(c))
 }
 
+/// Whether a message asks to add to a file rather than rewrite it ("add a
+/// line 'Reviewed' to sum.md", "append the total", "insert a heading")
+/// (#79): a `file_write` that rewrites the file is steered to `file_edit`.
+pub fn asks_to_add(text: &str) -> bool {
+    let t = text.to_lowercase();
+    const VERBS: &[&str] = &["add", "append", "insert", "prepend"];
+    t.split(|c: char| !c.is_alphanumeric())
+        .any(|w| VERBS.contains(&w))
+}
+
+/// Whether a message asks for a script that runs and makes or changes a
+/// file ("write one python script that counts the words ... and saves
+/// counts.md", "use python to write totals.csv") (#79). A script only to
+/// read ("write a python function that sorts a list") is not one.
+pub fn asks_for_script(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).collect();
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(w));
+    let script = has(&["script", "python", "py", "run_python", "code"]) || t.contains("run_python");
+    let file = t.split_whitespace().any(|w| {
+        let w = w.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '_');
+        w.rsplit_once('.').is_some_and(|(stem, ext)| {
+            !stem.is_empty()
+                && (1..=5).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+                && ext.chars().any(|c| c.is_ascii_alphabetic())
+        })
+    }) || has(&["file", "files", "save", "saves", "saved"]);
+    let act = has(&[
+        "run", "runs", "execute", "save", "saves", "write", "writes", "create", "creates", "make",
+        "makes", "count", "counts", "list", "lists", "generate",
+    ]);
+    script && file && act
+}
+
+/// Whether a reply holds a fenced Python block (```` ```python ```` or
+/// ```` ```py ````) (#79).
+pub fn has_python_fence(reply: &str) -> bool {
+    reply.match_indices("```").any(|(at, _)| {
+        let lang: String = reply[at + 3..]
+            .chars()
+            .take_while(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        matches!(lang.as_str(), "python" | "py" | "python3")
+    })
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn adding_and_script_requests_are_told_apart() {
+        use super::{asks_for_script, asks_to_add, has_python_fence};
+        assert!(asks_to_add("add a line 'Reviewed on 29 October' to sum.md"));
+        assert!(asks_to_add("Append the total to counts.md"));
+        assert!(!asks_to_add("rewrite sum.md in plain words"));
+        assert!(!asks_to_add("what does the address say"));
+        assert!(asks_for_script(
+            "write one python script that counts words in every .md file here and saves to counts.md"
+        ));
+        assert!(asks_for_script(
+            "In one run_python script, list the .md files and write counts.md"
+        ));
+        assert!(asks_for_script("use python to write totals.csv"));
+        assert!(!asks_for_script(
+            "write a python function that sorts a list"
+        ));
+        assert!(!asks_for_script("read sum.md"));
+        assert!(has_python_fence("Here it is:\n```python\nprint(1)\n```"));
+        assert!(has_python_fence("```py\nx = 1\n```"));
+        assert!(!has_python_fence("```bash\nls\n```"));
+        assert!(!has_python_fence("No code here."));
+    }
 
     #[test]
     fn a_plain_ask_to_see_a_file_names_it() {
