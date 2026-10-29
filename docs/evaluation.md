@@ -114,6 +114,10 @@ How to read it:
 
 The baseline (`crates/tern-eval/baseline.json`) holds these scores, with the held-out claims suite added.
 
+## Scholarly suite (PR #82, offline, 30 October 2026, 3 trials)
+
+`scholarly@1` passed 18 of 18 case runs (6 cases × 3 trials) in CI. Every metric was at 100%: evidence accuracy 12/12, recall at k 9/9, dedupe 12/12, retracted papers kept out 3/3, locators 18/18, claim support 12/12, snowball stop 3/3. These are cases written alongside the code, so they show the parsers, merge, funnel, locators and stop rule do what they were built to do. They say nothing yet about how well live searches rank. The intervals are wide (43.9%–100% for the three-run metrics), and the baseline holds these scores so that a regression fails CI.
+
 Live, pinned, and public numbers will be added when they have been run with a key.
 
 ## Adding cases
