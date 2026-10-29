@@ -386,7 +386,7 @@ pub const ENTRIES: &[Entry] = &[
     e(
         Section::About,
         "Onboarding",
-        "welcome tour first run setup again",
+        "welcome tour first run setup again intro animation",
     ),
 ];
 

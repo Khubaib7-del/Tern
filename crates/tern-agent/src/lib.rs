@@ -70,6 +70,7 @@ pub mod range;
 /// Read aloud with the local voice model (#69; needs the speakers).
 #[cfg(feature = "mic")]
 pub mod read_aloud;
+pub mod redo;
 pub mod refs;
 pub mod relevance;
 pub mod reply;

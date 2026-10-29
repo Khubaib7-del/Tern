@@ -654,6 +654,21 @@ struct Run<'r, 'a> {
     request_cap: Option<tern_providers::retry::RequestCap>,
     /// A code-mode script ran and called no tool, once per turn (#80).
     script_noted: bool,
+    /// What the turn already wrote and renamed (#81): the same change
+    /// again is skipped without a card.
+    redo: crate::redo::Redo,
+    /// How the last call was skipped as already done or refused by
+    /// [`crate::redo`]: its write is not a failed write.
+    redo_skipped: bool,
+    /// The folder changes a running code-mode script made, as the lines
+    /// its result ends with (#81). `None` outside a script.
+    script_actions: Option<Vec<String>>,
+    /// The call being dispatched was asked for as a `file_edit` (the
+    /// turn queues it as the `file_write` it becomes).
+    asked_edit: bool,
+    /// The answer Tern ends the turn with when the model keeps redoing a
+    /// change it was told is done (#81).
+    closing: Option<String>,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -716,6 +731,11 @@ impl<'a> TurnLoop<'a> {
             failed_writes: Default::default(),
             request_cap: None,
             script_noted: false,
+            redo: Default::default(),
+            redo_skipped: false,
+            script_actions: None,
+            asked_edit: false,
+            closing: None,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -894,7 +914,9 @@ impl Run<'_, '_> {
 
     /// Notes how a file write went, for the answer-claim guard.
     fn note_write(&mut self, name: &str, args: &Value, result: &str) {
-        if !matches!(name, "file_write" | "file_edit") {
+        // A write skipped as already done, or refused after earlier
+        // writes, leaves the file as those writes made it (#81).
+        if !matches!(name, "file_write" | "file_edit") || std::mem::take(&mut self.redo_skipped) {
             return;
         }
         let Some(path) = args["path"].as_str().filter(|p| !p.is_empty()) else {
@@ -980,6 +1002,7 @@ impl Run<'_, '_> {
                     messages.extend(saved);
                 }
                 seen.extend(q.seen);
+                self.redo = crate::redo::Redo::from_marks(q.writes);
                 self.model_calls = c.model_calls;
                 self.tool_calls = c.tool_calls;
                 self.prior = c.tokens_in + c.tokens_out;
@@ -1601,6 +1624,7 @@ impl Run<'_, '_> {
                         None
                     };
                     add_steered |= steer.is_some();
+                    let edits: Vec<bool> = raw.iter().map(|(n, _)| n == "file_edit").collect();
                     let calls: Vec<(String, Value)> = raw
                         .into_iter()
                         .map(|(n, a)| self.expand_call(n, a))
@@ -1631,6 +1655,12 @@ impl Run<'_, '_> {
                         let n = seen.entry(key).or_default();
                         *n += 1;
                         if *n >= REPEAT_LIMIT {
+                            // A change already done, asked for again
+                            // after Tern said so (#81): the turn ends with
+                            // that, not as a failure.
+                            if let Some(skip) = self.redo_for(name, args) {
+                                return Err(self.close_redo(skip));
+                            }
                             self.record(self.event(
                                 "loop.suspected",
                                 EffectClass::Analysis,
@@ -1668,6 +1698,7 @@ impl Run<'_, '_> {
                             continue;
                         }
                         self.next_call = Some(first + i as u32);
+                        self.asked_edit = edits.get(i).copied().unwrap_or(false);
                         results.push(self.dispatch(name, args).await?);
                     }
                     let mut back = results.join("\n\n");
@@ -1696,6 +1727,7 @@ impl Run<'_, '_> {
             return;
         };
         let (prior_in, prior_out) = (self.prior_in(), self.prior_out());
+        let writes = self.redo.marks();
         let Some(ck) = self.ck.as_mut() else {
             return;
         };
@@ -1707,6 +1739,7 @@ impl Run<'_, '_> {
         ck.quick = Some(QuickState {
             messages,
             seen: seen.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+            writes,
         });
         ck.model_calls = self.model_calls;
         ck.tool_calls = self.tool_calls;
@@ -1804,7 +1837,12 @@ impl Run<'_, '_> {
     fn finish(mut self, result: Result<(TurnState, String), Stop>) -> TurnOutcome {
         // A turn that needs Act mode ends as an answer saying so (#80), not
         // a failure: the window shows "Switch to Act and run".
-        let result = match (result, self.needs_act.clone()) {
+        // So does one Tern ended because the model kept redoing a change
+        // it was told is done (#81).
+        let result = match (
+            result,
+            self.needs_act.clone().or_else(|| self.closing.clone()),
+        ) {
             (Err(_), Some(text)) => {
                 self.land_completed();
                 Ok((TurnState::Completed, text))
@@ -1877,18 +1915,127 @@ impl<'a> Run<'_, 'a> {
     /// the model reads next.
     async fn tool_step(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
         self.last_post = None;
-        let text = match self.tool_pre(name, args).await? {
+        self.redo_skipped = false;
+        let asked = if self.asked_edit { "file_edit" } else { name };
+        let pre = self.tool_pre(name, args).await;
+        self.asked_edit = false;
+        let text = match pre? {
             Pre::Done(text) => text,
             Pre::Go(r) => {
                 self.begin(&r)?;
                 self.started(&r)?;
                 let (out, age) =
                     execute(r.tool, &r.name, r.args.clone(), self.cfg.hooks.cache).await;
-                self.post(r, out, age)?
+                let (tool, ran, ran_args) = (r.tool, r.name.clone(), r.args.clone());
+                let text = self.post(r, out, age)?;
+                if matches!(self.last_post, Some((true, _))) {
+                    self.note_done(asked, &ran, tool, &ran_args);
+                }
+                text
             }
         };
         self.note_write(name, args, &text);
         Ok(text)
+    }
+
+    /// A change that ran, for [`crate::redo`] and a script's result line
+    /// (#81). `asked` is the tool the model named: only its own
+    /// `file_write` calls count toward the writes per path (a `file_edit`
+    /// runs as one; a script's calls are its loop).
+    fn note_done(&mut self, asked: &str, name: &str, tool: &dyn Tool, args: &Value) {
+        let in_script = self.script_actions.is_some();
+        let line = match name {
+            "file_write" => {
+                let shown = args["path"].as_str().unwrap_or_default();
+                if let Some(full) = tool.rule_paths(args).first() {
+                    self.redo.wrote(
+                        full,
+                        shown,
+                        args["text"].as_str().unwrap_or_default(),
+                        asked == "file_write" && !in_script,
+                        in_script,
+                    );
+                }
+                if asked == "file_edit" {
+                    format!("edited {shown}")
+                } else {
+                    format!("wrote {shown}")
+                }
+            }
+            "file_rename" => {
+                let (from, to) = (
+                    args["from"].as_str().unwrap_or_default(),
+                    args["to"].as_str().unwrap_or_default(),
+                );
+                if let [a, b] = tool.rule_paths(args).as_slice() {
+                    self.redo.renamed(a, b, from, to, in_script);
+                }
+                format!("renamed {from} -> {to}")
+            }
+            "vault_write" => "saved a vault note".to_owned(),
+            "run_command" => format!(
+                "ran {}",
+                tool.target(args).unwrap_or_else(|| "a command".to_owned())
+            ),
+            _ => return,
+        };
+        if let Some(actions) = self.script_actions.as_mut() {
+            actions.push(line);
+        }
+    }
+
+    /// Whether a write or rename repeats what this turn already did
+    /// (#81: counts.md written nine times; a script's write and rename
+    /// made again directly).
+    fn redo_check(
+        &self,
+        asked: &str,
+        name: &str,
+        tool: &dyn Tool,
+        args: &Value,
+    ) -> Option<crate::redo::Skip> {
+        match name {
+            "file_write" => {
+                let full = tool.rule_paths(args).into_iter().next()?;
+                self.redo.check_write(
+                    &full,
+                    args["path"].as_str().unwrap_or_default(),
+                    args["text"].as_str().unwrap_or_default(),
+                    tool.old_text(args).as_deref(),
+                    // A script that writes one file in a loop is not
+                    // counted; the model's own repeated calls are.
+                    asked == "file_write" && self.script_actions.is_none(),
+                )
+            }
+            "file_rename" => match tool.rule_paths(args).as_slice() {
+                [a, b] => self.redo.check_rename(a, b),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// [`Run::redo_check`] for a queued call, by its tool's name.
+    fn redo_for(&self, name: &str, args: &Value) -> Option<crate::redo::Skip> {
+        let tool = self.cfg.tools.get(name)?;
+        self.redo_check(name, name, tool, args)
+    }
+
+    /// Ends the turn as answered: the model kept redoing a change Tern
+    /// told it is done (#81).
+    fn close_redo(&mut self, skip: crate::redo::Skip) -> Stop {
+        crate::diag::note("redo: the model kept redoing a finished change; ended the turn");
+        let _ = self.record(self.event(
+            "loop.suspected",
+            EffectClass::Analysis,
+            "The model kept redoing a change that was already done; Tern ended the turn",
+            json!({"redo": true, "note": skip.line}),
+        ));
+        self.closing = Some(skip.end.clone());
+        Stop {
+            state: TurnState::Blocked,
+            reason: skip.end,
+        }
     }
 
     /// A call as it runs: a `file_edit` becomes the `file_write` of the
@@ -1996,6 +2143,7 @@ impl<'a> Run<'_, 'a> {
             self.call_seq
         });
         let tools: &'a ToolRegistry = self.cfg.tools;
+        let asked = if self.asked_edit { "file_edit" } else { name };
         // `file_edit` runs as the `file_write` of the new text (#78): the
         // same card, diff, rules and cache.
         let expanded = match tools.get(name).and_then(|t| t.expand(args)) {
@@ -2071,6 +2219,55 @@ impl<'a> Run<'_, 'a> {
                 json!({"tool": name, "call": call, "error": why, "args": brief_args(args)}),
             ))?;
             return Ok(Pre::Done(format!("Tool `{name}` bad input: {why}.")));
+        }
+        // The same change again is not run and asks nothing (#81).
+        if let Some(skip) = self.redo_check(asked, name, tool, args) {
+            self.go(TurnState::RecordResult)?;
+            if name == "file_write" {
+                crate::live::clear_preview();
+            }
+            let done = skip.done;
+            crate::diag::note(&format!(
+                "redo: {} `{name}` ({})",
+                if done { "skipped" } else { "refused" },
+                tool.target(args).unwrap_or_default()
+            ));
+            let summary = if done {
+                format!("`{name}` was already done this turn; Tern did not run it again")
+            } else {
+                format!(
+                    "`{name}` was refused: the file was already written {} times this turn",
+                    crate::redo::WRITES_PER_PATH
+                )
+            };
+            let payload = json!({
+                "tool": name,
+                "call": call,
+                "error": (!done).then(|| skip.line.clone()),
+                "note": skip.line.clone(),
+                "args": brief_args(args),
+            });
+            self.record(self.event(
+                if done {
+                    "tool.skipped"
+                } else {
+                    "tool.rejected"
+                },
+                tool.effect(),
+                summary,
+                payload,
+            ))?;
+            // Told once already: the model ignored "answer now".
+            if self.redo.ignored(&skip) >= 2 {
+                return Err(self.close_redo(skip));
+            }
+            self.redo_skipped = true;
+            if done {
+                // Already as the call would leave it: a script reads
+                // success.
+                self.last_post = Some((true, Value::Null));
+            }
+            return Ok(Pre::Done(skip.line));
         }
         let limit = self.tool_limit();
         if self.tool_calls >= limit {
@@ -2404,6 +2601,7 @@ impl<'a> Run<'_, 'a> {
         ));
         let mut script = crate::python::Script::start(code, stubs);
         let outer = self.parent.replace(r.call);
+        let outer_actions = self.script_actions.replace(Vec::new());
         let mut inner = 0u32;
         let ended = loop {
             match script.next().await {
@@ -2442,13 +2640,21 @@ impl<'a> Run<'_, 'a> {
             }
         };
         self.parent = outer;
+        let actions =
+            std::mem::replace(&mut self.script_actions, outer_actions).unwrap_or_default();
         crate::diag::note(&format!("code mode: {inner} tool calls inside the script"));
         let out = ended?;
         let out = out.map(|mut o| {
             o.meta["inner_calls"] = json!(inner);
             o
         });
-        let text = self.post(r, out, None)?;
+        let mut text = self.post(r, out, None)?;
+        // What the script changed, said plainly (#81: the model made the
+        // script's write and rename again as direct calls).
+        if let Some(line) = crate::redo::script_done_line(&actions) {
+            text.push_str("\n\n");
+            text.push_str(&line);
+        }
         // A script that called none of the tools while the user asked for
         // a file action did nothing to the folder (#80: "code mode: 0 tool
         // calls" and an answer saying draft.md was written): said once.

@@ -2107,15 +2107,15 @@ impl Workspace {
             ),
             Self::row(
                 "Welcome tour",
-                "Provider, key, model, search, and theme, one step each.",
+                // #81: the intro first (a temporary dev hook, see
+                // `replay_intro`).
+                "The intro animation, then provider, key, model, search, and theme, one step each.",
                 Some(
                     Button::new("about-onboarding")
                         .capsule()
                         .label("Run it again")
                         .small()
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.start_onboarding(window, cx)),
-                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.replay_intro(cx)))
                         .into_any_element(),
                 ),
                 p,

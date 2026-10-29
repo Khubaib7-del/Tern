@@ -10,6 +10,7 @@
 //! | `tool.started` | Running |
 //! | `tool.executed` | Done |
 //! | `tool.failed`, `tool.rejected` | Failed |
+//! | `tool.skipped` (#81: the same change again, already done) | Done |
 //! | the run stopped with the card still open | Cancelled |
 //!
 //! Events carry the call's number (`call`) from #75 on; older runs have
@@ -409,7 +410,8 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                 }
             }
             "policy.decided" | "approval.requested" | "approval.answered" | "tool.started"
-            | "tool.executed" | "tool.failed" | "tool.rejected" | "sandbox.denied" => {
+            | "tool.executed" | "tool.failed" | "tool.rejected" | "tool.skipped"
+            | "sandbox.denied" => {
                 if tool.is_empty() {
                     continue;
                 }
@@ -474,6 +476,16 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                         {
                             c.diff = Some((a as usize, r as usize));
                         }
+                    }
+                    // #81: the same change again, already done this
+                    // turn: no approval, a Done card that says why.
+                    "tool.skipped" => {
+                        c.state = CardState::Done;
+                        c.started.get_or_insert(s.at);
+                        c.ended = Some(s.at);
+                        c.output = p["note"].as_str().unwrap_or_default().to_owned();
+                        c.allowed_because =
+                            Some("Already done this turn, so Tern did not run it again".into());
                     }
                     "tool.executed" => {
                         // A command that was killed or ran out of time
@@ -694,6 +706,27 @@ mod tests {
         assert!(g[0].cards[1].allowed_because.is_none());
         assert!(allowed_line("file_write", "approved once").is_none());
         assert!(allowed_line("file_write", "you allowed `file_write`").is_some());
+    }
+
+    #[test]
+    fn a_write_already_done_is_a_done_card_that_says_why() {
+        let r = run(&[
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [
+                    {"call": 1, "tool": "file_write", "args": {"path": "counts.md"}}
+                ]}),
+            ),
+            ev(
+                "tool.skipped",
+                json!({"tool": "file_write", "call": 1,
+                       "note": "counts.md is already written with that content"}),
+            ),
+        ]);
+        let c = &cards_of(&r)[0].cards[0];
+        assert_eq!(c.state, CardState::Done);
+        assert!(c.output.contains("already written"), "{}", c.output);
+        assert!(c.error.is_none());
     }
 
     #[test]
