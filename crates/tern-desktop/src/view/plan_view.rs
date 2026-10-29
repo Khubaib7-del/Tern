@@ -175,9 +175,13 @@ impl Workspace {
             v.steps.iter().collect()
         };
         let hidden = n.saturating_sub(shown.len());
+        // One id column for the card: as wide as its longest id, at most
+        // 96 px, so the titles line up.
+        let longest = v.steps.iter().map(|s| s.id.chars().count()).max();
+        let id_w = (longest.unwrap_or(1) as f32 * 7.4 + 2.).clamp(22., 96.);
         let rows = shown
             .into_iter()
-            .map(|s| self.plan_row(v.is_graph(), v.ended, s, live, p));
+            .map(|s| self.plan_row(v.is_graph(), v.ended, id_w, s, live, p));
         div()
             .id(SharedString::from(format!("plancard-{key}")))
             .flex()
@@ -218,6 +222,7 @@ impl Workspace {
         &self,
         graph: bool,
         ended: bool,
+        id_w: f32,
         s: &PlanStep,
         live: bool,
         p: Palette,
@@ -239,8 +244,7 @@ impl Workspace {
                 d.child(
                     div()
                         .flex_none()
-                        .min_w(px(22.))
-                        .max_w(px(96.))
+                        .w(px(id_w))
                         .truncate()
                         .font_family(crate::assets::MONO_FONT)
                         .text_xs()
