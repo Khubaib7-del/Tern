@@ -384,9 +384,7 @@ pub fn os_hint(result: &str, stubs: &[Stub]) -> Option<String> {
     if !result.starts_with("Tool `run_python`") {
         return None;
     }
-    let r = result.to_lowercase();
-    let err = r.split("error:").skip(1).collect::<Vec<_>>().join(" ");
-    let err = if err.is_empty() { r.clone() } else { err };
+    let err = result.to_lowercase();
     if !OS_SIGNS.iter().any(|s| err.contains(s)) {
         return None;
     }
@@ -931,7 +929,7 @@ mod tests {
             params: Vec::new(),
             summary: String::new(),
         };
-        let stubs = vec![
+        let stubs = [
             stub("files_list"),
             stub("file_read"),
             stub("file_write"),
