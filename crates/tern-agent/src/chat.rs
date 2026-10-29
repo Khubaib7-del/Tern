@@ -254,6 +254,15 @@ pub fn rename_output(
     true
 }
 
+/// Drops the outputs whose file is no longer there (moved, renamed or
+/// deleted outside Tern) (#79: they stayed greyed "Moved or deleted"
+/// forever and were counted). Returns how many went.
+pub fn prune_outputs(outputs: &mut Vec<Output>) -> usize {
+    let before = outputs.len();
+    outputs.retain(|o| o.path.is_file());
+    before - outputs.len()
+}
+
 /// What the model is told about the chat's workspace. A folder's name is
 /// said with how paths work inside it (#79: in a folder named `New` the
 /// model listed `New` and wrote `New/review.md`).
@@ -2262,5 +2271,36 @@ mod output_tests {
             std::path::Path::new("/w/zzz.md"),
             std::path::Path::new("/w/c.md")
         ));
+    }
+
+    #[test]
+    fn the_workspace_line_names_the_folder_and_how_paths_work() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("New");
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = crate::workspace::Workspace::open(&root).unwrap();
+        let line = workspace_line(&ws);
+        assert!(line.contains("the folder `New`"), "{line}");
+        assert!(line.contains("Do not start a path with `New/`"), "{line}");
+        assert!(line.contains("`file_write` makes any folders"), "{line}");
+    }
+
+    #[test]
+    fn outputs_whose_file_is_gone_are_pruned() {
+        let d = tempfile::tempdir().unwrap();
+        let kept = d.path().join("hello.md");
+        std::fs::write(&kept, "hello").unwrap();
+        let gone = d.path().join("counts.md");
+        std::fs::write(&gone, "1").unwrap();
+        let mut outs = vec![
+            Output::now(gone.clone(), "file_write"),
+            Output::now(d.path().join("review.md"), "file_write"),
+            Output::now(kept.clone(), "file_write"),
+        ];
+        std::fs::remove_file(&gone).unwrap();
+        assert_eq!(prune_outputs(&mut outs), 2);
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].path, kept);
+        assert_eq!(prune_outputs(&mut outs), 0);
     }
 }

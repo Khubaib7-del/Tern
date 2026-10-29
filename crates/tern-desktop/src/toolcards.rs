@@ -158,6 +158,9 @@ pub struct ToolCard {
     pub cached: Option<u64>,
     /// The calls a script or a task graph made, in order.
     pub children: Vec<ToolCard>,
+    /// A write's lines added and removed against the file before it
+    /// (#79), shown however the write was allowed.
+    pub diff: Option<(usize, usize)>,
 }
 
 impl ToolCard {
@@ -184,6 +187,7 @@ impl ToolCard {
             task: None,
             cached: None,
             children: Vec::new(),
+            diff: None,
         }
     }
 
@@ -465,6 +469,11 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                     "tool.started" => {
                         c.state = CardState::Running;
                         c.started = Some(s.at);
+                        if let (Some(a), Some(r)) =
+                            (p["diff"]["added"].as_u64(), p["diff"]["removed"].as_u64())
+                        {
+                            c.diff = Some((a as usize, r as usize));
+                        }
                     }
                     "tool.executed" => {
                         // A command that was killed or ran out of time
@@ -685,6 +694,29 @@ mod tests {
         assert!(g[0].cards[1].allowed_because.is_none());
         assert!(allowed_line("file_write", "approved once").is_none());
         assert!(allowed_line("file_write", "you allowed `file_write`").is_some());
+    }
+
+    #[test]
+    fn a_write_card_keeps_its_diff_counts() {
+        let r = run(&[
+            ev(
+                "tool.queued",
+                json!({"step": 1, "calls": [
+                    {"call": 1, "tool": "file_write", "args": {"path": "sum.md"}}
+                ]}),
+            ),
+            ev(
+                "policy.decided",
+                json!({"tool": "file_write", "call": 1, "decision": {"decision": "allow",
+                       "because": "you allowed `file_write` for this chat"}}),
+            ),
+            ev(
+                "tool.started",
+                json!({"tool": "file_write", "call": 1, "diff": {"added": 1, "removed": 0}}),
+            ),
+        ]);
+        let groups = cards_of(&r);
+        assert_eq!(groups[0].cards[0].diff, Some((1, 0)));
     }
 
     #[test]

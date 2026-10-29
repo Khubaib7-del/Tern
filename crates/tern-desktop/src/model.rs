@@ -3413,6 +3413,25 @@ mod tests {
     }
 
     #[test]
+    fn a_call_limit_stop_is_told_from_a_token_stop() {
+        let c = CallLimit::of("The turn reached its limit of 12 model calls.").unwrap();
+        assert_eq!(
+            c,
+            CallLimit {
+                n: 12,
+                tools: false
+            }
+        );
+        assert_eq!(c.line(), "The turn reached its limit of 12 model calls.");
+        let t = CallLimit::of("The turn reached its limit of 24 tool calls.").unwrap();
+        assert!(t.tools && t.n == 24);
+        assert_eq!(
+            CallLimit::of("The turn used 310000 tokens, over its limit of 300000."),
+            None
+        );
+    }
+
+    #[test]
     fn drafts_hide_tool_requests_and_restart_per_call() {
         let mut m = ready();
         m.start_turn("hi").unwrap();

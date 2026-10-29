@@ -121,6 +121,8 @@ impl Workspace {
         } else {
             s.outputs()
         };
+        // #79: files deleted or moved away since are not listed or counted.
+        tern_agent::chat::prune_outputs(&mut self.model.outputs);
         self.model
             .files
             .set_root(self.model.workspace.as_ref().map(|(_, p)| p.clone()));

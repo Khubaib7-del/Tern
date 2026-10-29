@@ -978,6 +978,37 @@ mod tests {
     }
 
     #[test]
+    fn a_first_segment_naming_the_folder_is_the_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("New");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("sum.md"), "x").unwrap();
+        assert_eq!(unroot_path(&root, "New"), "");
+        assert_eq!(unroot_path(&root, "New/review.md"), "review.md");
+        assert_eq!(unroot_path(&root, "./New\\a/b.md"), "a/b.md");
+        assert_eq!(unroot_path(&root, "src/New/x.md"), "src/New/x.md");
+        assert_eq!(unroot_path(&root, "notes.md"), "notes.md");
+        // A real subfolder of that name is kept.
+        std::fs::create_dir_all(root.join("New")).unwrap();
+        assert_eq!(unroot_path(&root, "New/review.md"), "New/review.md");
+        let w = Workspace::open(&root).unwrap();
+        assert_eq!(w.unroot("./sum.md"), "sum.md");
+    }
+
+    #[test]
+    fn writes_make_missing_folders_but_never_outside() {
+        let (d, w) = ws();
+        assert_eq!(w.write("a/b/c.md", "hi").unwrap(), "a/b/c.md");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a/b/c.md")).unwrap(),
+            "hi"
+        );
+        assert!(w.write("../x/y.md", "no").is_err());
+        assert_eq!(w.rename("a/b/c.md", "z/c.md").unwrap().1, "z/c.md");
+        assert!(d.path().join("z/c.md").is_file());
+    }
+
+    #[test]
     fn refuses_paths_that_leave() {
         let (_d, w) = ws();
         for bad in ["../x", "/etc/passwd", "src/../../x"] {

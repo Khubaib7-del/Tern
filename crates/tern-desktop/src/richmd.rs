@@ -630,23 +630,31 @@ pub fn draw_mermaid_or_error(source: &str) -> Result<Art, String> {
             Ok(art) => return Some(art),
             Err(e) => e,
         };
-        crate::crashlog::log_line(&format!(
-            "mermaid: merman could not read a diagram: {first}"
-        ));
+        // #79: labels with structural characters are quoted and drawn
+        // again; the log says so in one line, and names merman's error
+        // only when quoting did not help.
         let error = match crate::mermaidsrc::tolerant(source) {
             Some(fixed) => match draw_both(&fixed) {
                 Ok(art) => {
-                    crate::crashlog::log_line("mermaid: drawn after quoting its labels");
+                    crate::crashlog::log_line(&format!(
+                        "mermaid: drawn after quoting its labels ({})",
+                        first.chars().take(80).collect::<String>()
+                    ));
                     return Some(art);
                 }
                 Err(e) => {
                     crate::crashlog::log_line(&format!(
-                        "mermaid: still unreadable after quoting labels: {e}"
+                        "mermaid: merman could not read a diagram: {first}; still unreadable after quoting labels: {e}"
                     ));
                     e
                 }
             },
-            None => first,
+            None => {
+                crate::crashlog::log_line(&format!(
+                    "mermaid: merman could not read a diagram: {first}"
+                ));
+                first
+            }
         };
         if let Ok(mut m) = mermaid_errors().lock() {
             if m.len() > CACHE_MAX {

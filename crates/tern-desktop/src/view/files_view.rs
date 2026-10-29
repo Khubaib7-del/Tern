@@ -47,9 +47,19 @@ impl Workspace {
     /// Called every [`FOLDER_POLL`]: re-reads the tree when a folder on
     /// screen changed.
     pub(super) fn poll_folder(&mut self, cx: &mut Context<Self>) {
+        // #79: an output whose file was deleted or moved away goes from
+        // the list and its counts, whether or not the tab shows.
+        if self.prune_outputs() > 0 {
+            cx.notify();
+        }
         if self.files_visible() && self.model.files.changed() {
             cx.notify();
         }
+    }
+
+    /// Drops the outputs whose file is gone; returns how many went.
+    pub(super) fn prune_outputs(&mut self) -> usize {
+        tern_agent::chat::prune_outputs(&mut self.model.outputs)
     }
 
     fn open_file(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -342,7 +352,35 @@ impl Workspace {
             .track_scroll(&self.files_scroll)
             // A file the model is writing, as it arrives (#75).
             .children(self.write_preview(p, cx))
-            .child(self.section_head("Outputs", Some(n_out), p));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(self.section_head("Outputs", Some(n_out), p).flex_1())
+                    .child(
+                        // #79: like the Folder's, and it drops outputs
+                        // whose file is gone.
+                        Button::new("outputs-refresh")
+                            .capsule()
+                            .icon(AssetIcon::RefreshCw)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Refresh: drop files that were moved or deleted")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let gone = this.prune_outputs();
+                                this.model.files.reload();
+                                if gone > 0 {
+                                    this.model.toast_info(format!(
+                                        "Removed {gone} output{} that {} no longer there",
+                                        if gone == 1 { "" } else { "s" },
+                                        if gone == 1 { "is" } else { "are" }
+                                    ));
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
         if outputs.is_empty() {
             col = col.child(
                 div()
@@ -547,6 +585,9 @@ impl Workspace {
             .on_click(cx.listener(|this, _, _, cx| {
                 this.model.outputs_open = !this.model.outputs_open;
                 this.model.file_menu = None;
+                if this.model.outputs_open {
+                    this.prune_outputs();
+                }
                 cx.notify();
             }));
         if n > 0 {
