@@ -20,7 +20,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tern_core::{EffectClass, SecretString};
 use tern_crawl::{ApiRequest, ScholarHttp};
-use tern_research::scholar::funnel::{FunnelConfig, Sufficiency};
+use tern_research::scholar::funnel::{self, FunnelConfig, Sufficiency};
 use tern_research::scholar::snowball::{Direction, Snowball, StopRule};
 use tern_research::scholar::{self as sch, parse};
 pub use tern_research::scholar::{KeyNeed, Locator, Paper, Passage, Service};
