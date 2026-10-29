@@ -895,9 +895,13 @@ pub fn choose_passages(
     }
     let refs: Vec<&Paper> = all.iter().map(|_| paper).collect();
     let texts: Vec<String> = all.iter().map(|p| p.text.clone()).collect();
+    // The paper was already chosen as on topic, and the question is the
+    // user's own wording, so a passage needs fewer of its key terms than
+    // a paper does at the search gate.
     let cfg = FunnelConfig {
         relevance_weight: 1.0,
         keep: 8,
+        min_coverage: PASSAGE_COVERAGE,
         ..FunnelConfig::default()
     };
     let ranked = funnel::rank_texts(question, &refs, &texts, &cfg);
@@ -910,7 +914,18 @@ pub fn choose_passages(
             .take(3)
             .map(|s| all[s.index].clone())
             .collect();
-        return (best, ranked.sufficiency);
+        let why = if ranked.terms.is_empty() {
+            "the question has no searchable terms".to_owned()
+        } else {
+            let top = ranked.scored.first().map(|s| s.coverage).unwrap_or(0.0);
+            format!(
+                "none of its {} passages is about it: the best holds {:.0}% of the key terms ({})",
+                all.len(),
+                top * 100.0,
+                ranked.terms.join(", ")
+            )
+        };
+        return (best, Sufficiency::NotEnough(why));
     }
     let mut idx = kept;
     idx.sort_unstable();
@@ -919,6 +934,10 @@ pub fn choose_passages(
         Sufficiency::Enough,
     )
 }
+
+/// The least share of the question's key terms a passage of a paper
+/// being read must hold to count as evidence.
+const PASSAGE_COVERAGE: f32 = 0.4;
 
 /// `paper_snowball`.
 #[derive(Debug, Clone)]

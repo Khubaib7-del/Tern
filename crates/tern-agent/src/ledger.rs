@@ -82,11 +82,19 @@ pub fn of_run(run: &Run) -> Ledger {
                 Some("paper_read") => {
                     if let Some(page) = &s.page {
                         let hit = p["meta"]["cached"] == true;
-                        b.read(&page.url, &page.site, &page.title, worker, hit, at);
-                        if let Ok(paper) = serde_json::from_value::<tern_research::scholar::Paper>(
+                        match serde_json::from_value::<tern_research::scholar::Paper>(
                             p["meta"]["paper"].clone(),
                         ) {
-                            b.paper(&page.url, worker, paper);
+                            Ok(paper) => b.read_paper(
+                                &page.url,
+                                &page.site,
+                                &page.title,
+                                worker,
+                                hit,
+                                at,
+                                paper,
+                            ),
+                            Err(_) => b.read(&page.url, &page.site, &page.title, worker, hit, at),
                         }
                         b.step(&page.url, StepUse::Read, worker, (0, 0), 1, 0, at);
                     }

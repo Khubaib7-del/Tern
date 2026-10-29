@@ -1758,6 +1758,8 @@ impl Workspace {
                 if let Some(i) = self.last_answer() {
                     self.open_sources.insert(i);
                 }
+                // The opened list is under the answer: keep it in view.
+                self.scroll.scroll_to_bottom();
             }
             Act::View(v) => {
                 self.model.run_panel_open = true;
