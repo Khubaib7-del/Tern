@@ -177,7 +177,7 @@ impl Workspace {
         let hidden = n.saturating_sub(shown.len());
         let rows = shown
             .into_iter()
-            .map(|s| self.plan_row(v.is_graph(), s, live, p));
+            .map(|s| self.plan_row(v.is_graph(), v.ended, s, live, p));
         div()
             .id(SharedString::from(format!("plancard-{key}")))
             .flex()
@@ -214,7 +214,14 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn plan_row(&self, graph: bool, s: &PlanStep, live: bool, p: Palette) -> AnyElement {
+    fn plan_row(
+        &self,
+        graph: bool,
+        ended: bool,
+        s: &PlanStep,
+        live: bool,
+        p: Palette,
+    ) -> AnyElement {
         let ink = if s.status == StepStatus::InProgress {
             p.text
         } else {
@@ -227,10 +234,14 @@ impl Workspace {
             .min_w_0()
             .child(status_icon(s.status, live, p))
             .when(graph, |d| {
+                // One line, cut with an ellipsis (#78: "read_sum" wrapped a
+                // letter at a time in a 22 px column).
                 d.child(
                     div()
                         .flex_none()
-                        .w(px(22.))
+                        .min_w(px(22.))
+                        .max_w(px(96.))
+                        .truncate()
                         .font_family(crate::assets::MONO_FONT)
                         .text_xs()
                         .text_color(p.faint)
@@ -265,6 +276,17 @@ impl Workspace {
                         .text_xs()
                         .text_color(p.faint)
                         .child(s.status.label()),
+                )
+            })
+            // A plan the run ended before the model finished it (#78):
+            // its open steps say so, without claiming they were skipped.
+            .when(!graph && ended && s.status == StepStatus::Skipped, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child("Not marked done"),
                 )
             })
             .into_any_element()

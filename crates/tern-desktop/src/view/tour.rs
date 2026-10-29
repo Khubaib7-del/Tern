@@ -3073,7 +3073,7 @@ fn focus_beats() -> Vec<Beat> {
         scene(
             "x22-task-graph",
             "tern-only",
-            "A task graph: five tasks in two waves, the four reads of wave 1 run at once, task e waits for a; the graph card shows each task's tool, what it waits for and Done; the calls nest under the run_tasks card",
+            "A task graph: five tasks in two waves, the four reads of wave 1 run at once, read_summary waits for list_folder; the graph card shows each task's id on one line (a long one ends in an ellipsis, never wraps a letter at a time), its tool, what it waits for and Done; the calls nest under the run_tasks card",
             Act::WState("task graph"),
             3000,
         ),
@@ -3106,6 +3106,36 @@ fn focus_beats() -> Vec<Beat> {
             Act::WState("cache hit"),
             3000,
         ),
+        // #78: a plan left open ends where it stopped; a one-line edit is
+        // a file_edit shown as the write's card with a +1 -0 diff.
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: plan left open"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "x26-plan-ended",
+            "tern-only",
+            "The model made a plan and never updated it: when the run ends the card says Plan · Tidy the notes, ended at 0 of 3 done, and the open steps say Not marked done (no frozen 0 of 3 with a step still in progress)",
+            Act::WState("plan ended"),
+            3000,
+        ),
+        b(Act::ToastsClear, 300),
+        b(Act::CTypePath("Tour: add a line to the todo list"), 200),
+        b(Act::CSend, 3500),
+        scene(
+            "x27-edit-line-waits",
+            "tern-only",
+            "\"Add a line\": a file_edit, shown as the file_write card of todo.md with +1 -0 (not the whole file rewritten), waiting for its approval card",
+            Act::WState("edit waiting"),
+            3000,
+        ),
+        scene(
+            "x28-edit-line-done",
+            "tern-only",
+            "Approved: todo.md has the new last line and the card says Saved",
+            Act::WPick(0),
+            3500,
+        ),
+        b(Act::WState("edit done"), 200),
         b(Act::WApproval("workspace_write"), 300),
         b(Act::CTypePath("Tour: a long conversion"), 200),
         b(Act::CSend, 3500),
@@ -4747,11 +4777,11 @@ mod mock {
                     vec![(
                         "run_tasks".to_owned(),
                         json!({"goal": "Compare the notes", "tasks": [
-                            {"id": "a", "tool": "files_list", "args": {"path": "."}},
-                            {"id": "b", "tool": "file_read", "args": {"path": "reading-notes.md"}},
-                            {"id": "c", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
-                            {"id": "d", "tool": "file_read", "args": {"path": "todo.md"}},
-                            {"id": "e", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["a"]}
+                            {"id": "list_folder", "tool": "files_list", "args": {"path": "."}},
+                            {"id": "read_reading_notes", "tool": "file_read", "args": {"path": "reading-notes.md"}},
+                            {"id": "read_meeting", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
+                            {"id": "read_todo", "tool": "file_read", "args": {"path": "todo.md"}},
+                            {"id": "read_summary", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["list_folder"]}
                         ]}),
                     )],
                 )),
@@ -4772,6 +4802,40 @@ mod mock {
                 _ => answer(
                     "One script read the three notes and wrote word-counts.md; only its printed total came back to me.",
                 ),
+            };
+        }
+        // #78: a plan the model never updates again, and a one-line edit.
+        if user.contains("plan left open") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![
+                        (
+                            "plan".to_owned(),
+                            json!({"title": "Tidy the notes", "steps": [
+                                {"title": "List the notes", "status": "in_progress"},
+                                {"title": "Merge the meeting notes", "status": "pending"},
+                                {"title": "Write an index", "status": "pending"}
+                            ]}),
+                        ),
+                        ("files_list".to_owned(), json!({"path": "."})),
+                    ],
+                )),
+                _ => answer(
+                    "The folder has the reading notes, the meeting notes and the to-do list.",
+                ),
+            };
+        }
+        if user.contains("add a line to the todo list") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![(
+                        "file_edit".to_owned(),
+                        json!({"path": "todo.md", "append": "- Book Lab 3 for the demo"}),
+                    )],
+                )),
+                _ => answer("Added \"Book Lab 3 for the demo\" to todo.md."),
             };
         }
         if user.contains("read the todo list twice") {

@@ -120,9 +120,49 @@ pub struct PlanView {
     /// What Tern repaired in what the model sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// The run ended with steps the model never marked done (#78): they
+    /// show as skipped, and the card says where the plan stopped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
 }
 
 impl PlanView {
+    /// Whether some step is still pending or in progress.
+    pub fn open(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s.status, StepStatus::Pending | StepStatus::InProgress))
+    }
+
+    /// Ends a plan whose run ended with steps open: those become
+    /// skipped (not done, as far as the model said), and the plan says it
+    /// ended there. Returns whether anything changed.
+    pub fn end(&mut self) -> bool {
+        if !self.open() {
+            return false;
+        }
+        for s in self.steps.iter_mut() {
+            if matches!(s.status, StepStatus::Pending | StepStatus::InProgress) {
+                s.status = StepStatus::Skipped;
+            }
+        }
+        self.ended = true;
+        true
+    }
+
+    /// The line the model reads after a round of tools while its plan has
+    /// open steps, so it keeps the plan current (#78).
+    pub fn reminder(&self) -> String {
+        let now = self
+            .current()
+            .map(|c| format!(" \"{}\" is in progress.", c.title))
+            .unwrap_or_default();
+        format!(
+            "(Tern note: your plan is at {}.{now} When a step is finished, call `plan` with every step and its new status before you go on, and mark the plan done before your final answer.)",
+            self.progress()
+        )
+    }
+
     pub fn done(&self) -> usize {
         self.steps
             .iter()
@@ -134,9 +174,15 @@ impl PlanView {
         self.steps.iter().filter(|s| s.status == st).count()
     }
 
-    /// "2 of 4 done".
+    /// "2 of 4 done", or "ended at 2 of 4 done" for a plan whose run
+    /// ended before it did.
     pub fn progress(&self) -> String {
-        format!("{} of {} done", self.done(), self.steps.len())
+        format!(
+            "{}{} of {} done",
+            if self.ended { "ended at " } else { "" },
+            self.done(),
+            self.steps.len()
+        )
     }
 
     /// The step in progress, if any.
@@ -283,6 +329,7 @@ pub fn read_plan(args: &Value) -> Result<PlanView, String> {
         steps,
         waves: 0,
         notes,
+        ended: false,
     })
 }
 
@@ -607,6 +654,7 @@ impl Graph {
                 .collect(),
             waves: self.waves().len(),
             notes: self.notes.clone(),
+            ended: false,
         }
     }
 }
@@ -651,6 +699,62 @@ pub fn feed(args: &Value, results: &BTreeMap<String, String>) -> Value {
     }
 }
 
+/// A placeholder in a task's arguments that has nothing to put in
+/// (#78): `{{id}}` of a task with no result yet or an empty one, or
+/// `{{id.something}}` (only `{{id}}` is filled). The task fails with this
+/// line instead of running with the placeholder or an empty text (a file
+/// write of nothing). Placeholders that name no task are left alone.
+pub fn missing_input(
+    args: &Value,
+    ids: &[String],
+    results: &BTreeMap<String, String>,
+) -> Option<String> {
+    let mut texts = Vec::new();
+    fn strings<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
+        match v {
+            Value::String(s) => out.push(s),
+            Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+    strings(args, &mut texts);
+    for t in texts {
+        let mut rest = t;
+        while let Some(i) = rest.find("{{") {
+            let after = &rest[i + 2..];
+            let Some(j) = after.find("}}") else {
+                break;
+            };
+            let key = after[..j].trim();
+            rest = &after[j + 2..];
+            let base = key.split(['.', '[']).next().unwrap_or(key).trim();
+            if !ids.iter().any(|id| id == base) {
+                continue;
+            }
+            if key != base {
+                return Some(format!(
+                    "{{{{{key}}}}} cannot be filled: write {{{{{base}}}}} for task \"{base}\"'s whole result"
+                ));
+            }
+            match results.get(base) {
+                None => {
+                    return Some(format!(
+                        "{{{{{base}}}}} has no result yet: add \"{base}\" to this task's `after`"
+                    ));
+                }
+                Some(r) if r.trim().is_empty() => {
+                    return Some(format!(
+                        "task \"{base}\" gave an empty result, so {{{{{base}}}}} has nothing to put in"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    None
+}
+
 fn cut(s: &str) -> String {
     if s.chars().count() <= FEED_CHARS {
         s.to_owned()
@@ -693,14 +797,19 @@ pub fn of_run(run: &crate::Run) -> (Option<PlanView>, Option<PlanView>) {
             }
         }
     }
-    // A run that stopped leaves no task running.
-    if run.end.is_some()
-        && let Some(g) = graph.as_mut()
-    {
-        for s in g.steps.iter_mut() {
-            if matches!(s.status, StepStatus::InProgress | StepStatus::Pending) {
-                s.status = StepStatus::Skipped;
+    // A run that stopped leaves no task running, and a plan the model
+    // never finished says where it ended (#78; runs logged before the
+    // engine ended plans itself).
+    if run.end.is_some() {
+        if let Some(g) = graph.as_mut() {
+            for s in g.steps.iter_mut() {
+                if matches!(s.status, StepStatus::InProgress | StepStatus::Pending) {
+                    s.status = StepStatus::Skipped;
+                }
             }
+        }
+        if let Some(p) = plan.as_mut() {
+            p.end();
         }
     }
     (plan, graph)
@@ -717,7 +826,7 @@ impl Tool for PlanTool {
         "plan"
     }
     fn summary(&self) -> &'static str {
-        "Show the user a plan for a task with several steps and update it as you go: send every step each time with its status (pending, in_progress or done)."
+        "Show the user a plan for a task with several steps and keep it current: send every step each time with its status (pending, in_progress or done). Call it again as soon as a step is finished, and mark every step done before your final answer."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Analysis
@@ -967,6 +1076,83 @@ mod tests {
         let (plan, graph) = of_run(&run);
         assert_eq!(plan.unwrap().done(), 1);
         assert_eq!(graph.unwrap().steps.len(), 1);
+    }
+
+    #[test]
+    fn a_plan_left_open_ends_where_it_stopped() {
+        let mut p = read_plan(&json!({"steps": [
+            {"title": "Read sum.md", "status": "done"},
+            {"title": "Read review.md", "status": "in_progress"},
+            "Write counts.md"
+        ]}))
+        .unwrap();
+        assert!(p.open());
+        assert!(p.reminder().contains("1 of 3 done"));
+        assert!(p.reminder().contains("\"Read review.md\" is in progress"));
+        assert!(p.end());
+        assert!(p.ended);
+        assert_eq!(p.count(StepStatus::Skipped), 2);
+        assert_eq!(p.progress(), "ended at 1 of 3 done");
+        assert!(
+            p.line()
+                .starts_with("Plan · ended at 1 of 3 done: ✓ Read sum.md · – Read review.md")
+        );
+        // Ending twice changes nothing; a finished plan is not ended.
+        assert!(!p.end());
+        let mut done = read_plan(&json!({"steps": [{"title": "a", "status": "done"}]})).unwrap();
+        assert!(!done.end());
+        assert!(!done.ended);
+        // A run that ended shows an open plan as ended.
+        use tern_core::{EventEnvelope, SessionId};
+        let s = SessionId::new();
+        let mut run = crate::Run::new();
+        let open = read_plan(&json!({"steps": ["a", "b"]})).unwrap();
+        run.push(&EventEnvelope::new(
+            s,
+            "plan.updated",
+            EffectClass::Analysis,
+            open.line(),
+            serde_json::to_value(&open).unwrap(),
+        ));
+        assert!(!of_run(&run).0.unwrap().ended);
+        run.push(&EventEnvelope::new(
+            s,
+            "turn.finished",
+            EffectClass::Analysis,
+            "Answered",
+            json!({"state": "completed"}),
+        ));
+        assert!(run.end.is_some());
+        let p = of_run(&run).0.unwrap();
+        assert!(p.ended);
+        assert_eq!(p.progress(), "ended at 0 of 2 done");
+    }
+
+    #[test]
+    fn a_placeholder_with_nothing_to_put_in_fails_the_task() {
+        let ids: Vec<String> = ["read_sum", "count"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut r = BTreeMap::new();
+        r.insert("read_sum".to_owned(), "a\nb".to_owned());
+        assert_eq!(
+            missing_input(&json!({"text": "{{read_sum}}"}), &ids, &r),
+            None
+        );
+        // Not finished, empty, and a field of a result.
+        let e = missing_input(&json!({"path": "c.md", "text": "{{count}}"}), &ids, &r).unwrap();
+        assert!(e.contains("no result yet"), "{e}");
+        r.insert("count".to_owned(), "  ".to_owned());
+        let e = missing_input(&json!({"text": ["x {{ count }}"]}), &ids, &r).unwrap();
+        assert!(e.contains("empty result"), "{e}");
+        let e = missing_input(&json!({"text": "{{read_sum.result}}"}), &ids, &r).unwrap();
+        assert!(e.contains("write {{read_sum}}"), "{e}");
+        // Braces that name no task are text.
+        assert_eq!(
+            missing_input(&json!({"text": "{{name}} and {{"}), &ids, &r),
+            None
+        );
     }
 
     #[tokio::test]

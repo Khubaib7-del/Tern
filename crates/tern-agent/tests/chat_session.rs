@@ -164,9 +164,12 @@ async fn reopened_chat_brings_back_turns_and_history() {
     // instead of prose questions, `file_rename`, no invented actions,
     // full paths outside the folder), and since #77 `plan`, `run_tasks`
     // and code mode's line with the stubs (`def file_read(path: str) ->
-    // str`), at four characters a token.
+    // str`), and since #78 the rules on approval cards and reading files,
+    // code mode's no-disk line and example, and the longer `plan` and
+    // `run_python` descriptions (696 characters), at four characters a
+    // token.
     assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (956, 0));
+    assert_eq!((ctx.prompt, ctx.calls), (1130, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?", "Hello from the mock."))

@@ -334,6 +334,87 @@ pub fn stub_text(stubs: &[Stub]) -> String {
     stubs.iter().map(Stub::line).collect::<Vec<_>>().join("\n")
 }
 
+/// A short example of code mode with the functions this chat has (#78),
+/// for the system prompt: up to three lines, reading before writing.
+pub fn example(stubs: &[Stub]) -> String {
+    let has = |n: &str| stubs.iter().any(|s| s.name == n);
+    let mut lines = Vec::new();
+    if has("files_list") {
+        lines.push("names = files_list()".to_owned());
+    }
+    if has("file_read") {
+        lines.push("text = file_read(\"notes.md\")".to_owned());
+    } else if has("web_search") {
+        lines.push("text = web_search(\"retrieval augmented generation survey\")".to_owned());
+    }
+    if lines.iter().any(|l| l.starts_with("text")) {
+        lines.push(if has("file_write") {
+            "file_write(\"counts.md\", str(len(text.split())) + \" words\\n\")".to_owned()
+        } else {
+            "print(len(text.split()), \"words\")".to_owned()
+        });
+    }
+    lines.truncate(3);
+    lines.join("\n")
+}
+
+/// Names that reach for the disk, the OS or the network in plain Python.
+const OS_SIGNS: &[&str] = &[
+    "notimplementederror",
+    "os function",
+    "no module named 'os'",
+    "no module named 'pathlib'",
+    "no module named 'shutil'",
+    "no module named 'subprocess'",
+    "no module named 'glob'",
+    "no module named 'io'",
+    "no module named 'requests'",
+    "no module named 'urllib'",
+    "no module named 'socket'",
+    "name 'open' is not defined",
+    "name 'path' is not defined",
+];
+
+/// The line added to a failed `run_python` result whose error came from
+/// reaching for files, the OS or the network (#78: `Path.iterdir` in a
+/// script gave "NotImplementedError: OS function 'Path.iterdir' not
+/// implemented"): there is no such access, and these are the functions
+/// to use instead.
+pub fn os_hint(result: &str, stubs: &[Stub]) -> Option<String> {
+    if !result.starts_with("Tool `run_python`") {
+        return None;
+    }
+    let r = result.to_lowercase();
+    let err = r.split("error:").skip(1).collect::<Vec<_>>().join(" ");
+    let err = if err.is_empty() { r.clone() } else { err };
+    if !OS_SIGNS.iter().any(|s| err.contains(s)) {
+        return None;
+    }
+    let wanted = [
+        "files_list",
+        "file_read",
+        "file_write",
+        "file_edit",
+        "file_search",
+        "web_search",
+        "read_url",
+    ];
+    let names: Vec<String> = wanted
+        .iter()
+        .filter_map(|w| stubs.iter().find(|s| s.name == *w))
+        .map(|s| format!("{}()", s.name))
+        .collect();
+    Some(if names.is_empty() {
+        "(Tern note: run_python has no file system, OS or network access: open(), pathlib, os and the like do not work. Put the data in the code itself.)".to_owned()
+    } else {
+        format!(
+            "(Tern note: run_python has no file system, OS or network access: open(), pathlib (Path.iterdir, Path.read_text), os and the like do not work there. Reach files and the web only through the functions Tern provides inside the script: {}. For example:\n{}\nThen print a short summary.)",
+            names.join(", "),
+            example(stubs)
+        )
+    })
+}
+
 /// Whether a program calls any of the stubs (`name(` outside a longer
 /// name), so it runs in code mode.
 pub fn calls_tools(code: &str, stubs: &[Stub]) -> bool {
@@ -722,7 +803,7 @@ impl Tool for RunPython {
         "run_python"
     }
     fn summary(&self) -> &'static str {
-        "Run a short Python program (a Python subset: no imports beyond basic standard modules such as math, re, json, datetime; no files, network or packages like pandas) for glue work: reshaping data you already have, sums, unit conversions, cleaning citations. Put the data in the code. Returns what it printed and the value of the last expression."
+        "Run a short Python program (a Python subset: no imports beyond basic standard modules such as math, re, json, datetime; no open(), pathlib, os, network or packages like pandas) for glue work: reshaping data you already have, sums, unit conversions, cleaning citations. Reach files and the web only through the tool functions listed under Code mode. Returns what it printed and the value of the last expression."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Analysis
@@ -841,6 +922,61 @@ mod tests {
         );
         let s = run_snippet("import socket", Duration::from_secs(5), false);
         assert!(s.error.is_some());
+    }
+
+    #[test]
+    fn os_errors_point_at_the_tool_functions() {
+        let stub = |n: &str| Stub {
+            name: n.into(),
+            params: Vec::new(),
+            summary: String::new(),
+        };
+        let stubs = vec![
+            stub("files_list"),
+            stub("file_read"),
+            stub("file_write"),
+            stub("web_search"),
+        ];
+        let err = "Tool `run_python` failed: error:\nTraceback...\nNotImplementedError: OS function 'Path.iterdir' not implemented.";
+        let hint = os_hint(err, &stubs).unwrap();
+        assert!(hint.contains("no file system"), "{hint}");
+        assert!(
+            hint.contains("files_list(), file_read(), file_write(), web_search()"),
+            "{hint}"
+        );
+        assert!(
+            hint.contains("names = files_list()\ntext = file_read(\"notes.md\")"),
+            "{hint}"
+        );
+        assert!(
+            os_hint(
+                "Tool `run_python` failed: error:\nNameError: name 'open' is not defined",
+                &stubs
+            )
+            .is_some()
+        );
+        assert!(
+            os_hint(
+                "Tool `run_python` failed: error:\nZeroDivisionError: division by zero",
+                &stubs
+            )
+            .is_none()
+        );
+        assert!(
+            os_hint(
+                "Result of `run_python`:\nprinted: NotImplementedError",
+                &stubs
+            )
+            .is_none()
+        );
+        // With no tools, the data goes in the code.
+        assert!(
+            os_hint(err, &[])
+                .unwrap()
+                .contains("Put the data in the code")
+        );
+        assert_eq!(example(&[stub("web_search")]).lines().count(), 2);
+        assert_eq!(example(&[]), "");
     }
 
     #[test]

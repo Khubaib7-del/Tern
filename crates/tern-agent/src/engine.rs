@@ -412,6 +412,10 @@ pub fn retry_payload(provider: &str, n: &tern_providers::RetryNotice) -> Value {
 /// the conversation as text (#70).
 pub const FILE_NUDGE: &str = "(Tern note: the attached files are already in this conversation as text. Tern converted them on this computer and put their full contents inside the <attachments> block of the user's message above. Read them there and answer the question; do not say you cannot access, open or analyze files. If the text there is empty or only says a page is scanned, say what is missing and tell the user to press \"Read again as scanned\" on the file's chip to read it with the local document or OCR model.)";
 
+/// What the model is told when it asks in prose whether to make a change
+/// the user asked for (#78).
+pub const CONFIRM_NUDGE: &str = "(Tern note: do not ask in prose whether to go ahead. The user asked for this change: call the tool now (`file_edit` to add or change a few lines, `file_write` for a new file or a full rewrite). Tern shows the user an approval card with the diff, and that card is the confirmation. Ask in prose only when you cannot tell which file or what text the user means.)";
+
 /// What a message plainly asks Tern to read before the model answers: the
 /// file at a full path it names (when that file exists), and a web search
 /// when it says to use the web. `previous` is the user's previous
@@ -433,6 +437,13 @@ pub fn prefetch_calls(
         && crate::paths::user_path(&raw).is_file()
     {
         out.push(("file_read", json!({"path": raw})));
+    } else if tools.get("file_read").is_some()
+        && tools.get("files_list").is_some()
+        && let Some(name) = crate::webintent::file_to_read(own)
+    {
+        // "read sum.md" in a chat with a folder (#78: the model answered
+        // from memory right after a write): the file as it is now.
+        out.push(("file_read", json!({"path": name})));
     }
     if tools.get("web_search").is_some()
         && let Some(query) = web_prefetch(text, previous)
@@ -596,6 +607,9 @@ struct Run<'r, 'a> {
     parent: Option<u32>,
     /// The task graph task a call runs for, as `task`.
     task: Option<String>,
+    /// The model's plan as it last sent it (#78): reminded after each
+    /// round of tools while steps are open, ended when the run ends.
+    plan: Option<crate::planner::PlanView>,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -651,6 +665,7 @@ impl<'a> TurnLoop<'a> {
             next_call: None,
             parent: None,
             task: None,
+            plan: None,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -880,6 +895,7 @@ impl Run<'_, '_> {
         }
         let mut empty_retried = false;
         let mut file_nudged = false;
+        let mut confirm_nudged = false;
 
         loop {
             self.check_cancel()?;
@@ -1100,6 +1116,34 @@ impl Run<'_, '_> {
                     messages.push(ChatMessage::user(FILE_NUDGE.to_owned()));
                     self.go(TurnState::Verifying)?;
                 }
+                Reply::Answer(text)
+                    if !confirm_nudged
+                        && ["file_write", "file_edit", "file_rename"]
+                            .iter()
+                            .any(|t| self.cfg.tools.get(t).is_some())
+                        && !self.called.iter().any(|c| {
+                            matches!(c.as_str(), "file_write" | "file_edit" | "file_rename")
+                        })
+                        && crate::webintent::asks_for_change(&message_text)
+                        && crate::webintent::asks_to_proceed(&text) =>
+                {
+                    // "Would you like me to proceed with adding this
+                    // line?" (#78): in Act mode the approval card is the
+                    // question, so the model is told once to call the tool.
+                    confirm_nudged = true;
+                    self.record(self.event(
+                        "model.asked_in_prose",
+                        EffectClass::Analysis,
+                        "The model asked in prose before a change; Tern told it to call the tool so the approval card asks",
+                        json!({"chars": text.len()}),
+                    ))?;
+                    crate::diag::note(
+                        "turn: the model asked to proceed in prose; told it to call the tool",
+                    );
+                    messages.push(ChatMessage::assistant(text));
+                    messages.push(ChatMessage::user(CONFIRM_NUDGE.to_owned()));
+                    self.go(TurnState::Verifying)?;
+                }
                 Reply::Answer(text) => {
                     let refused = crate::webintent::is_refusal(&text);
                     let copied = previous_answer
@@ -1210,7 +1254,12 @@ impl Run<'_, '_> {
                     // Every call in the reply runs in this one round (a
                     // provider's parallel tool calls, or several blocks),
                     // and all the results go back together.
-                    let calls = protocol::parse_calls(&reply.text);
+                    // A `file_edit` is queued as the `file_write` it
+                    // becomes, so its card is the write's from the start.
+                    let calls: Vec<(String, Value)> = protocol::parse_calls(&reply.text)
+                        .into_iter()
+                        .map(|(n, a)| self.expand_call(n, a))
+                        .collect();
                     let mut results = Vec::with_capacity(calls.len());
                     let first = self.call_seq + 1;
                     self.call_seq += calls.len() as u32;
@@ -1261,8 +1310,19 @@ impl Run<'_, '_> {
                         self.next_call = Some(first + i as u32);
                         results.push(self.dispatch(name, args).await?);
                     }
+                    let mut back = results.join("\n\n");
+                    // The plan stays current (#78: a plan sat at 0 of 3
+                    // done for a whole run): a line after each round of
+                    // tools that did not update it.
+                    if let Some(plan) = &self.plan
+                        && plan.open()
+                        && !calls.iter().any(|(n, _)| n == "plan")
+                    {
+                        back.push_str("\n\n");
+                        back.push_str(&plan.reminder());
+                    }
                     messages.push(ChatMessage::assistant(reply.text));
-                    messages.push(ChatMessage::user(results.join("\n\n")));
+                    messages.push(ChatMessage::user(back));
                     // Safe point: the tools' results are in the conversation.
                     self.save(&messages[base..], &seen);
                 }
@@ -1400,6 +1460,12 @@ impl Run<'_, '_> {
             TurnState::Cancelled => "run.cancelled",
             _ => "turn.finished",
         };
+        // A plan the model never finished says where it ended (#78).
+        if let Some(mut plan) = self.plan.take()
+            && plan.end()
+        {
+            let _ = self.plan_event(&plan);
+        }
         let answered = answer.is_some();
         if answered && let Some(sink) = self.cfg.hooks.checkpoints {
             let _ = sink.clear(&self.cfg.session.to_string());
@@ -1453,6 +1519,17 @@ impl<'a> Run<'_, 'a> {
         }
     }
 
+    /// A call as it runs: a `file_edit` becomes the `file_write` of the
+    /// file's new text; a call that cannot be applied stays as it is (its
+    /// step says why).
+    fn expand_call(&self, name: String, args: Value) -> (String, Value) {
+        let tools = self.cfg.tools;
+        match tools.get(&name).and_then(|t| t.expand(&args)) {
+            Some(Ok((to, a))) if tools.get(to).is_some() => (to.to_owned(), a),
+            _ => (name, args),
+        }
+    }
+
     /// A call the model asked for: a task graph and a script that calls
     /// tools (code mode) run their own calls; the rest is one call (#77).
     async fn dispatch(&mut self, name: &str, args: &Value) -> Result<String, Stop> {
@@ -1464,11 +1541,17 @@ impl<'a> Run<'_, 'a> {
             "run_python" if tools.get(name).is_some() => {
                 let stubs = crate::python::stubs(tools);
                 let code = args["code"].as_str().unwrap_or_default();
-                if !stubs.is_empty() && crate::python::calls_tools(code, &stubs) {
-                    self.code_step(args, stubs).await
+                let text = if !stubs.is_empty() && crate::python::calls_tools(code, &stubs) {
+                    self.code_step(args, stubs.clone()).await?
                 } else {
-                    self.tool_step(name, args).await
-                }
+                    self.tool_step(name, args).await?
+                };
+                // Plain Python that reached for the disk (#78: Path.iterdir
+                // in a script): the error says which functions to use.
+                Ok(match crate::python::os_hint(&text, &stubs) {
+                    Some(hint) => format!("{text}\n\n{hint}"),
+                    None => text,
+                })
             }
             _ => self.tool_step(name, args).await,
         }
@@ -1483,6 +1566,26 @@ impl<'a> Run<'_, 'a> {
             self.call_seq
         });
         let tools: &'a ToolRegistry = self.cfg.tools;
+        // `file_edit` runs as the `file_write` of the new text (#78): the
+        // same card, diff, rules and cache.
+        let expanded = match tools.get(name).and_then(|t| t.expand(args)) {
+            Some(Ok((to, a))) if tools.get(to).is_some() => Some((to, a)),
+            Some(Err(e)) => {
+                self.go(TurnState::RecordResult)?;
+                self.record(self.event(
+                    "tool.rejected",
+                    EffectClass::Analysis,
+                    format!("`{name}` could not be applied: {e}"),
+                    json!({"tool": name, "call": call, "error": e, "args": brief_args(args)}),
+                ))?;
+                return Ok(Pre::Done(format!("Tool `{name}` failed: {e}.")));
+            }
+            _ => None,
+        };
+        let (name, args): (&str, &Value) = match &expanded {
+            Some((to, a)) => (*to, a),
+            None => (name, args),
+        };
         let Some(tool) = tools.get(name) else {
             self.go(TurnState::RecordResult)?;
             self.record(self.event(
@@ -1508,6 +1611,18 @@ impl<'a> Run<'_, 'a> {
             return Ok(Pre::Done(format!(
                 "Tool `{name}` {e}. Check its input schema."
             )));
+        }
+        if let Some(why) = tool.check(args) {
+            // Never asked about (#78: an approval card for an empty new
+            // file): the model gets the line and sends it again.
+            self.go(TurnState::RecordResult)?;
+            self.record(self.event(
+                "tool.rejected",
+                tool.effect(),
+                format!("`{name}` was asked for with bad arguments: {why}"),
+                json!({"tool": name, "call": call, "error": why, "args": brief_args(args)}),
+            ))?;
+            return Ok(Pre::Done(format!("Tool `{name}` bad input: {why}.")));
         }
         if self.tool_calls >= self.cfg.budget.max_tool_calls {
             return Err(Self::over_budget(format!(
@@ -1754,6 +1869,7 @@ impl<'a> Run<'_, 'a> {
                         serde_json::from_value::<crate::planner::PlanView>(o.meta["plan"].clone())
                 {
                     self.plan_event(&plan)?;
+                    self.plan = Some(plan);
                 }
                 if cut {
                     format!(
@@ -1933,6 +2049,7 @@ impl<'a> Run<'_, 'a> {
         let tools: &'a ToolRegistry = self.cfg.tools;
         let cache = self.cfg.hooks.cache;
         let mut failed: std::collections::BTreeSet<String> = Default::default();
+        let ids: Vec<String> = graph.tasks.iter().map(|t| t.id.clone()).collect();
         for wave in graph.waves() {
             self.check_cancel()?;
             let mut parallel = Vec::new();
@@ -1957,6 +2074,12 @@ impl<'a> Run<'_, 'a> {
                 let mut ready: Vec<(usize, Ready<'a>)> = Vec::new();
                 for &i in chunk {
                     let t = &graph.tasks[i];
+                    if let Some(why) = planner::missing_input(&t.args, &ids, results) {
+                        failed.insert(t.id.clone());
+                        view.steps[i].status = StepStatus::Failed;
+                        results.insert(t.id.clone(), format!("(failed: {why})"));
+                        continue;
+                    }
                     let fed = planner::feed(&t.args, results);
                     self.task = Some(t.id.clone());
                     self.go(TurnState::ToolRequested)?;
@@ -2006,6 +2129,16 @@ impl<'a> Run<'_, 'a> {
             for i in serial {
                 self.check_cancel()?;
                 let t = &graph.tasks[i];
+                // An unfilled or empty `{{id}}` never reaches a change
+                // (#78: a write of an empty counts.md).
+                if let Some(why) = planner::missing_input(&t.args, &ids, results) {
+                    crate::diag::note(&format!("task graph: {} failed: {why}", t.id));
+                    failed.insert(t.id.clone());
+                    view.steps[i].status = StepStatus::Failed;
+                    results.insert(t.id.clone(), format!("(failed: {why})"));
+                    self.plan_event(view)?;
+                    continue;
+                }
                 let fed = planner::feed(&t.args, results);
                 self.task = Some(t.id.clone());
                 self.go(TurnState::ToolRequested)?;
