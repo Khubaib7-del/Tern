@@ -113,7 +113,15 @@ impl Workspace {
     /// A chat came on screen: its remembered mode and its workspace.
     pub(super) fn chat_shown(&mut self, s: &ChatSession) {
         let id = (!s.is_draft()).then(|| s.session_id().to_string());
-        self.model.composer.chat_opened(id.as_deref(), s.harness());
+        // A folder chat with no mode of its own opens in its folder's
+        // last mode, else Act (#80: new folder chats opened in Chat, and
+        // write requests failed).
+        let folder = s
+            .workspace()
+            .map(|w| composer::folder_mode(&self.model.providers.prefs.folder_modes, w.path()));
+        self.model
+            .composer
+            .chat_opened(id.as_deref(), s.harness(), folder);
         self.model.deep_mode = self.model.composer.mode.is_deep();
         self.model.workspace = s.workspace().map(|w| (w.name(), w.path().to_path_buf()));
         self.model.outputs = if s.is_draft() {
@@ -163,6 +171,57 @@ impl Workspace {
             Err(e) => self.model.toast_error(e, None),
         }
         true
+    }
+
+    /// Saves `mode` as the open folder's last mode (#80), so the next new
+    /// chat there starts in it. Nothing for a chat without a folder, or a
+    /// mode a folder does not keep (Deep research, Study).
+    pub(super) fn remember_folder_mode(&mut self, mode: composer::Mode) {
+        let Some(id) = mode.folder_id() else {
+            return;
+        };
+        let Some((_, dir)) = &self.model.workspace else {
+            return;
+        };
+        let key = composer::folder_key(dir);
+        if self
+            .model
+            .providers
+            .prefs
+            .folder_modes
+            .get(&key)
+            .map(String::as_str)
+            == Some(id)
+        {
+            return;
+        }
+        self.save_ui_prefs(|p| {
+            p.folder_modes.insert(key.clone(), id.to_owned());
+        });
+    }
+
+    /// The needs-Act card's button (#80): Act mode for this chat and its
+    /// folder, then the message sent again.
+    pub(super) fn switch_to_act_and_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(n) = self.model.needs_act.take() else {
+            return;
+        };
+        let chat = self
+            .session
+            .as_ref()
+            .filter(|s| !s.is_draft())
+            .map(|s| s.session_id().to_string());
+        self.model.set_mode(composer::Mode::Act, chat.as_deref());
+        self.remember_folder_mode(composer::Mode::Act);
+        let (own, _) = tern_agent::attach::split(&n.message);
+        let text = own.trim().to_owned();
+        if text.is_empty() || !self.model.can_send() {
+            cx.notify();
+            return;
+        }
+        self.composer
+            .update(cx, |c, cx| crate::view::set_end(c, &text, window, cx));
+        self.submit(window, cx);
     }
 
     pub(super) fn save_ui_prefs(&mut self, f: impl Fn(&mut tern_agent::Preferences)) {
@@ -500,9 +559,20 @@ impl Workspace {
             cx.notify();
             return;
         };
+        let draft = s.is_draft();
         match s.set_workspace(path.as_deref()) {
             Ok(()) => {
                 self.model.workspace = s.workspace().map(|w| (w.name(), w.path().to_path_buf()));
+                // A new chat on a folder starts in the mode last used there,
+                // else Act (#80).
+                if draft
+                    && !self.model.is_busy()
+                    && self.model.composer.mode.harness() == tern_agent::Harness::Research
+                    && let Some((_, dir)) = &self.model.workspace
+                {
+                    let m = composer::folder_mode(&self.model.providers.prefs.folder_modes, dir);
+                    self.model.set_mode(m, None);
+                }
                 self.model
                     .files
                     .set_root(self.model.workspace.as_ref().map(|(_, p)| p.clone()));
@@ -1511,6 +1581,7 @@ impl Workspace {
                                 .filter(|s| !s.is_draft())
                                 .map(|s| s.session_id().to_string());
                             this.model.set_mode(m, chat.as_deref());
+                            this.remember_folder_mode(m);
                             cx.notify();
                         }))
                     }))
@@ -2123,6 +2194,7 @@ impl Workspace {
                 Notice::WikiEmpty => self.wiki_empty_banner(p, cx),
                 Notice::Resume => self.resume_banner(p, cx),
                 Notice::Continue => self.continue_bar(p, cx),
+                Notice::NeedsAct => self.needs_act_card(p, cx),
                 Notice::Inserted => self.inserted_banner(p, cx),
                 Notice::Local => self.local_failed_banner(p, cx),
             });

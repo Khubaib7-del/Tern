@@ -221,6 +221,10 @@ pub struct Preferences {
     pub workbench_programs: Vec<String>,
     /// Network for commands the workbench runs (#75); off by default.
     pub workbench_network: bool,
+    /// The composer mode last used in each folder (`chat`, `plan`,
+    /// `act`), by the folder's full path (#80): a new chat on that folder
+    /// starts in it. A folder with none starts in Act.
+    pub folder_modes: std::collections::BTreeMap<String, String>,
 }
 
 /// An approval choice as saved (`allow`, `ask`, `deny`).
@@ -706,6 +710,7 @@ mod tests {
             )],
             workbench_programs: vec!["latex".into()],
             workbench_network: true,
+            folder_modes: [("/home/me/notes".to_owned(), "act".to_owned())].into(),
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;

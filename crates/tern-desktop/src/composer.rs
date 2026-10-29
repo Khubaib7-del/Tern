@@ -105,6 +105,27 @@ impl Mode {
         self == Self::Deep
     }
 
+    /// The word a folder's mode is saved as (#80): Chat, Plan and Act
+    /// only (Deep research and Study have no folder).
+    pub fn folder_id(self) -> Option<&'static str> {
+        match self {
+            Self::Chat => Some("chat"),
+            Self::Plan => Some("plan"),
+            Self::Act => Some("act"),
+            _ => None,
+        }
+    }
+
+    /// The mode a folder's saved word names.
+    pub fn from_folder_id(id: &str) -> Option<Self> {
+        match id {
+            "chat" => Some(Self::Chat),
+            "plan" => Some(Self::Plan),
+            "act" => Some(Self::Act),
+            _ => None,
+        }
+    }
+
     /// The message as the user wrote it: the Study mode's instruction (see
     /// [`Mode::study_prefix`]) taken off the front when it is there, so a
     /// reopened Study chat shows the bubble, and its reply quote, as sent.
@@ -502,10 +523,12 @@ impl Composer {
         self.menu = None;
     }
 
-    /// A chat opened: its remembered mode, or the harness's first.
-    pub fn chat_opened(&mut self, chat: Option<&str>, harness: Harness) {
+    /// A chat opened: its remembered mode, else its folder's (`folder`,
+    /// #80), else the harness's first.
+    pub fn chat_opened(&mut self, chat: Option<&str>, harness: Harness, folder: Option<Mode>) {
         self.mode = chat
             .and_then(|c| self.modes.get(c).copied())
+            .or(folder)
             .filter(|m| m.harness() == harness)
             .unwrap_or_else(|| Mode::default_for(harness));
     }
@@ -569,8 +592,12 @@ impl Composer {
         }
         let q = self.picker.query.trim();
         let favs = &st.prefs.favourite_models;
+        // The chat model picker lists chat models only (#80: Groq's prompt
+        // guards and safeguard models were picked and failed). Speech and
+        // OCR models are chosen in Settings › Models.
         let mut out: Vec<&ModelChoice> = list
             .iter()
+            .filter(|m| m.info.can_chat())
             .filter(|m| self.picker.show_retired || !m.info.is_retired())
             .filter(|m| m.info.matches(q))
             .collect();
@@ -660,6 +687,24 @@ impl Composer {
     pub fn models_loaded(&mut self, provider: &'static str, n: usize) {
         self.counts.insert(provider, n);
     }
+}
+
+/// The key a folder's mode is saved under: its full path.
+pub fn folder_key(folder: &std::path::Path) -> String {
+    folder.display().to_string()
+}
+
+/// The mode a chat on `folder` starts in (#80): the one last used there,
+/// else Act, since a folder chat is there to work on its files (each
+/// change still asks).
+pub fn folder_mode(
+    saved: &std::collections::BTreeMap<String, String>,
+    folder: &std::path::Path,
+) -> Mode {
+    saved
+        .get(&folder_key(folder))
+        .and_then(|m| Mode::from_folder_id(m))
+        .unwrap_or(Mode::Act)
 }
 
 /// Stars or unstars `provider/model` in the saved favourites.
@@ -1046,10 +1091,28 @@ mod tests {
         assert_eq!(Mode::for_harness(Harness::Study).len(), 5);
         let mut c = Composer::default();
         c.set_mode(Mode::Plan, Some("a"));
-        c.chat_opened(Some("b"), Harness::Research);
+        c.chat_opened(Some("b"), Harness::Research, None);
         assert_eq!(c.mode, Mode::Chat, "a new chat starts in Chat");
-        c.chat_opened(Some("a"), Harness::Research);
+        c.chat_opened(Some("a"), Harness::Research, Some(Mode::Act));
         assert_eq!(c.mode, Mode::Plan, "a chat keeps its mode");
+        // A folder chat with no mode of its own takes its folder's (#80).
+        c.chat_opened(Some("c"), Harness::Research, Some(Mode::Act));
+        assert_eq!(c.mode, Mode::Act);
+        let mut saved = std::collections::BTreeMap::new();
+        let dir = std::path::Path::new("/home/me/Tern testing");
+        assert_eq!(
+            folder_mode(&saved, dir),
+            Mode::Act,
+            "a new folder starts in Act"
+        );
+        saved.insert(folder_key(dir), "chat".to_owned());
+        assert_eq!(
+            folder_mode(&saved, dir),
+            Mode::Chat,
+            "the last mode used there"
+        );
+        assert_eq!(Mode::Deep.folder_id(), None);
+        assert_eq!(Mode::from_folder_id("act"), Some(Mode::Act));
         c.harness_changed(Harness::Study);
         assert_eq!(c.mode, Mode::Tutor);
         assert_eq!(Mode::Plan.turn_mode(), TurnMode::Plan);
@@ -1163,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_groups_every_model_and_flags_non_chat_ones() {
+    fn picker_lists_chat_models_only() {
         let mut st = st();
         let mk = |id: &str| {
             ModelChoice::new({
@@ -1172,7 +1235,7 @@ mod tests {
                 m
             })
         };
-        let mut old = mk("mistral-ocr-2505");
+        let mut old = mk("mistral-medium-2312");
         old.info.lifecycle = tern_agent::providers::Lifecycle::Deprecated;
         if let Some(Models::Loaded(_, list)) = &mut st.models {
             list.extend([
@@ -1181,6 +1244,8 @@ mod tests {
                 mk("pixtral-12b-2409"),
                 mk("mistral-embed"),
                 mk("mistral-small-2603"),
+                mk("meta-llama/llama-prompt-guard-2-86m"),
+                mk("openai/gpt-oss-safeguard-20b"),
                 old,
             ]);
         }
@@ -1190,15 +1255,22 @@ mod tests {
         let mut sorted = cats.clone();
         sorted.sort();
         assert_eq!(cats, sorted, "rows come by section");
+        // Speech, OCR, embeddings and guards are not chat models (#80).
+        for id in [
+            "voxtral-mini-transcribe-3-0",
+            "mistral-ocr-4-1",
+            "mistral-embed",
+            "meta-llama/llama-prompt-guard-2-86m",
+            "openai/gpt-oss-safeguard-20b",
+        ] {
+            assert!(!rows.iter().any(|r| r.id == id), "{id} is not a chat model");
+        }
+        assert!(rows.iter().all(|r| r.chat));
         assert!(
-            !rows.iter().any(|r| r.id == "mistral-ocr-2505"),
+            !rows.iter().any(|r| r.id == "mistral-medium-2312"),
             "retired hidden"
         );
         assert_eq!(c.retired_count(&st), 1);
-        let stt = rows.iter().find(|r| r.id.starts_with("voxtral")).unwrap();
-        assert_eq!((stt.category, stt.chat), (Category::Speech, false));
-        assert_eq!(stt.badges, ["speech to text"]);
-        assert!(stt.context.is_none(), "no window for a non-chat model");
         let small = rows.iter().find(|r| r.id == "mistral-small-2603").unwrap();
         assert_eq!(small.label.as_deref(), Some("Mistral Small 4"));
         assert_eq!(small.category, Category::Vision);
@@ -1206,7 +1278,7 @@ mod tests {
         assert_eq!(c.models(&st).unwrap(), ["mistral-small-2603"]);
         c.picker.query.clear();
         c.picker.show_retired = true;
-        assert!(c.models(&st).unwrap().contains(&"mistral-ocr-2505"));
+        assert!(c.models(&st).unwrap().contains(&"mistral-medium-2312"));
         // Picking a non-chat model keeps the chat model and says why.
         let info = |id: &str| Composer::info_of(&st, id).unwrap().clone();
         let PickOutcome::Mic(why) = pick_outcome("mistral", &info("voxtral-mini-transcribe-3-0"))

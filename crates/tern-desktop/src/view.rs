@@ -1242,6 +1242,11 @@ impl Workspace {
                     self.bridge.remember(s.harness(), s.session_id());
                     self.model.composer.remember(&s.session_id().to_string());
                 }
+                // The folder keeps the mode this turn was sent in (#80); a
+                // needs-Act answer does not count as using Chat there.
+                if self.model.needs_act.is_none() {
+                    self.remember_folder_mode(self.model.composer.mode);
+                }
                 self.session = Some(s);
                 if self.model.reveal.is_none() {
                     self.ticker = None;
@@ -4564,6 +4569,76 @@ impl Workspace {
             .children(self.timeline_rail(p, cx))
             .children(self.checkpoint_strip(p, cx))
             .vertical_scrollbar(&self.scroll)
+    }
+
+    /// Over the composer when a turn needs Act mode (#80): what it needs,
+    /// and "Switch to Act and run", which sends the message again in Act.
+    fn needs_act_card(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let n = self.model.needs_act.as_ref()?;
+        if self.model.is_busy() {
+            return None;
+        }
+        Some(
+            div()
+                .id("needs-act-card")
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(p.border)
+                .bg(p.canvas)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text)
+                                .child(SharedString::from(n.line())),
+                        )
+                        .child(div().text_xs().text_color(p.faint).child(
+                            "Chat mode reads the folder; Act may change it, and each change still asks you first.",
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(
+                            Button::new("needs-act-dismiss")
+                                .capsule()
+                                .label("Dismiss")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.model.needs_act = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("needs-act-run")
+                                .capsule()
+                                .label("Switch to Act and run")
+                                .primary()
+                                .small()
+                                .disabled(!self.model.can_send())
+                                .tooltip("Switch this chat and its folder to Act, then send the message again")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.switch_to_act_and_run(window, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Over the composer after an answer stopped at the length limit.

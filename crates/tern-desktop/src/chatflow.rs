@@ -409,6 +409,9 @@ impl Undo {
 /// A banner over the composer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Notice {
+    /// The turn needs Act mode (#80): "Switch to Act and run". First, so
+    /// it is the banner shown.
+    NeedsAct,
     /// The chat's web search did not answer, so deep research stopped
     /// before any worker started.
     SearchDown,
