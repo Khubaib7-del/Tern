@@ -459,7 +459,7 @@ pub fn os_hint(result: &str, stubs: &[Stub]) -> Option<String> {
         "(Tern note: run_python has no file system, OS or network access: open(), pathlib, os and the like do not work. Put the data in the code itself.)".to_owned()
     } else {
         format!(
-            "(Tern note: run_python has no file system, OS or network access: open(), pathlib (Path.iterdir, Path.read_text), os and the like do not work there. Reach files and the web only through the functions Tern provides inside the script: {}. For example:\n{}\nThen print a short summary.)",
+            "(Tern note: run_python has no file system, OS or network access: open(), os and the like do not work there (in Act mode with a folder, pathlib's read_text, write_text and iterdir go through the file tools). Reach files and the web only through the functions Tern provides inside the script: {}. For example:\n{}\nThen print a short summary.)",
             names.join(", "),
             example(stubs)
         )

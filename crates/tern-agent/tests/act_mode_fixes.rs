@@ -429,7 +429,9 @@ async fn read_a_file_after_a_write_reads_it_again() {
 #[tokio::test]
 async fn plain_python_that_reaches_for_the_disk_is_told_the_functions() {
     let mut f = Folder::new();
-    let code = "from pathlib import Path\nfor p in Path('.').iterdir():\n    print(p)";
+    // #80: pathlib now goes through the file tools in Act mode with a
+    // folder, so the disk is reached with open() here.
+    let code = "for line in open('sum.md'):\n    print(line)";
     let model = Script::new(&[
         &tool_call("run_python", json!({"code": code})),
         "I could not list it.",
