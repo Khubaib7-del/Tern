@@ -362,6 +362,8 @@ enum Act {
     CFolderState(&'static str),
     /// #75: the composer's mode (Act lets the model write and run).
     WMode(crate::composer::Mode),
+    /// The needs-Act card's "Switch to Act and run" (#80).
+    WSwitchToAct,
     /// #75: the approval mode by id (`ask`, `workspace_write`, ...).
     WApproval(&'static str),
     /// #77: adds an allow path rule, as an older "Always allow" left it
@@ -2000,6 +2002,13 @@ impl Workspace {
                 self.model.set_mode(m, None);
                 cx.notify();
             }
+            Act::WSwitchToAct => {
+                if self.model.needs_act.is_none() {
+                    log("TOUR error no needs-Act card to click");
+                }
+                self.switch_to_act_and_run(window, cx);
+                cx.notify();
+            }
             Act::WApproval(id) => match tern_agent::permissions::ApprovalMode::parse(id) {
                 Some(m) => self.set_approval_mode(m),
                 None => log(&format!("TOUR error no approval mode {id}")),
@@ -2469,7 +2478,9 @@ impl Workspace {
             .collect();
         let (plan, graph) = tern_agent::planner::of_run(self.model.panel_run());
         log(&format!(
-            "TOUR work {what} plan: {:?} graph: {:?}",
+            "TOUR work {what} mode: {} needs_act: {:?} plan: {:?} graph: {:?}",
+            self.model.composer.mode.name(),
+            self.model.needs_act.as_ref().map(|n| n.line()),
             plan.map(|p| p.line()),
             graph.map(|g| format!("{} · {} waves", g.line(), g.waves))
         ));
@@ -3172,6 +3183,30 @@ fn focus_beats() -> Vec<Beat> {
             Act::WState("outputs pruned"),
             3000,
         ),
+        // #80: Chat mode in a folder chat: a write request ends with the
+        // needs-Act card; its button switches to Act and runs it.
+        b(Act::ToastsClear, 300),
+        b(Act::WMode(crate::composer::Mode::Chat), 300),
+        b(
+            Act::CTypePath("Tour: chat mode write the review to review-80.md"),
+            200,
+        ),
+        b(Act::CSend, 3000),
+        scene(
+            "x31-needs-act",
+            "tern-only",
+            "Chat mode in a folder chat: asking to write review-80.md ends with \"This needs Act mode\" and a card over the composer, \"This needs Act mode to write review-80.md.\" with Switch to Act and run (no failed tool card, no instructions to create the file by hand)",
+            Act::WState("needs act"),
+            3000,
+        ),
+        scene(
+            "x32-switched-to-act",
+            "tern-only",
+            "Switch to Act and run: the composer's mode chip says Act and the same message runs again; review-80.md is written (card Saved) and listed in Outputs",
+            Act::WSwitchToAct,
+            4500,
+        ),
+        b(Act::WState("act after switch"), 300),
         b(Act::CTypePath("Tour: a long conversion"), 200),
         b(Act::CSend, 3500),
         b(Act::CStop, 1500),
@@ -4871,6 +4906,19 @@ mod mock {
                     )],
                 )),
                 _ => answer("Added \"Book Lab 3 for the demo\" to todo.md."),
+            };
+        }
+        // #80: run again in Act after the needs-Act card.
+        if user.contains("chat mode write the review") {
+            return match steps {
+                0 => Some((
+                    String::new(),
+                    vec![(
+                        "file_write".to_owned(),
+                        json!({"path": "review-80.md", "text": "# Review\n\nSelf-RAG and FLARE retrieve only when needed.\n"}),
+                    )],
+                )),
+                _ => answer("Wrote review-80.md."),
             };
         }
         // #79: a script that writes a file, then renames it.
