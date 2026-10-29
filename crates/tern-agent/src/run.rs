@@ -945,6 +945,12 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             step.target = tool;
             step.detailed = false;
         }
+        // #81: the same write or rename again, already done this turn.
+        "tool.skipped" => {
+            step.verb = "Skipped";
+            step.target = tool;
+            step.note = e.user_summary.clone();
+        }
         "tool.rejected" | "loop.suspected" => {
             step.kind = StepKind::Problem;
             step.verb = if e.kind == "loop.suspected" {
