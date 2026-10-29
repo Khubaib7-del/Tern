@@ -1,4 +1,4 @@
-//! What a turn already changed in the folder (#81), so a model that does
+//! What a turn already changed in the folder (#82), so a model that does
 //! it again is told instead of asked about it.
 //!
 //! From the #80 Windows test: codestral wrote counts.md nine times in one
@@ -239,7 +239,7 @@ fn limit_line(shown: &str, writes: u32) -> String {
 }
 
 /// The line a code-mode script's result ends with when its calls changed
-/// the folder (#81: the model made the same calls again directly).
+/// the folder (#82: the model made the same calls again directly).
 pub fn script_done_line(actions: &[String]) -> Option<String> {
     (!actions.is_empty()).then(|| {
         format!(

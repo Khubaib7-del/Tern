@@ -32,7 +32,7 @@ use crate::theme::Palette;
 /// The text fields of the review's Settings pieces.
 pub(super) struct SetupInputs {
     pub crawler_key: Entity<InputState>,
-    /// A scholarly service's key or email (#81).
+    /// A scholarly service's key or email (#82).
     pub scholar_key: Entity<InputState>,
     pub custom_name: Entity<InputState>,
     pub custom_url: Entity<InputState>,
@@ -836,7 +836,7 @@ impl Workspace {
         Self::settings_card("Crawlers", p, rows)
     }
 
-    // ----- Scholarly sources (#81) -----
+    // ----- Scholarly sources (#82) -----
 
     fn save_scholar_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sv) = self.model.settings.scholar_editing else {

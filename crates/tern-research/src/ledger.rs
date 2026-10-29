@@ -97,7 +97,7 @@ pub struct SourceEntry {
     /// Milliseconds since the run started.
     #[serde(default)]
     pub at_ms: u64,
-    /// The paper this source is, when a scholarly search found it (#81):
+    /// The paper this source is, when a scholarly search found it (#82):
     /// authors, year, venue, DOI, citations, open-access PDF.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paper: Option<crate::scholar::Paper>,

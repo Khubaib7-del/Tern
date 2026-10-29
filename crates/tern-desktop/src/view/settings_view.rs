@@ -2107,7 +2107,7 @@ impl Workspace {
             ),
             Self::row(
                 "Welcome tour",
-                // #81: the intro first (a temporary dev hook, see
+                // #82: the intro first (a temporary dev hook, see
                 // `replay_intro`).
                 "The intro animation, then provider, key, model, search, and theme, one step each.",
                 Some(

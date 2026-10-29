@@ -654,20 +654,20 @@ struct Run<'r, 'a> {
     request_cap: Option<tern_providers::retry::RequestCap>,
     /// A code-mode script ran and called no tool, once per turn (#80).
     script_noted: bool,
-    /// What the turn already wrote and renamed (#81): the same change
+    /// What the turn already wrote and renamed (#82): the same change
     /// again is skipped without a card.
     redo: crate::redo::Redo,
     /// How the last call was skipped as already done or refused by
     /// [`crate::redo`]: its write is not a failed write.
     redo_skipped: bool,
     /// The folder changes a running code-mode script made, as the lines
-    /// its result ends with (#81). `None` outside a script.
+    /// its result ends with (#82). `None` outside a script.
     script_actions: Option<Vec<String>>,
     /// The call being dispatched was asked for as a `file_edit` (the
     /// turn queues it as the `file_write` it becomes).
     asked_edit: bool,
     /// The answer Tern ends the turn with when the model keeps redoing a
-    /// change it was told is done (#81).
+    /// change it was told is done (#82).
     closing: Option<String>,
 }
 
@@ -915,7 +915,7 @@ impl Run<'_, '_> {
     /// Notes how a file write went, for the answer-claim guard.
     fn note_write(&mut self, name: &str, args: &Value, result: &str) {
         // A write skipped as already done, or refused after earlier
-        // writes, leaves the file as those writes made it (#81).
+        // writes, leaves the file as those writes made it (#82).
         if !matches!(name, "file_write" | "file_edit") || std::mem::take(&mut self.redo_skipped) {
             return;
         }
@@ -1656,7 +1656,7 @@ impl Run<'_, '_> {
                         *n += 1;
                         if *n >= REPEAT_LIMIT {
                             // A change already done, asked for again
-                            // after Tern said so (#81): the turn ends with
+                            // after Tern said so (#82): the turn ends with
                             // that, not as a failure.
                             if let Some(skip) = self.redo_for(name, args) {
                                 return Err(self.close_redo(skip));
@@ -1838,7 +1838,7 @@ impl Run<'_, '_> {
         // A turn that needs Act mode ends as an answer saying so (#80), not
         // a failure: the window shows "Switch to Act and run".
         // So does one Tern ended because the model kept redoing a change
-        // it was told is done (#81).
+        // it was told is done (#82).
         let result = match (
             result,
             self.needs_act.clone().or_else(|| self.closing.clone()),
@@ -1939,7 +1939,7 @@ impl<'a> Run<'_, 'a> {
     }
 
     /// A change that ran, for [`crate::redo`] and a script's result line
-    /// (#81). `asked` is the tool the model named: only its own
+    /// (#82). `asked` is the tool the model named: only its own
     /// `file_write` calls count toward the writes per path (a `file_edit`
     /// runs as one; a script's calls are its loop).
     fn note_done(&mut self, asked: &str, name: &str, tool: &dyn Tool, args: &Value) {
@@ -1985,7 +1985,7 @@ impl<'a> Run<'_, 'a> {
     }
 
     /// Whether a write or rename repeats what this turn already did
-    /// (#81: counts.md written nine times; a script's write and rename
+    /// (#82: counts.md written nine times; a script's write and rename
     /// made again directly).
     fn redo_check(
         &self,
@@ -2022,7 +2022,7 @@ impl<'a> Run<'_, 'a> {
     }
 
     /// Ends the turn as answered: the model kept redoing a change Tern
-    /// told it is done (#81).
+    /// told it is done (#82).
     fn close_redo(&mut self, skip: crate::redo::Skip) -> Stop {
         crate::diag::note("redo: the model kept redoing a finished change; ended the turn");
         let _ = self.record(self.event(
@@ -2220,7 +2220,7 @@ impl<'a> Run<'_, 'a> {
             ))?;
             return Ok(Pre::Done(format!("Tool `{name}` bad input: {why}.")));
         }
-        // The same change again is not run and asks nothing (#81).
+        // The same change again is not run and asks nothing (#82).
         if let Some(skip) = self.redo_check(asked, name, tool, args) {
             self.go(TurnState::RecordResult)?;
             if name == "file_write" {
@@ -2649,7 +2649,7 @@ impl<'a> Run<'_, 'a> {
             o
         });
         let mut text = self.post(r, out, None)?;
-        // What the script changed, said plainly (#81: the model made the
+        // What the script changed, said plainly (#82: the model made the
         // script's write and rename again as direct calls).
         if let Some(line) = crate::redo::script_done_line(&actions) {
             text.push_str("\n\n");

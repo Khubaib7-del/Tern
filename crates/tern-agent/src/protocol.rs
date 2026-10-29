@@ -194,7 +194,7 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
 /// flowchart, a model said it had no tools to draw one).
 pub const RENDERING: &str = "Tern renders Markdown: tables, math ($...$, $$...$$) and ```mermaid fenced blocks, drawn as diagrams. To draw a diagram, flowchart, sequence, mind map or chart, answer with a ```mermaid block; never say you cannot draw.";
 
-/// Scholarly search (#81), after the tool protocol when `scholar_search`
+/// Scholarly search (#82), after the tool protocol when `scholar_search`
 /// is offered.
 pub const SCHOLARLY: &str = "For academic, scientific or medical questions call `scholar_search` first (web search second), read a paper's text with `paper_read`, and widen a reading list with `paper_snowball`. Cite papers by their link and quote passages with their locator, for example (p. 4, §3 Method). When the papers found do not support a claim, say \"not enough evidence\" for it; never present an answer from memory as sourced.";
 

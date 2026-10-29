@@ -92,7 +92,7 @@ const SERVICES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/services/wikipedia.svg"),
     ),
     ("zotero", include_bytes!("../assets/services/zotero.svg")),
-    // Scholarly sources (#81). OpenAlex's mark is from OurResearch's
+    // Scholarly sources (#82). OpenAlex's mark is from OurResearch's
     // openalex-gui and CORE's from the Open University's oacore/design
     // (both MIT); Crossref and Unpaywall publish no openly licensed mark,
     // so theirs are Tern-drawn (a link, an open padlock). See NOTICE.

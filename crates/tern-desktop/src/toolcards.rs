@@ -10,7 +10,7 @@
 //! | `tool.started` | Running |
 //! | `tool.executed` | Done |
 //! | `tool.failed`, `tool.rejected` | Failed |
-//! | `tool.skipped` (#81: the same change again, already done) | Done |
+//! | `tool.skipped` (#82: the same change again, already done) | Done |
 //! | the run stopped with the card still open | Cancelled |
 //!
 //! Events carry the call's number (`call`) from #75 on; older runs have
@@ -477,7 +477,7 @@ pub fn cards_of(run: &Run) -> Vec<StepGroup> {
                             c.diff = Some((a as usize, r as usize));
                         }
                     }
-                    // #81: the same change again, already done this
+                    // #82: the same change again, already done this
                     // turn: no approval, a Done card that says why.
                     "tool.skipped" => {
                         c.state = CardState::Done;

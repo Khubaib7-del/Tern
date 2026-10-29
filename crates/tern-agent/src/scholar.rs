@@ -1,4 +1,4 @@
-//! Scholarly search tools (#81): `scholar_search` asks Semantic Scholar,
+//! Scholarly search tools (#82): `scholar_search` asks Semantic Scholar,
 //! OpenAlex, arXiv and Crossref (and CORE with a key) at once, merges what
 //! they return, ranks it through the rerank funnel and says "not enough
 //! evidence" when nothing found is about the question; `paper_read` reads

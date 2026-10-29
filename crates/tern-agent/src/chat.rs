@@ -732,7 +732,7 @@ impl ChatSession {
         if let Some(c) = &search {
             tools.register(WebSearchTool(c.clone(), Some(decider.clone())));
             tools.register(ReadUrlTool::default());
-            // Scholarly search (#81) goes with web search: same switch.
+            // Scholarly search (#82) goes with web search: same switch.
             crate::scholar::register(&mut tools, Arc::new(crate::scholar::Scholar::new(secrets)));
         }
         // A vault that cannot be opened only leaves its tools out.

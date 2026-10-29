@@ -424,7 +424,7 @@ pub struct Workspace {
     intro: Option<Instant>,
     /// Where the cursor is over the intro, as fractions of the window.
     intro_cursor: Option<(f32, f32)>,
-    /// The intro was replayed from Settings › About (#81, a temporary dev
+    /// The intro was replayed from Settings › About (#82, a temporary dev
     /// hook): the welcome tour follows it.
     intro_replay: bool,
     /// The block focus view (#76), while a block is open in it.

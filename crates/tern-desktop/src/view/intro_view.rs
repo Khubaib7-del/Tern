@@ -45,13 +45,13 @@ impl Workspace {
         true
     }
 
-    /// Settings › About › Welcome tour (#81): plays the whole first-run
+    /// Settings › About › Welcome tour (#82): plays the whole first-run
     /// intro again (reveal, fly-in, settle, metal to white, lockup) and
     /// then the welcome tour, so the intro can be iterated on. It plays
     /// even with reduced motion, since it was asked for, and leaves
     /// `intro_seen` alone. From a click it only sets state and asks for a
     /// render: [`Workspace::tick_intro`], in render, draws the frames.
-    // TODO(#81): temporary dev hook, remove before release. The product
+    // TODO(#82): temporary dev hook, remove before release. The product
     // intro plays once, on the first launch, with no skip; the About row
     // goes back to starting the welcome tour only.
     pub(super) fn replay_intro(&mut self, cx: &mut Context<Self>) {
@@ -77,7 +77,7 @@ impl Workspace {
         self.intro = None;
         self.intro_cursor = None;
         if std::mem::take(&mut self.intro_replay) {
-            // A replay from Settings (#81): the tour follows, whatever the
+            // A replay from Settings (#82): the tour follows, whatever the
             // tour was before.
             self.start_onboarding(window, cx);
         } else if !super::tour::enabled() {

@@ -960,7 +960,7 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             step.target = tool;
             step.detailed = false;
         }
-        // #81: the same write or rename again, already done this turn.
+        // #82: the same write or rename again, already done this turn.
         "tool.skipped" => {
             step.verb = "Skipped";
             step.target = tool;

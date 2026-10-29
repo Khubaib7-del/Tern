@@ -512,7 +512,7 @@ pub struct SettingsState {
     pub crawler_editing: Option<tern_agent::crawlers::Crawler>,
     /// Each reader's last test or key result.
     pub crawler_notes: Vec<(tern_agent::crawlers::Crawler, Line)>,
-    /// Search › Scholarly sources (#81): each service and whether a key
+    /// Search › Scholarly sources (#82): each service and whether a key
     /// or email is saved, the row whose field is open, and each row's
     /// last result.
     pub scholar_keys: Vec<(tern_agent::scholar::Service, bool)>,

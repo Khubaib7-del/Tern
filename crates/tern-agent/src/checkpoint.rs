@@ -222,7 +222,7 @@ pub struct QuickState {
     /// Tool calls asked for so far, for loop detection.
     #[serde(default)]
     pub seen: Vec<(String, u32)>,
-    /// Paths written so far (#81), so "Continue" counts on from them.
+    /// Paths written so far (#82), so "Continue" counts on from them.
     #[serde(default)]
     pub writes: Vec<crate::redo::WriteMark>,
 }

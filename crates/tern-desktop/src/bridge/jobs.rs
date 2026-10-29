@@ -24,7 +24,7 @@ pub enum SetupMsg {
     /// A reader was tested (and its key saved, when one was given and it
     /// worked).
     CrawlerChecked(Crawler, Result<String, String>),
-    /// Each scholarly service and whether a key or email is saved (#81).
+    /// Each scholarly service and whether a key or email is saved (#82).
     Scholar(Vec<(Service, bool)>),
     /// A scholarly service was tested, or its key or email saved or
     /// removed.
