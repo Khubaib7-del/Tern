@@ -692,8 +692,7 @@ async fn an_academic_question_searches_the_literature_before_the_model_answers()
     let scholar = ScholarProbe::default();
     f.tools.register(search.clone());
     f.tools.register(scholar.clone());
-    let model =
-        Script::new(&["FLARE retrieves only when a sentence has low-confidence tokens."]);
+    let model = Script::new(&["FLARE retrieves only when a sentence has low-confidence tokens."]);
     let sink = MemorySink::default();
     let out = f
         .run_prefetch(
