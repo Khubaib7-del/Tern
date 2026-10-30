@@ -270,6 +270,7 @@ pub fn from_turn(
         sources,
         workers,
         claims: run.checks.clone(),
+        evidence: run.evidence.as_deref().cloned(),
         usage,
         errors,
         ledger: run.ledger(),

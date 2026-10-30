@@ -212,6 +212,14 @@ pub struct Paper {
     pub core_id: Option<String>,
     #[serde(default)]
     pub citations: Option<u64>,
+    /// Semantic Scholar's influential citation count: citations that
+    /// build on the paper rather than mention it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub influential_citations: Option<u64>,
+    /// As a reference or citation of a snowball seed: Semantic Scholar
+    /// marks the link influential.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub influential: bool,
     #[serde(default, rename = "abstract")]
     pub abstract_text: Option<String>,
     /// A legal open-access PDF.
@@ -294,6 +302,12 @@ impl Paper {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         };
+        self.influential_citations = match (self.influential_citations, other.influential_citations)
+        {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        self.influential |= other.influential;
         if self.url.is_empty() {
             self.url = other.url;
         }
@@ -349,6 +363,9 @@ impl Paper {
                 if c == 1 { "" } else { "s" }
             ));
         }
+        if let Some(i) = self.influential_citations.filter(|i| *i > 0) {
+            parts.push(format!("{} influential", thousands(i)));
+        }
         if let Some(d) = &self.doi {
             parts.push(format!("doi:{d}"));
         } else if let Some(a) = &self.arxiv {
@@ -370,6 +387,50 @@ impl Paper {
             None => self.title.clone(),
         }
     }
+}
+
+/// Text quoted from a paper without the paper's own reference markers
+/// ("[17]", "[9, 18]", "[3–5]"): they number the paper's bibliography,
+/// not Tern's sources, and once copied into an answer the claim check
+/// read them as citations of sources Tern never read (#83). Bracketed
+/// text with any letter in it, and intervals such as "[0, 1]", stay.
+pub fn strip_ref_markers(text: &str) -> String {
+    fn is_marker(inner: &str) -> bool {
+        let t = inner.trim();
+        if t.is_empty() || t.len() > 40 {
+            return false;
+        }
+        if !t
+            .chars()
+            .all(|c| c.is_ascii_digit() || " ,;-\u{2013}\u{2014}".contains(c))
+        {
+            return false;
+        }
+        let numbers: Vec<&str> = t
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|n| !n.is_empty())
+            .collect();
+        !numbers.is_empty()
+            && numbers
+                .iter()
+                .all(|n| n.len() <= 3 && n.trim_start_matches('0') == *n)
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('[') {
+        let after = &rest[i + 1..];
+        if let Some(j) = after.find(']')
+            && is_marker(&after[..j])
+        {
+            out.push_str(rest[..i].trim_end_matches(' '));
+            rest = &after[j + 1..];
+            continue;
+        }
+        out.push_str(&rest[..=i]);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `1234567` as `1,234,567`.
@@ -598,6 +659,27 @@ mod tests {
         assert_eq!(out[0].venue.as_deref(), Some("NeurIPS"));
         assert_eq!(out[0].found_by.len(), 3);
         assert_eq!(out[0].link(), "https://doi.org/10.48550/arxiv.1706.03762");
+    }
+
+    #[test]
+    fn a_papers_own_reference_markers_leave_quotes() {
+        assert_eq!(
+            strip_ref_markers(
+                "models such as BERT [17, 18] and GPT [9]. Attention [3\u{2013}5] helps [12; 14]."
+            ),
+            "models such as BERT and GPT. Attention helps."
+        );
+        assert_eq!(strip_ref_markers("a [1][2] b"), "a b");
+        // Not markers: locators, intervals, words.
+        for keep in [
+            "[p. 4 \u{b7} 3 Method] text",
+            "values in [0, 1]",
+            "see [Smith 2020]",
+            "array[i]",
+            "unclosed [12",
+        ] {
+            assert_eq!(strip_ref_markers(keep), keep);
+        }
     }
 
     #[test]

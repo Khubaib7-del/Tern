@@ -1,8 +1,63 @@
 # 04 · Roadmap
 
-> Status: draft, 21 October 2026. Every phase after phase 0 is **planned**. Each phase starts only when the owner approves it. Dates are not committed; order is.
+> Status: 30 October 2026. Work now lands one pull request at a time; each starts only when the owner approves it. Dates are not committed; order is. The phase table further down records how Tern got here.
 
-## Phase summary
+## Shipped pull requests
+
+| PR | Focus |
+| --- | --- |
+| #71 | Per-chat state: chats run at the same time, each with its own composer, run and approvals |
+| #72 | Rich Markdown answers; hardening (retries with `Retry-After`, spending caps not retried, long tool output kept head and tail) |
+| #73 | Math and Mermaid blocks with export |
+| #74 | Folder projects |
+| #75 | Work surface and sandbox v1; approval modes and permission rules |
+| #76 | Focus view and the first-run intro |
+| #77 | Planner and code mode |
+| #78 | Planner fixes and `file_edit` |
+| #79 | Act mode hardening |
+| #80 | Act mode guards |
+| #81 | Closed without merging (a CI-only pull request) |
+| #82 | Scholarly search (six services, rerank funnel, not enough evidence, locators, snowballing); loop and redo guards |
+
+## In progress
+
+### #83 · Scholarly fixes, evidence chain and claim verification
+
+| Deliverable | Exit check |
+| --- | --- |
+| Quote ids minted from text Tern read; `paper_read` shows them | Same passage, same id; a forged id is never accepted |
+| Unforgeable citations | A quote token Tern never minted is stripped; `[n]` of an unread page is flagged, not rendered as backed |
+| Stances per source (Supports, Refutes, Mixed, Not enough info) and agreement per independent site | Offline checks first; a model judge only within a budget |
+| Counter-search for key claims | Headline, numeric and strong claims only; hedged claims never; at most two per answer |
+| Report › Review claims and `[n]` hover cards | Stance chip, agreement bar, quote with page or section and the source's logo |
+| `evidence` evaluation suite | Citation validity, stance accuracy, agreement counts, counter-search triggers and effect; baseline from CI |
+
+## Next
+
+| PR | Focus | Exit check (brief) |
+| --- | --- | --- |
+| #84 | Context, memory and cost: compaction v2 mid-turn, cost budgets from a price list, prompt-cache-safe lazy tools, memory v1 with an approval inbox, learning from frustration signals | A long run compacts without losing the plan; a money budget stops a run at a safe point; nothing is remembered without approval |
+| #85 | Deep research v2, evaluations and observability: clarify and plan, lead and workers, a single writer, citation check, delegation to providers' deep research with Tern's own verification, public benchmark subsets, trace viewer | A delegated report is verified like Tern's own; benchmark subsets run offline in CI |
+| #86 | Charts and an analysis sandbox | A chart is drawn from a data file inside the sandbox, with no network |
+| #87 | Generative UI and a Depth toggle | Depth changes the answer's length and the work done, visibly |
+| #88 | Markdown folders, Obsidian vaults, and chat import (ChatGPT, Claude, Gemini) | An export imports with its provenance; an Obsidian vault opens unchanged |
+| #89 | Export to DOCX, PPTX, XLSX, PDF, LaTeX and BibTeX | Each format opens in its usual app, citations kept |
+| #90 | Local RAG and a knowledge graph | Answers cite passages of your own files with locators, offline |
+| #91 | Lecture video intake | A lecture becomes topics with timestamps you can study from |
+| #92 | Study suite: FSRS, quizzes from quotes, Socratic tutoring, debate audio | FSRS scheduling once a deck has enough reviews; every quiz question cites its quote |
+| #93 | Universal connector: MCP Registry, OAuth 2.1, OpenAPI tools | A service without MCP is usable through its OpenAPI description, behind the trust preview |
+| #94 | Computer use, off by default | Only after the user turns it on, behind the safety gate |
+| #95 | Security and reliability | Prompt-injection and SSRF suites stay green; a crash resumes from its step journal |
+| #96 | Interactive figures and Explain in 3D v2 | Figures stay smooth on the reference laptop |
+| #97 | Git panel and repository views | Status, diff and history without leaving Tern |
+| #98 | Shared rooms | Someone else can watch a run read-only |
+| #99 | Learning loops: feedback signals, preference adaptation, calibrated confidence, routing | Changes are measured by the evaluation suites; no weight fine-tuning |
+| #100 | Buffer 1: performance | Startup, memory and token budgets measured and met |
+| #101 | Buffer 2: polish and fixes from testing | The owner's Windows test list passes |
+| #102 | Buffer 3: accessibility, Urdu interface, edge cases | Screen-reader labels on every control; the interface in Urdu |
+| #103 | Packaging: MSIX for the Microsoft Store, Velopack, GitHub Releases | A signed build installs and updates itself |
+
+## Earlier phases
 
 | Phase | Name | Outcome | Status |
 | --- | --- | --- | --- |
@@ -10,19 +65,19 @@
 | 1 | Design lock | Palette, fonts, concept screens, SVG mark, Scout rig sketch | Done (PR #30; Tern Crawl logo PR #32) |
 | 2 | Core skeleton | Cargo workspace, `tern-core` contracts, `tern-platform` keychain on Windows, `tern-store` basics, `tern doctor` | Done |
 | 3 | Providers and first slice | BYOK and local models; a quick cited answer end to end in the TUI | Done |
-| 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Mostly built (PRs #31 to #33); scholarly sources and reports in the vault remain |
+| 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Done (PRs #31 to #33; scholarly sources in #82, evidence chain in #83) |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Mostly built (PR #34: plans and parallel workers; PR #35: checkpoints, steering, the in-app watcher, ledgers); budget pause and an OS scheduler remain |
-| 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | In progress (shell brought forward, ADR 0006) |
-| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | In progress (PR #36: materials, topics, mastery, tutor, quizzes, viva); flashcards with Anki export and Explain in 3D next |
+| 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | Done (shell brought forward, ADR 0006) |
+| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Mostly built (PR #36: materials, topics, mastery, tutor, quizzes, viva; flashcards and Explain in 3D since); FSRS and study plans in #92 |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Mostly built (PR #38: local scorer, Jev, SubQ Snap, and Voyage adapters, wiring, `tern decide bench`); the reasoning-model and remote benchmark rows need keys |
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Mostly built (PR #39); a model-written handoff summary remains |
 | 10 | Extensibility | MCP client, ACP server, skills, project rules | Mostly built (PR #40: MCP client, ACP server, skills, `TERN.md` and effective instructions, project folders, the Customize page); MCP prompts and resources remain |
 | 11 | Evaluation | Benchmarks for citation accuracy, cost, and reliability | Mostly built (PR #42: the five-rung ladder, versioned suites, metrics with intervals over three trials, published failures, run comparison, the CI baseline, the Evaluation page); live, pinned, and public scores need a key and have not been run |
 | 12 | Linux and macOS | Ports through `tern-platform` | Built (PR #43: Secret Service and Keychain, XDG and Application Support folders, OS reduced motion, the macOS menu and Cmd keys, CI jobs and test builds per OS); not yet tried by hand on a Linux desktop or a Mac |
 
-Distribution (installers, releases, auto-update, a website) is deliberately not on this list. It will be planned after phase 12, or earlier only if the owner decides.
+Distribution (installers, releases, auto-update) is now planned as #103.
 
-## Phase detail
+## Earlier phase detail
 
 ### Phase 0 · Repository baseline
 
@@ -169,14 +224,12 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 
 | Item | Status |
 | --- | --- |
-| Import chats from other assistants with provenance | Later |
-| Universal connector for services without MCP | Later |
-| Learning from frustration signals as reviewable preferences | Later |
+| Import chats from other assistants with provenance | Planned (#88) |
+| Universal connector for services without MCP | Planned (#93) |
+| Learning from frustration signals as reviewable preferences | Planned (#84) |
+| Lecture video and slide intake | Planned (#91) |
+| Computer use, scoped to research chores | Planned (#94), off by default |
+| Shared study and research rooms | Planned (#98) |
 | Skill discovery and repository reading without cloning | Later |
-| Lecture video and slide intake | Later |
 | Interactive explainer export | Later |
-| Explain in 3D mode | Planned with the Study harness (phase 7) |
-| Voice input and a Tern transcription model | After v1; the mic ships locked until then |
-| Computer use, scoped to research chores | Later, off by default |
-| Shared study and research rooms | Parked |
 | Hardware research pack | Parked |

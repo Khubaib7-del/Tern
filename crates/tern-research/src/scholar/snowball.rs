@@ -4,6 +4,12 @@
 //! round falls too low, or a round or paper cap is reached, whichever
 //! comes first. The caller fetches each round's links; this keeps what was
 //! seen and says when to stop.
+//!
+//! Each round's relevant finds are ranked by relevance to the topic, the
+//! question and the seed papers, then by influence (Semantic Scholar's
+//! influential citations and influential links, overall citations), never
+//! by date (#83: a seed's newest citing papers, off topic and uncited,
+//! came first). The best go on to the next round and lead the list.
 
 use std::collections::BTreeSet;
 
@@ -110,6 +116,10 @@ pub struct Round {
 pub struct Snowball {
     pub rule: StopRule,
     terms: Vec<String>,
+    /// The key terms of the seeds' titles.
+    seed_terms: Vec<String>,
+    /// The key terms of the user's question, when one was given.
+    question_terms: Vec<String>,
     seen: BTreeSet<String>,
     /// Relevant papers found so far, in the order found (seeds not
     /// included).
@@ -123,17 +133,80 @@ impl Snowball {
     /// Starts from `seeds` for `topic`.
     pub fn new(topic: &str, seeds: Vec<Paper>, rule: StopRule) -> Self {
         let mut seen = BTreeSet::new();
+        let mut titles = String::new();
         for s in &seeds {
             seen.extend(s.keys());
+            titles.push(' ');
+            titles.push_str(&s.title);
         }
         Self {
             rule,
             terms: key_terms(topic),
+            seed_terms: key_terms(&titles),
+            question_terms: Vec::new(),
             seen,
             found: Vec::new(),
             rounds: Vec::new(),
             frontier: seeds,
         }
+    }
+
+    /// Adds the user's question to what a find is ranked against.
+    pub fn with_question(mut self, question: &str) -> Self {
+        self.question_terms = key_terms(question);
+        self
+    }
+
+    /// How strongly `p` should be followed and listed, 0 to 1: relevance
+    /// to the topic and question (half), to the seeds (a fifth), then
+    /// influence: influential citations, an influential link to a seed,
+    /// and citations overall. The year plays no part.
+    pub fn score(&self, p: &Paper) -> f32 {
+        let text = p.text();
+        let mut asked: Vec<String> = self.terms.clone();
+        for t in &self.question_terms {
+            if !asked.contains(t) {
+                asked.push(t.clone());
+            }
+        }
+        let topic = if asked.is_empty() {
+            0.0
+        } else {
+            coverage(&asked, &text)
+        };
+        let seed = if self.seed_terms.is_empty() {
+            topic
+        } else {
+            coverage(&self.seed_terms, &text)
+        };
+        let log_share = |n: Option<u64>, top: f32| {
+            n.map_or(0.0, |n| ((1.0 + n as f32).ln() / (1.0 + top).ln()).min(1.0))
+        };
+        let influential = log_share(p.influential_citations, 1_000.0);
+        let cited = log_share(p.citations, 100_000.0);
+        let link = if p.influential { 1.0 } else { 0.0 };
+        0.5 * topic + 0.2 * seed + 0.15 * influential + 0.05 * cited + 0.1 * link
+    }
+
+    /// `papers` best first by [`Snowball::score`], ties by title.
+    fn sort(&self, papers: &mut [Paper]) {
+        let mut scored: Vec<(f32, Paper)> =
+            papers.iter().map(|p| (self.score(p), p.clone())).collect();
+        scored.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.title.cmp(&b.1.title))
+        });
+        for (slot, (_, p)) in papers.iter_mut().zip(scored) {
+            *slot = p;
+        }
+    }
+
+    /// Every relevant find, best first by [`Snowball::score`].
+    pub fn ranked(&self) -> Vec<Paper> {
+        let mut out = self.found.clone();
+        self.sort(&mut out);
+        out
     }
 
     /// Whether `p` is on the topic.
@@ -166,6 +239,8 @@ impl Snowball {
             }
         }
         let new_relevant = fresh.len();
+        // The strongest finds are kept when the cap cuts, and followed first.
+        self.sort(&mut fresh);
         let room = self.rule.max_papers.saturating_sub(self.found.len());
         fresh.truncate(room);
         self.found.extend(fresh.iter().cloned());
@@ -239,6 +314,57 @@ mod tests {
         assert!(s.done());
         assert_eq!(s.found.len(), 4);
         assert_eq!(s.stopped(), Some(StopReason::Saturated));
+    }
+
+    #[test]
+    fn influential_and_relevant_finds_lead_not_the_newest() {
+        let seed = Paper {
+            title: "Attention Is All You Need".into(),
+            year: Some(2017),
+            ..Paper::default()
+        };
+        let newest = |title: &str| Paper {
+            title: title.into(),
+            year: Some(2026),
+            citations: Some(0),
+            influential_citations: Some(0),
+            venue: Some("Elsevier".into()),
+            ..Paper::default()
+        };
+        let mut s = Snowball::new("attention transformer", vec![seed], StopRule::default())
+            .with_question("how does self-attention in the transformer work");
+        s.round(vec![
+            newest("Attention-guided transformer for patient-facing mental healthcare chat"),
+            newest("Orchard LiDAR segmentation with an attention transformer"),
+            Paper {
+                title: "BERT: Pre-training of Deep Bidirectional Transformers with self-attention"
+                    .into(),
+                year: Some(2019),
+                citations: Some(90_000),
+                influential_citations: Some(20_000),
+                influential: true,
+                ..Paper::default()
+            },
+            newest("Wind power forecasting with an attention transformer"),
+            Paper {
+                title: "Transformer-XL: attention language models beyond a fixed-length context"
+                    .into(),
+                year: Some(2019),
+                citations: Some(3_000),
+                influential_citations: Some(400),
+                ..Paper::default()
+            },
+        ]);
+        let ranked: Vec<String> = s.ranked().into_iter().map(|p| p.title).collect();
+        assert!(ranked[0].starts_with("BERT"), "{ranked:?}");
+        assert!(ranked[1].starts_with("Transformer-XL"), "{ranked:?}");
+        assert!(s.frontier[0].title.starts_with("BERT"));
+        // The year never lifts a paper: the same paper made newer scores
+        // the same.
+        let mut a = newest("Attention transformer for wind power");
+        let b = a.clone();
+        a.year = Some(1999);
+        assert_eq!(s.score(&a), s.score(&b));
     }
 
     #[test]

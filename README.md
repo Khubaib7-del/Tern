@@ -31,6 +31,8 @@ Tern turns a rough question into a verified, cited report, and turns what you re
 
 **Research**
 - **Cited answers that are checked.** Every cited sentence is checked against the text Tern read from its source: Supported, Partly supported, Not supported or No source, with the quoted passage. Each answer writes a Markdown and JSON run report.
+- **Evidence chain (#83).** A citation is only backed when it resolves to a quote Tern minted from a page it actually read; a source number Tern never read, or a quote id it never minted, is flagged instead of rendered as a source. Every page the turn read gets a stance on every claim (Supports, Refutes, Mixed, Not enough info), counted per independent site into an agreement bar, and key claims get a counter-search for evidence against them. The checks are cheap and offline first, so they work with small local models; the chat's model refines them within a budget.
+- **Scholarly search.** Semantic Scholar, OpenAlex, arXiv and Crossref searched at once (CORE with a key, Unpaywall for open-access PDFs), one paper per DOI across services, a rerank funnel, an honest "not enough evidence", passages quoted with page and section, and citation snowballing that stops when new papers level off.
 - **Deep research.** You approve a plan first. Parallel workers then research the sub-questions, each with its own budget, and one answer is written and checked from their notes. You can steer while it runs ("focus on 2024 sources", "drop 3"), and it resumes from checkpoints after a crash or a stop.
 - **Tern Crawl**, Tern's own crawler and reader: a network guard, robots.txt, per-site pacing, a page cache and PDFs read page by page. Firecrawl, Jina Reader or a plain fetch can be the reader instead.
 - **Right rail**: **Plan** (Summary, Workers, Detailed, Decisions), **Sources (n)** (Ledger, Raw events), **Report (n)** (claim verdicts), **Graph** (the run map and spend over time) and **Context** (what fills the context window). It opens by itself once a run has something to show.
@@ -42,6 +44,13 @@ Tern turns a rough question into a verified, cited report, and turns what you re
 
 **Explain in 3D**
 - Turns a concept or a whole answer into a small isometric figure in five levels, from the basics to the advanced parts. Each node has its explanation, the passage it came from and its citations. A real camera lets you orbit, zoom and pan, and Prev, Next and Play walk the levels. It is in Research and Study alike.
+
+**Agent work**
+- **Chat, Plan and Act modes**, with approval modes (Read-only, Ask, Workspace write, Full access), rules by domain, path or command, and an approval card with Always allow. Chat mode never changes files; a request that needs to says so and offers **Switch to Act and run**.
+- **Work surface**: every tool call is a card (queued, running, waiting for you, done), commands stream in a Terminal tab, writes stream into the Files tab with a diff, and **sandbox v1** runs listed programs without a shell, in the chat's folder, with limits and the network off by default.
+- **Planner and code mode**: a visible plan for multi-step tasks, a task graph that runs independent tool calls in parallel, and code mode, where one Python script calls many tools and only what it prints returns to the context; a result cache for repeated reads.
+- **Guards**: loop detection, a write repeated in the same turn is skipped, a change a script already made is not redone, and an answer that claims a failed write succeeded is sent back.
+- **Folder projects**: an opened folder is a project in the sidebar; a chat works inside its folder, and the folder's `TERN.md` and skills apply.
 
 **Workspace**
 - **Built-in browser** beside the chat. The real site runs in a separate helper process, so a page can never freeze Tern. **Explain with citations** asks Tern about the page you are on.
@@ -90,6 +99,7 @@ From source: `cargo run -p tern-desktop` for the app, or `cargo run -p tern-tui`
 | PDFs and pictures | Attach a PDF (up to 32 MB) and its text is read page by page; attach, drop, or paste (Ctrl/Cmd+V) a PNG, JPEG, GIF, or WebP (up to 5 MB) and it goes to the model as a picture (OpenAI-compatible, Anthropic, and Gemini formats), staying in the chat for follow-ups. Waiting pictures show a thumbnail in the composer. Pictures are converted to PNG or JPEG within 2048 px and 5 MB first (WebP, GIF, huge pictures; HEIC is refused with a reason). For a chat model that cannot see, readers are tried in order, each failure falling through: a local vision model, the local OCR model, a provider's vision model, a provider's OCR model; an info toast names the one that read them. When none can, the message goes with a note instead of failing, and a chat model that refuses pictures is remembered as not seeing and the turn reruns through the readers |
 | Local models | Downloaded on demand, never bundled: Tern's approved list of 16 models, a Default and an Alternative per task (OCR: PP-OCRv6 small + Arabic-script recogniser, Tesseract; documents to Markdown: PaddleOCR layout + tables, Granite-Docling, PP-FormulaNet+ for maths on demand; describe pictures: SmolVLM 500M, SmolVLM 256M, Qwen3-VL 2B; live dictation: Moonshine Streaming, Parakeet TDT v3; audio files: Whisper small, Whisper large-v3 turbo; read aloud: Kokoro 82M, Supertonic 3; embeddings: Granite Embedding R2, EmbeddingGemma 2), each with its pinned Hugging Face files, sizes, SHA-256, licence and licence notes; resumable downloads with progress, cancel and hash checks into `<data>/models/<id>/`; Enable, **Use for this task**, **Use the alternative** when one fails, delete. **Settings › Local models** (with each maker's logo) and `tern models list\|download\|remove\|default\|enable\|read`. **OCR runs locally** (PP-OCRv6 + the Arabic-script recogniser on ONNX Runtime via `oar-ocr`, English and Urdu): it reads pictures for chat models that cannot see, and `tern models read <picture>`. **Whisper runs locally** (whisper.cpp on the GPU, Vulkan on Windows and Linux, Metal on macOS, with automatic CPU fallback and Tern still starting without a Vulkan driver; **Settings › Speech** picks Auto/GPU/CPU and CPU threads Auto/2/4/6/8, Auto at most four; flash attention off, one segment for clips up to 30 s; [docs/speech.md](docs/speech.md)) for attached audio files and `tern models transcribe <file>`, and **Moonshine Streaming runs locally** (ONNX Runtime) for the mic as you speak. **Pictures are described locally** by SmolVLM 500M / 256M or Qwen3-VL 2B on llama.cpp, through the `tern-vlm` helper shipped in `vlm/` beside the app (GPU first, CPU fallback; a failure is a banner with **Use the alternative**, never a crash), `tern models describe <picture>`. **Documents become Markdown**: PDF text, scanned pages (a page with a picture and under 100 letters, or only a scanning app's watermark) through Granite-Docling or local OCR, with **Read as scanned** on a PDF chip, DOCX, PPTX, XLSX, old Office `.doc`/`.ppt`/`.xls` and HTML, cached by SHA-256, the chip saying how ("PDF text → Markdown · 12 pages"), `tern models convert <file>`. **Read aloud**: a speaker button under every answer reads it with Kokoro 82M on this computer (English; Pause, Stop, "Reading 2 of 5"; Settings › Speech › Read aloud for voice and speed), `tern models speak`. The remaining models (document layout, embeddings, Parakeet, Supertonic, Tesseract) download and verify but do not run yet. See [docs/local-models.md](docs/local-models.md) |
 | Claim checks | Every cited sentence of an answer is checked against the text Tern Crawl read for its source: Supported, Partly supported, Not supported, or No source, with the quoted passage and a link to it. The chat's model judges; an offline check fills gaps: word overlap, then a look for a contradiction in the best passage (a different number in the same place, a negation, an antonym, swapped sides of a comparison, another name where the claim has its own), which makes the claim Not supported |
+| Evidence chain | (#83) **Quote ids**: Tern mints a short id for each passage it reads (a hash of the page and the passage's words), and `paper_read` shows passages with theirs (`[q:3f9a1c · p. 4 · 3 Method]`). **Unforgeable citations**: an answer cites `[n]` or a quote token `[[q:3f9a1c]]`; a token becomes `[n]` only when Tern minted that id from a page the turn read, and is stripped otherwise; each `[n]` is bound to the quote of its source that bears on the claim, or flagged (a page Tern never read, or one with no passage on the claim). **Stances**: every page the turn read (up to 8 per claim, cited ones always) is judged Supports, Refutes, Mixed or Not enough info from the same offline checks as the claim verdicts, and the chat's model may refine a few cards within a budget. **Agreement**: support and refute counted per independent site, never per passage, with "few sources" under three. **Counter-search**: the headline claim and claims with a number or a strong word ("always", "the first", "causes"; never a hedged one) get one search for evidence against them (two claims per answer, two pages each, when claims are judged by the model, the app's default); what it reads joins the agreement. Shown in **Report › Review claims** (a stance chip, the agreement bar, a card per source with its quote, page or section, logo and stance, and a Counter-searched line) and on hover over each `[n]` chip; written into the run report's Evidence section. Offline `evidence` evaluation suite. See [docs/evidence.md](docs/evidence.md) |
 | Deep research | A plan first: the model splits the question into sub-questions (searches, expected source types, budget share) and you run, edit, skip, or cancel it before anything is searched. Workers then research the parts in parallel (3 at once by default), each with its own slice of tokens, pages, and time, reading through Tern Crawl; one answer is written from their notes with one set of citations, then checked and reported like any answer. One test search runs before the plan (also when the question waits for your approval), so a search service that is down stops the run with its real error before any model call is spent; the failure line names each worker's stop reason. `tern research --deep "question"` in the terminal; the composer's **Deep research** mode on desktop |
 | Run reports | Each answer writes a Markdown and JSON report (question, steps, sources with robots and cache status, claim verdicts, budget and tokens, errors, and a section per worker for deep research); `tern report` prints or exports one |
 | Resume | Research runs save a checkpoint at safe points (each tool result; for deep research the approved plan, each worker's reads and notes, each worker's end, and before the answer). A run that crashed, was force-quit, or was stopped picks up where it was, without repeating finished workers or reading their pages again: `tern resume [chat]`, or **Resume** on desktop. A run that failed offers **Retry failed workers** instead (only the failed workers run again; finished ones are kept), with the cause, progress counted from the workers ("2 of 5 done · 3 failed"), and local time. A run with nothing left to do offers nothing |
@@ -109,7 +119,7 @@ From source: `cargo run -p tern-desktop` for the app, or `cargo run -p tern-tui`
 | Skills | Folders with a `SKILL.md` (yours in Tern's data folder, a project's in `.tern/skills/`). Only names and descriptions go into the prompt; the model loads a skill's full instructions when a task needs it. Install from a folder or a git URL after a preview with the same suspicious-text scan, switch on and off. On desktop, **New skill** opens a `SKILL.md` editor (name, description, instructions, checked before saving) with templates to start from, and **Import from GitHub** installs a skill folder from a GitHub URL. `tern skills list\|install\|enable\|disable\|show\|rm`; **Settings › MCP & Skills** |
 | Rules and instructions | `TERN.md` files (yours, folders above the project, and the project's own) merged in order with a later file winning. **Effective instructions** shows exactly what the model is told, piece by piece. **Settings › Instructions** shows Tern's built-in Research and Study prompts read-only (with Copy) and takes your own instructions for every chat, for Research, and for Study, each with Reset to default; yours are added after Tern's own prompt, and a project's `TERN.md` still applies. `tern instructions`; **Settings › MCP & Skills → Instructions** |
 | Project folders | Projects hold chats and their sub-sessions; a project can link a folder on disk so its `TERN.md` and skills apply to its chats. Deleting a project moves its chats to the Inbox. `tern project new\|list\|mv\|rename\|root\|rm`. In the desktop sidebar an **opened folder is a project**: the folder button beside Projects opens one (one folder, one project, case-insensitive on Windows), it shows with its folder logo, its chats beneath (Show more after 5), collapse saved, and a ⋯ menu (Reveal in Explorer, Rename, Remove from sidebar, which never touches files on disk); several folders at once; drag a chat onto a project or Move to…; the Inbox keeps chats with no folder |
-| Evaluation | A test ladder with one command per rung: **unit** (`cargo test --workspace`, read back as a run), **synthetic** (bundled suites run offline in under a second: claim verdicts, research answers replayed from recordings, quiz grading, decision routing on a held-out split, and injection and tool safety: poisoned MCP descriptions, injected page text, tool calls an injection could ask for, and canary pages for a live model), **pinned** (real questions over pinned public pages, answered live), **public** (SciFact, read from your copy), and **human** (timed scripted tasks and the System Usability Scale). Metrics include citation accuracy, claim precision and recall, unsupported claims per 100 runs, constraint retention, tokens or cost per verified report, preflight forecast error (live), verdict and grading accuracy, Brier score, and scan, containment, and gate rates, each over at least three trials with a 95% interval, and every failure listed. Runs are saved as JSON and Markdown and compared metric by metric; CI runs the offline suites against a baseline and uploads the report. Offline scores after PR #43: claim verdicts 100% on the original suite and 83.3% on a held-out one (59.3% and 41.7% before the contradiction checks), research checker agreement 95.5%, quiz grading 87.0%, held-out routing 72.7% for the local scorer against 45.5% for fixed order, safety 94.7% with every gate case right. CI runs them on Windows, Linux, and macOS. `tern eval list\|run\|report\|compare\|usability`; the desktop **Evaluation** page. See [docs/evaluation.md](docs/evaluation.md) |
+| Evaluation | A test ladder with one command per rung: **unit** (`cargo test --workspace`, read back as a run), **synthetic** (bundled suites run offline in under a second: claim verdicts, research answers replayed from recordings, quiz grading, decision routing on a held-out split, scholarly search over recorded answers, the evidence chain (citation validity, stances, agreement counts, counter-search triggers and effect), and injection and tool safety: poisoned MCP descriptions, injected page text, tool calls an injection could ask for, and canary pages for a live model), **pinned** (real questions over pinned public pages, answered live), **public** (SciFact, read from your copy), and **human** (timed scripted tasks and the System Usability Scale). Metrics include citation accuracy, claim precision and recall, unsupported claims per 100 runs, constraint retention, tokens or cost per verified report, preflight forecast error (live), verdict and grading accuracy, Brier score, and scan, containment, and gate rates, each over at least three trials with a 95% interval, and every failure listed. Runs are saved as JSON and Markdown and compared metric by metric; CI runs the offline suites against a baseline and uploads the report. Offline scores after PR #43: claim verdicts 100% on the original suite and 83.3% on a held-out one (59.3% and 41.7% before the contradiction checks), research checker agreement 95.5%, quiz grading 87.0%, held-out routing 72.7% for the local scorer against 45.5% for fixed order, safety 94.7% with every gate case right. CI runs them on Windows, Linux, and macOS. `tern eval list\|run\|report\|compare\|usability`; the desktop **Evaluation** page. See [docs/evaluation.md](docs/evaluation.md) |
 | Toasts | Tern's short notes (the model changed, a voice model saved, a steer sent, errors) appear as toasts beside the chat, in the free gutter right of the message column (or narrowed above the composer when the window is too narrow), never over the messages, instead of lines in the chat; provider errors read in plain words: info toasts leave after 4 s, errors stay with **Dismiss** and, where it helps, **Retry** (the action sits under the text, which keeps the toast's width); they stack, fade in and out on the house curve (200 ms), and appear at once with reduced motion. Old chats no longer show stored error lines |
 | Timeline rail | A thin rail at the chat's right edge with one tick per question (from two questions up, in new and old chats, Research and Study): hover a tick for the question's first 80 characters and when it was asked, click to glide to it; the questions on screen are lit |
 | Composer | A **+** menu (files, images, PDFs, a folder, a link or DOI, an MCP resource, paste), a **mode** picker (Chat, Plan, Deep research, Act; Tutor, Quiz, Flashcards, Viva, and Explain in Study), a compact **model** popover (providers with their logos on the left, that provider's models on the right; search; switches in place), a separate **thinking effort** chip with its own meter glyph (None to Max, mapped onto each provider's own knob: OpenAI `reasoning_effort`, Anthropic thinking budgets, Gemini thinking budget or level, OpenRouter, xAI, Groq; it opens a slider popover with six stops over a row of warm-lit ticks in a rounded box, a slim glowing bar handle that follows a drag and snaps on release, click, arrow keys, and reset; one click or drag is one change and the popover stays open until Esc or a click outside; greyed out for models that do not think), a **context** popover (a segmented donut of how full the model's context window is, split into system prompt, tools, attachments, messages, and a compaction summary, with **Compact now** and **New chat with summary**; window sizes from the provider's model list or Tern's table of known models), a separate **search** chip, `@` and `/` buttons (`@` lists files attached lately, the workspace's files, a typed folder to drill into, and other chats; **Browse…** opens a file picker), chips with a visible **×** (only × removes a chip, never Backspace; × cancels an audio transcription), an `@` menu driven by the keys (Up/Down wrap, Tab or Enter picks, Esc closes; the mouse and the keys share one highlight), a composer **per chat** (text, attachments, conversions and transcriptions in flight, and dictation stay with their chat: main chat, sub-session, branch or new chat), attachments as **preview cards** (a picture's thumbnail, a scanned PDF's first page, the first lines of text, code or notebook files, and a coloured badge for the kind) in the composer and the sent message, a scanned PDF's chip showing "page 3/6 · 50%" while a local model reads it, **Pause** for a deep run, and Tab to queue a message while a run goes. Plan mode lets no tool run; Act mode allows tools that change things, each still approved Urdu, Arabic, Persian and Hebrew drafts read right to left: the line is right-aligned, the caret and clicks follow the text, and Left/Right move the way the text reads, so `??` typed after Urdu goes at its left end. `@` references are drawn in the accent colour. Dictated text goes in at the caret. |
@@ -146,7 +156,7 @@ Linux and macOS are built, tested, and evaluated by CI on every pull request, bu
 | For | Finding out what is true and who said it | Learning it well enough to explain it |
 | Produces | Cited reports, literature reviews, evidence tables, fact-check boards, comparisons | Tutoring, flashcard decks, quizzes, viva practice, study plans |
 | Method | Plan → search → read → verify → write, with a run report | Explain → check understanding → practise → grade |
-| Checked by | Claim verdicts against exact source spans: ■ supported · ✕ contradicted · ○ unverified · ⌀ unreachable · — waived | The same verdict vocabulary, applied to answers |
+| Checked by | Claim verdicts against the quoted passage, and each source's stance (Supports, Refutes, Mixed, Not enough info) with an agreement bar per claim | The same verdict vocabulary, applied to answers |
 | Looks like | Cooler surface, square markers, mono labels | Warmer surface, round markers, italic serif labels |
 
 Both share the same projects, library, vault, memory, providers, and permissions. Switch harness per session.
@@ -157,11 +167,11 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | --- | --- |
 | Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
 | Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
-| Control | Safe pause at budget limits, drift detection, and a scheduler that runs watches while Tern is closed (loop detection, steering, run checkpoints, and the in-app watcher are built) |
+| Control | Drift detection, cost budgets in money (#84), and a scheduler that runs watches while Tern is closed (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
 | Memory | Stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
 | Extensibility | Watching single MCP resources, and MCP sampling, roots, and elicitation (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
 | Workspace | The Study playground built on Explain in 3D (Explain in 3D and the built-in browser are built) |
-| Vault | Agent edits shown as diffs (plain Markdown notes, `[[links]]`, backlinks, and Git for the vault are built) |
+| Vault | Obsidian vaults and chat import (#88) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
 | Study | Study plans, and FSRS scheduling once a deck has enough reviews to fit it (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
 | Library | A model-written handoff summary (chat ranges, sub-sessions, handoffs, the Library with bulk delete, highlights, the side chat, and project folders are built) |
 | Evaluation | Live, pinned, and public scores run with a key and published, and more held-out cases (the ladder, the suites, the metrics, reports, comparison, the CI baseline, and a held-out claims suite are built) |
@@ -215,35 +225,69 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 
 ## Roadmap
 
+Shipped since the earlier phases:
+
+| PR | Focus |
+| --- | --- |
+| #71 | Per-chat state: chats run at the same time, each with its own composer, run and approvals |
+| #72 | Rich Markdown answers and hardening (retries with `Retry-After`, long tool output kept head and tail) |
+| #73 | Math and Mermaid blocks with export |
+| #74 | Folder projects |
+| #75 | Work surface and sandbox v1, approval modes and permission rules |
+| #76 | Focus view and the first-run intro |
+| #77 | Planner and code mode |
+| #78 | Planner fixes and `file_edit` |
+| #79 | Act mode hardening |
+| #80 | Act mode guards |
+| #81 | Closed without merging (a CI-only pull request) |
+| #82 | Scholarly search, and loop and redo guards |
+
+In progress: **#83** scholarly fixes, and the evidence chain and claim verification.
+
+Next:
+
+| PR | Focus |
+| --- | --- |
+| #84 | Context, memory and cost: compaction v2, cost budgets, lazy tools, memory v1 with an approval inbox |
+| #85 | Deep research v2, evaluations and observability |
+| #86 | Charts and an analysis sandbox |
+| #87 | Generative UI and a Depth toggle |
+| #88 | Markdown folders, Obsidian, and chat import |
+| #89 | Export to DOCX, PPTX, XLSX, PDF, LaTeX and BibTeX |
+| #90 | Local RAG and a knowledge graph |
+| #91 | Lecture video intake |
+| #92 | Study suite: FSRS, quizzes from quotes, Socratic tutoring, debate audio |
+| #93 | Universal connector: MCP Registry, OAuth 2.1, OpenAPI tools |
+| #94 | Computer use (off by default) |
+| #95 | Security and reliability |
+| #96 | Interactive figures and Explain in 3D v2 |
+| #97 | Git panel and repository views |
+| #98 | Shared rooms |
+| #99 | Learning loops |
+| #100 | Buffer 1: performance |
+| #101 | Buffer 2: polish and fixes from testing |
+| #102 | Buffer 3: accessibility, Urdu interface, edge cases |
+| #103 | Packaging: MSIX for the Microsoft Store, Velopack, GitHub Releases |
+
+<details>
+<summary>Earlier phases</summary>
+
 | Phase | Focus | Status |
 | --- | --- | --- |
-| 0 | Repository baseline | Done |
-| 1 | Design lock: palette, fonts, concept screens, SVG mark | Done |
-| 2 | Core skeleton, keychain, store, `tern doctor` | Done |
-| 3 | Providers and the first cited answer in the TUI | Done |
-| 4 | Crawler and claim verification | Mostly done |
-| 5 | Deep research: plans, workers, checkpoints, steering | Mostly done |
-| 6 | Desktop app | In progress (research flow v2 in #59) |
-| 7 | Study harness | Mostly done |
+| 0–3 | Repository baseline, design lock, core skeleton, providers and the first cited answer | Done |
+| 4 | Crawler and claim verification | Done (scholarly sources in #82, evidence chain in #83) |
+| 5 | Deep research: plans, workers, checkpoints, steering | Mostly done (an OS scheduler for watches remains) |
+| 6 | Desktop app | Done |
+| 7 | Study harness | Mostly done (FSRS and study plans in #92) |
 | 8 | Decision model | Mostly done |
 | 9 | Continuity and library | Mostly done |
 | 10 | Extensibility: MCP, ACP, skills | Done |
-| 11 | Evaluation | Mostly done |
-| 12 | Linux and macOS | Mostly done |
+| 11 | Evaluation | Mostly done (live and public scores need a key) |
+| 12 | Linux and macOS | Built and green in CI; not yet tried by hand |
 
-Next pull requests:
+</details>
 
-| PR | Planned |
-| --- | --- |
-| #60 | Images, OCR and voice, and local models |
-| #61 | Video |
-| #62 to #64 | The review buffer |
-| #65 | Local RAG over your files |
-| #66 | Context, memory and cost |
-| #67 | Learning loops |
-| #68 | Packaging and the Microsoft Store |
-
-Phase detail and exit checks: [docs/04-roadmap.md](docs/04-roadmap.md).
+Exit checks per pull request: [docs/04-roadmap.md](docs/04-roadmap.md).
 
 ## Repository layout
 
@@ -333,6 +377,7 @@ Motion turns off in the desktop app when the OS asks for reduced motion (GNOME o
 | [Changelog](CHANGELOG.md) | Everything merged so far |
 | [Roadmap](docs/04-roadmap.md) | Phases and exit checks |
 | [Security model](docs/05-security-model.md) | Threats, controls, trust order |
+| [Evidence chain](docs/evidence.md) | Quote ids, citations Tern can back, stances, agreement, counter-search |
 | [Evaluation](docs/evaluation.md) | The test ladder, suites, metrics, scores, adding cases |
 | [Web search](docs/search.md) | Wikipedia (keyless default), Tavily, Brave, SearXNG with its address and JSON output, search errors |
 | [Linux](docs/linux.md) · [macOS](docs/macos.md) | Build dependencies, running, OS details, known limits |

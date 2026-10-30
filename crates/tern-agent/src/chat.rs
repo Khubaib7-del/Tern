@@ -1869,7 +1869,12 @@ impl ChatSession {
         let turns = past_turns(&events);
         let n = turns.len();
         let last = turns.last()?;
-        let answer = last.answer.as_deref().filter(|_| last.stop.is_none())?;
+        let raw_answer = last.answer.as_deref().filter(|_| last.stop.is_none())?;
+        // Quote tokens become `[n]` (or are stripped when Tern never minted
+        // them) before anything reads the claims.
+        let minted = verify::minted_quotes(&events, &last.pages);
+        let rendered = tern_research::evidence::render(raw_answer, &minted);
+        let answer = rendered.text.as_str();
         let claims = verify::extract_claims(answer).len();
         if claims > 0 {
             let _ = tee.record(EventEnvelope::new(
@@ -1895,14 +1900,97 @@ impl ChatSession {
             Some(&self.decider),
         )
         .await;
+        // The evidence chain: every page the turn read, each one's stance
+        // on each claim, then counter-searches for key claims (with the
+        // model judge only: word-overlap checks stay offline).
+        let budget = verify::EvidenceBudget::default();
+        let reader = crate::web::shared_reader();
+        let sources = verify::all_source_texts(answer, &last.pages, &reader, budget.sources).await;
+        let mut chain = tern_research::evidence::build(raw_answer, &sources, &minted, &budget);
+        tern_research::evidence::align(&mut chain, &checked.checks);
+        let mut judge_tokens = checked.judge_tokens;
+        if self.check_claims == CheckClaims::Model
+            && let Some(search) = self.search.as_deref()
+        {
+            for n in tern_research::evidence::plan_counter(&mut chain, &budget) {
+                let Some((query, trigger)) = chain
+                    .claim(n)
+                    .and_then(|c| c.counter.as_ref())
+                    .map(|cs| (cs.query.clone(), cs.trigger))
+                else {
+                    continue;
+                };
+                let _ = tee.record(EventEnvelope::new(
+                    self.session,
+                    "claims.countering",
+                    EffectClass::Network,
+                    format!("Searching for evidence against claim {n}"),
+                    json!({"claim": n, "query": query, "trigger": trigger}),
+                ));
+                let found = verify::counter_pages(
+                    search,
+                    &reader,
+                    &query,
+                    &last.pages,
+                    budget.counter_reads,
+                )
+                .await;
+                let note = match found {
+                    Ok(pages) => {
+                        tern_research::evidence::add_counter(&mut chain, n, &pages);
+                        chain
+                            .claim(n)
+                            .and_then(|c| c.counter.as_ref())
+                            .map(|cs| cs.note.clone())
+                            .unwrap_or_default()
+                    }
+                    Err(e) => {
+                        let note = format!("The search failed: {e}");
+                        if let Some(cs) = chain
+                            .claims
+                            .iter_mut()
+                            .find(|c| c.claim == n)
+                            .and_then(|c| c.counter.as_mut())
+                        {
+                            cs.note = note.clone();
+                        }
+                        note
+                    }
+                };
+                let (read, disagree) = chain
+                    .claim(n)
+                    .and_then(|c| c.counter.as_ref())
+                    .map(|cs| (cs.read, cs.disagree))
+                    .unwrap_or_default();
+                let _ = tee.record(EventEnvelope::new(
+                    self.session,
+                    "claims.countered",
+                    EffectClass::Network,
+                    format!("Counter-searched claim {n}: {note}"),
+                    json!({"claim": n, "query": query, "read": read, "disagree": disagree, "note": note}),
+                ));
+            }
+        }
+        if self.check_claims == CheckClaims::Model && claims > 0 {
+            let judge = Judge {
+                model: &self.provider,
+                model_name: &self.model,
+            };
+            if let Ok(Some((i, o))) = verify::judge_stances(&mut chain, &judge, &budget).await {
+                let (pi, po) = judge_tokens.unwrap_or_default();
+                judge_tokens = Some((pi + i, po + o));
+            }
+        }
         // The judge's tokens stay out of the chat's ledger, which the
         // context ring reads; the report and the event carry them.
         let mut turn = last.clone();
+        turn.answer = Some(answer.to_owned());
         turn.run.checks = checked.checks.clone();
+        turn.run.evidence = Some(Box::new(chain.clone()));
         let provider = self.provider.spec().id;
         let mut report =
             crate::report::from_turn(self.session, n, &turn, provider, Some(self.budget));
-        if let Some((i, o)) = checked.judge_tokens {
+        if let Some((i, o)) = judge_tokens {
             report.usage.judge_tokens_in = i;
             report.usage.judge_tokens_out = o;
         }
@@ -1921,14 +2009,18 @@ impl ChatSession {
             "checks": checked.checks,
             "tally": tally,
             "report": written.as_ref().ok(),
+            "evidence": chain,
         });
+        if !rendered.forged.is_empty() {
+            payload["forged"] = json!(rendered.forged.iter().map(|(_, t)| t).collect::<Vec<_>>());
+        }
         if let Some(e) = &checked.judge_error {
             payload["judge_error"] = json!(e);
         }
         if !checked.decisions.is_empty() {
             payload["decisions"] = json!(checked.decisions);
         }
-        if let Some((i, o)) = checked.judge_tokens {
+        if let Some((i, o)) = judge_tokens {
             payload["judge_tokens"] = json!({"input": i, "output": o});
         }
         if let Err(e) = &written {

@@ -8,6 +8,11 @@
 use tern_crawl::Fetcher;
 use tern_providers::{ChatMessage, ChatRequest};
 pub use tern_research::claims::{Claim, extract as extract_claims};
+pub use tern_research::evidence::{
+    Agreement, Budget as EvidenceBudget, Chain, CiteStatus, ClaimEvidence, Quote, QuoteBook,
+    QuoteId, Stance, add_counter, align as align_evidence, build as build_evidence, plan_counter,
+    render as render_quotes,
+};
 pub use tern_research::verdict::{
     ClaimCheck, Evidence, Method, SourceText, Tally, Verdict, apply_judgments, check_lexical,
     judge_prompt, parse_judgments,
@@ -343,6 +348,153 @@ pub async fn check_answer_with(
     let numbered = numbered(answer, pages);
     let sources = source_texts(&numbered, fetcher).await;
     check_with_decider(answer, &sources, judge, decider).await
+}
+
+/// Quotes tools showed the model with their ids (`meta.quotes` of a tool
+/// result, with the page in `meta.page`), numbered by the page the turn
+/// read them from. Ids are minted again from the text, so a forged one
+/// never gets in; quotes from a page the turn did not read are left out.
+pub fn minted_quotes(events: &[tern_core::EventEnvelope], pages: &[PageRef]) -> QuoteBook {
+    let mut book = QuoteBook::default();
+    for e in events.iter().filter(|e| e.kind == "tool.executed") {
+        let meta = &e.payload["meta"];
+        let Some(quotes) = meta["quotes"].as_array() else {
+            continue;
+        };
+        let url = meta["page"]["url"].as_str().unwrap_or_default();
+        let Some(i) = pages.iter().position(|p| loose(&p.url) == loose(url)) else {
+            continue;
+        };
+        let page = &pages[i];
+        for q in quotes {
+            let text = q["text"].as_str().unwrap_or_default().trim();
+            if text.is_empty() {
+                continue;
+            }
+            book.add(Quote {
+                id: QuoteId::default(),
+                source: i + 1,
+                url: page.url.clone(),
+                title: page.title.clone(),
+                site: page.site.clone(),
+                text: text.to_owned(),
+                page: q["page"].as_u64().map(|n| n as u32),
+                section: q["section"].as_str().map(str::to_owned),
+                anchor: String::new(),
+                counter: false,
+            });
+        }
+    }
+    book
+}
+
+/// Every page the turn read as a source the evidence chain compares
+/// claims against: the answer's own numbering for the pages it cites, then
+/// up to `extra` more in reading order, each under a number the answer
+/// does not use.
+pub async fn all_source_texts(
+    answer: &str,
+    pages: &[PageRef],
+    fetcher: &Fetcher,
+    extra: usize,
+) -> Vec<SourceText> {
+    let mut list = numbered(answer, pages);
+    let mut used: std::collections::BTreeSet<usize> = list.iter().map(|(n, _)| *n).collect();
+    used.extend(tern_research::claims::citations(answer));
+    used.extend(
+        tern_research::claims::link_list(answer)
+            .into_iter()
+            .map(|(n, _)| n),
+    );
+    let mut added = 0;
+    for (i, p) in pages.iter().enumerate() {
+        if added >= extra {
+            break;
+        }
+        if list.iter().any(|(_, q)| loose(&q.url) == loose(&p.url)) {
+            continue;
+        }
+        let mut n = i + 1;
+        while used.contains(&n) {
+            n += 100;
+        }
+        used.insert(n);
+        list.push((n, p.clone()));
+        added += 1;
+    }
+    source_texts(&list, fetcher).await
+}
+
+/// Search results a counter-search read beyond these.
+pub const COUNTER_HITS: usize = 6;
+
+/// The pages a counter-search for `query` reads: the top results not
+/// among the turn's `pages`, at most `reads` of them, each read through
+/// `fetcher` (the result's snippet when the page cannot be read). A query
+/// that finds nothing is tried again with its key words only.
+pub async fn counter_pages(
+    search: &tern_crawl::SearchClient,
+    fetcher: &Fetcher,
+    query: &str,
+    pages: &[PageRef],
+    reads: usize,
+) -> Result<Vec<SourceText>, String> {
+    let mut hits = search
+        .search(query, COUNTER_HITS)
+        .await
+        .map_err(|e| e.to_string())?;
+    let core = query.split(" disputed OR").next().unwrap_or(query).trim();
+    if hits.is_empty() && core != query {
+        hits = search
+            .search(core, COUNTER_HITS)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let fresh: Vec<tern_crawl::SearchHit> = hits
+        .into_iter()
+        .filter(|h| !pages.iter().any(|p| loose(&p.url) == loose(&h.url)))
+        .take(reads)
+        .collect();
+    let reads = futures::future::join_all(fresh.iter().map(|h| fetcher.fetch(&h.url))).await;
+    Ok(fresh
+        .into_iter()
+        .zip(reads)
+        .map(|(h, r)| SourceText {
+            n: 0,
+            text: r
+                .map(|pg| pg.text.chars().take(TEXT_CHARS).collect())
+                .unwrap_or_else(|_| h.snippet.clone()),
+            url: h.url,
+            title: h.title,
+            site: h.site,
+        })
+        .collect())
+}
+
+/// Asks the judge model about the cards most worth a second look (see
+/// [`tern_research::evidence::stance_prompt`]) and folds its answers in.
+/// Returns its tokens in and out, or the error.
+pub async fn judge_stances(
+    chain: &mut Chain,
+    judge: &Judge<'_>,
+    budget: &EvidenceBudget,
+) -> Result<Option<(u64, u64)>, String> {
+    let Some((system, message, pairs)) = tern_research::evidence::stance_prompt(chain, budget)
+    else {
+        return Ok(None);
+    };
+    let mut req = ChatRequest::new(judge.model_name, vec![ChatMessage::user(message)]);
+    req.system = Some(system);
+    req.max_tokens = 600;
+    req.temperature = Some(0.0);
+    let resp = judge
+        .model
+        .complete(&req)
+        .await
+        .map_err(|e| e.to_string())?;
+    let judged = tern_research::evidence::parse_stances(&resp.text);
+    tern_research::evidence::apply_stances(chain, &pairs, &judged, judge.model_name);
+    Ok(Some((resp.usage.input_tokens, resp.usage.output_tokens)))
 }
 
 /// The answer with a small verdict badge after each checked claim: a

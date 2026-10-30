@@ -62,6 +62,7 @@ fn kind_icon(kind: SuiteKind) -> AssetIcon {
         SuiteKind::Decision => AssetIcon::Signpost,
         SuiteKind::Safety => AssetIcon::ShieldCheck,
         SuiteKind::Scholarly => AssetIcon::BookOpen,
+        SuiteKind::Evidence => AssetIcon::BadgeCheck,
         SuiteKind::Tests => AssetIcon::ListChecks,
         SuiteKind::Usability => AssetIcon::Users,
     }

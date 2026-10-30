@@ -1017,6 +1017,166 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// One quote a citation rests on, as its chip's hover card shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CiteQuote {
+    /// The source's stance on the claim, as a glyph and a label.
+    pub stance: (&'static str, &'static str),
+    /// The claim's agreement across sources ("2 support · 3 sources").
+    pub agreement: String,
+    pub quote: String,
+    /// "p. 4 · 3 Method", or empty.
+    pub locator: String,
+}
+
+/// What a citation chip shows on hover: the source and the quotes Tern
+/// minted from it that the answer's claims rest on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CiteCard {
+    pub n: usize,
+    pub title: String,
+    pub site: String,
+    /// The site's icon on disk, when Tern has it.
+    pub icon: Option<std::path::PathBuf>,
+    pub quotes: Vec<CiteQuote>,
+    /// Why the citation has no quote, when it has none.
+    pub note: String,
+}
+
+thread_local! {
+    /// Hover cards by the URL a chip opens.
+    static CARDS: RefCell<HashMap<String, CiteCard>> = RefCell::new(HashMap::new());
+}
+
+/// Most cards kept; older ones are dropped when it fills.
+const MAX_CARDS: usize = 512;
+
+/// Adds hover cards for chips, keyed by the URL each chip opens.
+pub fn set_cite_cards(cards: impl IntoIterator<Item = (String, CiteCard)>) {
+    CARDS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > MAX_CARDS {
+            c.clear();
+        }
+        c.extend(cards);
+    });
+}
+
+fn cite_card(url: &str) -> Option<CiteCard> {
+    CARDS.with(|c| c.borrow().get(url).cloned())
+}
+
+/// A chip's hover card.
+struct CiteCardView(CiteCard);
+
+impl gpui_kit::Render for CiteCardView {
+    fn render(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl IntoElement {
+        let p = Palette::get(is_dark(cx));
+        let c = &self.0;
+        let initial: String = c
+            .site
+            .trim_start_matches("www.")
+            .chars()
+            .next()
+            .map(|ch| ch.to_uppercase().collect())
+            .unwrap_or_else(|| "·".into());
+        let monogram = move || {
+            div()
+                .size(px(14.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .bg(p.hover)
+                .text_color(p.muted)
+                .text_size(px(9.))
+                .child(SharedString::from(initial.clone()))
+                .into_any_element()
+        };
+        let logo = match &c.icon {
+            Some(path) => img(path.clone())
+                .size(px(14.))
+                .flex_none()
+                .rounded_sm()
+                .with_fallback(monogram)
+                .into_any_element(),
+            None => monogram(),
+        };
+        let title = if c.title.trim().is_empty() {
+            c.site.clone()
+        } else {
+            c.title.clone()
+        };
+        div()
+            .max_w(px(360.))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.raised)
+            .text_xs()
+            .child(
+                div().flex().items_center().gap_2().child(logo).child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(p.text)
+                        .child(SharedString::from(format!("[{}] {title}", c.n))),
+                ),
+            )
+            .children(c.quotes.iter().map(|q| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .text_color(p.muted)
+                            .child(SharedString::from(format!("{} {}", q.stance.0, q.stance.1)))
+                            .child(
+                                div()
+                                    .text_color(p.faint)
+                                    .child(SharedString::from(q.agreement.clone())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .pl_2()
+                            .border_l_2()
+                            .border_color(p.border)
+                            .text_color(p.muted)
+                            .child(SharedString::from(format!("“{}”", q.quote))),
+                    )
+                    .when(!q.locator.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(p.faint)
+                                .child(SharedString::from(q.locator.clone())),
+                        )
+                    })
+            }))
+            .when(!c.note.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_color(p.faint)
+                        .child(SharedString::from(c.note.clone())),
+                )
+            })
+    }
+}
+
 /// Sets what a chip's click does (open the page in Tern's browser).
 pub fn set_cite_opener(f: impl Fn(&str, &mut Window, &mut App) + 'static) {
     OPEN.with(|o| *o.borrow_mut() = Some(Rc::new(f)));
@@ -1188,6 +1348,9 @@ impl MarkdownPlugin for Cite {
             .cursor_pointer()
             .hover(move |d| d.text_color(p.text).border_color(p.accent))
             .on_click(move |_, window, cx| open_cite(&url, window, cx))
+            .when_some(cite_card(&c.url), |d, card| {
+                d.tooltip(move |_, cx| cx.new(|_| CiteCardView(card.clone())).into())
+            })
             .child(SharedString::from(c.n.clone()));
         Some(InlineElement::new(chip))
     }

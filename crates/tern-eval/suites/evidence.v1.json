@@ -1,0 +1,358 @@
+{
+  "format": 1,
+  "id": "evidence",
+  "version": 1,
+  "title": "Evidence chain: citations, stances, agreement, counter-search",
+  "kind": "evidence",
+  "level": "synthetic",
+  "origin": "synthetic: answers and page texts written for Tern's tests",
+  "description": "Each case runs an answer through Tern's evidence chain over the pages it read. Citation checks: is each [n] bound to a quote Tern minted from a page it read, flagged as a page it never read, or read but with no passage on the claim, and are quote tokens Tern never minted stripped? Verdict checks: is the claim's stance across sources (Supports, Refutes, Mixed, Not enough info) right, with support and refute counts per independent site? Counter-search checks: do the right claims get a counter-search (headline, a number, a strong claim; never a hedged one), does the query hold the claim's key words, and is the stance right once the pages it found are read?",
+  "cases": [
+    {
+      "id": "bind-bound-unbound-unread",
+      "answer": "The Eiffel Tower is 330 metres tall [1][2][5].",
+      "sources": [
+        {
+          "url": "https://a.test/tower",
+          "title": "Tower facts",
+          "text": "The Eiffel Tower is 330 metres tall. It is in Paris."
+        },
+        {
+          "url": "https://b.test/paris",
+          "title": "Paris",
+          "text": "Paris has many bakeries and museums."
+        }
+      ],
+      "cites": [
+        {
+          "claim": 1,
+          "statuses": [
+            "bound",
+            "unbound",
+            "unread"
+          ]
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "supports",
+          "supports": 1,
+          "refutes": 0
+        }
+      ],
+      "tags": [
+        "citation"
+      ]
+    },
+    {
+      "id": "token-minted-and-forged",
+      "answer": "Retrieval pairs a retriever with a generator [[q:@1:We combine a retriever with a generator for knowledge-intensive tasks.]]. It was trained on Mars [[q:0badid]].",
+      "sources": [
+        {
+          "url": "https://arxiv.org/abs/2005.11401",
+          "title": "RAG",
+          "text": "We combine a retriever with a generator for knowledge-intensive tasks. Results improve on open-domain QA."
+        }
+      ],
+      "cites": [
+        {
+          "claim": 1,
+          "statuses": [
+            "bound"
+          ]
+        }
+      ],
+      "forged": 1,
+      "tags": [
+        "citation",
+        "token"
+      ]
+    },
+    {
+      "id": "unread-number-only",
+      "answer": "Tern was founded in 2031 [3].",
+      "sources": [
+        {
+          "url": "https://a.test/tern",
+          "title": "",
+          "text": "Tern is a research agent."
+        },
+        {
+          "url": "https://b.test/os",
+          "title": "",
+          "text": "It runs on Windows."
+        }
+      ],
+      "cites": [
+        {
+          "claim": 1,
+          "statuses": [
+            "unread"
+          ]
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "not_enough_info",
+          "supports": 0,
+          "refutes": 0
+        }
+      ],
+      "tags": [
+        "citation"
+      ]
+    },
+    {
+      "id": "agreement-mixed-by-site",
+      "answer": "The Eiffel Tower is 330 metres tall [1].",
+      "sources": [
+        {
+          "url": "https://a.test/1",
+          "title": "",
+          "text": "The Eiffel Tower is 330 metres tall."
+        },
+        {
+          "url": "https://b.test/2",
+          "title": "",
+          "text": "Measured in 2022, the Eiffel Tower is 330 metres tall."
+        },
+        {
+          "url": "https://c.test/3",
+          "title": "",
+          "text": "The Eiffel Tower is 300 metres tall, its original height."
+        },
+        {
+          "url": "https://a.test/4",
+          "title": "",
+          "text": "Visitors say the Eiffel Tower is 330 metres tall."
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "mixed",
+          "supports": 2,
+          "refutes": 1
+        }
+      ],
+      "tags": [
+        "agreement"
+      ]
+    },
+    {
+      "id": "refuted-number",
+      "answer": "Water boils at 90 degrees Celsius at sea level [1].",
+      "sources": [
+        {
+          "url": "https://a.test/water",
+          "title": "",
+          "text": "At sea level, water boils at 100 degrees Celsius."
+        }
+      ],
+      "cites": [
+        {
+          "claim": 1,
+          "statuses": [
+            "bound"
+          ]
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "refutes",
+          "supports": 0,
+          "refutes": 1
+        }
+      ],
+      "tags": [
+        "verdict"
+      ]
+    },
+    {
+      "id": "not-enough-info",
+      "answer": "The museum opened in 1977 [1].",
+      "sources": [
+        {
+          "url": "https://a.test/museum",
+          "title": "",
+          "text": "The museum has a large collection of modern art."
+        }
+      ],
+      "cites": [
+        {
+          "claim": 1,
+          "statuses": [
+            "unbound"
+          ]
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "not_enough_info"
+        }
+      ],
+      "tags": [
+        "verdict"
+      ]
+    },
+    {
+      "id": "uncited-source-counts",
+      "answer": "Python was created by Guido van Rossum [1].",
+      "sources": [
+        {
+          "url": "https://a.test/py",
+          "title": "",
+          "text": "Python was created by Guido van Rossum in 1991."
+        },
+        {
+          "url": "https://b.test/guido",
+          "title": "",
+          "text": "Guido van Rossum created Python while at CWI."
+        },
+        {
+          "url": "https://c.test/snakes",
+          "title": "",
+          "text": "Snakes are reptiles."
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "supports",
+          "supports": 2,
+          "refutes": 0
+        }
+      ],
+      "tags": [
+        "agreement"
+      ]
+    },
+    {
+      "id": "counter-triggers-and-effects",
+      "answer": "Coffee was first brewed in Yemen [1]. Tea may be older than coffee [1]. The shop sells 40 kinds of tea [1].",
+      "sources": [
+        {
+          "url": "https://a.test/coffee",
+          "title": "",
+          "text": "Coffee was first brewed in Yemen. Tea may be older than coffee. The shop sells 40 kinds of tea."
+        }
+      ],
+      "stances": [
+        {
+          "claim": 3,
+          "stance": "supports"
+        }
+      ],
+      "counter": [
+        {
+          "claim": 1,
+          "trigger": "headline",
+          "query_has": [
+            "coffee",
+            "yemen",
+            "disputed"
+          ],
+          "pages": [
+            {
+              "url": "https://d.test/history",
+              "title": "",
+              "text": "Coffee was first brewed in Yemen, in the 15th century."
+            }
+          ],
+          "after": "supports"
+        },
+        {
+          "claim": 2,
+          "trigger": null
+        },
+        {
+          "claim": 3,
+          "trigger": "number",
+          "query_has": [
+            "40",
+            "shop"
+          ],
+          "pages": [
+            {
+              "url": "https://e.test/shop",
+              "title": "",
+              "text": "The shop sells 25 kinds of tea."
+            }
+          ],
+          "after": "mixed"
+        }
+      ],
+      "tags": [
+        "counter"
+      ]
+    },
+    {
+      "id": "counter-strong-claim",
+      "answer": "The clinic is open on weekdays [1]. This vaccine always prevents measles [2].",
+      "sources": [
+        {
+          "url": "https://a.test/clinic",
+          "title": "",
+          "text": "The clinic is open on weekdays."
+        },
+        {
+          "url": "https://b.test/vaccine",
+          "title": "",
+          "text": "This vaccine prevents measles in most children."
+        }
+      ],
+      "counter": [
+        {
+          "claim": 1,
+          "trigger": "headline"
+        },
+        {
+          "claim": 2,
+          "trigger": "strong",
+          "query_has": [
+            "vaccine",
+            "measles"
+          ]
+        }
+      ],
+      "tags": [
+        "counter"
+      ]
+    },
+    {
+      "id": "counter-negated-query",
+      "answer": "Ice does not melt below 0 degrees [1].",
+      "sources": [
+        {
+          "url": "https://a.test/ice",
+          "title": "",
+          "text": "Ice does not melt below 0 degrees at normal pressure."
+        }
+      ],
+      "stances": [
+        {
+          "claim": 1,
+          "stance": "supports"
+        }
+      ],
+      "counter": [
+        {
+          "claim": 1,
+          "trigger": "headline",
+          "query_has": [
+            "ice",
+            "melt",
+            "evidence"
+          ]
+        }
+      ],
+      "tags": [
+        "counter"
+      ]
+    }
+  ]
+}

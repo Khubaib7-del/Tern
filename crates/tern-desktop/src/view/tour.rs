@@ -398,6 +398,15 @@ enum Act {
     /// #82: scrolls Settings › Search & Crawlers to the Scholarly sources
     /// card.
     ScholarCard,
+    /// #83 (`TERN_TOUR_ONLY=evidence`): a cited answer from three pages
+    /// read, streamed through the real events.
+    EvidenceTurn,
+    /// #83: the claim check with the evidence chain (stances, agreement,
+    /// counter-search, an unread and a forged citation) built by Tern's
+    /// own code over the tour's pages, then the turn finished.
+    EvidenceFinish,
+    /// #83: the Report with claim `n` focused.
+    EvidenceClaim(usize),
 }
 
 /// One beat: an optional new scene (id, the v2 scene it maps to or
@@ -475,6 +484,9 @@ fn script() -> Vec<Beat> {
     }
     if scholar_tour() {
         return scholar_script();
+    }
+    if evidence_tour() {
+        return evidence_script();
     }
     use crate::onboarding::Step;
     let mut v = vec![
@@ -1505,6 +1517,142 @@ impl Workspace {
         self.on_msg(Msg::Text(1, SCHOLAR_A.into()), window, cx);
     }
 
+    /// #83: a cited answer from three pages read (`read_url` events), its
+    /// text streamed as a real turn's is.
+    fn tour_evidence_turn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.model.set_mode(crate::composer::Mode::Chat, None);
+        if self.model.start_turn(EVIDENCE_Q).is_none() {
+            log("TOUR evidence turn not started");
+            return;
+        }
+        self.start_ticker(cx);
+        self.tour_event(
+            "turn.started",
+            "Started",
+            json!({"mode": "chat"}),
+            window,
+            cx,
+        );
+        for (title, url, site, _) in EVIDENCE_PAGES {
+            let page = json!({"title": title, "url": url, "site": site});
+            self.tour_event(
+                "tool.executed",
+                "Read a page",
+                json!({"tool": "read_url", "args": {"url": url}, "meta": {"page": page}}),
+                window,
+                cx,
+            );
+        }
+        self.request_icons();
+        self.on_msg(Msg::Text(1, EVIDENCE_A.into()), window, cx);
+    }
+
+    /// #83: the claim check and evidence chain over the tour's pages, by
+    /// Tern's own code (no model): verdicts, stances, agreement, two
+    /// counter-searches over recorded pages, and the events a real check
+    /// sends.
+    fn tour_evidence_finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use tern_agent::verify::{self as v, EvidenceBudget, QuoteBook, SourceText};
+        let sources: Vec<SourceText> = EVIDENCE_PAGES
+            .iter()
+            .enumerate()
+            .map(|(i, (title, url, site, text))| SourceText {
+                n: i + 1,
+                url: (*url).into(),
+                title: (*title).into(),
+                site: (*site).into(),
+                text: (*text).into(),
+            })
+            .collect();
+        let book = QuoteBook::default();
+        let shown = v::render_quotes(EVIDENCE_A, &book).text;
+        let claims = v::extract_claims(&shown);
+        self.tour_event(
+            "claims.checking",
+            "Checking claims against their sources",
+            json!({"claims": claims.len()}),
+            window,
+            cx,
+        );
+        let checks: Vec<v::ClaimCheck> = claims
+            .iter()
+            .map(|c| v::check_lexical(c, &sources))
+            .collect();
+        let budget = EvidenceBudget::default();
+        let mut chain = v::build_evidence(EVIDENCE_A, &sources, &book, &budget);
+        v::align_evidence(&mut chain, &checks);
+        let planned = v::plan_counter(&mut chain, &budget);
+        for n in planned {
+            let query = chain
+                .claim(n)
+                .and_then(|c| c.counter.as_ref())
+                .map(|c| c.query.clone())
+                .unwrap_or_default();
+            self.tour_event(
+                "claims.countering",
+                "Searching for evidence against a claim",
+                json!({"claim": n, "query": query}),
+                window,
+                cx,
+            );
+            let pages: Vec<SourceText> = EVIDENCE_COUNTER
+                .iter()
+                .filter(|(claim, ..)| *claim == n)
+                .map(|(_, title, url, site, text)| SourceText {
+                    n: 0,
+                    url: (*url).into(),
+                    title: (*title).into(),
+                    site: (*site).into(),
+                    text: (*text).into(),
+                })
+                .collect();
+            v::add_counter(&mut chain, n, &pages);
+            let (read, disagree, note) = chain
+                .claim(n)
+                .and_then(|c| c.counter.as_ref())
+                .map(|c| (c.read, c.disagree, c.note.clone()))
+                .unwrap_or_default();
+            self.tour_event(
+                "claims.countered",
+                "Counter-searched a claim",
+                json!({"claim": n, "query": query, "read": read, "disagree": disagree, "note": note}),
+                window,
+                cx,
+            );
+        }
+        log(&format!(
+            "TOUR evidence claims={} stances={:?} forged={} invalid={} counter={}",
+            chain.claims.len(),
+            chain
+                .claims
+                .iter()
+                .map(|c| (c.claim, c.stance.label(), c.agreement.line()))
+                .collect::<Vec<_>>(),
+            chain.forged.len(),
+            chain.invalid_cites(),
+            chain.counter_searches().count()
+        ));
+        let tally = tern_agent::Tally::of(&checks);
+        self.tour_event(
+            "claims.checked",
+            &format!("Checked {} claims: {}", checks.len(), tally.line()),
+            json!({"checks": checks, "tally": tally, "evidence": chain, "report": null}),
+            window,
+            cx,
+        );
+        self.tour_event(
+            "turn.finished",
+            "Answered",
+            json!({"state": "completed"}),
+            window,
+            cx,
+        );
+        self.model
+            .finish_turn(&outcome(EVIDENCE_A), context(9_800, 260));
+        self.model.reveal_all();
+        self.scroll.scroll_to_bottom();
+    }
+
     fn tour_event(
         &mut self,
         kind: &str,
@@ -2449,6 +2597,15 @@ impl Workspace {
                 cx.notify();
             }
             Act::ScholarTurn => self.tour_scholar_turn(window, cx),
+            Act::EvidenceTurn => self.tour_evidence_turn(window, cx),
+            Act::EvidenceFinish => self.tour_evidence_finish(window, cx),
+            Act::EvidenceClaim(n) => {
+                if let Some(i) = self.last_answer() {
+                    self.model.show_claim(i, n);
+                }
+                self.model.run_panel_open = true;
+                self.scroll_to_claim(cx);
+            }
             Act::ScholarFinish => {
                 self.tour_event("turn.finished", "Answered", json!({"state": "completed"}), window, cx);
                 self.model.finish_turn(&outcome(SCHOLAR_A), context(18_400, 520));
@@ -3558,6 +3715,109 @@ const SCHOLAR_FLARE_PDF: &str = "[page 1]\nAbstract\nWe propose Forward-Looking 
 const SCHOLAR_SELFRAG_PDF: &str = "[page 1]\nAbstract\nSelf-RAG retrieves on demand: a retrieve token decides whether retrieval helps the next segment, so the model does not retrieve before every sentence.\n[page 9]\n5 Results\nRetrieving on demand outperforms retrieving a fixed number of passages before every generation on six tasks, including open-domain QA and long-form generation.\n";
 /// The tour's scholarly answer, quoting the read papers with locators.
 const SCHOLAR_A: &str = "Mostly yes. Retrieving only when the model is unsure matches or beats retrieving before every sentence, and it retrieves less.\n\n- **FLARE** retrieves when a token of the upcoming sentence falls below a confidence threshold: \"otherwise the sentence is kept without retrieval\" (p. 4, §3 Method). It \"outperforms single-time retrieval and retrieving before every sentence on all four long-form generation tasks\" (p. 7, §5 Results) [1].\n- **Self-RAG** learns a retrieve token instead of a threshold, and \"retrieving on demand outperforms retrieving a fixed number of passages before every generation on six tasks\" (p. 9, §5 Results) [2].\n\nBoth gains are on long-form tasks; for short factual questions the papers I read do not compare the two, so there is not enough evidence to say the same holds there.";
+
+/// The evidence tour (`TERN_TOUR_ONLY=evidence`, #83): a cited answer
+/// from three pages, then the evidence chain Tern builds for it: verdict
+/// and stance per claim, agreement bars, source cards with quotes, a
+/// citation of a page never read, a forged quote token, and two
+/// counter-searches.
+fn evidence_tour() -> bool {
+    std::env::var("TERN_TOUR_ONLY").as_deref() == Ok("evidence")
+}
+
+fn evidence_script() -> Vec<Beat> {
+    vec![
+        b(Act::Nothing, 1500),
+        b(Act::Connect, 1500),
+        scene(
+            "ev01-answer",
+            "tern-only",
+            "Evidence: an answer citing [n] from three pages read",
+            Act::EvidenceTurn,
+            2400,
+        ),
+        scene(
+            "ev02-checked",
+            "tern-only",
+            "Evidence: claims checked, counter-searched, verdict badges inline",
+            Act::EvidenceFinish,
+            2600,
+        ),
+        scene(
+            "ev03-report",
+            "tern-only",
+            "Report › Review claims: stance chips, agreement bars, source cards",
+            Act::EvidenceClaim(1),
+            3200,
+        ),
+        scene(
+            "ev04-counter",
+            "tern-only",
+            "Report: a claim a counter-search found a source against",
+            Act::EvidenceClaim(3),
+            3200,
+        ),
+        scene(
+            "ev05-unbacked",
+            "tern-only",
+            "Report: a citation of a page Tern never read is flagged",
+            Act::EvidenceClaim(4),
+            3000,
+        ),
+        scene(
+            "ev06-steps",
+            "tern-only",
+            "Run steps: Checked claims and the Counter-searched steps",
+            Act::View(RunView::Detailed),
+            3000,
+        ),
+        b(Act::Quit, 0),
+    ]
+}
+
+const EVIDENCE_Q: &str = "How tall is the Eiffel Tower, and when was it finished?";
+/// The pages the tour's turn read: title, URL, site, the text Tern read.
+const EVIDENCE_PAGES: [(&str, &str, &str, &str); 3] = [
+    (
+        "Eiffel Tower - Wikipedia",
+        "https://en.wikipedia.org/wiki/Eiffel_Tower",
+        "en.wikipedia.org",
+        "The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris. The Eiffel Tower is 330 metres tall. It was completed in 1889 for the World's Fair.",
+    ),
+    (
+        "Key figures - Official Eiffel Tower website",
+        "https://www.toureiffel.paris/en/the-monument/key-figures",
+        "toureiffel.paris",
+        "Today the Eiffel Tower is 330 metres tall, antennas included. Construction began in 1887 and took two years.",
+    ),
+    (
+        "Eiffel Tower | Britannica",
+        "https://www.britannica.com/topic/Eiffel-Tower-Paris-France",
+        "britannica.com",
+        "When it was finished, the Eiffel Tower is 300 metres tall.",
+    ),
+];
+/// What the tour's counter-searches found, by claim: claim, title, URL,
+/// site, text.
+const EVIDENCE_COUNTER: [(usize, &str, &str, &str, &str); 2] = [
+    (
+        2,
+        "Eiffel Tower - History",
+        "https://www.history.com/topics/landmarks/eiffel-tower",
+        "history.com",
+        "The Eiffel Tower was completed in 1889 for the World's Fair in Paris, on time and on budget.",
+    ),
+    (
+        3,
+        "The building of the Eiffel Tower",
+        "https://www.paris-history.test/eiffel-construction",
+        "paris-history.test",
+        "Construction began in 1886, a year before the official start.",
+    ),
+];
+/// The tour's answer: claim 1 has a refuting source, claim 3 a forged
+/// quote token, claim 4 cites a page the turn never read.
+const EVIDENCE_A: &str = "The Eiffel Tower is 330 metres tall [1][2]. It was completed in 1889 for the World's Fair [1]. Construction of the tower began in 1887 [2][[q:0c0ffe]]. It is the tallest structure in Paris [4].\n\n[1] Eiffel Tower - Wikipedia — https://en.wikipedia.org/wiki/Eiffel_Tower\n[2] Key figures — https://www.toureiffel.paris/en/the-monument/key-figures\n";
 
 /// The folders tour (`TERN_TOUR_ONLY=folders`, #74): the composer tour's
 /// mock model and files, with only the folder, math-fence and Files scenes.

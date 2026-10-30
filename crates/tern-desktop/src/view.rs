@@ -19,6 +19,7 @@ use gpui_kit::{
 };
 use tern_agent::Role;
 use tern_agent::attach::Source as AttachSource;
+use tern_agent::verify::Stance;
 use tern_agent::{
     ApprovalAnswer, CancelFlag, ChatSession, Harness, PageRef, RawFilter, Run, RunEnd, RunStep,
     StepKind, Verdict,
@@ -191,6 +192,11 @@ pub struct Workspace {
     /// Stops one deep research worker, or the whole run.
     deep_control: tern_agent::DeepControl,
     scroll: ScrollHandle,
+    /// The run panel's scroll, and whether the Report should scroll its
+    /// focused claim to the top when it is next drawn (a verdict badge
+    /// clicked, #83).
+    run_scroll: ScrollHandle,
+    claim_scroll_pending: std::rc::Rc<std::cell::Cell<bool>>,
     ticker: Option<Task<()>>,
     /// Motion state: the side panels' slides and a theme switch in flight.
     sidebar_slide: Slide,
@@ -755,6 +761,7 @@ impl Workspace {
             bridge.cards_load();
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
+        let run_scroll = ScrollHandle::new();
         let mut this = Self {
             sidebar_slide: Slide::new(sidebar_open),
             panel_slide: Slide::new(panel_open),
@@ -815,6 +822,8 @@ impl Workspace {
             plan_dropped: HashSet::new(),
             deep_control: tern_agent::DeepControl::default(),
             scroll: ScrollHandle::new(),
+            run_scroll,
+            claim_scroll_pending: Default::default(),
             ticker: None,
             _listener: listener,
             _watch_timer: watch_timer,
@@ -4149,14 +4158,24 @@ impl Workspace {
                             // Citation chips once the answer has landed; while
                             // it streams, `[n]` stays text so the view only
                             // re-parses its last block (#72).
-                            let text = with_badges(i, shown, run);
+                            let shown = render_quotes(shown, run);
+                            let text = with_badges(i, &shown, run);
                             // `\( \)` and `\[ \]` formulas as dollar math
                             // (round 2).
                             let text = crate::richmd::prepare(&text).into_owned();
                             let text = if revealing {
                                 text
                             } else {
-                                crate::richmd::chips(&text, &cite_pages(&text, pages))
+                                let targets = cite_pages(&text, pages);
+                                if let Some(chain) = run.evidence.as_deref() {
+                                    crate::richmd::set_cite_cards(cite_cards(
+                                        chain,
+                                        &targets,
+                                        pages,
+                                        &self.model.icons,
+                                    ));
+                                }
+                                crate::richmd::chips(&text, &targets)
                             };
                             bidi_markdown("answer", i, text, move |t| {
                                 let open = open.clone();
@@ -6003,12 +6022,23 @@ impl Workspace {
                 // The Files tab scrolls itself (its tree is culled).
                 div().flex_1().min_h_0().child(body).into_any_element()
             } else {
+                // A plain GPUI scroll div with its own handle, so the
+                // Report can scroll to a claim (`scroll_to_claim`).
                 div()
-                    .id("run-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(body)
+                    .child(
+                        div()
+                            .id("run-scroll")
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.run_scroll)
+                            .child(body),
+                    )
+                    .child(page_bar("run-scroll-bar".into(), &self.run_scroll))
                     .into_any_element()
             })
             .child(
@@ -6218,7 +6248,14 @@ impl Workspace {
                             })),
                     )
             });
+            let evidence = run
+                .evidence
+                .as_deref()
+                .and_then(|chain| chain.claim(c.claim).map(|ev| (chain, ev)))
+                .map(|(chain, ev)| self.claim_evidence(chain, ev, &pages, p, cx));
             div()
+                .id(SharedString::from(format!("report-claim-{}", c.claim)))
+                .relative()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -6226,7 +6263,12 @@ impl Workspace {
                 .rounded_md()
                 .border_1()
                 .border_color(if focused { p.muted } else { p.border })
-                .when(focused, |d| d.bg(p.raised))
+                .when(focused, |d| {
+                    d.bg(p.raised).child(claim_scroll_probe(
+                        self.run_scroll.clone(),
+                        self.claim_scroll_pending.clone(),
+                    ))
+                })
                 .child(
                     div()
                         .flex()
@@ -6254,6 +6296,7 @@ impl Workspace {
                         .child(SharedString::from(c.text.clone())),
                 )
                 .children(source)
+                .children(evidence)
                 .children(actions)
                 .when(!c.note.is_empty(), |d| {
                     d.child(
@@ -6317,6 +6360,23 @@ impl Workspace {
             .gap_2()
             .children(review)
             .when(!run.checks.is_empty(), |d| d.child(counts))
+            .children(run.evidence.as_deref().and_then(|chain| {
+                let line = chain.tally().line();
+                (!line.is_empty()).then(|| {
+                    let bad = chain.invalid_cites();
+                    div()
+                        .text_xs()
+                        .text_color(p.faint)
+                        .child(SharedString::from(if bad > 0 {
+                            format!(
+                                "Across sources: {line} · {bad} citation{} Tern could not back",
+                                if bad == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            format!("Across sources: {line}")
+                        }))
+                })
+            }))
             .when(run.checks.is_empty(), |d| {
                 d.child(
                     div()
@@ -6327,6 +6387,179 @@ impl Workspace {
             })
             .children(claims)
             .children(files)
+            .into_any_element()
+    }
+
+    /// Scrolls the run panel to the focused claim when it is next drawn
+    /// (`claim_scroll_probe` measures it there).
+    pub(super) fn scroll_to_claim(&self, cx: &mut Context<Self>) {
+        self.claim_scroll_pending.set(true);
+        cx.notify();
+    }
+
+    /// A claim's evidence in the Report: its stance across sources with
+    /// the agreement bar, one card per source (quote, locator, logo,
+    /// stance), citations Tern could not back, and its counter-search.
+    fn claim_evidence(
+        &self,
+        chain: &tern_agent::verify::Chain,
+        ev: &tern_agent::verify::ClaimEvidence,
+        pages: &[PageRef],
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use tern_agent::verify::CiteStatus;
+        let head = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(stance_chip(ev.stance, p))
+            .child(agreement_bar(&ev.agreement, p))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(SharedString::from(if ev.agreement.few() {
+                        format!("{} · few sources", ev.agreement.line())
+                    } else {
+                        ev.agreement.line()
+                    })),
+            );
+        let cards = ev
+            .cards
+            .iter()
+            .take(EVIDENCE_CARDS)
+            .enumerate()
+            .filter_map(|(i, k)| {
+                let q = k.quote.as_ref().and_then(|id| chain.quote(id))?;
+                let page = pages
+                    .iter()
+                    .find(|pg| pg.url == q.url)
+                    .cloned()
+                    .unwrap_or_else(|| PageRef {
+                        title: q.title.clone(),
+                        url: q.url.clone(),
+                        site: q.site.clone(),
+                        builtin: None,
+                        favicon: None,
+                    });
+                let loc = q.locator();
+                let mut where_ = if k.source > 0 {
+                    format!("[{}] {}", k.source, page.label())
+                } else {
+                    page.label().to_string()
+                };
+                if !loc.is_empty() {
+                    where_ = format!("{where_} · {loc}");
+                }
+                if k.counter {
+                    where_ = format!("{where_} · counter-search");
+                }
+                let url = if q.anchor.is_empty() {
+                    q.url.clone()
+                } else {
+                    q.anchor.clone()
+                };
+                Some(
+                    div()
+                        .id(SharedString::from(format!("ev-card-{}-{i}", ev.claim)))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .px_1()
+                        .py(px(3.))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|d| d.bg(p.hover))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(14.))
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(stance_ink(k.stance, p))
+                                        .child(SharedString::from(k.stance.glyph())),
+                                )
+                                .child(self.site_icon(&page, 14., p))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(p.muted)
+                                        .child(SharedString::from(where_)),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .pl(px(22.))
+                                .text_xs()
+                                .text_color(p.faint)
+                                .child(SharedString::from(format!("“{}”", q.text))),
+                        )
+                        .when(!k.note.is_empty() && k.stance != Stance::Supports, |d| {
+                            d.child(
+                                div()
+                                    .pl(px(22.))
+                                    .text_xs()
+                                    .text_color(p.faint)
+                                    .child(SharedString::from(k.note.clone())),
+                            )
+                        })
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.browse(&url, window, cx)),
+                        ),
+                )
+            });
+        let unbacked = ev.cites.iter().filter(|b| !b.status.renders()).map(|b| {
+            let what = if b.status == CiteStatus::Forged {
+                b.token.clone()
+            } else {
+                format!("[{}]", b.n)
+            };
+            div()
+                .text_xs()
+                .text_color(p.muted)
+                .child(SharedString::from(format!("{what} · {}", b.status.label())))
+        });
+        let counter = ev
+            .counter
+            .as_ref()
+            .filter(|cs| cs.ran || !cs.note.is_empty())
+            .map(|cs| {
+                // The query is long: the line wraps inside the card.
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(p.faint)
+                    .child(
+                        div()
+                            .flex_none()
+                            .pt(px(2.))
+                            .child(gpui_kit::component::Icon::new(IconName::Search).xsmall()),
+                    )
+                    .child(div().flex_1().min_w_0().child(SharedString::from(format!(
+                        "Counter-searched “{}” · {}",
+                        cs.query, cs.note
+                    ))))
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pt_1()
+            .child(head)
+            .children(cards)
+            .children(unbacked)
+            .children(counter)
             .into_any_element()
     }
 
@@ -7316,10 +7549,180 @@ fn cite_pages(text: &str, pages: &[PageRef]) -> std::collections::HashMap<usize,
         .collect()
 }
 
+/// The answer with its quote tokens (`[[q:ab12cd]]`) as `[n]`, against
+/// the quotes its evidence chain holds; tokens Tern never minted are
+/// dropped.
+fn render_quotes(text: &str, run: &Run) -> String {
+    if !text.contains("[q:") && !text.contains("[[q:") {
+        return text.to_owned();
+    }
+    let book = tern_agent::verify::QuoteBook {
+        quotes: run
+            .evidence
+            .as_deref()
+            .map(|c| c.quotes.clone())
+            .unwrap_or_default(),
+    };
+    tern_agent::verify::render_quotes(text, &book).text
+}
+
+/// Hover cards for the answer's citation chips: for each `[n]`, the quotes
+/// Tern minted from its source that the claims rest on, with each claim's
+/// stance and agreement; a citation of a page Tern never read says so.
+fn cite_cards(
+    chain: &tern_agent::verify::Chain,
+    targets: &std::collections::HashMap<usize, String>,
+    pages: &[PageRef],
+    icons: &std::collections::HashMap<String, SiteIcon>,
+) -> Vec<(String, crate::richmd::CiteCard)> {
+    let unread = chain.unread_numbers();
+    targets
+        .iter()
+        .map(|(n, url)| {
+            let page = pages.iter().find(|p| p.url == *url);
+            let site = page.map(|p| p.site.clone()).unwrap_or_else(|| {
+                url.split("://")
+                    .nth(1)
+                    .unwrap_or(url)
+                    .split('/')
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start_matches("www.")
+                    .to_owned()
+            });
+            let quotes: Vec<crate::richmd::CiteQuote> = chain
+                .quotes_for(*n)
+                .into_iter()
+                .take(2)
+                .map(|(ev, card, q)| crate::richmd::CiteQuote {
+                    stance: (card.stance.glyph(), card.stance.label()),
+                    agreement: format!(
+                        "Claim {}: {} · {}",
+                        ev.claim,
+                        ev.stance.label().to_lowercase(),
+                        ev.agreement.line()
+                    ),
+                    quote: q.text.clone(),
+                    locator: q.locator(),
+                })
+                .collect();
+            let note = if unread.contains(n) {
+                "Tern never read this source, so this citation is not backed.".to_owned()
+            } else if quotes.is_empty() {
+                "No passage of this source bears on the claims that cite it.".to_owned()
+            } else {
+                String::new()
+            };
+            let icon = match icons.get(&site) {
+                Some(SiteIcon::Ready(path)) => Some(path.clone()),
+                _ => None,
+            };
+            (
+                url.clone(),
+                crate::richmd::CiteCard {
+                    n: *n,
+                    title: page.map(|p| p.title.clone()).unwrap_or_default(),
+                    site,
+                    icon,
+                    quotes,
+                    note,
+                },
+            )
+        })
+        .collect()
+}
+
 fn with_badges(entry: usize, text: &str, run: &Run) -> String {
     tern_agent::verify::annotate(text, &run.checks, |claim| {
         tern_agent::verify::claim_link(entry, claim)
     })
+}
+
+/// An invisible layer over the Report's focused claim: when a scroll to
+/// it is pending, it moves the run panel so the claim's top meets the
+/// panel's top (GPUI clamps the far end), then asks for a redraw.
+fn claim_scroll_probe(
+    handle: ScrollHandle,
+    pending: std::rc::Rc<std::cell::Cell<bool>>,
+) -> impl IntoElement {
+    gpui_kit::canvas(
+        move |bounds, window, _| {
+            if pending.replace(false) {
+                let view = handle.bounds();
+                let off = handle.offset();
+                let below = f32::from(bounds.origin.y) - f32::from(view.origin.y);
+                let y = (f32::from(off.y) - below).min(0.);
+                handle.set_offset(gpui_kit::point(off.x, px(y)));
+                window.refresh();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Source cards shown per claim in the Report.
+const EVIDENCE_CARDS: usize = 4;
+
+/// The ink for a stance: grey steps, never a hue (palette C).
+fn stance_ink(s: Stance, p: Palette) -> Hsla {
+    match s {
+        Stance::Supports | Stance::Refutes => p.text,
+        Stance::Mixed => p.muted,
+        Stance::NotEnoughInfo => p.faint,
+    }
+}
+
+/// A claim's stance as a chip: glyph and label, outlined.
+fn stance_chip(s: Stance, p: Palette) -> AnyElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(4.))
+        .px(px(6.))
+        .py(px(1.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if s == Stance::Refutes {
+            p.muted
+        } else {
+            p.border
+        })
+        .text_xs()
+        .text_color(stance_ink(s, p))
+        .child(SharedString::from(s.glyph()))
+        .child(s.label())
+        .into_any_element()
+}
+
+/// Width of the agreement bar.
+const BAR_W: f32 = 96.;
+
+/// The agreement bar: one stretch per side, sized by independent sources.
+/// Supports is solid, mixed is mid-grey, refutes is an outline, no info is
+/// the track; shape carries the meaning, the palette stays grey.
+fn agreement_bar(a: &tern_agent::verify::Agreement, p: Palette) -> AnyElement {
+    let total = a.sources().max(1) as f32;
+    let part = |n: usize| BAR_W * n as f32 / total;
+    let seg = |w: f32| div().h(px(6.)).w(px(w)).flex_none();
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(1.))
+        .w(px(BAR_W + 3.))
+        .when(a.supports > 0, |d| {
+            d.child(seg(part(a.supports)).bg(p.text))
+        })
+        .when(a.mixed > 0, |d| d.child(seg(part(a.mixed)).bg(p.muted)))
+        .when(a.refutes > 0, |d| {
+            d.child(seg(part(a.refutes)).border_1().border_color(p.text))
+        })
+        .when(a.nei > 0, |d| d.child(seg(part(a.nei)).bg(p.border)))
+        .when(a.sources() == 0, |d| d.child(seg(BAR_W).bg(p.border)))
+        .into_any_element()
 }
 
 /// A verdict as its Tern glyph (ADR 0002's verdict set). Shape carries
