@@ -10,7 +10,8 @@ use tern_providers::{ChatMessage, ChatRequest};
 pub use tern_research::claims::{Claim, extract as extract_claims};
 pub use tern_research::evidence::{
     Agreement, Budget as EvidenceBudget, Chain, CiteStatus, ClaimEvidence, Quote, QuoteBook,
-    QuoteId, Stance, render as render_quotes,
+    QuoteId, Stance, add_counter, align as align_evidence, build as build_evidence, plan_counter,
+    render as render_quotes,
 };
 pub use tern_research::verdict::{
     ClaimCheck, Evidence, Method, SourceText, Tally, Verdict, apply_judgments, check_lexical,
