@@ -4,6 +4,10 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Changed: docs
+
+- **Docs: roadmap v3**: the README's status says #82 and #83 are merged and #84 (engine reliability: never lose a turn) is next, What works today covers the #83 scholarly follow-ups, and the README roadmap is a phased summary of #84–#109 and the post-v1.0 backlog (#110–#113). [docs/04-roadmap.md](docs/04-roadmap.md) is rewritten as roadmap v3: phases, a goal, scope and exit check per pull request, dependencies, and where each item of the old #84–#103 plan went.
+
 ### Fixed (PR #83): scholarly follow-ups from the #82 Windows test
 
 - **Academic questions search the literature first**: a question about papers, studies, research methods or a named technique ("How does FLARE compare with retrieving before every sentence?", "Do octopuses dream in binary code?") runs `scholar_search` before the model answers, chosen by a deterministic classifier (academic, file, casual or general) rather than left to the model, which picked `web_search` with `scholar_search` on offer. The model is told to answer from the papers, say "not enough evidence" when they do not cover the question, and may still search the web afterwards. The system prompt and tool descriptions say the same, and never to expand an acronym from memory.
