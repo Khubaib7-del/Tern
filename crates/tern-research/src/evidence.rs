@@ -1363,15 +1363,16 @@ For each numbered pair, answer one stance: \"supports\" if the passage states th
 Judge only from the passage, never from what you know. \
 Answer with JSON only: an array of objects {\"pair\": number, \"stance\": \"supports\" | \"refutes\" | \"mixed\" | \"not_enough_info\"}.";
 
+/// A judge prompt: the system prompt, the message, and the numbered
+/// (claim, card index) pairs.
+pub type StancePrompt = (String, String, Vec<(usize, usize)>);
+
 /// The system prompt and message for a model judge over the cards most
 /// worth a second look, within `budget.judge_cards`: counter-search cards
 /// first, then other uncited cards that take a side. Returns the pairs as
 /// (claim, card index) in the order they were numbered, or `None` when no
 /// card needs it.
-pub fn stance_prompt(
-    chain: &Chain,
-    budget: &Budget,
-) -> Option<(String, String, Vec<(usize, usize)>)> {
+pub fn stance_prompt(chain: &Chain, budget: &Budget) -> Option<StancePrompt> {
     let mut picks: Vec<(u8, usize, usize)> = Vec::new();
     for ev in &chain.claims {
         for (i, k) in ev.cards.iter().enumerate() {
