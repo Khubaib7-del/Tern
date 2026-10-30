@@ -6253,6 +6253,7 @@ impl Workspace {
                 .and_then(|chain| chain.claim(c.claim).map(|ev| (chain, ev)))
                 .map(|(chain, ev)| self.claim_evidence(chain, ev, &pages, p, cx));
             div()
+                .id(SharedString::from(format!("report-claim-{}", c.claim)))
                 .flex()
                 .flex_col()
                 .gap_1()
