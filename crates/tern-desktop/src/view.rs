@@ -6533,17 +6533,23 @@ impl Workspace {
             .as_ref()
             .filter(|cs| cs.ran || !cs.note.is_empty())
             .map(|cs| {
+                // The query is long: the line wraps inside the card.
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_1()
                     .text_xs()
                     .text_color(p.faint)
-                    .child(gpui_kit::component::Icon::new(IconName::Search).xsmall())
-                    .child(SharedString::from(format!(
+                    .child(
+                        div()
+                            .flex_none()
+                            .pt(px(2.))
+                            .child(gpui_kit::component::Icon::new(IconName::Search).xsmall()),
+                    )
+                    .child(div().flex_1().min_w_0().child(SharedString::from(format!(
                         "Counter-searched “{}” · {}",
                         cs.query, cs.note
-                    )))
+                    ))))
             });
         div()
             .flex()
