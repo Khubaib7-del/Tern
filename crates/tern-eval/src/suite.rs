@@ -101,6 +101,9 @@ pub enum SuiteKind {
     /// Scholarly search: ranking, "not enough evidence", locators,
     /// snowballing, over recorded service answers.
     Scholarly,
+    /// The evidence chain: citations bound to quotes Tern read, stances
+    /// and agreement across sources, counter-search triggers.
+    Evidence,
     /// The workspace's tests, read from `cargo test` (the unit rung).
     Tests,
     /// A usability session (the human rung).
@@ -116,6 +119,7 @@ impl SuiteKind {
             Self::Decision => "Decision routing",
             Self::Safety => "Injection and tool safety",
             Self::Scholarly => "Scholarly search",
+            Self::Evidence => "Evidence chain",
             Self::Tests => "Unit and integration tests",
             Self::Usability => "Usability",
         }
@@ -129,6 +133,7 @@ impl SuiteKind {
             Self::Decision => "decision",
             Self::Safety => "safety",
             Self::Scholarly => "scholarly",
+            Self::Evidence => "evidence",
             Self::Tests => "tests",
             Self::Usability => "usability",
         }
@@ -409,6 +414,66 @@ pub struct ScholarlyCase {
     pub tags: Vec<String>,
 }
 
+/// What a claim's citations should come to, in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CiteExpect {
+    pub claim: usize,
+    pub statuses: Vec<tern_research::evidence::CiteStatus>,
+}
+
+/// A claim's stance across sources, and optionally its counts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StanceExpect {
+    pub claim: usize,
+    pub stance: tern_research::evidence::Stance,
+    #[serde(default)]
+    pub supports: Option<usize>,
+    #[serde(default)]
+    pub refutes: Option<usize>,
+}
+
+/// Whether a claim gets a counter-search, what the query holds, and what
+/// the claim's stance is once the pages it found are read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CounterExpect {
+    pub claim: usize,
+    /// The trigger, or none when the claim should get no counter-search.
+    #[serde(default)]
+    pub trigger: Option<tern_research::evidence::Trigger>,
+    /// Words the query must hold (case-insensitive).
+    #[serde(default)]
+    pub query_has: Vec<String>,
+    /// Pages the counter-search finds.
+    #[serde(default)]
+    pub pages: Vec<CaseSource>,
+    /// The claim's stance after reading them.
+    #[serde(default)]
+    pub after: Option<tern_research::evidence::Stance>,
+}
+
+/// An evidence-chain case: an answer, the sources Tern read (numbered
+/// from 1), and what the chain should make of it. In the answer,
+/// `[[q:@N:exact words]]` stands for the quote id Tern mints for those
+/// words of source N (a tool showed the model that passage).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EvidenceCase {
+    pub id: String,
+    pub answer: String,
+    #[serde(default)]
+    pub sources: Vec<CaseSource>,
+    #[serde(default)]
+    pub cites: Vec<CiteExpect>,
+    /// Quote tokens Tern never minted, stripped.
+    #[serde(default)]
+    pub forged: Option<usize>,
+    #[serde(default)]
+    pub stances: Vec<StanceExpect>,
+    #[serde(default)]
+    pub counter: Vec<CounterExpect>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
 /// A suite's cases, by kind.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cases {
@@ -418,6 +483,7 @@ pub enum Cases {
     Decision(Vec<Fixture>),
     Safety(Vec<SafetyCase>),
     Scholarly(Vec<ScholarlyCase>),
+    Evidence(Vec<EvidenceCase>),
 }
 
 impl Cases {
@@ -429,6 +495,7 @@ impl Cases {
             Self::Decision(c) => c.len(),
             Self::Safety(c) => c.len(),
             Self::Scholarly(c) => c.len(),
+            Self::Evidence(c) => c.len(),
         }
     }
 
@@ -444,6 +511,7 @@ impl Cases {
             Self::Decision(c) => c.iter().map(|x| x.id.clone()).collect(),
             Self::Safety(c) => c.iter().map(|x| x.id.clone()).collect(),
             Self::Scholarly(c) => c.iter().map(|x| x.id.clone()).collect(),
+            Self::Evidence(c) => c.iter().map(|x| x.id.clone()).collect(),
         }
     }
 }
@@ -519,6 +587,7 @@ impl Suite {
             SuiteKind::Decision => Cases::Decision(each(&f.cases, from)?),
             SuiteKind::Safety => Cases::Safety(each(&f.cases, from)?),
             SuiteKind::Scholarly => Cases::Scholarly(each(&f.cases, from)?),
+            SuiteKind::Evidence => Cases::Evidence(each(&f.cases, from)?),
             SuiteKind::Tests | SuiteKind::Usability => {
                 return Err(format!(
                     "{from}: {} runs are made by Tern, not read from a suite file",
@@ -621,6 +690,29 @@ impl Suite {
                     }
                 }
             }
+            Cases::Evidence(cs) => {
+                for c in cs {
+                    if c.answer.trim().is_empty() {
+                        return bad(&c.id, "an evidence case needs its answer".into());
+                    }
+                    if c.cites.is_empty()
+                        && c.forged.is_none()
+                        && c.stances.is_empty()
+                        && c.counter.is_empty()
+                    {
+                        return bad(&c.id, "the case checks nothing".into());
+                    }
+                    if c.counter
+                        .iter()
+                        .any(|k| k.after.is_some() && k.pages.is_empty())
+                    {
+                        return bad(
+                            &c.id,
+                            "a stance after counter-search needs its pages".into(),
+                        );
+                    }
+                }
+            }
             Cases::Scholarly(cs) => {
                 for c in cs {
                     for k in c.recorded.keys() {
@@ -668,6 +760,7 @@ const BUNDLED: &[(&str, &str)] = &[
     ),
     ("safety", include_str!("../suites/safety.v2.json")),
     ("scholarly", include_str!("../suites/scholarly.v1.json")),
+    ("evidence", include_str!("../suites/evidence.v1.json")),
     ("pinned", include_str!("../suites/pinned.v1.json")),
 ];
 

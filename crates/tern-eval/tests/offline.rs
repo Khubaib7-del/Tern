@@ -57,7 +57,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
     let suites = for_level(Level::Synthetic, &[]);
     assert_eq!(
         suites.len(),
-        7,
+        8,
         "{:?}",
         suites.iter().map(|s| &s.id).collect::<Vec<_>>()
     );
@@ -121,6 +121,17 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
     ] {
         assert!(scholarly.metric(key).is_some(), "scholarly lacks {key}");
     }
+    // The evidence chain: citations, stances, counter-search.
+    let evidence = run.suite("evidence").unwrap();
+    for key in [
+        "citation_validity",
+        "verdict_accuracy",
+        "agreement_accuracy",
+        "counter_trigger_accuracy",
+        "counter_effect_accuracy",
+    ] {
+        assert!(evidence.metric(key).is_some(), "evidence lacks {key}");
+    }
     // Canary cases need a live model.
     let safety = run.suite("safety").unwrap();
     assert_eq!(safety.skipped, 4 * 3);
@@ -146,7 +157,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
 #[test]
 fn every_bundled_suite_parses_and_ladder_has_commands() {
     let all = bundled();
-    assert_eq!(all.len(), 8);
+    assert_eq!(all.len(), 9);
     assert!(all.iter().any(|s| s.level == Level::Pinned));
     for l in Level::ALL {
         assert!(!l.command().is_empty());

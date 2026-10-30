@@ -15,8 +15,8 @@ use tern_study::quiz::{Question, QuestionKind};
 use crate::report::{Better, EvalRun, Failure, Metric, REPORT_FORMAT, SuiteResult, Unit};
 use crate::subject::{GateAnswer, GateCall, Subject};
 use crate::suite::{
-    CaseSource, Cases, ClaimCase, Constraint, EvidenceExpect, Level, QuizCase, ResearchCase,
-    SafetyCase, SafetyCheck, SafetyExpect, ScholarlyCase, Suite,
+    CaseSource, Cases, ClaimCase, Constraint, EvidenceCase, EvidenceExpect, Level, QuizCase,
+    ResearchCase, SafetyCase, SafetyCheck, SafetyExpect, ScholarlyCase, Suite,
 };
 
 /// The fewest trials a published result should have.
@@ -122,6 +122,7 @@ pub async fn run_suite(suite: &Suite, subject: &dyn Subject, trials: usize) -> S
         Cases::Decision(cs) => decision(&mut r, cs, subject, trials).await,
         Cases::Safety(cs) => safety(&mut r, cs, subject, trials, &mut used).await,
         Cases::Scholarly(cs) => scholarly(&mut r, cs, trials),
+        Cases::Evidence(cs) => evidence(&mut r, cs, trials),
     }
     r.input_tokens = used.input;
     r.output_tokens = used.output;
@@ -1238,6 +1239,223 @@ fn scholarly(r: &mut SuiteResult, cases: &[ScholarlyCase], trials: usize) {
         stop.metric(
             "snowball_stop_accuracy",
             "Snowballing stops where it should",
+            Better::Higher,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+}
+
+/// A case source as the chain reads it, numbered `n`.
+fn source_text(n: usize, s: &CaseSource) -> SourceText {
+    SourceText {
+        n,
+        url: s.url.clone(),
+        title: s.title.clone(),
+        site: site(&s.url),
+        text: s.text.clone(),
+    }
+}
+
+/// The answer with each `[[q:@N:words]]` placeholder made the id Tern
+/// mints for those words of source N, and the book of those quotes.
+fn mint_placeholders(
+    answer: &str,
+    sources: &[SourceText],
+) -> (String, tern_research::evidence::QuoteBook) {
+    use tern_research::evidence::{Quote, QuoteBook, QuoteId};
+    let mut book = QuoteBook::default();
+    let mut out = String::with_capacity(answer.len());
+    let mut rest = answer;
+    while let Some(i) = rest.find("[[q:@") {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 5..];
+        let Some(close) = after.find("]]") else {
+            out.push_str(&rest[i..]);
+            rest = "";
+            break;
+        };
+        let inner = &after[..close];
+        let (n, words) = inner.split_once(':').unwrap_or((inner, ""));
+        let src = n
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| sources.iter().find(|s| s.n == n));
+        match src {
+            Some(s) if !words.trim().is_empty() => {
+                let id = book.add(Quote {
+                    id: QuoteId::default(),
+                    source: s.n,
+                    url: s.url.clone(),
+                    title: s.title.clone(),
+                    site: s.site.clone(),
+                    text: words.trim().to_owned(),
+                    page: None,
+                    section: None,
+                    anchor: String::new(),
+                    counter: false,
+                });
+                out.push_str(&id.token());
+            }
+            _ => out.push_str(&rest[i..i + 5 + close + 2]),
+        }
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+    (out, book)
+}
+
+/// Evidence-chain cases: citations bound or flagged, stances and counts
+/// across sources, counter-search triggers and queries, and the stance
+/// once counter-search pages are read. Offline: nothing calls a model.
+fn evidence(r: &mut SuiteResult, cases: &[EvidenceCase], trials: usize) {
+    use tern_research::evidence::{self as ev, Budget};
+    r.headline = "citation_validity".into();
+    let mut cites = Ratio::new(trials);
+    let mut stances = Ratio::new(trials);
+    let mut counts = Ratio::new(trials);
+    let mut triggers = Ratio::new(trials);
+    let mut effect = Ratio::new(trials);
+    let budget = Budget::default();
+    for t in 0..trials {
+        for c in cases {
+            let mut why: Vec<String> = Vec::new();
+            let sources: Vec<SourceText> = c
+                .sources
+                .iter()
+                .enumerate()
+                .map(|(i, s)| source_text(i + 1, s))
+                .collect();
+            let (answer, book) = mint_placeholders(&c.answer, &sources);
+            let mut chain = ev::build(&answer, &sources, &book, &budget);
+            for want in &c.cites {
+                let got: Vec<ev::CiteStatus> = chain
+                    .claim(want.claim)
+                    .map(|e| e.cites.iter().map(|b| b.status).collect())
+                    .unwrap_or_default();
+                let ok = got == want.statuses;
+                cites.add(t, ok);
+                if !ok {
+                    why.push(format!(
+                        "claim {} citations {:?}, expected {:?}",
+                        want.claim, got, want.statuses
+                    ));
+                }
+            }
+            if let Some(n) = c.forged {
+                let ok = chain.forged.len() == n;
+                cites.add(t, ok);
+                if !ok {
+                    why.push(format!(
+                        "{} forged tokens, expected {n}",
+                        chain.forged.len()
+                    ));
+                }
+            }
+            for want in &c.stances {
+                let got = chain.claim(want.claim);
+                let stance = got.map(|e| e.stance);
+                let ok = stance == Some(want.stance);
+                stances.add(t, ok);
+                if !ok {
+                    why.push(format!(
+                        "claim {} is {:?}, expected {:?}",
+                        want.claim, stance, want.stance
+                    ));
+                }
+                if want.supports.is_some() || want.refutes.is_some() {
+                    let a = got.map(|e| e.agreement).unwrap_or_default();
+                    let ok = want.supports.is_none_or(|n| n == a.supports)
+                        && want.refutes.is_none_or(|n| n == a.refutes);
+                    counts.add(t, ok);
+                    if !ok {
+                        why.push(format!(
+                            "claim {} agreement {}, expected {:?} support / {:?} refute",
+                            want.claim,
+                            a.line(),
+                            want.supports,
+                            want.refutes
+                        ));
+                    }
+                }
+            }
+            if !c.counter.is_empty() {
+                ev::plan_counter(&mut chain, &budget);
+                for want in &c.counter {
+                    let planned = chain.claim(want.claim).and_then(|e| e.counter.clone());
+                    let got = planned.as_ref().map(|cs| cs.trigger);
+                    let query = planned
+                        .as_ref()
+                        .map(|cs| cs.query.to_lowercase())
+                        .unwrap_or_default();
+                    let has = want
+                        .query_has
+                        .iter()
+                        .all(|w| query.contains(&w.to_lowercase()));
+                    let ok = got == want.trigger && has;
+                    triggers.add(t, ok);
+                    if !ok {
+                        why.push(format!(
+                            "claim {} counter-search {:?} “{query}”, expected {:?} with {:?}",
+                            want.claim, got, want.trigger, want.query_has
+                        ));
+                    }
+                    if let Some(after) = want.after {
+                        let pages: Vec<SourceText> =
+                            want.pages.iter().map(|s| source_text(0, s)).collect();
+                        ev::add_counter(&mut chain, want.claim, &pages);
+                        let stance = chain.claim(want.claim).map(|e| e.stance);
+                        let ok = stance == Some(after);
+                        effect.add(t, ok);
+                        if !ok {
+                            why.push(format!(
+                                "claim {} after counter-search is {:?}, expected {after:?}",
+                                want.claim, stance
+                            ));
+                        }
+                    }
+                }
+            }
+            r.attempted += 1;
+            if why.is_empty() {
+                r.passed += 1;
+            } else {
+                r.failures.push(Failure {
+                    case: c.id.clone(),
+                    trial: t + 1,
+                    expected: "every check passes".into(),
+                    got: format!("{} check(s) failed", why.len()),
+                    why: why.join("; "),
+                });
+            }
+        }
+    }
+    r.metrics = [
+        cites.metric(
+            "citation_validity",
+            "Citations bound to a quote Tern read, or flagged",
+            Better::Higher,
+        ),
+        stances.metric(
+            "verdict_accuracy",
+            "Stances across sources right",
+            Better::Higher,
+        ),
+        counts.metric(
+            "agreement_accuracy",
+            "Support and refute counts right",
+            Better::Higher,
+        ),
+        triggers.metric(
+            "counter_trigger_accuracy",
+            "Counter-search runs for the right claims, with the right query",
+            Better::Higher,
+        ),
+        effect.metric(
+            "counter_effect_accuracy",
+            "Stance right once counter-search pages are read",
             Better::Higher,
         ),
     ]
