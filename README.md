@@ -275,7 +275,7 @@ Next, by phase:
 | | #105 | Adapts to you v2 and memory v2 |
 | | #106–#108 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
 | | #109 | v1.0 release |
-| | #110 | Handbook bundle: 13 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log), drafted PR by PR under `docs/handbooks/` from #84 on |
+| | #110 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #84 on |
 | **After v1.0** | #111–#114 | Computer use; figures and Explain in 3D v2; git panel; shared rooms |
 
 **Final-year-project demo path:** #83 → #84 → #85 → #90 → #93 → #94 → #97 (with #89 measuring the numbers). The final-year-project build ends at #98.

@@ -352,7 +352,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 
 ### #110 · Handbook bundle
 
-**Goal:** thirteen handbooks that explain Tern to the people who use, examine and build it, shipped in the repository under `docs/handbooks/`, as a PDF set and as one ZIP. Each handbook stands alone and links to the others, and all are written from the real code, ADRs and pull request history.
+**Goal:** fourteen handbooks that explain Tern to the people who use, examine and build it, shipped in the repository under `docs/handbooks/`, as a PDF set and as one ZIP. Each handbook stands alone and links to the others, and all are written from the real code, ADRs and pull request history.
 
 | Handbook | For | Contents |
 | --- | --- | --- |
@@ -369,6 +369,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | 11. Security and privacy | Everyone | Local-first data, key storage, sandbox and permissions, the taint gate, prompt-injection defences, what leaves the machine |
 | 12. Prompts | Contributors | Versioned prompts, model-family deltas, lints, how to change a prompt safely |
 | 13. Raw (decision log) | Future maintainers | Every ADR, a research digest with sources, the pull request history, what failed and why |
+| 14. Research and sources | Thesis readers, examiners and contributors | Everything researched for Tern, topic by topic (context, memory, evidence, deep research, generative UI, study, adaptation, sandbox) with its findings, and every source: papers (with arXiv ids), repositories (with their licence, and whether ideas or code were used), posts and the people behind them, documentation and benchmarks; where each finding landed (the PR number), and which claims were verified against the source and which rest on an excerpt only |
 
 **Built PR by PR, starting with #84:** every pull request adds or updates its section under `docs/handbooks/` (a checklist item in the PR template), so #110 edits and assembles rather than writing from scratch. #110 adds screenshots from the UI tours, diagrams, a shared glossary, a PDF build and a ZIP in the release.
 
@@ -636,6 +637,6 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 | Computer use, scoped to research chores | After v1.0 (#111), off by default |
 | Shared study and research rooms | After v1.0 (#114) |
 | Skill discovery and repository reading without cloning | Later |
-| Handbooks (user, research reading and writing, study, features, architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log) | Planned (#110), drafted from #84 on |
+| Handbooks (user, research reading and writing, study, features, architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources) | Planned (#110), drafted from #84 on |
 | Interactive explainer export | Later |
 | Hardware research pack | Parked |
