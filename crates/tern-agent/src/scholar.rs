@@ -761,13 +761,26 @@ pub fn read_output(mut paper: Paper, joined: &str, url: &str, question: &str) ->
         ),
     }
     let mut used = 0;
+    // Each passage carries the id Tern minted for it, so the answer can
+    // cite the passage itself as [[q:id]] (the evidence chain).
+    let mut quotes = Vec::new();
     for ps in &chosen {
-        let line = format!("\n[{}] {}\n", ps.locator.label(), ps.text);
+        let id = tern_research::evidence::quote_id(url, &ps.text);
+        let label = ps.locator.label();
+        let line = if label.is_empty() {
+            format!("\n[q:{}] {}\n", id.as_str(), ps.text)
+        } else {
+            format!("\n[q:{} · {label}] {}\n", id.as_str(), ps.text)
+        };
         if used + line.len() > READ_CHARS {
             break;
         }
         used += line.len();
         out.push_str(&line);
+        quotes.push(json!({"id": id, "text": ps.text, "page": ps.locator.page, "section": ps.locator.section}));
+    }
+    if !quotes.is_empty() {
+        out.push_str("\nCite a passage as [n] for this paper, or by its id, e.g. [[q:ab12cd]].\n");
     }
     let pref = page_ref(&paper, url);
     ToolOutput {
@@ -779,6 +792,7 @@ pub fn read_output(mut paper: Paper, joined: &str, url: &str, question: &str) ->
             "pages": pages.len(),
             "sufficiency": sufficiency,
             "passages": chosen.iter().take(8).map(|p| json!({"text": clip(&p.text, 300), "locator": p.locator})).collect::<Vec<_>>(),
+            "quotes": quotes,
         }),
     }
 }
@@ -1246,7 +1260,7 @@ mod tests {
             "",
         );
         assert!(
-            read.content.contains("[p. 1 · Abstract]"),
+            read.content.contains(" · p. 1 · Abstract]"),
             "{}",
             read.content
         );
