@@ -9,7 +9,11 @@
 //! its budget divided among workers) and [`deep`] the workers' notes,
 //! their merge into one numbering, and the synthesis's final citations. Nothing here
 //! touches the network, the store, or a provider: the engine in
-//! `tern-agent` feeds it text and runs the model calls.
+//! `tern-agent` feeds it text and runs the model calls. [`scholar`] reads the
+//! scholarly services' answers into papers, ranks them through the rerank
+//! funnel (with "not enough evidence" when nothing supports the question),
+//! cuts PDFs into passages with page and section locators, and decides
+//! when citation snowballing stops.
 
 #![forbid(unsafe_code)]
 
@@ -18,6 +22,7 @@ pub mod deep;
 pub mod ledger;
 pub mod plan;
 pub mod report;
+pub mod scholar;
 pub mod steer;
 pub mod verdict;
 pub mod watch;

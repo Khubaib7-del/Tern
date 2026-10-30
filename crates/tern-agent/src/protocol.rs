@@ -168,6 +168,10 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
         s.push_str(&tools.describe());
         s.push_str("\n\n");
         s.push_str(TOOL_PROTOCOL);
+        if tools.get("scholar_search").is_some() {
+            s.push_str("\n\n");
+            s.push_str(SCHOLARLY);
+        }
         if tools.get("run_python").is_some() {
             let stubs = crate::python::stubs(tools);
             if !stubs.is_empty() {
@@ -189,6 +193,10 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
 /// What Tern draws from an answer's Markdown (#80: asked for a
 /// flowchart, a model said it had no tools to draw one).
 pub const RENDERING: &str = "Tern renders Markdown: tables, math ($...$, $$...$$) and ```mermaid fenced blocks, drawn as diagrams. To draw a diagram, flowchart, sequence, mind map or chart, answer with a ```mermaid block; never say you cannot draw.";
+
+/// Scholarly search (#82), after the tool protocol when `scholar_search`
+/// is offered.
+pub const SCHOLARLY: &str = "For academic, scientific or medical questions call `scholar_search` first (web search second), read a paper's text with `paper_read`, and widen a reading list with `paper_snowball`. Cite papers by their link and quote passages with their locator, for example (p. 4, §3 Method). When the papers found do not support a claim, say \"not enough evidence\" for it; never present an answer from memory as sourced.";
 
 /// Code mode (#77), after the tool protocol when `run_python` is offered;
 /// the stubs follow it.

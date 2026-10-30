@@ -107,6 +107,9 @@ pub(super) struct SettingsInputs {
     /// Each section page's scroll, by its place in `Section::ALL`, so a
     /// page keeps its place when you come back to it.
     pub page_scroll: Vec<gpui_kit::ScrollHandle>,
+    /// Search & Crawlers' Scholarly sources card, so the tour (and a
+    /// link to it) can scroll the page to it (#82).
+    pub scholar_anchor: gpui_kit::ScrollAnchor,
 }
 
 impl SettingsInputs {
@@ -179,6 +182,14 @@ impl SettingsInputs {
                 },
             ),
         ];
+        let page_scroll: Vec<gpui_kit::ScrollHandle> = Section::ALL
+            .iter()
+            .map(|_| gpui_kit::ScrollHandle::new())
+            .collect();
+        let search_at = Section::ALL
+            .iter()
+            .position(|x| *x == Section::Search)
+            .unwrap_or(0);
         (
             Self {
                 search,
@@ -190,10 +201,8 @@ impl SettingsInputs {
                 role_scroll: UniformListScrollHandle::new(),
                 provider_models_scroll: UniformListScrollHandle::new(),
                 onboarding_models_scroll: UniformListScrollHandle::new(),
-                page_scroll: Section::ALL
-                    .iter()
-                    .map(|_| gpui_kit::ScrollHandle::new())
-                    .collect(),
+                scholar_anchor: gpui_kit::ScrollAnchor::for_handle(page_scroll[search_at].clone()),
+                page_scroll,
             },
             subs,
         )
@@ -242,6 +251,7 @@ impl Workspace {
                     self.bridge.load_providers();
                 }
                 self.bridge.crawlers_load();
+                self.bridge.scholar_load();
                 self.measure_cache();
                 let typed = self.searx_input.read(cx).value().to_string();
                 if typed.is_empty()
@@ -1820,6 +1830,16 @@ impl Workspace {
             );
         }
         body.push(self.crawlers_card(p, cx));
+        body.push(
+            div()
+                .id("settings-scholar-card")
+                .w_full()
+                .flex()
+                .flex_col()
+                .anchor_scroll(Some(self.settings_inputs.scholar_anchor.clone()))
+                .child(self.scholar_card(p, cx))
+                .into_any_element(),
+        );
         let cache = tern_agent::platform::AppPaths::discover()
             .ok()
             .map(|a| a.crawl_cache());
@@ -2105,15 +2125,15 @@ impl Workspace {
             ),
             Self::row(
                 "Welcome tour",
-                "Provider, key, model, search, and theme, one step each.",
+                // #82: the intro first (a temporary dev hook, see
+                // `replay_intro`).
+                "The intro animation, then provider, key, model, search, and theme, one step each.",
                 Some(
                     Button::new("about-onboarding")
                         .capsule()
                         .label("Run it again")
                         .small()
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.start_onboarding(window, cx)),
-                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.replay_intro(cx)))
                         .into_any_element(),
                 ),
                 p,

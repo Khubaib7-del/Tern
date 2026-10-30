@@ -17,6 +17,7 @@ use tern_agent::crawlers::Crawler;
 use tern_agent::mcp::presets;
 use tern_agent::prompts::{self, Scope};
 use tern_agent::providers::{CustomProvider, CustomWire, custom};
+use tern_agent::scholar::Service as ScholarService;
 use tern_agent::skill_author;
 use tern_core::SecretString;
 
@@ -31,6 +32,8 @@ use crate::theme::Palette;
 /// The text fields of the review's Settings pieces.
 pub(super) struct SetupInputs {
     pub crawler_key: Entity<InputState>,
+    /// A scholarly service's key or email (#82).
+    pub scholar_key: Entity<InputState>,
     pub custom_name: Entity<InputState>,
     pub custom_url: Entity<InputState>,
     pub custom_key: Entity<InputState>,
@@ -69,6 +72,11 @@ impl SetupInputs {
                 InputState::new(window, cx)
                     .masked(true)
                     .placeholder("Paste the API key")
+            }),
+            scholar_key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Paste the key, or type your email")
             }),
             custom_name: input("Name, e.g. Office vLLM", window, cx),
             custom_url: input("Base URL, e.g. http://localhost:8000/v1", window, cx),
@@ -241,6 +249,23 @@ impl Workspace {
     pub(super) fn on_setup(&mut self, m: SetupMsg, window: &mut Window, cx: &mut Context<Self>) {
         let st = &mut self.model.settings;
         match m {
+            SetupMsg::Scholar(keys) => st.scholar_keys = keys,
+            SetupMsg::ScholarChecked(sv, r) => {
+                let ok = r.is_ok();
+                st.set_scholar_note(
+                    sv,
+                    match r {
+                        Ok(t) => Line::Ok(t),
+                        Err(e) => Line::Failed(e),
+                    },
+                );
+                if ok && st.scholar_editing == Some(sv) {
+                    st.scholar_editing = None;
+                    self.setup_inputs
+                        .scholar_key
+                        .update(cx, |i, cx| i.set_value("", window, cx));
+                }
+            }
             SetupMsg::Crawlers(keys) => st.crawler_keys = keys,
             SetupMsg::CrawlerChecked(c, r) => {
                 let ok = r.is_ok();
@@ -809,6 +834,205 @@ impl Workspace {
             })
             .collect();
         Self::settings_card("Crawlers", p, rows)
+    }
+
+    // ----- Scholarly sources (#82) -----
+
+    fn save_scholar_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sv) = self.model.settings.scholar_editing else {
+            return;
+        };
+        let key = value_of(&self.setup_inputs.scholar_key, cx);
+        if key.is_empty() {
+            return;
+        }
+        let working = if sv.takes_email() {
+            "Saving the email…"
+        } else {
+            "Searching with the key…"
+        };
+        self.model
+            .settings
+            .set_scholar_note(sv, Line::Working(working.into()));
+        self.bridge.scholar_add_key(sv, SecretString::new(key));
+        self.setup_inputs
+            .scholar_key
+            .update(cx, |i, cx| i.set_value("", window, cx));
+        cx.notify();
+    }
+
+    /// The Scholarly sources group: each service with its logo, what it
+    /// gives, whether it needs a key or an email, Add / Remove and Test.
+    /// Keys and emails go to the keychain as `scholar.<id>`.
+    pub(super) fn scholar_card(&self, p: Palette, cx: &mut Context<Self>) -> AnyElement {
+        let st = &self.model.settings;
+        let mut rows: Vec<AnyElement> = vec![
+            div()
+                .px_3()
+                .py_2()
+                .text_xs()
+                .text_color(p.faint)
+                .child(
+                    "scholar_search asks these at once for academic questions (with web search on). All work without a key except CORE; Unpaywall needs your email.",
+                )
+                .into_any_element(),
+        ];
+        for sv in ScholarService::ALL {
+            let id = sv.id();
+            let has = st.scholar_has_key(sv);
+            let editing = st.scholar_editing == Some(sv);
+            let working = matches!(st.scholar_note(sv), Some(Line::Working(_)));
+            let status = tern_agent::scholar::status(sv, has);
+            let what = if sv.takes_email() { "email" } else { "key" };
+            let bid = |w: &str| SharedString::from(format!("scholar-{w}-{id}"));
+            let mut actions = div().flex().items_center().gap_1().flex_none();
+            if working {
+                actions = actions.child(Spinner::new().small().color(p.muted));
+            }
+            if sv.takes_secret() && !editing {
+                actions = actions.child(
+                    Button::new(bid("key"))
+                        .capsule()
+                        .label(match (has, sv.takes_email()) {
+                            (true, true) => "Change email".to_owned(),
+                            (true, false) => "Replace key".to_owned(),
+                            (false, true) => "Add email".to_owned(),
+                            (false, false) => "Add key".to_owned(),
+                        })
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.model.settings.scholar_editing = Some(sv);
+                            this.setup_inputs.scholar_key.update(cx, |i, cx| {
+                                i.set_value("", window, cx);
+                                i.focus(window, cx);
+                            });
+                            cx.notify();
+                        })),
+                );
+            }
+            if has {
+                actions = actions.child(
+                    Button::new(bid("rm"))
+                        .capsule()
+                        .label(format!("Remove {what}"))
+                        .ghost()
+                        .small()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model
+                                .settings
+                                .set_scholar_note(sv, Line::Working("Removing…".into()));
+                            this.bridge.scholar_remove_key(sv);
+                            cx.notify();
+                        })),
+                );
+            }
+            actions = actions.child(
+                Button::new(bid("test"))
+                    .capsule()
+                    .label("Test")
+                    .ghost()
+                    .small()
+                    .disabled(working)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.model
+                            .settings
+                            .set_scholar_note(sv, Line::Working("Searching one paper…".into()));
+                        this.bridge.scholar_test(sv);
+                        cx.notify();
+                    })),
+            );
+            let mut info = div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(sv.name()),
+                        )
+                        .child(div().text_xs().text_color(p.faint).child(status)),
+                )
+                .child(div().text_xs().text_color(p.faint).child(sv.blurb()));
+            if let Some(l) = st.scholar_note(sv) {
+                info = info.child(line_view(l, p));
+            }
+            let key_url = sv.key_url();
+            rows.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .px_3()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(p.border)
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap_3()
+                            .child(tile(super::service_logo(id, 16., p, super::mono_ink(p)), p))
+                            .child(info),
+                    )
+                    .child(div().pl(px(40.)).flex().flex_wrap().child(actions))
+                    .when(editing, |d| {
+                        d.child(
+                            div()
+                                .pl(px(40.))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().flex_1().child(
+                                    Input::new(&self.setup_inputs.scholar_key).mask_toggle(),
+                                ))
+                                .child(
+                                    Button::new(bid("save"))
+                                        .capsule()
+                                        .label(if sv.takes_email() {
+                                            "Save"
+                                        } else {
+                                            "Test and save"
+                                        })
+                                        .small()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.save_scholar_key(window, cx)
+                                        })),
+                                )
+                                .when(!key_url.is_empty(), |d| {
+                                    d.child(
+                                        Button::new(bid("get"))
+                                            .capsule()
+                                            .label("Get a key")
+                                            .ghost()
+                                            .small()
+                                            .on_click(move |_, _, cx| cx.open_url(key_url)),
+                                    )
+                                })
+                                .child(
+                                    Button::new(bid("cancel"))
+                                        .capsule()
+                                        .label("Cancel")
+                                        .ghost()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.model.settings.scholar_editing = None;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                    })
+                    .into_any_element(),
+            );
+        }
+        Self::settings_card("Scholarly sources", p, rows)
     }
 
     // ----- Instructions -----

@@ -28,7 +28,7 @@ pub fn ttl(tool: &str) -> Option<Duration> {
     let mins = |m: u64| Some(Duration::from_secs(m * 60));
     match tool {
         "web_search" => mins(60),
-        "scholar_search" => mins(24 * 60),
+        "scholar_search" | "paper_read" | "paper_snowball" => mins(24 * 60),
         "read_url" => mins(6 * 60),
         // Local reads: short, and emptied by any change.
         "file_read" | "files_list" | "file_search" | "vault_read" | "vault_search" => mins(10),
@@ -39,7 +39,10 @@ pub fn ttl(tool: &str) -> Option<Duration> {
 /// Whether a tool's cached results may go to disk (web results; local
 /// files stay in memory).
 fn on_disk(tool: &str) -> bool {
-    matches!(tool, "web_search" | "scholar_search" | "read_url")
+    matches!(
+        tool,
+        "web_search" | "scholar_search" | "paper_read" | "paper_snowball" | "read_url"
+    )
 }
 
 /// Tools whose success empties the cached local reads.

@@ -37,6 +37,33 @@ The `web_search` tool asks the model for a short keyword query of 2–6 words (n
 
 A name made of several words, or one with a version (`SubQ Snap 1.1`), is matched as a whole. A result must contain the name (`SubQ Snap`), or every one of its distinctive words (`SubQ` and `Snap`). One of them alone is not enough: on the Windows test, Wikipedia's medical pages matched `Snap` and got through. When the question has two or more strong words, the keyword fallback never searches just one of them. The fixture `crates/tern-agent/tests/fixtures/wiki-subq-medical.json` holds the pages from that log, and its test checks that none of them is kept.
 
+## Scholarly search (#82)
+
+With web search on, the model also gets three scholarly tools for academic questions. They talk to the services' own public APIs, not to a search engine.
+
+| Tool | What it does |
+| --- | --- |
+| `scholar_search` | Asks Semantic Scholar, OpenAlex, arXiv and Crossref at once (and CORE when it has a key), reads each answer into one paper shape (title, authors, year, venue, DOI, arXiv id, citations, abstract, a legal open-access PDF), merges the same paper found by several services into one row, and ranks the rest through the rerank funnel. Optional filters: years and open access only |
+| `paper_read` | Finds a paper's open-access PDF (arXiv, the services' open-access links, or Unpaywall for a DOI once your email is saved), reads it through Tern Crawl page by page, and hands the model the passages that bear on the question, each with a locator such as `p. 4 · 3 Method`, so the answer can quote "(p. 4, §3 Method)" |
+| `paper_snowball` | Follows a paper's references (backward) and the papers citing it (forward), round by round, and stops when new relevant papers level off, a round's yield falls too low, or a round or paper cap is reached |
+
+**Ranking and "not enough evidence".** The funnel scores relevance (BM25 over the title and the abstract or passage text, plus how many of the question's key terms a paper holds) and blends it 80/20 with quality (citations, recency, an open-access copy). Retracted papers (Crossref's notices, OpenAlex's flag) are kept out. A gate follows: when nothing passes it, the tool says there is **not enough evidence** in the literature Tern searched and tells the model to say so plainly instead of answering from memory. `paper_read` does the same when no passage of the paper supports the question. The numbers are starting points taken from published scholarly pipelines, not tuned for Tern.
+
+**Where papers show.** Every paper a search kept, and every paper read, appears in the run panel's **Ledger** with its title, authors, year, venue, citation count and open-access PDF link; papers read are also the answer's inline sources, each with its service's logo (Semantic Scholar, OpenAlex, arXiv, Crossref, Unpaywall, CORE).
+
+**Keys and emails: Settings › Search & Crawlers › Scholarly sources.** Every service works without setup except CORE:
+
+| Service | Needs | Limits Tern keeps |
+| --- | --- | --- |
+| Semantic Scholar | Nothing; a free key lifts the shared rate limit | One request a second |
+| OpenAlex | Nothing; a free key raises the daily allowance | Ten a second |
+| arXiv | Nothing | One request every 3 s, as arXiv asks |
+| Crossref | Nothing; your email joins the polite pool | Ten a second |
+| Unpaywall | Your email, which it asks for with each request; until you add one, `paper_read` skips Unpaywall | Ten a second |
+| CORE | A free key | One request every 6 s |
+
+Each row has **Add key** or **Add email** (with **Get a key** where one is offered), **Test**, which searches one paper with what is saved, and **Remove**. Keys and emails are kept in the OS keychain as `scholar.<id>`, like every other key. A rate limit or a server error is retried with backoff (a `Retry-After` is honoured, up to 30 s), and answers are cached for a day under `<data>/cache/scholar`, so asking again is free. One service failing never fails the search: the tool names it ("CORE (failed: …)") and ranks what the others found.
+
 ## Tavily or Brave
 
 Desktop: **Providers › Search**, paste the key on the service's row. Terminal:

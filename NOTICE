@@ -86,6 +86,20 @@ File-type logos (attachment cards, sent messages and the @ menu, #72)
   owners. Tern uses them only to show what kind a file is; this implies
   no endorsement by, or affiliation with, those owners.
 
+Scholarly source logos (Settings › Search & Crawlers and the Sources
+panel, #81)
+  crates/tern-desktop/assets/services/openalex.svg: the OpenAlex mark from
+  https://github.com/ourresearch/openalex-gui (public/favicon.svg),
+  MIT License, Copyright (c) OurResearch.
+  crates/tern-desktop/assets/services/core.svg: the CORE mark from
+  https://github.com/oacore/design (assets/coreLogo.svg, the mark only),
+  MIT License, Copyright (c) 2015 The Open University.
+  crossref.svg and unpaywall.svg are simple marks drawn for Tern (a link,
+  an open padlock), not those services' logos, which have no open
+  licence. The marks are trademarks of their owners; Tern uses them only
+  to show which service a result came from, which implies no endorsement
+  by, or affiliation with, those owners.
+
 -------------------------------------------------------------------------
 Models Tern downloads on request (never bundled)
 -------------------------------------------------------------------------

@@ -92,6 +92,23 @@ const SERVICES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/services/wikipedia.svg"),
     ),
     ("zotero", include_bytes!("../assets/services/zotero.svg")),
+    // Scholarly sources (#82). OpenAlex's mark is from OurResearch's
+    // openalex-gui and CORE's from the Open University's oacore/design
+    // (both MIT); Crossref and Unpaywall publish no openly licensed mark,
+    // so theirs are Tern-drawn (a link, an open padlock). See NOTICE.
+    (
+        "openalex",
+        include_bytes!("../assets/services/openalex.svg"),
+    ),
+    ("core", include_bytes!("../assets/services/core.svg")),
+    (
+        "crossref",
+        include_bytes!("../assets/services/crossref.svg"),
+    ),
+    (
+        "unpaywall",
+        include_bytes!("../assets/services/unpaywall.svg"),
+    ),
 ];
 
 /// The UI, mono, and serif faces (SIL Open Font License 1.1).
@@ -162,6 +179,14 @@ pub fn service_for(site: &str) -> Option<&'static str> {
         "zotero"
     } else if is("researchgate.net") {
         "researchgate"
+    } else if is("openalex.org") {
+        "openalex"
+    } else if is("crossref.org") {
+        "crossref"
+    } else if is("unpaywall.org") {
+        "unpaywall"
+    } else if is("core.ac.uk") {
+        "core"
     } else {
         return None;
     };
@@ -269,6 +294,8 @@ mod tests {
         assert_eq!(service_for("pubmed.ncbi.nlm.nih.gov"), Some("pubmed"));
         assert_eq!(service_for("notgithub.com"), None);
         assert_eq!(service_for("example.org"), None);
+        assert_eq!(service_for("api.openalex.org"), Some("openalex"));
+        assert_eq!(service_for("core.ac.uk"), Some("core"));
         for n in [
             "github",
             "arxiv",
@@ -277,6 +304,11 @@ mod tests {
             "pubmed",
             "brave",
             "duckduckgo",
+            "semanticscholar",
+            "openalex",
+            "crossref",
+            "unpaywall",
+            "core",
         ] {
             assert!(service_names().any(|s| s == n), "{n}");
         }

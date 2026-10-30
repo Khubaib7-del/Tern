@@ -40,5 +40,14 @@
     "safety_pass": 0.947,
     "scan_false_alarms": 0.167,
     "scan_recall": 0.875
+  },
+  "scholarly": {
+    "claim_support_accuracy": 1.0,
+    "dedupe_accuracy": 1.0,
+    "evidence_accuracy": 1.0,
+    "locator_accuracy": 1.0,
+    "recall_at_k": 1.0,
+    "retracted_excluded": 1.0,
+    "snowball_stop_accuracy": 1.0
   }
 }

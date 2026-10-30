@@ -6,6 +6,7 @@
 use tern_agent::Preferences;
 use tern_agent::crawlers::{self, Crawler};
 use tern_agent::providers::{self as setup, CustomProvider, SecretStore};
+use tern_agent::scholar::{self, Service};
 use tern_core::SecretString;
 
 use tern_agent::local_models::{
@@ -23,6 +24,11 @@ pub enum SetupMsg {
     /// A reader was tested (and its key saved, when one was given and it
     /// worked).
     CrawlerChecked(Crawler, Result<String, String>),
+    /// Each scholarly service and whether a key or email is saved (#82).
+    Scholar(Vec<(Service, bool)>),
+    /// A scholarly service was tested, or its key or email saved or
+    /// removed.
+    ScholarChecked(Service, Result<String, String>),
     /// A custom provider was saved under this id, or why not.
     CustomSaved(Result<&'static str, String>),
     /// A custom provider was deleted, or why not.
@@ -56,7 +62,65 @@ fn crawler_keys() -> Vec<(Crawler, bool)> {
         .collect()
 }
 
+fn scholar_keys() -> Vec<(Service, bool)> {
+    let keychain = setup::keychain();
+    let secrets: Option<&dyn SecretStore> = keychain.as_ref().ok().map(|b| b.as_ref());
+    scholar::rows(secrets)
+        .into_iter()
+        .map(|r| (r.service, r.saved))
+        .collect()
+}
+
 impl Bridge {
+    /// Which scholarly services have a key or email saved.
+    pub fn scholar_load(&self) {
+        let tx = self.tx.clone();
+        self.rt
+            .spawn_blocking(move || send(&tx, SetupMsg::Scholar(scholar_keys())));
+    }
+
+    /// Checks a key (with a one-paper search) or an email and saves it
+    /// only if it passes.
+    pub fn scholar_add_key(&self, s: Service, key: SecretString) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = match setup::keychain() {
+                Err(e) => Err(format!("The keychain is not available: {e}")),
+                Ok(store) => scholar::add_key(s, key, store.as_ref()).await,
+            };
+            send(&tx, SetupMsg::ScholarChecked(s, r));
+            let keys = tokio::task::spawn_blocking(scholar_keys)
+                .await
+                .unwrap_or_default();
+            send(&tx, SetupMsg::Scholar(keys));
+        });
+    }
+
+    /// Runs a one-paper search on `s` with what is saved for it.
+    pub fn scholar_test(&self, s: Service) {
+        let tx = self.tx.clone();
+        self.rt.spawn(async move {
+            let r = match setup::keychain() {
+                Ok(store) => scholar::test(s, Some(store.as_ref())).await,
+                Err(_) => scholar::test(s, None).await,
+            };
+            send(&tx, SetupMsg::ScholarChecked(s, r));
+        });
+    }
+
+    /// Deletes a scholarly service's key or email.
+    pub fn scholar_remove_key(&self, s: Service) {
+        let tx = self.tx.clone();
+        self.rt.spawn_blocking(move || {
+            let r = setup::keychain()
+                .map_err(|e| format!("The keychain is not available: {e}"))
+                .and_then(|st| scholar::remove_key(s, st.as_ref()))
+                .map(|_| "Removed".to_owned());
+            send(&tx, SetupMsg::ScholarChecked(s, r));
+            send(&tx, SetupMsg::Scholar(scholar_keys()));
+        });
+    }
+
     /// Reads every local model's state for Settings › Local models.
     pub fn local_models_load(&self, prefs: LocalModelPrefs) {
         let tx = self.tx.clone();

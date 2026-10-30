@@ -98,6 +98,9 @@ pub enum SuiteKind {
     Decision,
     /// Prompt injection and tool safety.
     Safety,
+    /// Scholarly search: ranking, "not enough evidence", locators,
+    /// snowballing, over recorded service answers.
+    Scholarly,
     /// The workspace's tests, read from `cargo test` (the unit rung).
     Tests,
     /// A usability session (the human rung).
@@ -112,6 +115,7 @@ impl SuiteKind {
             Self::Quiz => "Quiz grading",
             Self::Decision => "Decision routing",
             Self::Safety => "Injection and tool safety",
+            Self::Scholarly => "Scholarly search",
             Self::Tests => "Unit and integration tests",
             Self::Usability => "Usability",
         }
@@ -124,6 +128,7 @@ impl SuiteKind {
             Self::Quiz => "quiz",
             Self::Decision => "decision",
             Self::Safety => "safety",
+            Self::Scholarly => "scholarly",
             Self::Tests => "tests",
             Self::Usability => "usability",
         }
@@ -311,6 +316,99 @@ pub struct SafetyCase {
     pub expect: SafetyExpect,
 }
 
+/// Whether a scholarly case's evidence should be enough to answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceExpect {
+    Enough,
+    NotEnough,
+}
+
+impl EvidenceExpect {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Enough => "enough evidence",
+            Self::NotEnough => "not enough evidence",
+        }
+    }
+}
+
+/// A quote and where it should be found in a case's PDF pages; no page
+/// means it must not be found (it is not in the paper's body).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteCase {
+    pub text: String,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+/// A claim checked against a case's PDF passages.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaimSupportCase {
+    pub text: String,
+    pub expect: EvidenceExpect,
+}
+
+/// Citation snowballing replayed from recorded Semantic Scholar answers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnowballCase {
+    /// A paper search answer whose papers are the seeds.
+    pub seed: Value,
+    /// Each round's references and citations answer, in order.
+    pub rounds: Vec<Value>,
+    /// The round the stop rule should end on.
+    pub stop_round: usize,
+    /// Why: rounds, papers, saturated, low_yield, no_seeds.
+    pub stop: String,
+    /// Relevant papers found by then.
+    #[serde(default)]
+    pub found: Option<usize>,
+}
+
+fn five() -> usize {
+    5
+}
+
+/// A scholarly search case: recorded service answers for a question,
+/// and what Tern should make of them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ScholarlyCase {
+    pub id: String,
+    #[serde(default)]
+    pub question: String,
+    /// Service id (semanticscholar, openalex, arxiv, crossref, unpaywall,
+    /// core) → its answer: JSON, or the Atom XML text for arXiv.
+    #[serde(default)]
+    pub recorded: std::collections::BTreeMap<String, Value>,
+    /// Papers that must be in the top `k` kept: a DOI, `arxiv:<id>`, or a
+    /// title.
+    #[serde(default)]
+    pub gold: Vec<String>,
+    #[serde(default = "five")]
+    pub k: usize,
+    #[serde(default)]
+    pub expect: Option<EvidenceExpect>,
+    /// Distinct papers after merging the services' answers.
+    #[serde(default)]
+    pub unique: Option<usize>,
+    /// Papers that must not be kept (a retracted paper).
+    #[serde(default)]
+    pub not_kept: Vec<String>,
+    /// PDF text, one string per page.
+    #[serde(default)]
+    pub pages: Vec<String>,
+    #[serde(default)]
+    pub quotes: Vec<QuoteCase>,
+    #[serde(default)]
+    pub claims: Vec<ClaimSupportCase>,
+    #[serde(default)]
+    pub snowball: Option<SnowballCase>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
 /// A suite's cases, by kind.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cases {
@@ -319,6 +417,7 @@ pub enum Cases {
     Quiz(Vec<QuizCase>),
     Decision(Vec<Fixture>),
     Safety(Vec<SafetyCase>),
+    Scholarly(Vec<ScholarlyCase>),
 }
 
 impl Cases {
@@ -329,6 +428,7 @@ impl Cases {
             Self::Quiz(c) => c.len(),
             Self::Decision(c) => c.len(),
             Self::Safety(c) => c.len(),
+            Self::Scholarly(c) => c.len(),
         }
     }
 
@@ -343,6 +443,7 @@ impl Cases {
             Self::Quiz(c) => c.iter().map(|x| x.id.clone()).collect(),
             Self::Decision(c) => c.iter().map(|x| x.id.clone()).collect(),
             Self::Safety(c) => c.iter().map(|x| x.id.clone()).collect(),
+            Self::Scholarly(c) => c.iter().map(|x| x.id.clone()).collect(),
         }
     }
 }
@@ -417,6 +518,7 @@ impl Suite {
             SuiteKind::Quiz => Cases::Quiz(each(&f.cases, from)?),
             SuiteKind::Decision => Cases::Decision(each(&f.cases, from)?),
             SuiteKind::Safety => Cases::Safety(each(&f.cases, from)?),
+            SuiteKind::Scholarly => Cases::Scholarly(each(&f.cases, from)?),
             SuiteKind::Tests | SuiteKind::Usability => {
                 return Err(format!(
                     "{from}: {} runs are made by Tern, not read from a suite file",
@@ -519,6 +621,34 @@ impl Suite {
                     }
                 }
             }
+            Cases::Scholarly(cs) => {
+                for c in cs {
+                    for k in c.recorded.keys() {
+                        if tern_research::scholar::Service::parse(k).is_none() {
+                            return bad(&c.id, format!("unknown service `{k}`"));
+                        }
+                    }
+                    let searches = !c.recorded.is_empty();
+                    if !searches && (!c.gold.is_empty() || c.expect.is_some() || c.unique.is_some())
+                    {
+                        return bad(&c.id, "search checks need recorded answers".into());
+                    }
+                    if searches && c.question.trim().is_empty() {
+                        return bad(&c.id, "a search case needs its question".into());
+                    }
+                    if c.pages.is_empty() && (!c.quotes.is_empty() || !c.claims.is_empty()) {
+                        return bad(&c.id, "quote and claim checks need PDF pages".into());
+                    }
+                    if !searches && c.pages.is_empty() && c.snowball.is_none() {
+                        return bad(&c.id, "the case checks nothing".into());
+                    }
+                    if let Some(sb) = &c.snowball
+                        && (sb.stop_round == 0 || sb.stop_round > sb.rounds.len())
+                    {
+                        return bad(&c.id, "stop_round is out of range".into());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -537,6 +667,7 @@ const BUNDLED: &[(&str, &str)] = &[
         include_str!("../suites/decision-heldout.v1.json"),
     ),
     ("safety", include_str!("../suites/safety.v2.json")),
+    ("scholarly", include_str!("../suites/scholarly.v1.json")),
     ("pinned", include_str!("../suites/pinned.v1.json")),
 ];
 

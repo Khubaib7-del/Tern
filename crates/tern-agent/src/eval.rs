@@ -538,7 +538,7 @@ mod tests {
         let (a, path) = run(&store, &req, &TernSubject::offline()).await.unwrap();
         assert!(path.exists() && path.with_extension("md").exists());
         assert_eq!(a.trials, 3);
-        assert_eq!(a.suites.len(), 6);
+        assert_eq!(a.suites.len(), 7);
         // The bundled baseline holds for an offline run of this build.
         let broken = check_baseline(&a, &baseline());
         assert!(broken.is_empty(), "{broken:#?}");

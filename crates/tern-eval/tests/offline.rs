@@ -57,7 +57,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
     let suites = for_level(Level::Synthetic, &[]);
     assert_eq!(
         suites.len(),
-        6,
+        7,
         "{:?}",
         suites.iter().map(|s| &s.id).collect::<Vec<_>>()
     );
@@ -108,6 +108,19 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
         research.metric("forecast_error").is_none(),
         "forecasts need measured tokens"
     );
+    // Scholarly search: recorded answers through Tern's own parsers.
+    let scholarly = run.suite("scholarly").unwrap();
+    for key in [
+        "evidence_accuracy",
+        "recall_at_k",
+        "dedupe_accuracy",
+        "retracted_excluded",
+        "locator_accuracy",
+        "claim_support_accuracy",
+        "snowball_stop_accuracy",
+    ] {
+        assert!(scholarly.metric(key).is_some(), "scholarly lacks {key}");
+    }
     // Canary cases need a live model.
     let safety = run.suite("safety").unwrap();
     assert_eq!(safety.skipped, 4 * 3);
@@ -133,7 +146,7 @@ async fn synthetic_suites_run_offline_with_intervals_and_failures() {
 #[test]
 fn every_bundled_suite_parses_and_ladder_has_commands() {
     let all = bundled();
-    assert_eq!(all.len(), 7);
+    assert_eq!(all.len(), 8);
     assert!(all.iter().any(|s| s.level == Level::Pinned));
     for l in Level::ALL {
         assert!(!l.command().is_empty());

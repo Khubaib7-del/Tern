@@ -873,7 +873,22 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
                         step.note = with_worker(&step.note, w);
                     }
                 }
-                "read_url" => {
+                "scholar_search" | "paper_snowball" => {
+                    step.kind = StepKind::Search;
+                    step.verb = "Searched papers";
+                    step.target = args["query"]
+                        .as_str()
+                        .or_else(|| args["topic"].as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    if let Some(n) = p["meta"]["results"].as_u64() {
+                        step.note = plural(n as usize, "paper");
+                    }
+                    if let Some(w) = p["worker"].as_u64() {
+                        step.note = with_worker(&step.note, w);
+                    }
+                }
+                "read_url" | "paper_read" => {
                     step.kind = StepKind::Read;
                     step.verb = "Read";
                     step.target = page
@@ -944,6 +959,12 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
             };
             step.target = tool;
             step.detailed = false;
+        }
+        // #82: the same write or rename again, already done this turn.
+        "tool.skipped" => {
+            step.verb = "Skipped";
+            step.target = tool;
+            step.note = e.user_summary.clone();
         }
         "tool.rejected" | "loop.suspected" => {
             step.kind = StepKind::Problem;

@@ -45,6 +45,24 @@ impl Workspace {
         true
     }
 
+    /// Settings › About › Welcome tour (#82): plays the whole first-run
+    /// intro again (reveal, fly-in, settle, metal to white, lockup) and
+    /// then the welcome tour, so the intro can be iterated on. It plays
+    /// even with reduced motion, since it was asked for, and leaves
+    /// `intro_seen` alone. From a click it only sets state and asks for a
+    /// render: [`Workspace::tick_intro`], in render, draws the frames.
+    // TODO(#82): temporary dev hook, remove before release. The product
+    // intro plays once, on the first launch, with no skip; the About row
+    // goes back to starting the welcome tour only.
+    pub(super) fn replay_intro(&mut self, cx: &mut Context<Self>) {
+        tern_agent::diag::note("intro: replayed from Settings › About (dev hook)");
+        self.onboarding = None;
+        self.intro_cursor = None;
+        self.intro = Some(Instant::now());
+        self.intro_replay = true;
+        cx.notify();
+    }
+
     /// Called at the top of every render: ends the intro when its time is
     /// up (marks it seen, then onboarding gets its turn) and otherwise
     /// asks for the next frame.
@@ -58,7 +76,11 @@ impl Workspace {
         }
         self.intro = None;
         self.intro_cursor = None;
-        if !super::tour::enabled() {
+        if std::mem::take(&mut self.intro_replay) {
+            // A replay from Settings (#82): the tour follows, whatever the
+            // tour was before.
+            self.start_onboarding(window, cx);
+        } else if !super::tour::enabled() {
             self.save_ui_prefs(|p| p.intro_seen = true);
             self.onboarding_checked = false;
             self.consider_onboarding(window, cx);

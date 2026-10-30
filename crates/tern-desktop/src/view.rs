@@ -424,6 +424,9 @@ pub struct Workspace {
     intro: Option<Instant>,
     /// Where the cursor is over the intro, as fractions of the window.
     intro_cursor: Option<(f32, f32)>,
+    /// The intro was replayed from Settings › About (#82, a temporary dev
+    /// hook): the welcome tour follows it.
+    intro_replay: bool,
     /// The block focus view (#76), while a block is open in it.
     focus: Option<Box<focus_view::FocusUi>>,
     /// The scripted UI tour, when `TERN_TOUR` is set (`view::tour`).
@@ -901,6 +904,7 @@ impl Workspace {
             onboarding_checked: false,
             intro: None,
             intro_cursor: None,
+            intro_replay: false,
             focus: None,
             tour: tour::enabled().then(tour::Tour::new),
             _subscriptions: {

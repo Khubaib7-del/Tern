@@ -1,0 +1,1085 @@
+{
+  "format": 1,
+  "id": "scholarly",
+  "version": 1,
+  "title": "Scholarly search: ranking, abstention, locators, snowballing",
+  "kind": "scholarly",
+  "level": "synthetic",
+  "origin": "synthetic: answers written for Tern's tests in each service's own answer format (Semantic Scholar, OpenAlex, Crossref JSON, arXiv Atom; one arXiv answer recorded from the live API on 2026-10-29); real papers keep their titles and identifiers, abstracts are shortened or paraphrased, the PDF pages are invented",
+  "description": "Each case replays recorded scholarly answers through Tern's parsers, merge and rerank funnel: are the right papers in the top k, are duplicates across services one paper, is a retracted paper kept out, and does a question nothing supports get \"not enough evidence\"? PDF cases check that quotes are found with their page and section (and that quotes not in the paper are not), and that claims get \"not enough evidence\" when no passage supports them. Snowball cases replay citation links and check where the stop rule ends.",
+  "cases": [
+    {
+      "id": "s-rag-merged",
+      "question": "retrieval augmented generation for knowledge-intensive NLP",
+      "tags": [
+        "merge",
+        "arxiv-recorded"
+      ],
+      "recorded": {
+        "semanticscholar": {
+          "total": 2,
+          "offset": 0,
+          "data": [
+            {
+              "paperId": "58ed1fbaabe027345f7bb3a6312d41c5aac63e22",
+              "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Patrick Lewis"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Ethan Perez"
+                },
+                {
+                  "authorId": "1002",
+                  "name": "Aleksandra Piktus"
+                },
+                {
+                  "authorId": "1003",
+                  "name": "Fabio Petroni"
+                }
+              ],
+              "year": 2020,
+              "venue": "Neural Information Processing Systems",
+              "externalIds": {
+                "ArXiv": "2005.11401",
+                "DBLP": "conf/nips/LewisPPPKGKLYR020",
+                "CorpusId": 218869575
+              },
+              "citationCount": 9000,
+              "openAccessPdf": {
+                "url": "https://arxiv.org/pdf/2005.11401",
+                "status": "GREEN"
+              },
+              "abstract": "Large pre-trained language models store factual knowledge in their parameters. We explore retrieval-augmented generation models, which combine pre-trained parametric and non-parametric memory for language generation, and set the state of the art on knowledge-intensive NLP tasks.",
+              "url": "https://www.semanticscholar.org/paper/58ed1fbaabe027345f7bb3a6312d41c5aac63e22"
+            },
+            {
+              "paperId": "b26f2037f769d5ffc5f7bdcec2de8da28ec14bee",
+              "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Vladimir Karpukhin"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Barlas Oguz"
+                },
+                {
+                  "authorId": "1002",
+                  "name": "Sewon Min"
+                }
+              ],
+              "year": 2020,
+              "venue": "Conference on Empirical Methods in Natural Language Processing",
+              "externalIds": {
+                "ArXiv": "2004.04906",
+                "DOI": "10.18653/v1/2020.emnlp-main.550",
+                "CorpusId": 215737187
+              },
+              "citationCount": 4000,
+              "openAccessPdf": null,
+              "abstract": "Open-domain question answering relies on efficient passage retrieval to select candidate contexts. We show that retrieval can be practically implemented using dense representations alone.",
+              "url": "https://www.semanticscholar.org/paper/b26f2037f769d5ffc5f7bdcec2de8da28ec14bee"
+            }
+          ]
+        },
+        "openalex": {
+          "meta": {
+            "count": 1
+          },
+          "results": [
+            {
+              "id": "https://openalex.org/W3027879771",
+              "doi": "https://doi.org/10.48550/arxiv.2005.11401",
+              "display_name": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+              "publication_year": 2020,
+              "authorships": [
+                {
+                  "author": {
+                    "display_name": "Patrick Lewis"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Ethan Perez"
+                  }
+                }
+              ],
+              "primary_location": {
+                "source": {
+                  "display_name": "arXiv (Cornell University)"
+                }
+              },
+              "cited_by_count": 4200,
+              "best_oa_location": {
+                "pdf_url": "https://arxiv.org/pdf/2005.11401"
+              },
+              "open_access": {
+                "oa_url": "https://arxiv.org/pdf/2005.11401"
+              },
+              "abstract_inverted_index": {
+                "Large": [
+                  0
+                ],
+                "pre-trained": [
+                  1
+                ],
+                "language": [
+                  2
+                ],
+                "models": [
+                  3
+                ],
+                "have": [
+                  4
+                ],
+                "been": [
+                  5
+                ],
+                "shown": [
+                  6
+                ],
+                "to": [
+                  7
+                ],
+                "store": [
+                  8
+                ],
+                "factual": [
+                  9
+                ],
+                "knowledge": [
+                  10
+                ],
+                "in": [
+                  11
+                ],
+                "their": [
+                  12
+                ],
+                "parameters": [
+                  13
+                ]
+              },
+              "ids": {
+                "openalex": "https://openalex.org/W3027879771",
+                "doi": "https://doi.org/10.48550/arxiv.2005.11401"
+              },
+              "is_retracted": false
+            }
+          ]
+        },
+        "arxiv": "<?xml version='1.0' encoding='UTF-8'?>\n<feed xmlns:opensearch=\"http://a9.com/-/spec/opensearch/1.1/\" xmlns:arxiv=\"http://arxiv.org/schemas/atom\" xmlns=\"http://www.w3.org/2005/Atom\">\n  <id>https://arxiv.org/api/8AaoiipoegAcRysNphkOEDe2Nug</id>\n  <title>arXiv Query: search_query=all:retrieval AND all:augmented AND all:generation AND all:knowledge&amp;id_list=&amp;start=0&amp;max_results=3</title>\n  <updated>2026-10-29T20:42:34Z</updated>\n  <link href=\"https://arxiv.org/api/query?search_query=all:retrieval+AND+(all:augmented+AND+(all:generation+AND+all:knowledge))&amp;start=0&amp;max_results=3&amp;id_list=\" type=\"application/atom+xml\"/>\n  <opensearch:itemsPerPage>3</opensearch:itemsPerPage>\n  <opensearch:totalResults>3844</opensearch:totalResults>\n  <opensearch:startIndex>0</opensearch:startIndex>\n  <entry>\n    <id>http://arxiv.org/abs/2603.14541v1</id>\n    <title>Expert Mind: A Retrieval-Augmented Architecture for Expert Knowledge Preservation in the Energy Sector</title>\n    <updated>2026-03-15T18:32:12Z</updated>\n    <link href=\"https://arxiv.org/abs/2603.14541v1\" rel=\"alternate\" type=\"text/html\"/>\n    <link href=\"https://arxiv.org/pdf/2603.14541v1\" rel=\"related\" type=\"application/pdf\" title=\"pdf\"/>\n    <summary>The departure of subject-matter experts from industrial organizations results in the irreversible loss of tacit knowledge that is rarely captured through conventional documentation practices. This paper proposes Expert Mind, an experimental system that leverages Retrieval-Augmented Generation (RAG), large language models (LLMs), and multimodal capture techniques to preserve, structure, and make queryable the deep expertise of organizational knowledge holders. Drawing on the specific context of the energy sector, where decades of operational experience risk being lost to an aging workforce, we describe the system architecture, processing pipeline, ethical framework, and evaluation methodology. The proposed system addresses the knowledge elicitation problem through structured interviews, think-aloud sessions, and text corpus ingestion, which are subsequently embedded into a vector store and queried through a conversational interface. Preliminary design considerations suggest Expert Mind can significantly reduce knowledge transfer latency and improve onboarding efficiency. Ethical dimensions including informed consent, intellectual property, and the right to erasure are addressed as first-class design constraints.</summary>\n    <category term=\"cs.AI\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.IR\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <published>2026-03-15T18:32:12Z</published>\n    <arxiv:comment>6 pages, 1 figure, conceptual architecture paper on retrieval-augmented expert knowledge systems</arxiv:comment>\n    <arxiv:primary_category term=\"cs.AI\"/>\n    <author>\n      <name>Diego Ezequiel Cervera</name>\n    </author>\n  </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2402.12317v2</id>\n    <title>EVOR: Evolving Retrieval for Code Generation</title>\n    <updated>2024-12-03T15:56:26Z</updated>\n    <link href=\"https://arxiv.org/abs/2402.12317v2\" rel=\"alternate\" type=\"text/html\"/>\n    <link href=\"https://arxiv.org/pdf/2402.12317v2\" rel=\"related\" type=\"application/pdf\" title=\"pdf\"/>\n    <summary>Recently the retrieval-augmented generation (RAG) has been successfully applied in code generation. However, existing pipelines for retrieval-augmented code generation (RACG) employ static knowledge bases with a single source, limiting the adaptation capabilities of Large Language Models (LLMs) to domains they have insufficient knowledge of. In this work, we develop a novel pipeline, EVOR, that employs the synchronous evolution of both queries and diverse knowledge bases. On two realistic settings where the external knowledge is required to solve code generation tasks, we compile four new datasets associated with frequently updated libraries and long-tail programming languages, named EVOR-BENCH. Extensive experiments demonstrate that EVOR achieves two to four times of execution accuracy compared to other methods such as Reflexion (Shinn et al., 2024), DocPrompting (Zhou et al., 2023), etc. We demonstrate that EVOR is flexible and can be easily combined with them to achieve further improvement. Further analysis reveals that EVOR benefits from the synchronous evolution of queries and documents and the diverse information sources in the knowledge base. We hope that our studies will inspire more insights into the design of advanced RACG pipelines in future research. Our model, code, and data are available at https://arks-codegen.github.io.</summary>\n    <category term=\"cs.CL\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.AI\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <published>2024-02-19T17:37:28Z</published>\n    <arxiv:comment>Retrieval-augmented code generation</arxiv:comment>\n    <arxiv:primary_category term=\"cs.CL\"/>\n    <author>\n      <name>Hongjin Su</name>\n    </author>\n    <author>\n      <name>Shuyang Jiang</name>\n    </author>\n    <author>\n      <name>Yuhang Lai</name>\n    </author>\n    <author>\n      <name>Haoyuan Wu</name>\n    </author>\n    <author>\n      <name>Boao Shi</name>\n    </author>\n    <author>\n      <name>Che Liu</name>\n    </author>\n    <author>\n      <name>Qian Liu</name>\n    </author>\n    <author>\n      <name>Tao Yu</name>\n    </author>\n  </entry>\n  <entry>\n    <id>http://arxiv.org/abs/2502.00306v2</id>\n    <title>Riddle Me This! Stealthy Membership Inference for Retrieval-Augmented Generation</title>\n    <updated>2025-06-30T16:37:59Z</updated>\n    <link href=\"https://arxiv.org/abs/2502.00306v2\" rel=\"alternate\" type=\"text/html\"/>\n    <link href=\"https://arxiv.org/pdf/2502.00306v2\" rel=\"related\" type=\"application/pdf\" title=\"pdf\"/>\n    <summary>Retrieval-Augmented Generation (RAG) enables Large Language Models (LLMs) to generate grounded responses by leveraging external knowledge databases without altering model parameters. Although the absence of weight tuning prevents leakage via model parameters, it introduces the risk of inference adversaries exploiting retrieved documents in the model's context. Existing methods for membership inference and data extraction often rely on jailbreaking or carefully crafted unnatural queries, which can be easily detected or thwarted with query rewriting techniques common in RAG systems. In this work, we present Interrogation Attack (IA), a membership inference technique targeting documents in the RAG datastore. By crafting natural-text queries that are answerable only with the target document's presence, our approach demonstrates successful inference with just 30 queries while remaining stealthy; straightforward detectors identify adversarial prompts from existing methods up to ~76x more frequently than those generated by our attack. We observe a 2x improvement in TPR@1%FPR over prior inference attacks across diverse RAG configurations, all while costing less than $0.02 per document inference.</summary>\n    <category term=\"cs.CR\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.AI\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.CL\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.IR\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <category term=\"cs.LG\" scheme=\"http://arxiv.org/schemas/atom\"/>\n    <published>2025-02-01T04:01:18Z</published>\n    <arxiv:comment>This is the full version (27 pages) of the paper 'Riddle Me This! Stealthy Membership Inference for Retrieval-Augmented Generation' published at CCS 2025</arxiv:comment>\n    <arxiv:primary_category term=\"cs.CR\"/>\n    <author>\n      <name>Ali Naseh</name>\n    </author>\n    <author>\n      <name>Yuefeng Peng</name>\n    </author>\n    <author>\n      <name>Anshuman Suri</name>\n    </author>\n    <author>\n      <name>Harsh Chaudhari</name>\n    </author>\n    <author>\n      <name>Alina Oprea</name>\n    </author>\n    <author>\n      <name>Amir Houmansadr</name>\n    </author>\n  </entry>\n</feed>\n",
+        "crossref": {
+          "status": "ok",
+          "message-type": "work-list",
+          "message": {
+            "items": [
+              {
+                "DOI": "10.18653/v1/2026.findings-eacl.35",
+                "title": [
+                  "Multilingual Retrieval-Augmented Generation for Knowledge-Intensive Question Answering Task"
+                ],
+                "author": [
+                  {
+                    "given": "Leonardo",
+                    "family": "Ranaldi",
+                    "sequence": "first"
+                  }
+                ],
+                "issued": {
+                  "date-parts": [
+                    [
+                      2026
+                    ]
+                  ]
+                },
+                "container-title": [
+                  "Findings of the Association for Computational Linguistics: EACL 2026"
+                ],
+                "is-referenced-by-count": 0,
+                "URL": "https://doi.org/10.18653/v1/2026.findings-eacl.35"
+              }
+            ]
+          }
+        }
+      },
+      "gold": [
+        "arxiv:2005.11401"
+      ],
+      "k": 3,
+      "expect": "enough",
+      "unique": 6
+    },
+    {
+      "id": "s-transformer-relevance",
+      "question": "attention transformer sequence transduction",
+      "tags": [
+        "relevance-over-citations"
+      ],
+      "recorded": {
+        "semanticscholar": {
+          "total": 2,
+          "offset": 0,
+          "data": [
+            {
+              "paperId": "204e3073870fae3d05bcbc2f6a8e263d9b72e776",
+              "title": "Attention is All you Need",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Ashish Vaswani"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Noam Shazeer"
+                },
+                {
+                  "authorId": "1002",
+                  "name": "Niki Parmar"
+                },
+                {
+                  "authorId": "1003",
+                  "name": "Jakob Uszkoreit"
+                }
+              ],
+              "year": 2017,
+              "venue": "Neural Information Processing Systems",
+              "externalIds": {
+                "ArXiv": "1706.03762",
+                "CorpusId": 13756489
+              },
+              "citationCount": 150000,
+              "openAccessPdf": {
+                "url": "https://arxiv.org/pdf/1706.03762",
+                "status": "GREEN"
+              },
+              "abstract": "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks. We propose a new simple network architecture, the Transformer, based solely on attention mechanisms.",
+              "url": "https://www.semanticscholar.org/paper/204e3073870fae3d05bcbc2f6a8e263d9b72e776"
+            },
+            {
+              "paperId": "cea967b59209c6be22829699f05b8b1ac4dc092d",
+              "title": "Sequence to Sequence Learning with Neural Networks",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Ilya Sutskever"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Oriol Vinyals"
+                },
+                {
+                  "authorId": "1002",
+                  "name": "Quoc V. Le"
+                }
+              ],
+              "year": 2014,
+              "venue": "Neural Information Processing Systems",
+              "externalIds": {
+                "ArXiv": "1409.3215",
+                "CorpusId": 7961699
+              },
+              "citationCount": 25000,
+              "openAccessPdf": {
+                "url": "https://arxiv.org/pdf/1409.3215",
+                "status": "GREEN"
+              },
+              "abstract": "Deep neural networks are powerful models. We present a general end-to-end approach to sequence learning with a multilayered LSTM.",
+              "url": "https://www.semanticscholar.org/paper/cea967b59209c6be22829699f05b8b1ac4dc092d"
+            }
+          ]
+        },
+        "openalex": {
+          "meta": {
+            "count": 2
+          },
+          "results": [
+            {
+              "id": "https://openalex.org/W2963403868",
+              "doi": "https://doi.org/10.48550/arxiv.1706.03762",
+              "display_name": "Attention Is All You Need",
+              "publication_year": 2017,
+              "authorships": [
+                {
+                  "author": {
+                    "display_name": "Ashish Vaswani"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Noam Shazeer"
+                  }
+                }
+              ],
+              "primary_location": {
+                "source": {
+                  "display_name": "arXiv (Cornell University)"
+                }
+              },
+              "cited_by_count": 60000,
+              "best_oa_location": {
+                "pdf_url": "https://arxiv.org/pdf/1706.03762"
+              },
+              "open_access": {
+                "oa_url": "https://arxiv.org/pdf/1706.03762"
+              },
+              "abstract_inverted_index": {
+                "The": [
+                  0
+                ],
+                "dominant": [
+                  1
+                ],
+                "sequence": [
+                  2
+                ],
+                "transduction": [
+                  3
+                ],
+                "models": [
+                  4
+                ],
+                "are": [
+                  5
+                ],
+                "based": [
+                  6
+                ],
+                "on": [
+                  7
+                ],
+                "complex": [
+                  8
+                ],
+                "recurrent": [
+                  9
+                ],
+                "or": [
+                  10
+                ],
+                "convolutional": [
+                  11
+                ],
+                "neural": [
+                  12
+                ],
+                "networks": [
+                  13
+                ]
+              },
+              "ids": {
+                "openalex": "https://openalex.org/W2963403868",
+                "doi": "https://doi.org/10.48550/arxiv.1706.03762"
+              },
+              "is_retracted": false
+            },
+            {
+              "id": "https://openalex.org/W2194775991",
+              "doi": "https://doi.org/10.1109/cvpr.2016.90",
+              "display_name": "Deep Residual Learning for Image Recognition",
+              "publication_year": 2016,
+              "authorships": [
+                {
+                  "author": {
+                    "display_name": "Kaiming He"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Xiangyu Zhang"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Shaoqing Ren"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Jian Sun"
+                  }
+                }
+              ],
+              "primary_location": {
+                "source": {
+                  "display_name": "2016 IEEE Conference on Computer Vision and Pattern Recognition (CVPR)"
+                }
+              },
+              "cited_by_count": 210000,
+              "best_oa_location": {
+                "pdf_url": null
+              },
+              "open_access": {
+                "oa_url": null
+              },
+              "abstract_inverted_index": {
+                "Deeper": [
+                  0
+                ],
+                "neural": [
+                  1
+                ],
+                "networks": [
+                  2
+                ],
+                "are": [
+                  3
+                ],
+                "more": [
+                  4
+                ],
+                "difficult": [
+                  5
+                ],
+                "to": [
+                  6,
+                  14
+                ],
+                "train.": [
+                  7
+                ],
+                "We": [
+                  8
+                ],
+                "present": [
+                  9
+                ],
+                "a": [
+                  10
+                ],
+                "residual": [
+                  11
+                ],
+                "learning": [
+                  12
+                ],
+                "framework": [
+                  13
+                ],
+                "ease": [
+                  15
+                ],
+                "the": [
+                  16
+                ],
+                "training": [
+                  17
+                ],
+                "of": [
+                  18
+                ],
+                "networks.": [
+                  19
+                ]
+              },
+              "ids": {
+                "openalex": "https://openalex.org/W2194775991",
+                "doi": "https://doi.org/10.1109/cvpr.2016.90"
+              },
+              "is_retracted": false
+            }
+          ]
+        }
+      },
+      "gold": [
+        "arxiv:1706.03762"
+      ],
+      "k": 1,
+      "expect": "enough",
+      "unique": 3
+    },
+    {
+      "id": "s-not-enough-chimera",
+      "question": "sourdough fermentation in lunar regolith",
+      "tags": [
+        "abstain"
+      ],
+      "recorded": {
+        "semanticscholar": {
+          "total": 2,
+          "offset": 0,
+          "data": [
+            {
+              "paperId": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+              "title": "Geotechnical properties of lunar regolith simulants",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Mira Okafor"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Jun Tanaka"
+                }
+              ],
+              "year": 2021,
+              "venue": "Icarus",
+              "externalIds": {
+                "DOI": "10.5555/regolith.2021.4",
+                "CorpusId": 900001
+              },
+              "citationCount": 120,
+              "openAccessPdf": null,
+              "abstract": "We compare grain size, cohesion and density of six lunar regolith simulants with Apollo samples.",
+              "url": "https://www.semanticscholar.org/paper/a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+            },
+            {
+              "paperId": "b2c3d4e5f60718293a4b5c6d7e8f901234567890",
+              "title": "Microbial succession in traditional sourdough fermentation",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "Lena Fischer"
+                },
+                {
+                  "authorId": "1001",
+                  "name": "Paolo Russo"
+                }
+              ],
+              "year": 2019,
+              "venue": "Food Microbiology",
+              "externalIds": {
+                "DOI": "10.5555/sourdough.2019.7",
+                "CorpusId": 900002
+              },
+              "citationCount": 310,
+              "openAccessPdf": {
+                "url": "https://repo.example/sourdough.pdf",
+                "status": "GREEN"
+              },
+              "abstract": "Lactic acid bacteria and yeasts succeed one another during sourdough fermentation over ten days.",
+              "url": "https://www.semanticscholar.org/paper/b2c3d4e5f60718293a4b5c6d7e8f901234567890"
+            }
+          ]
+        },
+        "openalex": {
+          "meta": {
+            "count": 1
+          },
+          "results": [
+            {
+              "id": "https://openalex.org/W4000000001",
+              "doi": "https://doi.org/10.5555/plants.2022.3",
+              "display_name": "Plants grown in lunar regolith from Apollo missions",
+              "publication_year": 2022,
+              "authorships": [
+                {
+                  "author": {
+                    "display_name": "Anna-Lisa Paul"
+                  }
+                },
+                {
+                  "author": {
+                    "display_name": "Stephen Elardo"
+                  }
+                }
+              ],
+              "primary_location": {
+                "source": {
+                  "display_name": "Communications Biology"
+                }
+              },
+              "cited_by_count": 400,
+              "best_oa_location": {
+                "pdf_url": null
+              },
+              "open_access": {
+                "oa_url": null
+              },
+              "abstract_inverted_index": {
+                "Arabidopsis": [
+                  0
+                ],
+                "thaliana": [
+                  1
+                ],
+                "grew": [
+                  2
+                ],
+                "in": [
+                  3
+                ],
+                "lunar": [
+                  4
+                ],
+                "regolith": [
+                  5
+                ],
+                "but": [
+                  6
+                ],
+                "showed": [
+                  7
+                ],
+                "stress": [
+                  8
+                ],
+                "responses.": [
+                  9
+                ]
+              },
+              "ids": {
+                "openalex": "https://openalex.org/W4000000001",
+                "doi": "https://doi.org/10.5555/plants.2022.3"
+              },
+              "is_retracted": false
+            }
+          ]
+        },
+        "arxiv": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\" xmlns:opensearch=\"http://a9.com/-/spec/opensearch/1.1/\">\n  <title>arXiv Query: search_query=all:sourdough AND all:fermentation AND all:lunar AND all:regolith</title>\n  <opensearch:totalResults>0</opensearch:totalResults>\n</feed>\n",
+        "crossref": {
+          "status": "ok",
+          "message-type": "work-list",
+          "message": {
+            "items": [
+              {
+                "DOI": "10.5555/yeast.2018.11",
+                "title": [
+                  "Yeast metabolism during bread dough fermentation"
+                ],
+                "author": [
+                  {
+                    "given": "Hana",
+                    "family": "Kim",
+                    "sequence": "first"
+                  }
+                ],
+                "issued": {
+                  "date-parts": [
+                    [
+                      2018
+                    ]
+                  ]
+                },
+                "container-title": [
+                  "Journal of Cereal Science"
+                ],
+                "is-referenced-by-count": 85,
+                "URL": "https://doi.org/10.5555/yeast.2018.11"
+              }
+            ]
+          }
+        }
+      },
+      "gold": [],
+      "k": 5,
+      "expect": "not_enough",
+      "unique": 4
+    },
+    {
+      "id": "s-retracted-excluded",
+      "question": "room temperature superconductivity lutetium hydride",
+      "tags": [
+        "retraction"
+      ],
+      "recorded": {
+        "crossref": {
+          "status": "ok",
+          "message-type": "work-list",
+          "message": {
+            "items": [
+              {
+                "DOI": "10.1038/s41586-023-05742-0",
+                "title": [
+                  "Evidence of near-ambient superconductivity in a N-doped lutetium hydride"
+                ],
+                "author": [
+                  {
+                    "given": "Nathan",
+                    "family": "Dasenbrock-Gammon",
+                    "sequence": "first"
+                  },
+                  {
+                    "given": "Elliot",
+                    "family": "Snider",
+                    "sequence": "additional"
+                  }
+                ],
+                "issued": {
+                  "date-parts": [
+                    [
+                      2023
+                    ]
+                  ]
+                },
+                "container-title": [
+                  "Nature"
+                ],
+                "is-referenced-by-count": 300,
+                "URL": "https://doi.org/10.1038/s41586-023-05742-0",
+                "abstract": "<jats:p>Claims of room temperature superconductivity in a nitrogen-doped lutetium hydride at near-ambient pressure.</jats:p>",
+                "updated-by": [
+                  {
+                    "updated": {
+                      "date-parts": [
+                        [
+                          2023,
+                          11,
+                          7
+                        ]
+                      ]
+                    },
+                    "DOI": "10.1038/s41586-023-06774-2",
+                    "type": "retraction",
+                    "source": "publisher",
+                    "label": "Retraction"
+                  }
+                ]
+              },
+              {
+                "DOI": "10.1038/s41586-023-06162-w",
+                "title": [
+                  "Absence of near-ambient superconductivity in LuH2±xNy"
+                ],
+                "author": [
+                  {
+                    "given": "Xue",
+                    "family": "Ming",
+                    "sequence": "first"
+                  },
+                  {
+                    "given": "Ying-Jie",
+                    "family": "Zhang",
+                    "sequence": "additional"
+                  }
+                ],
+                "issued": {
+                  "date-parts": [
+                    [
+                      2023
+                    ]
+                  ]
+                },
+                "container-title": [
+                  "Nature"
+                ],
+                "is-referenced-by-count": 150,
+                "URL": "https://doi.org/10.1038/s41586-023-06162-w",
+                "abstract": "<jats:p>We find no superconductivity down to 10 kelvin in nitrogen-doped lutetium hydride samples, contradicting the report of room temperature superconductivity.</jats:p>"
+              }
+            ]
+          }
+        }
+      },
+      "gold": [
+        "10.1038/s41586-023-06162-w"
+      ],
+      "k": 2,
+      "expect": "enough",
+      "unique": 2,
+      "not_kept": [
+        "10.1038/s41586-023-05742-0"
+      ]
+    },
+    {
+      "id": "s-pdf-locators",
+      "question": "",
+      "tags": [
+        "locators",
+        "claims"
+      ],
+      "pages": [
+        "Tide-Aware Routing for Coastal Ferries\nA. Rahman, S. Iqbal\nAbstract\nWe route coastal ferries using tide forecasts and cut fuel use by 12 percent on three test routes.\n\n1 Introduction\nCoastal ferries lose time and fuel when they fight tidal currents.\nExisting planners ignore tides entirely.\n",
+        "2 Method\nThe planner reads hourly tide forecasts from harbour gauges\nand searches routes with a time-dependent shortest path.\n\n2.1 Data\nWe use 14 months of gauge readings from four harbours.\n",
+        "3 Results\nOn the three routes the planner saved 12 percent of fuel and\n7 minutes per crossing on average.\n\n4 Limitations\nThe planner does not model wind or waves.\n",
+        "References\n[1] K. Lee. Tidal currents and small vessels. 2019.\n[2] M. Chen. Time-dependent shortest paths. 2015.\n"
+      ],
+      "quotes": [
+        {
+          "text": "searches routes with a time-dependent shortest path",
+          "page": 2,
+          "section": "2 Method"
+        },
+        {
+          "text": "saved 12 percent of fuel and 7 minutes per crossing",
+          "page": 3,
+          "section": "3 Results"
+        },
+        {
+          "text": "We use 14 months of gauge readings from four harbours",
+          "page": 2,
+          "section": "2.1 Data"
+        },
+        {
+          "text": "cut fuel use by 12 percent on three test routes",
+          "page": 1,
+          "section": "Abstract"
+        },
+        {
+          "text": "The planner models wind and waves in real time",
+          "page": null,
+          "section": null
+        },
+        {
+          "text": "Tidal currents and small vessels",
+          "page": null,
+          "section": null
+        }
+      ],
+      "claims": [
+        {
+          "text": "The planner uses hourly tide forecasts from harbour gauges",
+          "expect": "enough"
+        },
+        {
+          "text": "The planner saved fuel on the test routes",
+          "expect": "enough"
+        },
+        {
+          "text": "Wind forecasts reduce ferry emissions in storms",
+          "expect": "not_enough"
+        },
+        {
+          "text": "Passengers preferred the new timetable in surveys",
+          "expect": "not_enough"
+        }
+      ]
+    },
+    {
+      "id": "s-snowball-saturates",
+      "question": "graph neural networks molecular",
+      "tags": [
+        "snowball"
+      ],
+      "snowball": {
+        "seed": {
+          "total": 1,
+          "offset": 0,
+          "data": [
+            {
+              "paperId": "5eed000000000000000000000000000000000001",
+              "title": "Graph neural networks for molecular property prediction",
+              "authors": [
+                {
+                  "authorId": "1000",
+                  "name": "R. Gomez"
+                }
+              ],
+              "year": 2020,
+              "venue": "ICML",
+              "externalIds": {
+                "DOI": "10.5555/gnn.seed",
+                "CorpusId": 910000
+              },
+              "citationCount": 800,
+              "openAccessPdf": null,
+              "abstract": "We predict molecular properties with graph neural networks.",
+              "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000001"
+            }
+          ]
+        },
+        "rounds": [
+          {
+            "data": [
+              {
+                "citedPaper": {
+                  "paperId": "5eed000000000000000000000000000000000002",
+                  "title": "Message passing graph neural networks for molecules",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "J. Gilmer"
+                    }
+                  ],
+                  "year": 2017,
+                  "venue": "ICML",
+                  "externalIds": {
+                    "CorpusId": 910001
+                  },
+                  "citationCount": 5000,
+                  "openAccessPdf": null,
+                  "abstract": "Neural message passing on molecular graphs predicts quantum chemical properties.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000002"
+                }
+              },
+              {
+                "citedPaper": {
+                  "paperId": "5eed000000000000000000000000000000000003",
+                  "title": "Graph attention networks for molecular property prediction",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "P. Velickovic"
+                    }
+                  ],
+                  "year": 2018,
+                  "venue": "ICLR",
+                  "externalIds": {
+                    "CorpusId": 910002
+                  },
+                  "citationCount": 4000,
+                  "openAccessPdf": null,
+                  "abstract": "Attention over graph neighbourhoods for molecular property prediction.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000003"
+                }
+              },
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000004",
+                  "title": "Equivariant graph neural networks for molecular dynamics",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "V. Satorras"
+                    }
+                  ],
+                  "year": 2021,
+                  "venue": "ICML",
+                  "externalIds": {
+                    "CorpusId": 910003
+                  },
+                  "citationCount": 900,
+                  "openAccessPdf": null,
+                  "abstract": "E(n)-equivariant graph neural networks for molecular simulation.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000004"
+                }
+              },
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000005",
+                  "title": "Protein language models",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "A. Rives"
+                    }
+                  ],
+                  "year": 2021,
+                  "venue": "PNAS",
+                  "externalIds": {
+                    "CorpusId": 910004
+                  },
+                  "citationCount": 1500,
+                  "openAccessPdf": null,
+                  "abstract": "Language models trained on protein sequences.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000005"
+                }
+              }
+            ]
+          },
+          {
+            "data": [
+              {
+                "citedPaper": {
+                  "paperId": "5eed000000000000000000000000000000000002",
+                  "title": "Message passing graph neural networks for molecules",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "J. Gilmer"
+                    }
+                  ],
+                  "year": 2017,
+                  "venue": "ICML",
+                  "externalIds": {
+                    "CorpusId": 910001
+                  },
+                  "citationCount": 5000,
+                  "openAccessPdf": null,
+                  "abstract": "Neural message passing on molecular graphs predicts quantum chemical properties.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000002"
+                }
+              },
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000006",
+                  "title": "Graph neural networks for molecular toxicity prediction",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "L. Wu"
+                    }
+                  ],
+                  "year": 2022,
+                  "venue": "JCIM",
+                  "externalIds": {
+                    "CorpusId": 910005
+                  },
+                  "citationCount": 120,
+                  "openAccessPdf": null,
+                  "abstract": "Graph neural networks predict molecular toxicity.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000006"
+                }
+              },
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000007",
+                  "title": "Image segmentation with transformers",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "E. Xie"
+                    }
+                  ],
+                  "year": 2021,
+                  "venue": "NeurIPS",
+                  "externalIds": {
+                    "CorpusId": 910006
+                  },
+                  "citationCount": 3000,
+                  "openAccessPdf": null,
+                  "abstract": "Transformers segment images.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000007"
+                }
+              },
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000008",
+                  "title": "Reinforcement learning for chess",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "D. Silver"
+                    }
+                  ],
+                  "year": 2018,
+                  "venue": "Science",
+                  "externalIds": {
+                    "CorpusId": 910007
+                  },
+                  "citationCount": 6000,
+                  "openAccessPdf": null,
+                  "abstract": "Self-play reinforcement learning masters chess.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000008"
+                }
+              }
+            ]
+          },
+          {
+            "data": [
+              {
+                "citingPaper": {
+                  "paperId": "5eed000000000000000000000000000000000009",
+                  "title": "Graph neural networks for molecular solubility",
+                  "authors": [
+                    {
+                      "authorId": "1000",
+                      "name": "K. Yang"
+                    }
+                  ],
+                  "year": 2023,
+                  "venue": "JCIM",
+                  "externalIds": {
+                    "CorpusId": 910008
+                  },
+                  "citationCount": 40,
+                  "openAccessPdf": null,
+                  "abstract": "Graph neural networks for molecular solubility.",
+                  "url": "https://www.semanticscholar.org/paper/5eed000000000000000000000000000000000009"
+                }
+              }
+            ]
+          }
+        ],
+        "stop_round": 2,
+        "stop": "saturated",
+        "found": 4
+      }
+    }
+  ]
+}

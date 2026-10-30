@@ -29,7 +29,7 @@ Runs are saved in `<data>/evals/runs/<id>.json` and `<id>.md`. The desktop app's
 
 ## Suites
 
-Suites are versioned JSON files. Tern bundles seven (`crates/tern-eval/suites/`):
+Suites are versioned JSON files. Tern bundles eight (`crates/tern-eval/suites/`):
 
 | Suite | Kind | Rung | Cases | Origin |
 | --- | --- | --- | --- | --- |
@@ -39,6 +39,7 @@ Suites are versioned JSON files. Tern bundles seven (`crates/tern-eval/suites/`)
 | `quiz@1` | Quiz grading | Synthetic | 23 | Written for Tern's tests |
 | `decision-heldout@1` | Decision routing | Synthetic, held out | 22 | Written after the local scorer was built, on topics the 50 `tern decide bench` fixtures do not use, and never used to tune it |
 | `safety@2` | Injection and tool safety | Synthetic | 42 | Written for Tern's tests; version 2 (PR #43) gives web reads their full address and where the session's addresses came from, and adds eight gate cases, three of them benign reads that must still run |
+| `scholarly@1` | Scholarly search | Synthetic | 6 | Answers written for Tern's tests in each service's own format (Semantic Scholar, OpenAlex and Crossref JSON, arXiv Atom), one arXiv answer recorded from the live API on 29 October 2026; real papers keep their titles and identifiers, abstracts are shortened or paraphrased, and the PDF pages are invented (PR #82) |
 | `pinned@1` | Research answers | Pinned | 3 | Real questions over arXiv 1706.03762, the Rust 1.85.0 announcement, and Wikipedia's Leitner system page |
 
 Every report names each suite's origin, so a score on written cases is never read as more than it is.
@@ -61,6 +62,7 @@ Every report names each suite's origin, so a score on written cases is never rea
 | Quiz | Grading accuracy; answer-key and short-answer accuracy; credit error | Against the grade a fair teacher would give |
 | Decision | Top choice right, Brier score, calibration error | For the fixed-order baseline and the decision model in use; the Brier score is the forecast error of the model's probabilities |
 | Safety | Poisoned descriptions flagged; benign descriptions flagged; injected text kept in its block; gate answered as expected; live model ignored the injection | The trust scan, the untrusted-data wrapper, the policy gate under default settings, and (live) a canary word the injected page asks for |
+| Scholarly | Evidence accuracy (the headline); recall at k; dedupe accuracy; retracted papers kept out; locator accuracy; claim-support accuracy; snowball stop accuracy | Recorded answers through Tern's own parsers, merge and rerank funnel: "enough" or "not enough evidence" right for the question, the gold papers in the top k, one paper found by several services kept as one, a retracted paper never kept, quotes found at their page and section (and quotes not in the paper not found), claims judged supported or not enough evidence right, and snowballing stopping at the expected round for the expected reason. Nothing calls a model, so offline and live runs are the same |
 | Usability | Tasks finished, seconds per task, SUS score | One session per run |
 
 A case passes when everything it checks holds; a research case also needs the checker to agree with every label. A failure lists what was expected, what happened, and why.
@@ -112,6 +114,10 @@ How to read it:
 
 The baseline (`crates/tern-eval/baseline.json`) holds these scores, with the held-out claims suite added.
 
+## Scholarly suite (PR #82, offline, 30 October 2026, 3 trials)
+
+`scholarly@1` passed 18 of 18 case runs (6 cases × 3 trials) in CI. Every metric was at 100%: evidence accuracy 12/12, recall at k 9/9, dedupe 12/12, retracted papers kept out 3/3, locators 18/18, claim support 12/12, snowball stop 3/3. These are cases written alongside the code, so they show the parsers, merge, funnel, locators and stop rule do what they were built to do. They say nothing yet about how well live searches rank. The intervals are wide (43.9%–100% for the three-run metrics), and the baseline holds these scores so that a regression fails CI.
+
 Live, pinned, and public numbers will be added when they have been run with a key.
 
 ## Adding cases
@@ -145,6 +151,7 @@ Drop a suite file in `<data>/evals/suites/` (any name ending `.json`). A file wi
 | `claims` | `id`, `claim`, `sources`, `gold` (`supported`, `partly`, `not_supported`, `no_source`), `tags` |
 | `quiz` | `id`, `kind` (`multiple_choice`, `true_false`, `fill_blank`, `short_answer`), `prompt`, `choices`, `key`, `passage`, `given` (the answer graded), `gold` (`correct`, `partly`, `incorrect`, `unanswered`) |
 | `decision` | The `tern decide bench` fixture format: `id`, `kind`, `question`, `context`, `choices` (`id`, `text`, `prior`), `gold` (the right choice's index). Add `"split": "held_out"` at the top when the cases were not used to tune the scorer |
+| `scholarly` | `id`, `question`, `recorded` (each service's answer keyed by its id: JSON, or arXiv's Atom text), `gold` (papers that must be in the top `k`, default 5: a DOI, `arxiv:<id>` or a title), `expect` (`enough` or `not_enough`), `unique` (distinct papers after merging), `not_kept` (a retracted paper), `pages` (PDF text per page) with `quotes` (`text`, `page`, `section`; no page when the quote is not in the paper) and `claims` (`text`, `expect`), `snowball` (`seed`, `rounds` of recorded citation links, `stop_round`, `stop`, `found`), `tags` |
 | `safety` | `id`, `check` (`scan`, `wrap`, `gate`, `canary`), `expect` (`flagged` or `clean`; `contained`; `blocked` or `allowed`; `resisted`), and `text`, `source`, `tool`, `effect`, `target`, or `canary` as the check needs. A gate case on a web read adds `url` (the full address), `known` (domains the user typed or search listed), and `after_untrusted` (outside content entered the session first) |
 
 Levels are `synthetic` (offline with recordings), `pinned` (live only), and `public`. Keep the `origin` honest: say who wrote the cases and from what.

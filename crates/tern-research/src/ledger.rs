@@ -97,6 +97,10 @@ pub struct SourceEntry {
     /// Milliseconds since the run started.
     #[serde(default)]
     pub at_ms: u64,
+    /// The paper this source is, when a scholarly search found it (#82):
+    /// authors, year, venue, DOI, citations, open-access PDF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper: Option<crate::scholar::Paper>,
 }
 
 /// What kind of step a budget row is.
@@ -339,7 +343,48 @@ impl LedgerBuilder {
                 format!("from “{query}”")
             },
             at_ms,
+            paper: None,
         });
+    }
+
+    /// Attaches a scholarly paper's metadata to the source at `url`.
+    pub fn paper(&mut self, url: &str, worker: Option<usize>, paper: crate::scholar::Paper) {
+        if let Some(e) = self.find(url, worker) {
+            match &mut e.paper {
+                Some(p) => p.absorb(paper),
+                None => e.paper = Some(paper),
+            }
+        }
+    }
+
+    /// A paper read through its PDF: the row its search listed (the same
+    /// DOI, arXiv id or title, under another URL) becomes the read, so one
+    /// paper is one row; else the read gets a row of its own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read_paper(
+        &mut self,
+        url: &str,
+        site: &str,
+        title: &str,
+        worker: Option<usize>,
+        cache_hit: bool,
+        at_ms: u64,
+        paper: crate::scholar::Paper,
+    ) {
+        if !url.is_empty() && self.find(url, worker).is_none() {
+            let keys = paper.keys();
+            if let Some(e) = self.sources.iter_mut().find(|s| {
+                s.worker == worker
+                    && s.fate != SourceFate::Read
+                    && s.paper
+                        .as_ref()
+                        .is_some_and(|p| p.keys().iter().any(|k| keys.contains(k)))
+            }) {
+                e.url = url.to_owned();
+            }
+        }
+        self.read(url, site, title, worker, cache_hit, at_ms);
+        self.paper(url, worker, paper);
     }
 
     /// A page read, from the cache or live.
@@ -471,6 +516,7 @@ impl LedgerBuilder {
                 reason,
                 detail: detail.unwrap_or_default().to_owned(),
                 at_ms,
+                paper: None,
             }),
         }
     }
@@ -623,6 +669,38 @@ fn cell(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paper_read_settles_the_row_its_search_listed() {
+        let mut b = LedgerBuilder::new();
+        let listed = crate::scholar::Paper {
+            title: "Active Retrieval Augmented Generation".into(),
+            doi: Some("10.18653/v1/2023.emnlp-main.495".into()),
+            arxiv: Some("2305.06983".into()),
+            ..crate::scholar::Paper::default()
+        };
+        let url = "https://doi.org/10.18653/v1/2023.emnlp-main.495";
+        b.considered(url, "doi.org", &listed.title, None, "q", 10);
+        b.paper(url, None, listed.clone());
+        let read = crate::scholar::Paper {
+            arxiv: Some("2305.06983".into()),
+            ..listed
+        };
+        b.read_paper(
+            "https://arxiv.org/pdf/2305.06983",
+            "arxiv.org",
+            "Active Retrieval Augmented Generation",
+            None,
+            false,
+            20,
+            read,
+        );
+        let l = b.finish(30, &[]);
+        assert_eq!(l.sources.len(), 1, "{:?}", l.sources);
+        assert_eq!(l.sources[0].fate, SourceFate::Read);
+        assert_eq!(l.sources[0].url, "https://arxiv.org/pdf/2305.06983");
+        assert!(l.sources[0].paper.is_some());
+    }
 
     #[test]
     fn each_url_settles_on_one_fate() {
