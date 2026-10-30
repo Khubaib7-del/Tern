@@ -6,7 +6,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ### Changed: docs
 
-- **Docs: roadmap v3**: the README's status says #82 and #83 are merged and #84 (engine reliability: never lose a turn) is next, What works today covers the #83 scholarly follow-ups, and the README roadmap is a phased summary of #84–#109 and the post-v1.0 backlog (#110–#113). [docs/04-roadmap.md](docs/04-roadmap.md) is rewritten as roadmap v3: phases, a goal, scope and exit check per pull request, dependencies, and where each item of the old #84–#103 plan went.
+- **Docs: roadmap v3**: the README's status says #82 and #83 are merged and #84 (engine reliability: never lose a turn) is next, What works today covers the #83 scholarly follow-ups, and the README roadmap is a phased summary of #84–#110 (#110 the handbook bundle) and the post-v1.0 backlog (#111–#114). [docs/04-roadmap.md](docs/04-roadmap.md) is rewritten as roadmap v3: phases, a goal, scope and exit check per pull request, dependencies, and where each item of the old #84–#103 plan went.
 
 ### Fixed (PR #83): scholarly follow-ups from the #82 Windows test
 

@@ -15,15 +15,15 @@ If GitHub gives a pull request a different number from the one here (a closed PR
 | 3 · Research engine v2 and published proof | #89–#91 | Evaluation harness and consistency gate, router with Quick and Scholarly pipelines, Deep v2 and Long-run mode | Published citation-fidelity numbers | Planned |
 | 4 · Study and show | #92–#98 | Generative UI, grounded study, conflicting-sources resolver, local RAG, learner model, guarded tutor and viva, charts | The final-year-project demo | Planned |
 | 5 · Your files and reach | #99–#103 | Lecture video, Obsidian and chat import, export, security, connectors | — | Planned |
-| 6 · Learning, hardening and launch | #104–#109 | Learning core, adaptive user model v2, three buffers, the v1.0 release | v1.0 | Planned |
-| After v1.0 | #110–#113 | Computer use, figures and Explain in 3D v2, git panel, shared rooms | — | Backlog |
+| 6 · Learning, hardening, launch and handbooks | #104–#110 | Learning core, adaptive user model v2, three buffers, the v1.0 release, the handbook bundle | v1.0 and the handbooks | Planned |
+| After v1.0 | #111–#114 | Computer use, figures and Explain in 3D v2, git panel, shared rooms | — | Backlog |
 
 **Final-year-project demo path:** #83 (every citation resolves to a quote Tern read) → **#84** (a run survives rate limits, crashes and network loss) → **#85** (fresh chats behave the same; "continue" keeps the thread) → **#90** (the Scholarly pipeline with evidence ids owned by code; its numbers measured by **#89**) → **#93** (research becomes quote-anchored cards and a quiz on FSRS, pushed to Anki) → **#94** (the conflicting-sources resolver) → **#97** (a viva that defends the claims of your own report).
 
 - Minimum demo: through #90, plus #93.
 - Full demo: add #94 and #97.
 
-**Cut line: after #98.** #84 to #98 is the final-year-project build. If time runs short, drop in this order: #98 charts → #96 learner model (keep the FSRS queue) → #94 shrinks to the resolver without the actions router. #89 (it produces the measured numbers) and #97's viva are never dropped. #99 to #109 is the work for v1.0.
+**Cut line: after #98.** #84 to #98 is the final-year-project build. If time runs short, drop in this order: #98 charts → #96 learner model (keep the FSRS queue) → #94 shrinks to the resolver without the actions router. #89 (it produces the measured numbers) and #97's viva are never dropped. #99 to #109 is the work for v1.0, and #110 completes the handbooks.
 
 ## Phase 1 · Foundations and work surface (#72–#80) — shipped
 
@@ -280,6 +280,7 @@ If GitHub gives a pull request a different number from the one here (a closed PR
 
 - Verified notes written into an Obsidian vault with each claim's status in the frontmatter; "Related in your vault".
 - ChatGPT, Claude and Gemini import with provenance; imported memories go to the inbox.
+- An editable Markdown view of memory: what Tern remembers, shown as Markdown you can read and edit.
 
 **Depends on:** #87.
 
@@ -311,7 +312,7 @@ If GitHub gives a pull request a different number from the one here (a closed PR
 
 **Depends on:** #102.
 
-## Phase 6 · Learning, hardening and launch (#104–#109)
+## Phase 6 · Learning, hardening, launch and handbooks (#104–#110)
 
 ### #104 · Learning core (eval-gated)
 
@@ -349,14 +350,39 @@ Screen-reader labels on every control; the interface in Urdu; a quality check of
 
 Updates through Velopack, GitHub Releases and the Store listing; macOS notarisation at low priority. **Exit check:** a signed build installs and updates itself.
 
-## After v1.0 (#110–#113) — backlog
+### #110 · Handbook bundle
+
+**Goal:** thirteen handbooks that explain Tern to the people who use, examine and build it, shipped in the repository under `docs/handbooks/`, as a PDF set and as one ZIP. Each handbook stands alone and links to the others, and all are written from the real code, ADRs and pull request history.
+
+| Handbook | For | Contents |
+| --- | --- | --- |
+| 1. User guide | Students and researchers | Install, your own keys and local models, modes (Quick, Scholarly, Deep, Long-run), folders, approvals, Study, export, privacy settings, troubleshooting |
+| 2. Research paper reading | Students | Reading a paper in three passes, judging evidence, abstract versus full text, citation chasing, how the evidence chain and claim checks help, worked examples |
+| 3. Research paper writing | Students and thesis writers | From question to outline, the literature review, argument and evidence, citing (APA, IEEE, Harvard), avoiding plagiarism and unsupported claims, using Tern honestly, viva preparation |
+| 4. Study | Learners | The learning science (testing, spacing, interleaving), FSRS, quote-tied cards, tutor and viva, deadline plans |
+| 5. Features | Everyone | Every feature with screenshots: rich blocks, math and Mermaid, generative UI, the conflict resolver, charts, the focus view, lecture video, Obsidian |
+| 6. Technical architecture | Engineers and examiners | Crates, data flow, the turn loop, providers, the rate governor, the journal, the evidence store, the sandbox, diagrams |
+| 7. Internals | Contributors | The context cascade, bootstrap prompt layers, memory schema, user model, learning core, event types, replay |
+| 8. Engineering | Contributors | Repository layout, build, CI (four jobs), UI tours, evaluations and gates, coding rules, release and packaging |
+| 9. Design | Designers | Design brief, palette, type, spacing, components, motion, brand (the Tern mark, Scout), accessibility |
+| 10. Evaluation | Examiners and researchers | Every evaluation suite, metrics and targets, and how to reproduce the numbers |
+| 11. Security and privacy | Everyone | Local-first data, key storage, sandbox and permissions, the taint gate, prompt-injection defences, what leaves the machine |
+| 12. Prompts | Contributors | Versioned prompts, model-family deltas, lints, how to change a prompt safely |
+| 13. Raw (decision log) | Future maintainers | Every ADR, a research digest with sources, the pull request history, what failed and why |
+
+**Built PR by PR, starting with #84:** every pull request adds or updates its section under `docs/handbooks/` (a checklist item in the PR template), so #110 edits and assembles rather than writing from scratch. #110 adds screenshots from the UI tours, diagrams, a shared glossary, a PDF build and a ZIP in the release.
+
+**Exit check:** every handbook builds to PDF in CI; links and code references are checked; every feature in the README's What works today appears in the Features handbook; someone new can install Tern and reach a first verified report from the User guide alone.
+**Depends on:** #109; sections grow from #84 on.
+
+## After v1.0 (#111–#114) — backlog
 
 | PR | Scope | Why it waits |
 | --- | --- | --- |
-| #110 | Computer use, off by default; research chores only (library portals, PDFs), each action a journaled step | Risky, and not needed for research and study |
-| #111 | Interactive figures and Explain in 3D v2; image-occlusion cards from PDF figures | Polish; needs figure extraction |
-| #112 | Git panel: status, diff, history | A coding feature, outside research and study |
-| #113 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
+| #111 | Computer use, off by default; research chores only (library portals, PDFs), each action a journaled step | Risky, and not needed for research and study |
+| #112 | Interactive figures and Explain in 3D v2; image-occlusion cards from PDF figures | Polish; needs figure extraction |
+| #113 | Git panel: status, diff, history | A coding feature, outside research and study |
+| #114 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
 
 ## Dependencies
 
@@ -384,6 +410,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | #103 | #102 |
 | #104 | #84, #89, #94, #102 |
 | #105 | #87, #102, #104 |
+| #110 | #109 (sections from #84 on) |
 
 ## Old → new numbering
 
@@ -417,10 +444,11 @@ The plan published with #83 listed #84–#103. Where each item went:
 | #101 | Buffer 2: polish and fixes from testing | #107 | Buffer 2: polish and the Windows test list |
 | #102 | Buffer 3: accessibility, Urdu, edge cases | #108 | Buffer 3: accessibility, Urdu, edge cases |
 | #103 (rest) | Packaging | #109 | v1.0 release |
-| #94 | Computer use | #110 | Computer use (after v1.0) |
-| #96 | Interactive figures and Explain in 3D v2 | #111 | Figures and Explain in 3D v2 (after v1.0) |
-| #97 | Git panel | #112 | Git panel (after v1.0) |
-| #98 | Shared rooms | #113 | Shared rooms (after v1.0) |
+| — | (new) | #110 | Handbook bundle |
+| #94 | Computer use | #111 | Computer use (after v1.0) |
+| #96 | Interactive figures and Explain in 3D v2 | #112 | Figures and Explain in 3D v2 (after v1.0) |
+| #97 | Git panel | #113 | Git panel (after v1.0) |
+| #98 | Shared rooms | #114 | Shared rooms (after v1.0) |
 
 Why the shape changed:
 
@@ -431,7 +459,8 @@ Why the shape changed:
 - **Generative UI split.** Quiz and Flashcard components come first (#92); the resolver needs #90's conflict detection (#94).
 - **A private beta early (#88)**, so real users test signed builds long before v1.0 (#109).
 - **Security before connectors and the learning core (#102)**, because connectors bring untrusted content and the learning core must not run before taint and poisoning suites exist.
-- **Computer use, figures v2, the git panel and shared rooms wait until after v1.0.**
+- **Handbooks added (#110)**, drafted PR by PR under `docs/handbooks/` from #84 on, so the last PR of the plan assembles them.
+- **Computer use, figures v2, the git panel and shared rooms wait until after v1.0 (#111–#114).**
 
 ## Earlier phases
 
@@ -604,8 +633,9 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 | Universal connector for services without MCP | Planned (#103) |
 | Learning from frustration signals, eval-gated | Planned (signal tap in #84, learning core in #104) |
 | Lecture video and slide intake | Planned (#99) |
-| Computer use, scoped to research chores | After v1.0 (#110), off by default |
-| Shared study and research rooms | After v1.0 (#113) |
+| Computer use, scoped to research chores | After v1.0 (#111), off by default |
+| Shared study and research rooms | After v1.0 (#114) |
 | Skill discovery and repository reading without cloning | Later |
+| Handbooks (user, research reading and writing, study, features, architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log) | Planned (#110), drafted from #84 on |
 | Interactive explainer export | Later |
 | Hardware research pack | Parked |
