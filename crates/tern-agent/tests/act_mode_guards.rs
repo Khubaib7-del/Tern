@@ -620,3 +620,136 @@ async fn the_prompt_says_mermaid_blocks_are_drawn() {
         "{system}"
     );
 }
+
+// ----- 9. Routing (#83) -----
+
+/// A scholarly search that records its queries.
+#[derive(Debug, Clone, Default)]
+struct ScholarProbe(Arc<Mutex<Vec<String>>>);
+
+impl Tool for ScholarProbe {
+    fn name(&self) -> &'static str {
+        "scholar_search"
+    }
+    fn summary(&self) -> &'static str {
+        "Search scholarly papers."
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["query"], "properties": {"query": {"type": "string"}}})
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(args["query"].as_str().unwrap_or_default().to_owned());
+        Box::pin(async {
+            Ok(ToolOutput::text(
+                "Scholarly search: 1. Active Retrieval Augmented Generation (Jiang et al., 2023)",
+            ))
+        })
+    }
+}
+
+impl Folder {
+    async fn run_prefetch(
+        &mut self,
+        model: &dyn Model,
+        sink: &MemorySink,
+        msg: &str,
+    ) -> TurnOutcome {
+        let approver = Answer::new(ApprovalAnswer::Deny);
+        TurnLoop {
+            session: SessionId::new(),
+            model,
+            model_name: "test-model",
+            tools: &self.tools,
+            gate: &mut self.gate,
+            approver: &approver,
+            sink,
+            ledger: &self.ledger,
+            budget: self.budget,
+            cancel: CancelFlag::default(),
+            instructions: None,
+            max_output_tokens: 4096,
+            on_text: None,
+            hooks: tern_agent::engine::RunHooks {
+                prefetch: true,
+                ..Default::default()
+            },
+        }
+        .run(Vec::new(), msg)
+        .await
+    }
+}
+
+#[tokio::test]
+async fn an_academic_question_searches_the_literature_before_the_model_answers() {
+    let mut f = Folder::new(TurnMode::Act);
+    let search = CountingSearch::default();
+    let scholar = ScholarProbe::default();
+    f.tools.register(search.clone());
+    f.tools.register(scholar.clone());
+    let model =
+        Script::new(&["FLARE retrieves only when a sentence has low-confidence tokens."]);
+    let sink = MemorySink::default();
+    let out = f
+        .run_prefetch(
+            &model,
+            &sink,
+            "How does FLARE compare with retrieving before every sentence?",
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(
+        scholar.0.lock().unwrap().as_slice(),
+        ["FLARE retrieving sentence"]
+    );
+    assert_eq!(search.0.load(Ordering::SeqCst), 0);
+    let read = model.read(0);
+    assert!(
+        read.contains("Active Retrieval Augmented Generation"),
+        "{read}"
+    );
+    assert!(read.contains("scholarly literature first"), "{read}");
+    assert!(
+        read.contains("never describe the contents of a paper"),
+        "{read}"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_task_about_papers_does_not_search_the_literature() {
+    let mut f = Folder::new(TurnMode::Act);
+    let scholar = ScholarProbe::default();
+    f.tools.register(scholar.clone());
+    let model = Script::new(&["There are no papers in this folder."]);
+    let sink = MemorySink::default();
+    f.run_prefetch(&model, &sink, "summarize the papers in this folder")
+        .await;
+    assert!(scholar.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_file_task_never_triggers_the_web_safety_net() {
+    let mut f = Folder::new(TurnMode::Act);
+    let search = CountingSearch::default();
+    f.tools.register(search.clone());
+    let model = Script::new(&[
+        "I don't have real-time access to the internet, so I can't look that up.",
+        "I couldn't count them yet.",
+        "There is one .md file, sum.md.",
+    ]);
+    let sink = MemorySink::default();
+    f.run(
+        &model,
+        &Answer::new(ApprovalAnswer::Deny),
+        &sink,
+        "count words in every .md file here and save the counts to counts.md.",
+    )
+    .await;
+    assert_eq!(search.0.load(Ordering::SeqCst), 0);
+    assert!(of_kind(&sink, "web.safety_net").is_empty());
+}

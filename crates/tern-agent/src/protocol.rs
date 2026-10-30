@@ -196,7 +196,7 @@ pub const RENDERING: &str = "Tern renders Markdown: tables, math ($...$, $$...$$
 
 /// Scholarly search (#82), after the tool protocol when `scholar_search`
 /// is offered.
-pub const SCHOLARLY: &str = "For academic, scientific or medical questions call `scholar_search` first (web search second), read a paper's text with `paper_read`, and widen a reading list with `paper_snowball`. Cite papers by their link and quote passages with their locator, for example (p. 4, §3 Method). When the papers found do not support a claim, say \"not enough evidence\" for it; never present an answer from memory as sourced.";
+pub const SCHOLARLY: &str = "For academic, scientific or medical questions, and any question about papers, studies, research methods or a named technique (for example FLARE, LoRA, ReAct), call `scholar_search` first (web search second), read a paper's text with `paper_read`, and widen a reading list with `paper_snowball`. Cite papers by their link and quote passages with their locator, for example (p. 4, §3 Method). Say what a paper finds only from text `paper_read` returned; a paper read as \"Abstract only\" is described \"according to its abstract\", and a paper you only saw listed is described by its title alone, never as discussing or showing anything. Leave a paper's own reference numbers such as [17] out of quotes: [n] cites only Tern's sources. When the papers found do not support a claim, say \"not enough evidence\" for it; never present an answer from memory as sourced, and never expand an acronym from memory.";
 
 /// Code mode (#77), after the tool protocol when `run_python` is offered;
 /// the stubs follow it.

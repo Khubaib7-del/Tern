@@ -55,8 +55,10 @@ pub fn remove_key(s: Service, secrets: &dyn SecretStore) -> Result<bool, String>
 }
 
 /// The fields Semantic Scholar is asked for.
-const S2_FIELDS: &str =
-    "title,authors,year,venue,externalIds,citationCount,openAccessPdf,abstract,url";
+const S2_FIELDS: &str = "title,authors,year,venue,externalIds,citationCount,influentialCitationCount,openAccessPdf,abstract,url";
+/// The fields a reference or citation list is asked for: the link's own
+/// influence mark, then the paper's.
+const S2_LINK_FIELDS: &str = "isInfluential,title,authors,year,venue,externalIds,citationCount,influentialCitationCount,openAccessPdf,abstract,url";
 /// The fields OpenAlex is asked for.
 const OPENALEX_SELECT: &str = "id,doi,display_name,publication_year,authorships,primary_location,cited_by_count,best_oa_location,open_access,abstract_inverted_index,ids,is_retracted";
 const CROSSREF_SELECT: &str =
@@ -364,6 +366,57 @@ impl Scholar {
         parse::s2_paper(&v).ok_or_else(|| "Semantic Scholar has no title for it".to_owned())
     }
 
+    /// One work's record from OpenAlex, by DOI.
+    pub async fn openalex_doi(&self, doi: &str) -> Option<Paper> {
+        let s = Service::OpenAlex;
+        let mut q = vec![("select", OPENALEX_SELECT.to_owned())];
+        if let Some(k) = self.key(s) {
+            q.push(("api_key", k.to_owned()));
+        }
+        let url = self.url(s, &format!("/works/doi:{doi}"), &q);
+        let a = self.http.get(&self.request(s, url)).await.ok()?;
+        let v: Value = serde_json::from_str(&a.body).ok()?;
+        parse::openalex_work(&v)
+    }
+
+    /// One work's record from Crossref, by DOI.
+    pub async fn crossref_doi(&self, doi: &str) -> Option<Paper> {
+        let s = Service::Crossref;
+        let mut q = Vec::new();
+        if let Some(m) = self.key(s) {
+            q.push(("mailto", m.to_owned()));
+        }
+        let url = self.url(s, &format!("/works/{doi}"), &q);
+        let a = self.http.get(&self.request(s, url)).await.ok()?;
+        let v: Value = serde_json::from_str(&a.body).ok()?;
+        parse::crossref_work(&v["message"])
+    }
+
+    /// Fills a paper's abstract (and what else is missing) from Semantic
+    /// Scholar, then OpenAlex, then Crossref, stopping at the first that
+    /// has one.
+    pub async fn fill_abstract(&self, p: &mut Paper) {
+        if p.abstract_text.is_none()
+            && let Some(id) = s2_id_for(p)
+            && let Ok(s2) = self.s2_paper(&id).await
+        {
+            p.absorb(s2);
+        }
+        let Some(doi) = p.doi.clone() else {
+            return;
+        };
+        if p.abstract_text.is_none()
+            && let Some(oa) = self.openalex_doi(&doi).await
+        {
+            p.absorb(oa);
+        }
+        if p.abstract_text.is_none()
+            && let Some(cr) = self.crossref_doi(&doi).await
+        {
+            p.absorb(cr);
+        }
+    }
+
     /// A paper's references or citations from Semantic Scholar.
     pub async fn links(
         &self,
@@ -377,7 +430,7 @@ impl Scholar {
             s,
             &format!("/graph/v1/paper/{id}/{which}"),
             &[
-                ("fields", S2_FIELDS.to_owned()),
+                ("fields", S2_LINK_FIELDS.to_owned()),
                 ("limit", limit.to_string()),
             ],
         );
@@ -510,7 +563,7 @@ pub fn search_output(
         }
         Sufficiency::Enough => {
             out.push_str(&format!(
-                "Scholarly search for \"{query}\" (asked {}): {} papers after merging, {} pass the relevance check, best first. Cite a paper as [n] with its link; quote a passage with its locator, for example (p. 4, §3 Method). A claim none of these papers supports gets \"not enough evidence\", not a guess. Read a paper's PDF with paper_read before quoting its body.\n",
+                "Scholarly search for \"{query}\" (asked {}): {} papers after merging, {} pass the relevance check, best first. Cite a paper as [n] with its link; quote a passage with its locator, for example (p. 4, §3 Method). A claim none of these papers supports gets \"not enough evidence\", not a guess. {UNREAD_RULE}\n",
                 asked.join(", "),
                 papers.len(),
                 kept.len()
@@ -524,9 +577,7 @@ pub fn search_output(
                     p.meta_line(),
                     p.link()
                 ));
-                if let Some(pdf) = &p.oa_pdf {
-                    out.push_str(&format!("   PDF: {pdf}\n"));
-                }
+                out.push_str(&format!("   {}\n", read_status(p)));
                 let key = p.key();
                 let mut shown = 0;
                 for ps in passages
@@ -545,13 +596,16 @@ pub fn search_output(
                         } else {
                             loc
                         },
-                        clip(&ps.text, 400)
+                        clip(&sch::strip_ref_markers(&ps.text), 400)
                     ));
                 }
                 if shown == 0
                     && let Some(a) = &p.abstract_text
                 {
-                    out.push_str(&format!("   Abstract: {}\n", clip(a, 360)));
+                    out.push_str(&format!(
+                        "   Abstract: {}\n",
+                        clip(&sch::strip_ref_markers(a), 360)
+                    ));
                 }
             }
         }
@@ -587,6 +641,23 @@ pub fn search_output(
             "papers": rows,
             "passages": snippets,
         }),
+    }
+}
+
+/// What every list of papers tells the model about papers it has not
+/// read (#83: an answer said each unread paper "discusses the use of
+/// attention" from its title alone).
+pub const UNREAD_RULE: &str = "None of these papers has been read yet: until paper_read returns a paper's text, say only what its title and abstract say, attribute it (\"its abstract says\"), and never claim what its body, methods or results contain. Prefer papers marked \"PDF\" when choosing what to read; the others give their abstract only.";
+
+/// Whether paper_read can read a paper's full text: an open-access PDF or
+/// an arXiv copy, or only its abstract.
+pub fn read_status(p: &Paper) -> String {
+    if let Some(pdf) = &p.oa_pdf {
+        format!("PDF: {pdf}")
+    } else if let Some(a) = &p.arxiv {
+        format!("PDF: https://arxiv.org/pdf/{a}")
+    } else {
+        "No open-access PDF: paper_read gives its abstract only".to_owned()
     }
 }
 
@@ -762,7 +833,11 @@ pub fn read_output(mut paper: Paper, joined: &str, url: &str, question: &str) ->
     }
     let mut used = 0;
     for ps in &chosen {
-        let line = format!("\n[{}] {}\n", ps.locator.label(), ps.text);
+        let line = format!(
+            "\n[{}] {}\n",
+            ps.locator.label(),
+            sch::strip_ref_markers(&ps.text)
+        );
         if used + line.len() > READ_CHARS {
             break;
         }
@@ -778,9 +853,62 @@ pub fn read_output(mut paper: Paper, joined: &str, url: &str, question: &str) ->
             "paper": row(&paper),
             "pages": pages.len(),
             "sufficiency": sufficiency,
-            "passages": chosen.iter().take(8).map(|p| json!({"text": clip(&p.text, 300), "locator": p.locator})).collect::<Vec<_>>(),
+            "passages": chosen.iter().take(8).map(|p| json!({"text": clip(&sch::strip_ref_markers(&p.text), 300), "locator": p.locator})).collect::<Vec<_>>(),
         }),
     }
+}
+
+/// What `paper_read` returns when the full text could not be read
+/// (`why`: no open-access PDF, robots.txt, a failed download) but an
+/// abstract was found: the abstract, plainly labelled as all Tern read.
+/// `None` without an abstract.
+pub fn abstract_output(paper: &Paper, why: &str, question: &str) -> Option<ToolOutput> {
+    let abs = paper
+        .abstract_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())?;
+    let abs = sch::strip_ref_markers(abs);
+    let link = paper.link();
+    let from = paper
+        .found_by
+        .iter()
+        .map(|s| s.name())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut out = format!(
+        "{}\n{link}\nAbstract only: Tern could not read this paper's full text ({why}), so it read the abstract{}. Say \"according to its abstract\" for anything taken from it, and never claim what its body, methods or results sections say.\n",
+        paper.title,
+        if from.is_empty() {
+            String::new()
+        } else {
+            format!(" from {from}")
+        }
+    );
+    if !question.is_empty() {
+        let terms = funnel::key_terms(question);
+        let cov = funnel::coverage(&terms, &abs);
+        if !terms.is_empty() && cov < PASSAGE_COVERAGE {
+            out.push_str(&format!(
+                "The abstract does not address \"{question}\" ({:.0}% of its key terms); say there is not enough evidence in what Tern read.\n",
+                cov * 100.0
+            ));
+        }
+    }
+    out.push_str(&format!("\n[abstract] {abs}\n"));
+    let mut pref = page_ref(paper, &link);
+    pref.title = format!("{} (abstract only)", paper.title);
+    Some(ToolOutput {
+        content: out,
+        evidence_refs: vec![link],
+        meta: json!({
+            "page": pref,
+            "paper": row(paper),
+            "abstract_only": true,
+            "reason": why,
+            "pages": 0,
+        }),
+    })
 }
 
 fn this_year() -> i32 {
@@ -814,7 +942,11 @@ impl PaperReadTool {
             }
         }
         p.oa_pdf.clone().ok_or_else(|| {
-            "no open-access PDF was found for it (Unpaywall needs your email under Settings › Search & Crawlers › Scholarly sources)".to_owned()
+            if self.0.key(Service::Unpaywall).is_some() {
+                "no open-access PDF was found for it".to_owned()
+            } else {
+                "no open-access PDF was found for it; an email under Settings › Search & Crawlers › Scholarly sources lets Unpaywall look too".to_owned()
+            }
         })
     }
 }
@@ -824,7 +956,7 @@ impl Tool for PaperReadTool {
         "paper_read"
     }
     fn summary(&self) -> &'static str {
-        "Read a paper's open-access PDF by DOI, arXiv id or PDF link. Returns passages labelled with their page and section, e.g. [p. 4 · 3 Method]; with `question`, the passages that bear on it, or \"not enough evidence in this paper\". Quote with the locator."
+        "Read a paper's open-access PDF by DOI, arXiv id or PDF link. Returns passages labelled with their page and section, e.g. [p. 4 · 3 Method]; with `question`, the passages that bear on it, or \"not enough evidence in this paper\". Quote with the locator. When the full text cannot be read (no open-access PDF, the site forbids it) it returns the abstract, marked \"Abstract only\": then say \"according to its abstract\". Prefer papers with a PDF."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Network
@@ -863,16 +995,36 @@ impl Tool for PaperReadTool {
                 .trim()
                 .to_owned();
             let mut paper = paper_ref(&asked);
-            let pdf = self.pdf_for(&mut paper).await.map_err(ToolError::Failed)?;
-            let page = self
-                .1
-                .fetch(&pdf)
-                .await
-                .map_err(|e| ToolError::Failed(format!("could not read {pdf}: {e}")))?;
-            if paper.title.trim().is_empty() {
-                paper.title = page.title.clone();
+            let fetched = match self.pdf_for(&mut paper).await {
+                Ok(pdf) => self
+                    .1
+                    .fetch(&pdf)
+                    .await
+                    .map_err(|e| format!("could not read {pdf}: {e}")),
+                Err(e) => Err(e),
+            };
+            match fetched {
+                Ok(page) => {
+                    if paper.title.trim().is_empty() {
+                        paper.title = page.title.clone();
+                    }
+                    Ok(read_output(paper, &page.text, &page.final_url, &question))
+                }
+                Err(why) => {
+                    // No full text (#83: robots.txt at sciencedirect, no
+                    // open-access PDF): the abstract, labelled as such.
+                    self.0.fill_abstract(&mut paper).await;
+                    crate::diag::note(&format!(
+                        "paper_read: full text unavailable ({why}); abstract={}",
+                        paper.abstract_text.is_some()
+                    ));
+                    abstract_output(&paper, &why, &question).ok_or_else(|| {
+                        ToolError::Failed(format!(
+                            "{why}, and no abstract was found either. This paper is unread: do not say what it contains."
+                        ))
+                    })
+                }
             }
-            Ok(read_output(paper, &page.text, &page.final_url, &question))
         })
     }
 }
@@ -948,7 +1100,7 @@ impl Tool for PaperSnowballTool {
         "paper_snowball"
     }
     fn summary(&self) -> &'static str {
-        "Follow a paper's references and/or the papers citing it, round by round, keeping papers on `topic`; stops when new relevant papers level off (at most 3 rounds, 40 papers). Give the seed as a DOI or arXiv id."
+        "Follow a paper's references and/or the papers citing it, round by round, keeping papers on `topic`; stops when new relevant papers level off (at most 3 rounds, 40 papers). Give the seed as a DOI or arXiv id, and the user's `question` when there is one. Finds are ranked by relevance to the seed and question, then influential citations, never by date. It lists papers; it does not read them."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Network
@@ -958,6 +1110,7 @@ impl Tool for PaperSnowballTool {
                "properties": {
                    "paper": {"type": "string", "description": "The seed paper: a DOI or arXiv id."},
                    "topic": {"type": "string", "description": "Key terms a found paper must be about."},
+                   "question": {"type": "string", "description": "The user's question, to rank finds by."},
                    "direction": {"type": "string", "description": "references, citations, or both (default)."},
                    "rounds": {"type": "integer", "description": "At most this many rounds (1-3, default 2)."}}})
     }
@@ -988,7 +1141,12 @@ impl Tool for PaperSnowballTool {
             if seed.s2_id.is_none() {
                 seed.s2_id = Some(seed_id.clone());
             }
-            let mut ball = Snowball::new(&topic, vec![seed.clone()], rule);
+            let question = args["question"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let mut ball = Snowball::new(&topic, vec![seed.clone()], rule).with_question(&question);
             let mut errors = Vec::new();
             while !ball.done() {
                 let mut linked = Vec::new();
@@ -1015,8 +1173,9 @@ impl Tool for PaperSnowballTool {
                 .stopped()
                 .map(|r| r.label())
                 .unwrap_or("nothing left to follow");
+            let ranked = ball.ranked();
             let mut out = format!(
-                "Snowballing from \"{}\" on \"{topic}\": {} relevant papers in {} round(s); stopped because {stop}.\n",
+                "Snowballing from \"{}\" on \"{topic}\": {} relevant papers in {} round(s); stopped because {stop}. Best first: relevance to the seed and question, then influential citations (not date). {UNREAD_RULE}\n",
                 if seed.title.is_empty() {
                     seed_id.as_str()
                 } else {
@@ -1028,13 +1187,19 @@ impl Tool for PaperSnowballTool {
             if ball.found.is_empty() {
                 out.push_str("Not enough evidence: no linked paper is on this topic. Say so rather than guessing.\n");
             }
-            for (n, p) in ball.found.iter().enumerate() {
+            for (n, p) in ranked.iter().enumerate() {
                 out.push_str(&format!(
-                    "{}. {}\n   {}\n   {}\n",
+                    "{}. {}{}\n   {}\n   {}\n   {}\n",
                     n + 1,
                     p.title,
+                    if p.influential {
+                        " (influential link)"
+                    } else {
+                        ""
+                    },
                     p.meta_line(),
-                    p.link()
+                    p.link(),
+                    read_status(p)
                 ));
             }
             if !errors.is_empty() {
@@ -1046,11 +1211,11 @@ impl Tool for PaperSnowballTool {
             }
             Ok(ToolOutput {
                 content: out,
-                evidence_refs: ball.found.iter().map(Paper::link).collect(),
+                evidence_refs: ranked.iter().map(Paper::link).collect(),
                 meta: json!({
                     "query": topic,
                     "seed": row(&seed),
-                    "papers": ball.found.iter().map(|p| { let mut v = row(p); v["passed"] = json!(true); v }).collect::<Vec<_>>(),
+                    "papers": ranked.iter().map(|p| { let mut v = row(p); v["passed"] = json!(true); v }).collect::<Vec<_>>(),
                     "rounds": ball.rounds,
                     "stop": ball.stopped(),
                     "results": ball.found.len(),
@@ -1251,6 +1416,102 @@ mod tests {
             read.content
         );
         assert_eq!(read.meta["page"]["builtin"], "arxiv");
+    }
+
+    #[test]
+    fn lists_say_which_papers_can_be_read_and_that_none_was() {
+        let s2 = r#"{"data": [
+            {"paperId": "a", "title": "Active Retrieval Augmented Generation", "externalIds": {"ArXiv": "2305.06983"}, "year": 2023, "citationCount": 900},
+            {"paperId": "b", "title": "Active retrieval augmented generation for clinical notes", "externalIds": {"DOI": "10.1016/j.x.2026.1"}, "year": 2026, "citationCount": 0}]}"#;
+        let out = replay_search(
+            "active retrieval augmented generation",
+            &[(Service::SemanticScholar, s2)],
+        );
+        assert!(
+            out.content
+                .contains("PDF: https://arxiv.org/pdf/2305.06983"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains("No open-access PDF: paper_read gives its abstract only"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains("None of these papers has been read yet"),
+            "{}",
+            out.content
+        );
+    }
+
+    #[test]
+    fn a_paper_without_full_text_is_read_as_its_abstract() {
+        let paper = Paper {
+            title: "Toward a framework for patient-facing GenAI tools".into(),
+            doi: Some("10.1016/j.jmedi.2026.106741".into()),
+            abstract_text: Some(
+                "We propose a framework for assessing generative AI tools in mental healthcare [17, 18]."
+                    .into(),
+            ),
+            found_by: vec![Service::OpenAlex],
+            ..Paper::default()
+        };
+        let why = "could not read https://www.sciencedirect.com/x.pdf: robots.txt disallows it";
+        let out = abstract_output(&paper, why, "").expect("an abstract");
+        assert!(out.content.contains("Abstract only"), "{}", out.content);
+        assert!(out.content.contains("robots.txt"), "{}", out.content);
+        assert!(
+            out.content.contains("according to its abstract"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains("generative AI tools in mental healthcare."),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("[17"), "{}", out.content);
+        assert_eq!(out.meta["abstract_only"], true);
+        assert!(
+            out.meta["page"]["title"]
+                .as_str()
+                .unwrap()
+                .ends_with("(abstract only)")
+        );
+        assert_eq!(
+            out.evidence_refs,
+            vec!["https://doi.org/10.1016/j.jmedi.2026.106741".to_owned()]
+        );
+        // A question the abstract does not touch says so.
+        let off = abstract_output(&paper, why, "self-attention in transformers").unwrap();
+        assert!(off.content.contains("does not address"), "{}", off.content);
+        // No abstract: nothing to return, the tool fails as unread.
+        let bare = Paper {
+            abstract_text: None,
+            ..paper
+        };
+        assert!(abstract_output(&bare, why, "").is_none());
+    }
+
+    #[test]
+    fn a_read_paper_quotes_without_its_own_reference_numbers() {
+        let read = read_output(
+            paper_ref("arXiv:1706.03762"),
+            "[page 2]\n3 Model Architecture\nSelf-attention has been used in reading comprehension [4, 27] and summarization [28].\n",
+            "https://arxiv.org/pdf/1706.03762",
+            "",
+        );
+        assert!(
+            read.content
+                .contains("used in reading comprehension and summarization."),
+            "{}",
+            read.content
+        );
+        assert!(!read.content.contains("[4, 27]"), "{}", read.content);
     }
 
     #[test]
