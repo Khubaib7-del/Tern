@@ -239,7 +239,7 @@ pub fn content_words(text: &str) -> BTreeSet<String> {
 }
 
 /// Whether a text says "not", "never", "no"...
-fn negated(text: &str) -> bool {
+pub(crate) fn negated(text: &str) -> bool {
     text.split(|c: char| !(c.is_alphanumeric() || c == '\''))
         .any(|w| {
             let w = w.to_lowercase();
@@ -253,7 +253,7 @@ fn negated(text: &str) -> bool {
 /// Numbers in a text written in digits, normalised (`1,200` and `1200`
 /// match). Number words (`two doses`) are left to [`conflict`], which only
 /// uses them where the words around them match.
-fn numbers(text: &str) -> BTreeSet<String> {
+pub(crate) fn numbers(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
         .map(|w| w.trim_matches(['.', ',']).replace(',', ""))
         .filter(|w| !w.is_empty() && w.chars().any(|c| c.is_ascii_digit()))
@@ -709,6 +709,27 @@ pub fn passages(claim: &str, sources: &[&SourceText]) -> Vec<Passage> {
     out
 }
 
+/// The passage of `s` at `start..end`, with `overlap` already counted,
+/// scored as [`passages`] scores one.
+pub(crate) fn score_span(
+    claim: &str,
+    s: &SourceText,
+    start: usize,
+    end: usize,
+    overlap: u8,
+) -> Passage {
+    let text = &s.text[start..end];
+    let want_stems: BTreeSet<String> = tokens(claim).into_iter().map(|t| t.stem).collect();
+    Passage {
+        source: s.n,
+        start,
+        end,
+        overlap,
+        numbers_match: numbers(claim).is_subset(&numbers(text)),
+        polarity_match: !flipped(claim, negated(claim), &want_stems, text),
+    }
+}
+
 /// The verdict the lexical path gives a passage.
 pub fn lexical_verdict(p: &Passage) -> Verdict {
     if p.overlap >= SUPPORTED_AT && p.numbers_match && p.polarity_match {
@@ -825,7 +846,7 @@ pub fn evidence_of(p: &Passage, sources: &[&SourceText]) -> Evidence {
 }
 
 /// Text cut to `max` characters at a word, with an ellipsis.
-fn clip(text: &str, max: usize) -> String {
+pub(crate) fn clip(text: &str, max: usize) -> String {
     let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.chars().count() <= max {
         return t;
@@ -836,7 +857,7 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// Text without the PDF reader's `[page N]` markers.
-fn without_page_marks(text: &str) -> String {
+pub(crate) fn without_page_marks(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find("[page ") {
@@ -854,7 +875,7 @@ fn without_page_marks(text: &str) -> String {
 }
 
 /// The `[page N]` marker the PDF reader put before `at`, if any.
-fn page_at(text: &str, at: usize) -> Option<u32> {
+pub(crate) fn page_at(text: &str, at: usize) -> Option<u32> {
     let i = if text[at..].starts_with("[page ") {
         at
     } else {
@@ -1054,13 +1075,13 @@ fn find_quote(quote: &str, sources: &[&SourceText]) -> Option<Evidence> {
     None
 }
 
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     squash_with_map(s).0
 }
 
 /// Lower case with whitespace runs made one space, and for each byte of
 /// the result the byte of `s` it came from.
-fn squash_with_map(s: &str) -> (String, Vec<usize>) {
+pub(crate) fn squash_with_map(s: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(s.len());
     let mut map = Vec::with_capacity(s.len());
     let mut space = false;

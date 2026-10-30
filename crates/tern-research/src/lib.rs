@@ -13,12 +13,16 @@
 //! scholarly services' answers into papers, ranks them through the rerank
 //! funnel (with "not enough evidence" when nothing supports the question),
 //! cuts PDFs into passages with page and section locators, and decides
-//! when citation snowballing stops.
+//! when citation snowballing stops. [`evidence`] is the evidence chain:
+//! quotes Tern minted from what it read, citations bound to them, each
+//! source's stance on each claim (Supports, Refutes, Mixed, Not enough
+//! info), the agreement across sources, and counter-search planning.
 
 #![forbid(unsafe_code)]
 
 pub mod claims;
 pub mod deep;
+pub mod evidence;
 pub mod ledger;
 pub mod plan;
 pub mod report;
@@ -29,6 +33,7 @@ pub mod watch;
 
 pub use claims::{Claim, extract};
 pub use deep::{Final, Merged, NoteSource, WorkerNotes, WorkerStatus};
+pub use evidence::{Agreement, Chain, CiteStatus, ClaimEvidence, QuoteBook, QuoteId, Stance};
 pub use ledger::{Ledger, LedgerReason, SourceFate};
 pub use plan::{PlanBudget, PlanSource, ResearchPlan, SourceKind, SubQuestion, WorkerBudget};
 pub use report::{ReportBudget, ReportSource, ReportStep, ReportUsage, ReportWorker, RunReport};
