@@ -487,8 +487,10 @@ pub fn prefetch_calls(
     // An academic question (papers, studies, a named technique such as
     // FLARE) searches the literature first, whatever the model would pick
     // (#83: small models chose `web_search` with `scholar_search` on
-    // offer). Never for a folder or file task.
+    // offer). Never for a folder or file task, nor when the message itself
+    // asks for the web ("use the web tool"): that search runs instead.
     if tools.get("scholar_search").is_some()
+        && !crate::webintent::asks_for_web(own)
         && crate::intent::classify(own) == crate::intent::Intent::Academic
         && let Some(query) = crate::intent::scholar_query(own)
     {

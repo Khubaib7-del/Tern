@@ -258,8 +258,9 @@ pub fn is_file_task(text: &str) -> bool {
 }
 
 /// A technique's name: an all-capital word of three to ten letters or
-/// digits (FLARE, BERT, RAG, GPT-4), or a mixed-case acronym with at least
-/// two capitals and no spaces (LoRA, ReAct, RoBERTa).
+/// digits (FLARE, BERT, RAG, GPT-4), or a mixed-case acronym with more
+/// capitals than small letters (LoRA, RoBERTa, Self-RAG). Product names
+/// in camel case (LangChain, GitHub, OpenAI) are not techniques.
 fn has_technique_name(text: &str) -> bool {
     text.split(|c: char| !(c.is_alphanumeric() || c == '-'))
         .map(|w| w.trim_matches('-'))
@@ -273,11 +274,11 @@ fn has_technique_name(text: &str) -> bool {
                 && w.chars().count() <= 10
                 && !COMMON_CAPS.contains(&w.to_uppercase().as_str());
             // Mixed case like "LoRA": not the first word (a capitalised
-            // sentence start is not an acronym), two or more capitals with
-            // a lower-case letter after the first.
+            // sentence start is not an acronym), and mostly capitals.
             let mixed = i > 0
                 && caps >= 2
                 && caps < letters
+                && caps > letters - caps
                 && w.chars().next().is_some_and(char::is_uppercase)
                 && w.chars().count() <= 10;
             all_caps || mixed
@@ -466,6 +467,8 @@ mod tests {
             "What is an API key?",
             "peer to peer networking basics",
             "Make me a study plan for next week",
+            "who is the creator of LangChain?",
+            "what is new on GitHub and OpenAI?",
         ] {
             let got = classify(q);
             assert!(
