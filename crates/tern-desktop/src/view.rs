@@ -192,10 +192,11 @@ pub struct Workspace {
     /// Stops one deep research worker, or the whole run.
     deep_control: tern_agent::DeepControl,
     scroll: ScrollHandle,
-    /// The run panel's scroll, and the anchor on its focused claim (a
-    /// verdict badge clicked scrolls the Report to its claim, #83).
+    /// The run panel's scroll, and whether the Report should scroll its
+    /// focused claim to the top when it is next drawn (a verdict badge
+    /// clicked, #83).
     run_scroll: ScrollHandle,
-    claim_anchor: gpui_kit::ScrollAnchor,
+    claim_scroll_pending: std::rc::Rc<std::cell::Cell<bool>>,
     ticker: Option<Task<()>>,
     /// Motion state: the side panels' slides and a theme switch in flight.
     sidebar_slide: Slide,
@@ -821,8 +822,8 @@ impl Workspace {
             plan_dropped: HashSet::new(),
             deep_control: tern_agent::DeepControl::default(),
             scroll: ScrollHandle::new(),
-            claim_anchor: gpui_kit::ScrollAnchor::for_handle(run_scroll.clone()),
             run_scroll,
+            claim_scroll_pending: Default::default(),
             ticker: None,
             _listener: listener,
             _watch_timer: watch_timer,
@@ -6254,6 +6255,7 @@ impl Workspace {
                 .map(|(chain, ev)| self.claim_evidence(chain, ev, &pages, p, cx));
             div()
                 .id(SharedString::from(format!("report-claim-{}", c.claim)))
+                .relative()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -6262,8 +6264,10 @@ impl Workspace {
                 .border_1()
                 .border_color(if focused { p.muted } else { p.border })
                 .when(focused, |d| {
-                    d.bg(p.raised)
-                        .anchor_scroll(Some(self.claim_anchor.clone()))
+                    d.bg(p.raised).child(claim_scroll_probe(
+                        self.run_scroll.clone(),
+                        self.claim_scroll_pending.clone(),
+                    ))
                 })
                 .child(
                     div()
@@ -6386,15 +6390,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Scrolls the run panel to the focused claim. The claim takes the
-    /// anchor when it is next drawn, so the scroll waits a frame for it.
-    pub(super) fn scroll_to_claim(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let anchor = self.claim_anchor.clone();
-        let view = cx.entity_id();
-        window.on_next_frame(move |window, cx| {
-            anchor.scroll_to(window, cx);
-            cx.notify(view);
-        });
+    /// Scrolls the run panel to the focused claim when it is next drawn
+    /// (`claim_scroll_probe` measures it there).
+    pub(super) fn scroll_to_claim(&self, cx: &mut Context<Self>) {
+        self.claim_scroll_pending.set(true);
+        cx.notify();
     }
 
     /// A claim's evidence in the Report: its stance across sources with
@@ -7630,6 +7630,30 @@ fn with_badges(entry: usize, text: &str, run: &Run) -> String {
     tern_agent::verify::annotate(text, &run.checks, |claim| {
         tern_agent::verify::claim_link(entry, claim)
     })
+}
+
+/// An invisible layer over the Report's focused claim: when a scroll to
+/// it is pending, it moves the run panel so the claim's top meets the
+/// panel's top (GPUI clamps the far end), then asks for a redraw.
+fn claim_scroll_probe(
+    handle: ScrollHandle,
+    pending: std::rc::Rc<std::cell::Cell<bool>>,
+) -> impl IntoElement {
+    gpui_kit::canvas(
+        move |bounds, window, _| {
+            if pending.replace(false) {
+                let view = handle.bounds();
+                let off = handle.offset();
+                let below = f32::from(bounds.origin.y) - f32::from(view.origin.y);
+                let y = (f32::from(off.y) - below).min(0.);
+                handle.set_offset(gpui_kit::point(off.x, px(y)));
+                window.refresh();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
 }
 
 /// Source cards shown per claim in the Report.
