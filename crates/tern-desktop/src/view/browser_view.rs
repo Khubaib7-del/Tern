@@ -102,6 +102,7 @@ impl Workspace {
             if let Some((entry, claim)) = tern_agent::verify::claim_of_link(&url) {
                 let _ = this.update(app, |w, cx| {
                     w.model.show_claim(entry, claim);
+                    w.scroll_to_claim(window, cx);
                     cx.notify();
                 });
                 return;

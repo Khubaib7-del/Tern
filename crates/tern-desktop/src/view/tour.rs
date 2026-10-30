@@ -2604,6 +2604,7 @@ impl Workspace {
                     self.model.show_claim(i, n);
                 }
                 self.model.run_panel_open = true;
+                self.scroll_to_claim(window, cx);
             }
             Act::ScholarFinish => {
                 self.tour_event("turn.finished", "Answered", json!({"state": "completed"}), window, cx);

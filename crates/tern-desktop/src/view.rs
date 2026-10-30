@@ -192,6 +192,10 @@ pub struct Workspace {
     /// Stops one deep research worker, or the whole run.
     deep_control: tern_agent::DeepControl,
     scroll: ScrollHandle,
+    /// The run panel's scroll, and the anchor on its focused claim (a
+    /// verdict badge clicked scrolls the Report to its claim, #83).
+    run_scroll: ScrollHandle,
+    claim_anchor: gpui_kit::ScrollAnchor,
     ticker: Option<Task<()>>,
     /// Motion state: the side panels' slides and a theme switch in flight.
     sidebar_slide: Slide,
@@ -756,6 +760,7 @@ impl Workspace {
             bridge.cards_load();
         }
         let (sidebar_open, panel_open) = (model.sidebar_open, model.run_panel_open);
+        let run_scroll = ScrollHandle::new();
         let mut this = Self {
             sidebar_slide: Slide::new(sidebar_open),
             panel_slide: Slide::new(panel_open),
@@ -816,6 +821,8 @@ impl Workspace {
             plan_dropped: HashSet::new(),
             deep_control: tern_agent::DeepControl::default(),
             scroll: ScrollHandle::new(),
+            claim_anchor: gpui_kit::ScrollAnchor::for_handle(run_scroll.clone()),
+            run_scroll,
             ticker: None,
             _listener: listener,
             _watch_timer: watch_timer,
@@ -6014,12 +6021,23 @@ impl Workspace {
                 // The Files tab scrolls itself (its tree is culled).
                 div().flex_1().min_h_0().child(body).into_any_element()
             } else {
+                // A plain GPUI scroll div with its own handle, so the
+                // Report can scroll to a claim (`scroll_to_claim`).
                 div()
-                    .id("run-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .child(body)
+                    .child(
+                        div()
+                            .id("run-scroll")
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.run_scroll)
+                            .child(body),
+                    )
+                    .child(page_bar("run-scroll-bar".into(), &self.run_scroll))
                     .into_any_element()
             })
             .child(
@@ -6242,7 +6260,10 @@ impl Workspace {
                 .rounded_md()
                 .border_1()
                 .border_color(if focused { p.muted } else { p.border })
-                .when(focused, |d| d.bg(p.raised))
+                .when(focused, |d| {
+                    d.bg(p.raised)
+                        .anchor_scroll(Some(self.claim_anchor.clone()))
+                })
                 .child(
                     div()
                         .flex()
@@ -6362,6 +6383,17 @@ impl Workspace {
             .children(claims)
             .children(files)
             .into_any_element()
+    }
+
+    /// Scrolls the run panel to the focused claim. The claim takes the
+    /// anchor when it is next drawn, so the scroll waits a frame for it.
+    pub(super) fn scroll_to_claim(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let anchor = self.claim_anchor.clone();
+        let view = cx.entity_id();
+        window.on_next_frame(move |window, cx| {
+            anchor.scroll_to(window, cx);
+            cx.notify(view);
+        });
     }
 
     /// A claim's evidence in the Report: its stance across sources with
