@@ -16,6 +16,13 @@
     "brier.local-lexical-1": 0.327,
     "ece.local-lexical-1": 0.151
   },
+  "evidence": {
+    "agreement_accuracy": 1.0,
+    "citation_validity": 1.0,
+    "counter_effect_accuracy": 1.0,
+    "counter_trigger_accuracy": 1.0,
+    "verdict_accuracy": 1.0
+  },
   "quiz": {
     "credit_error": 0.087,
     "grading_accuracy": 0.869,

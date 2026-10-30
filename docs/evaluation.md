@@ -121,9 +121,9 @@ The baseline (`crates/tern-eval/baseline.json`) holds these scores, with the hel
 
 Live, pinned, and public numbers will be added when they have been run with a key.
 
-## Evidence suite (PR #83, offline)
+## Evidence suite (PR #83, offline, 30 October 2026, 3 trials)
 
-`evidence@1` runs answers through the evidence chain over the pages they read. Metrics: **citation validity** (each citation's status, and forged tokens stripped), **verdict accuracy** (the claim's stance across sources), **agreement accuracy** (support and refute counts per independent site), **counter-search trigger accuracy** (the right claims get a counter-search, with the claim's key words in the query) and **counter-search effect accuracy** (the stance once the pages it found are read). The baseline is set from the first CI run. Like the scholarly suite, these cases were written alongside the code: they show the chain does what it was built to do, not how often a live model's citations hold up. See [evidence.md](evidence.md).
+`evidence@1` runs answers through the evidence chain over the pages they read. Metrics: **citation validity** (each citation's status, and forged tokens stripped), **verdict accuracy** (the claim's stance across sources), **agreement accuracy** (support and refute counts per independent site), **counter-search trigger accuracy** (the right claims get a counter-search, with the claim's key words in the query) and **counter-search effect accuracy** (the stance once the pages it found are read). `evidence@1` passed 30 of 30 case runs (10 cases × 3 trials) in CI on Windows, Linux and macOS. Every metric was at 100%: citation validity 18/18, verdict accuracy 24/24, agreement accuracy 15/15, counter-search trigger accuracy 18/18, counter-search effect accuracy 6/6 (95% interval 61.0%–100% for the effect metric, the widest). The baseline holds these scores so that a regression fails CI. Like the scholarly suite, these cases were written alongside the code: they show the chain does what it was built to do, not how often a live model's citations hold up. See [evidence.md](evidence.md).
 
 ## Adding cases
 
