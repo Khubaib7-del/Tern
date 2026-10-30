@@ -6415,7 +6415,7 @@ impl Workspace {
                 let mut where_ = if k.source > 0 {
                     format!("[{}] {}", k.source, page.label())
                 } else {
-                    page.label()
+                    page.label().to_string()
                 };
                 if !loc.is_empty() {
                     where_ = format!("{where_} · {loc}");
