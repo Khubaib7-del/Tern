@@ -406,6 +406,9 @@ pub struct Run {
     pub end: Option<RunEnd>,
     /// The answer's claims and their verdicts, once checked.
     pub checks: Vec<ClaimCheck>,
+    /// The answer's evidence chain (quotes, stances, agreement,
+    /// counter-searches), once checked.
+    pub evidence: Option<Box<tern_research::evidence::Chain>>,
     /// Where the run's report was written.
     pub report: Option<ReportFiles>,
     /// The plan and workers, for a deep research turn.
@@ -534,6 +537,9 @@ impl Run {
         if e.kind == "claims.checked" {
             self.checks = serde_json::from_value(e.payload["checks"].clone()).unwrap_or_default();
             self.report = serde_json::from_value(e.payload["report"].clone()).ok();
+            self.evidence = serde_json::from_value(e.payload["evidence"].clone())
+                .ok()
+                .map(Box::new);
         }
         self.steps.push(step_of(e, at));
     }
@@ -848,6 +854,25 @@ pub fn step_of(e: &EventEnvelope, at: Duration) -> RunStep {
         "claims.checking" => {
             step.verb = "Checking claims";
             step.detailed = false;
+        }
+        "claims.countering" => {
+            step.kind = StepKind::Search;
+            step.verb = "Counter-searching";
+            step.target = str_at(p, "query").unwrap_or_default().to_owned();
+            step.detailed = false;
+        }
+        "claims.countered" => {
+            step.kind = StepKind::Search;
+            step.verb = "Counter-searched";
+            step.target = str_at(p, "query").unwrap_or_default().to_owned();
+            step.note = str_at(p, "note").unwrap_or_default().to_owned();
+            if let Some(n) = p["claim"].as_u64() {
+                step.note = if step.note.is_empty() {
+                    format!("claim {n}")
+                } else {
+                    format!("claim {n} · {}", step.note)
+                };
+            }
         }
         "claims.checked" => {
             let checks: Vec<ClaimCheck> =

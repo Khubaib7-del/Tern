@@ -38,6 +38,10 @@ pub struct RunReport {
     #[serde(default)]
     pub workers: Vec<ReportWorker>,
     pub claims: Vec<ClaimCheck>,
+    /// The evidence chain: quotes, each source's stance on each claim,
+    /// agreement, counter-searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::evidence::Chain>,
     pub usage: ReportUsage,
     pub errors: Vec<String>,
     /// Every URL considered and what each step used.
@@ -305,6 +309,11 @@ impl RunReport {
             ));
         }
 
+        if let Some(chain) = &self.evidence {
+            md.push('\n');
+            md.push_str(&crate::evidence::markdown(chain));
+        }
+
         md.push_str("\n## Budget and usage\n\n");
         let u = &self.usage;
         let of = |used: u64, max: Option<u64>| match max {
@@ -461,6 +470,7 @@ mod tests {
                     seconds: 60,
                 }),
             }],
+            evidence: None,
             claims: vec![ClaimCheck {
                 claim: 1,
                 text: "In 1889.".into(),
