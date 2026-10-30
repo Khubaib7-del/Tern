@@ -4,6 +4,15 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Fixed (PR #83): scholarly follow-ups from the #82 Windows test
+
+- **Academic questions search the literature first**: a question about papers, studies, research methods or a named technique ("How does FLARE compare with retrieving before every sentence?", "Do octopuses dream in binary code?") runs `scholar_search` before the model answers, chosen by a deterministic classifier (academic, file, casual or general) rather than left to the model, which picked `web_search` with `scholar_search` on offer. The model is told to answer from the papers, say "not enough evidence" when they do not cover the question, and may still search the web afterwards. The system prompt and tool descriptions say the same, and never to expand an acronym from memory.
+- **Snowball ranks by influence and relevance, not date**: `paper_snowball` ranks each round's finds by relevance to the topic, the user's question (new `question` argument) and the seed, then Semantic Scholar's influential citation count and influential links, then citations overall; the year plays no part. The strongest finds are followed in the next round and lead the list (it had listed a seed's newest citing papers, off topic and uncited, first).
+- **`paper_read` falls back to the abstract**: when a paper has no open-access PDF, or its site's robots.txt forbids reading it, `paper_read` returns the paper's abstract from Semantic Scholar, OpenAlex or Crossref, marked "Abstract only" (and "(abstract only)" in the Ledger), instead of failing. Search and snowball lists say which papers have a PDF and which give their abstract only, and to prefer the readable ones.
+- **No claims about unread papers**: every paper list tells the model that none of its papers has been read and that a paper is described only by what its title and abstract say until `paper_read` returns its text ("according to its abstract" for an abstract-only read).
+- **A paper's own reference numbers leave quotes**: markers such as [17], [9, 18] or [3–5] in passages and abstracts are taken out before the model sees them, so an answer no longer carries them and the claim check no longer reports "Cites [17] [18] [9] but Tern read no such source".
+- **No web search for folder and file tasks**: Tern's own search after a refusal or a repeated reply never runs for a file or folder task (a file name such as `counts.md` or `*.md`, a local path, or files and folders with file tools on offer) or once the model has used a file tool in the turn; "count words in every .md file here and save the counts to counts.md" had been answered "I couldn't find any relevant results".
+
 ### Added (PR #83): evidence chain and claim verification
 
 - **Quote ids**: Tern mints a six-digit id for each passage it quotes, hashed from the page and the passage's words, so the same passage always has the same id and an id cannot be guessed. `paper_read` labels each passage with its id and locator (`[q:3f9a1c · p. 4 · 3 Method]`) and lists the quotes in its result.

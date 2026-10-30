@@ -47,6 +47,7 @@ pub mod explain;
 pub mod git;
 pub mod handoff;
 pub mod highlight;
+pub mod intent;
 pub mod ledger;
 pub mod library;
 pub mod live;

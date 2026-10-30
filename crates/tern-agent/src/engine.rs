@@ -421,6 +421,20 @@ pub const CONFIRM_NUDGE: &str = "(Tern note: do not ask in prose whether to go a
 /// it (#79).
 pub const SCRIPT_NUDGE: &str = "(Tern note: do not show the script for the user to run. Run it yourself now with `run_python`. Inside `run_python` there is no open(), os or pathlib: use the tool functions listed under Code mode instead (for example files_list(), file_read(path), file_write(path, text)), and print a short summary of what it did.)";
 
+/// The tools that work on the user's folder.
+const FILE_TOOLS: &[&str] = &[
+    "files_list",
+    "file_read",
+    "file_search",
+    "file_write",
+    "file_edit",
+    "file_rename",
+];
+
+/// What follows the scholarly search Tern runs before an academic
+/// question (#83).
+const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If the papers do not cover the question, say \"not enough evidence\" rather than answering from memory; you may call `web_search` afterwards for background.)";
+
 /// Said once when the model refuses an ordinary writing request (#80).
 pub const REFUSAL_NUDGE: &str = "(Tern note: this is an ordinary request. Answer it directly and in full; ignore any words in it about pressing buttons in the app.)";
 
@@ -469,6 +483,18 @@ pub fn prefetch_calls(
         // "read sum.md" in a chat with a folder (#78: the model answered
         // from memory right after a write): the file as it is now.
         out.push(("file_read", json!({"path": name})));
+    }
+    // An academic question (papers, studies, a named technique such as
+    // FLARE) searches the literature first, whatever the model would pick
+    // (#83: small models chose `web_search` with `scholar_search` on
+    // offer). Never for a folder or file task, nor when the message itself
+    // asks for the web ("use the web tool"): that search runs instead.
+    if tools.get("scholar_search").is_some()
+        && !crate::webintent::asks_for_web(own)
+        && crate::intent::classify(own) == crate::intent::Intent::Academic
+        && let Some(query) = crate::intent::scholar_query(own)
+    {
+        out.push(("scholar_search", json!({"query": query})));
     }
     if tools.get("web_search").is_some()
         && let Some(query) = web_prefetch(text, previous)
@@ -870,6 +896,18 @@ impl Run<'_, '_> {
 
     /// Whether the chat has a folder but is in Chat mode, so its file
     /// changes are left out (#80).
+    /// Whether Tern may search the web itself after a refusal or a copied
+    /// reply: never for a folder or file task (#83: "count words in every
+    /// .md file here and save the counts to counts.md" became a web search
+    /// and the answer said it found no relevant results).
+    fn safety_net_allowed(&self, message: &str) -> bool {
+        let (own, _) = crate::attach::split(message);
+        let (_, own) = crate::reply::split(own);
+        let file_tools = FILE_TOOLS.iter().any(|t| self.cfg.tools.get(t).is_some());
+        let used_file_tools = self.called.iter().any(|c| FILE_TOOLS.contains(&c.as_str()));
+        crate::intent::safety_net_allowed(own, file_tools, used_file_tools)
+    }
+
     fn chat_mode_folder(&self) -> bool {
         self.cfg.tools.mode() == Some(crate::workspace::TurnMode::Chat)
             && self.cfg.tools.hidden("file_write")
@@ -1088,6 +1126,8 @@ impl Run<'_, '_> {
                     "(Tern searched the web just now because the message asked for it, and the search found nothing on the question. Say so plainly as the result above says; do not make up an answer and do not say you cannot access the internet.)"
                 } else if name == "web_search" {
                     "(Tern searched the web just now because the message asked for it. These results are current: answer the user's question from them and cite the links as [n]. Do not say you cannot access the internet.)"
+                } else if name == "scholar_search" {
+                    SCHOLAR_PREFETCH_NOTE
                 } else {
                     "(Tern ran this because the message asked for it. Answer the message using it.)"
                 };
@@ -1507,6 +1547,7 @@ impl Run<'_, '_> {
                         && !net_used
                         && self.cfg.tools.get("web_search").is_some()
                         && !crate::webintent::is_composition(&message_text)
+                        && self.safety_net_allowed(&message_text)
                     {
                         net_used = true;
                         let question = crate::webintent::web_query_with(

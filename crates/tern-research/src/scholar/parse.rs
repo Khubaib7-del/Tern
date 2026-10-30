@@ -100,6 +100,7 @@ pub fn s2_paper(v: &Value) -> Option<Paper> {
         arxiv,
         s2_id,
         citations: v["citationCount"].as_u64(),
+        influential_citations: v["influentialCitationCount"].as_u64(),
         abstract_text: s(&v["abstract"]),
         oa_pdf: s(&v["openAccessPdf"]["url"]),
         url,
@@ -131,7 +132,10 @@ pub fn semantic_scholar_links(v: &Value) -> Vec<Paper> {
             } else {
                 &e["citingPaper"]
             };
-            s2_paper(p)
+            s2_paper(p).map(|mut p| {
+                p.influential = e["isInfluential"].as_bool().unwrap_or(false);
+                p
+            })
         })
         .collect()
 }
