@@ -1150,7 +1150,19 @@ impl Tool for PaperSnowballTool {
                 max_rounds: args["rounds"].as_u64().unwrap_or(2).clamp(1, 3) as usize,
                 ..StopRule::default()
             };
-            let mut seed = self.0.s2_paper(&seed_id).await.unwrap_or(seed);
+            // The seed is resolved by its id (#85, A11): Semantic Scholar
+            // first, then OpenAlex by DOI, so finds are scored against
+            // the seed's own title and abstract.
+            let (mut seed, resolved) = match self.0.s2_paper(&seed_id).await {
+                Ok(p) => (p, "s2"),
+                Err(_) => match seed.doi.clone() {
+                    Some(doi) => match self.0.openalex_doi(&doi).await {
+                        Some(p) => (p, "openalex"),
+                        None => (seed, "none"),
+                    },
+                    None => (seed, "none"),
+                },
+            };
             if seed.s2_id.is_none() {
                 seed.s2_id = Some(seed_id.clone());
             }
@@ -1186,6 +1198,13 @@ impl Tool for PaperSnowballTool {
                 .stopped()
                 .map(|r| r.label())
                 .unwrap_or("nothing left to follow");
+            crate::diag::note(&format!(
+                "snowball: seed={seed_id} resolved={resolved} title_known={} rounds={} found={} stop={stop:?} link_errors={}",
+                !seed.title.is_empty(),
+                ball.rounds.len(),
+                ball.found.len(),
+                errors.len()
+            ));
             let ranked = ball.ranked();
             let mut out = format!(
                 "Snowballing from \"{}\" on \"{topic}\": {} relevant papers in {} round(s); stopped because {stop}. Best first: relevance to the seed and question, then influential citations (not date). {UNREAD_RULE}\n",
