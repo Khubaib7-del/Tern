@@ -1,6 +1,6 @@
 # Internals handbook (draft)
 
-> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #113, the handbook bundle. It explains how a turn runs inside Tern, for someone changing the engine. The architecture overview is [03-architecture.md](../03-architecture.md).
+> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #114, the handbook bundle. It explains how a turn runs inside Tern, for someone changing the engine. The architecture overview is [03-architecture.md](../03-architecture.md).
 
 ## 1. A turn, end to end
 
