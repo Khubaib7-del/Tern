@@ -172,7 +172,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
 | Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#106) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
 | Memory | Context cascade v2 and a versioned bootstrap prompt (#87), memory v1 with an explicit profile (#89), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
-| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app (#105) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
+| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app, and a browser for agents that lets research drive the built-in browser on pages that need clicks or your signed-in session (#105, built on agent-desktop and agent-browser) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
 | Workspace | The Study playground built on Explain in 3D (Explain in 3D and the built-in browser are built) |
 | Vault | Obsidian vaults and chat import (#102) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
 | Study | FSRS-6 from the first review and cards gated on quotes (#95), a learner model and deadline plans (#98), a guarded tutor and a viva over your own report (#99) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
@@ -273,13 +273,13 @@ Next, by phase:
 | | #102 | Obsidian and chat import, and an editable Markdown view of memory |
 | | #103 | Export and reference formats |
 | | #104 | Security and reliability |
-| | #105 | Universal connector, your own corpus, and desktop sources |
+| | #105 | Universal connector, your own corpus, and desktop sources, and a browser for agents |
 | **6 · Learning, hardening, launch and handbooks** | #106 | Learning core, gated by evaluations |
 | | #107 | Adapts to you v2 and memory v2 |
 | | #108–#110 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
 | | #111 | v1.0 release |
 | | #112 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
-| **After v1.0** | #113–#116 | Computer use; figures and Explain in 3D v2; git panel; shared rooms |
+| **After v1.0** | #113–#116 | Computer use (on agent-desktop and agent-browser); figures and Explain in 3D v2; git panel; shared rooms |
 
 **Final-year-project demo path:** #83 → #85 → #87 → #92 → #95 → #96 → #99 (with #91 measuring the numbers). The final-year-project build ends at #100.
 

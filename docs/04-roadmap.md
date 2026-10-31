@@ -70,7 +70,7 @@ The roadmap follows GitHub's numbers: #84 is this docs pull request, which moved
 
 ### #86 · Docs: desktop sources and renumbering
 
-A docs-only pull request. It plans an optional desktop-sources connector in #105 (reading papers from Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop) and moves every planned pull request after #85 up by one.
+A docs-only pull request. It plans two optional pieces in #105, a desktop-sources connector (reading papers from Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop) and a browser for agents (the agent drives the built-in browser, built on agent-browser), names both as the base for computer use in #113, and moves every planned pull request after #85 up by one.
 
 ### #87 · Context cascade v2 and bootstrap prompt v1
 
@@ -314,6 +314,7 @@ A docs-only pull request. It plans an optional desktop-sources connector in #105
 - ACP v1 brought up to date; the MCP Registry, OAuth 2.1 and OpenAPI tools behind the trust preview; presets for literature services you already use.
 - Tern as an MCP server and `tern research --json --wait`; an A2A client behind a flag; MCP Apps in a separate webview; connector actions as journaled steps with idempotency keys.
 - Desktop sources (optional, off by default): read papers from desktop apps such as Zotero, PDF readers, and a library portal the user is already signed in to, through the OS accessibility tree rather than screenshots. Built on [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Apache-2.0, Rust, Windows, macOS and Linux), whose snapshot, ref, act and verify loop also shapes the built-in browser tool and the UI tours. Consent is asked per app, actions are read-only by default, and snapshots are never logged or sent to a model unfiltered.
+- Browser for agents (optional, off by default): the research agent drives Tern's built-in browser itself, for pages that need JavaScript, clicks or the user's signed-in session (publisher pages, library portals, paywalled papers the user has access to). Built on [agent-browser](https://github.com/vercel-labs/agent-browser) (Apache-2.0, Rust) and the same snapshot, ref, act and verify loop: the page is read as an accessibility snapshot with stable refs, each click or form fill is a journaled step, actions are read-only by default, and page text stays isolated from instructions.
 
 **Depends on:** #104.
 
@@ -385,7 +386,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 
 | PR | Scope | Why it waits |
 | --- | --- | --- |
-| #113 | Computer use, off by default; research chores only (library portals, PDFs), each action a journaled step | Risky, and not needed for research and study |
+| #113 | Computer use, off by default, built on agent-desktop (desktop apps) and agent-browser (the web): Tern acts for you, asking first, on research chores only (sign in to a library portal, download the PDF, file it in Zotero), each action a journaled step | Risky, and not needed for research and study |
 | #114 | Interactive figures and Explain in 3D v2; image-occlusion cards from PDF figures | Polish; needs figure extraction |
 | #115 | Git panel: status, diff, history | A coding feature, outside research and study |
 | #116 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
@@ -639,9 +640,10 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 | Import chats from other assistants with provenance | Planned (#102) |
 | Universal connector for services without MCP | Planned (#105) |
 | Desktop sources through the accessibility tree (agent-desktop) | Planned (#105) |
+| Browser for agents: the agent drives the built-in browser (agent-browser) | Planned (#105) |
 | Learning from frustration signals, eval-gated | Planned (signal tap in #85, learning core in #106) |
 | Lecture video and slide intake | Planned (#101) |
-| Computer use, scoped to research chores | After v1.0 (#113), off by default |
+| Computer use, scoped to research chores, on agent-desktop and agent-browser | After v1.0 (#113), off by default |
 | Shared study and research rooms | After v1.0 (#116) |
 | Skill discovery and repository reading without cloning | Later |
 | Handbooks (user, research reading and writing, study, features, architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources) | Planned (#112), drafted from #85 on |
