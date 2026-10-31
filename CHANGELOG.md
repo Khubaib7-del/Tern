@@ -4,6 +4,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+- **Docs: browser for agents and computer use** (PR #87): the roadmap plans a browser for agents in #106 that lets research drive the built-in browser on pages that need clicks or a signed-in session, built on agent-browser (Apache-2.0, Rust), and names agent-desktop and agent-browser as the base for computer use (#114, after v1.0). Every planned pull request after #86 moves up by one again: context cascade #88, run-state UI #89, memory #90, the Store beta #91, connectors #106, v1.0 #112, handbooks #113.
 - **Docs: desktop sources and renumbering** (PR #86): the roadmap plans an optional desktop-sources connector in #105 that reads papers from apps such as Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop (Apache-2.0). Every planned pull request after #85 moves up by one: context cascade is now #87, the run-state UI #88, memory #89, the Store beta #90, and v1.0 #111.
 
 ### Added (PR #85): durable turns, rate governor, honest budgets
@@ -36,7 +37,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 ### Tests (PR #85)
 
 - `crates/tern-agent/tests/durable_turns.rs`: acceptance tests A-T1 to A-T9, A-T11, A-T13, A-T15 (S2, S3, S4) and A-T16 against scripted models, plus quick reads, read-once papers and chaos; A-T10 and A-T12 in `tern-research`, A-T14 in `tern-providers::estimate`; unit tests for the follow-up parser, quick reads, the signal tap, the per-chat cache, prices and the governor.
-- Docs: `docs/handbooks/internals.md` and `docs/handbooks/engineering.md` (drafts for the #112 handbook bundle), the README's What works today, and a NOTICE entry for the models.dev price data.
+- Docs: `docs/handbooks/internals.md` and `docs/handbooks/engineering.md` (drafts for the #113 handbook bundle), the README's What works today, and a NOTICE entry for the models.dev price data.
 
 ### Changed: docs
 
