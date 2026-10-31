@@ -951,9 +951,15 @@ async fn a_stop_mid_reply_keeps_what_streamed_and_nothing_after() {
         Some("Paging splits memory into pages.")
     );
     assert_eq!(turns[0].stop.as_deref(), Some("You stopped the run."));
+    // #85 (A1): a stopped reply joins the history with a note, so a typed
+    // "continue" picks it up.
+    let (m, a) = turns[0]
+        .exchange()
+        .expect("a stopped reply joins the history");
+    assert_eq!(m, "What is paging?");
     assert!(
-        turns[0].exchange().is_none(),
-        "a stopped reply is not history"
+        a.starts_with("Paging splits memory into pages.\n\n(Tern note: this turn stopped"),
+        "{a}"
     );
 }
 

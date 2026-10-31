@@ -98,6 +98,12 @@ impl Model for Provider {
     }
 }
 
+/// Streamed reply text is checkpointed in the log after this many new
+/// characters (#85)...
+const PROGRESS_CHARS: usize = 200;
+/// ...or after this long, whichever comes first.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// How much of a reply's reasoning the log keeps.
 const REASONING_KEEP: usize = 20_000;
 
@@ -1222,6 +1228,9 @@ impl Run<'_, '_> {
             // Native tool calls' arguments as they stream, by index, for
             // the Files tab's live preview of a file being written (#75).
             let writes: Mutex<HashMap<usize, (String, String, usize)>> = Mutex::default();
+            // What streamed is checkpointed in the log every second or 200
+            // characters (#85), so a crash mid-reply keeps it.
+            let progress = Mutex::new((0usize, std::time::Instant::now()));
             let reply = match self.cfg.on_text {
                 Some(sink) => {
                     let call = self.model_calls;
@@ -1230,6 +1239,7 @@ impl Run<'_, '_> {
                     let thought = &thought;
                     let streamed = &streamed;
                     let writes = &writes;
+                    let progress = &progress;
                     let forward = move |d: tern_providers::Delta<'_>| {
                         match d {
                             tern_providers::Delta::Tool { index, name, args } => {
@@ -1251,6 +1261,22 @@ impl Run<'_, '_> {
                                     // without native tools) previews a file
                                     // write as it streams too (#76).
                                     stream_fence_preview(&s, writes);
+                                    if let Ok(mut p) = progress.lock()
+                                        && (s.len() - p.0 >= PROGRESS_CHARS
+                                            || p.1.elapsed() >= PROGRESS_EVERY)
+                                    {
+                                        let _ = events.record(
+                                            EventEnvelope::new(
+                                                session,
+                                                crate::transcript::ANSWER_PROGRESS,
+                                                EffectClass::Analysis,
+                                                "",
+                                                json!({"call": call, "from": p.0, "text": &s[p.0..]}),
+                                            )
+                                            .with_turn(turn),
+                                        );
+                                        *p = (s.len(), std::time::Instant::now());
+                                    }
                                 }
                                 sink(call, t);
                             }
@@ -1343,11 +1369,19 @@ impl Run<'_, '_> {
                     continue;
                 }
                 r => r,
-            }
-            .map_err(|e| Stop {
-                state: TurnState::Failed,
-                reason: e.to_string(),
-            })?;
+            };
+            let reply = match reply {
+                Ok(r) => r,
+                Err(e) => {
+                    // What streamed before the failure is kept with it
+                    // (#85), like a stop's (#71).
+                    self.partial = streamed.lock().map(|s| s.clone()).unwrap_or_default();
+                    return Err(Stop {
+                        state: TurnState::Failed,
+                        reason: e.to_string(),
+                    });
+                }
+            };
             // A stopped stream returns what arrived; it is not an answer.
             self.check_cancel()?;
             self.cfg.ledger.record(
@@ -1931,7 +1965,7 @@ impl Run<'_, '_> {
                     "tool_calls": self.tool_calls,
                     "answer_chars": answer.as_ref().map(String::len),
                     "answer": answer,
-                    "partial": (state == TurnState::Cancelled && !self.partial.trim().is_empty())
+                    "partial": (answer.is_none() && !self.partial.trim().is_empty())
                         .then(|| self.partial.clone()),
                     "resumable": resumable,
                 }),

@@ -1511,6 +1511,16 @@ impl ChatSession {
                 .push(ChatMessage::user(text).with_images(images));
             self.history.push(ChatMessage::assistant(answer.clone()));
             self.auto_compact(observer).await;
+        } else if out.answer.is_none()
+            && let Ok(Ok(events)) = self.sink.with_store(|s| s.replay(self.session, 0))
+            && let Some((_, kept)) = live_turns(&events).last().and_then(|t| t.exchange())
+        {
+            // #85 (A1): a turn that stopped before its answer stays in the
+            // history with what it kept (the partial text, its sources and
+            // the tools it ran), so a typed "continue" picks it up.
+            self.history
+                .push(ChatMessage::user(text).with_images(images));
+            self.history.push(ChatMessage::assistant(kept));
         }
         out
     }
