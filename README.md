@@ -172,7 +172,7 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
 | Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#105) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
 | Memory | Context cascade v2 and a versioned bootstrap prompt (#86), memory v1 with an explicit profile (#88), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
-| Extensibility | Watching single MCP resources, and MCP sampling, roots, and elicitation (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
+| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app (#104) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
 | Workspace | The Study playground built on Explain in 3D (Explain in 3D and the built-in browser are built) |
 | Vault | Obsidian vaults and chat import (#101) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
 | Study | FSRS-6 from the first review and cards gated on quotes (#94), a learner model and deadline plans (#97), a guarded tutor and a viva over your own report (#98) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
@@ -272,7 +272,7 @@ Next, by phase:
 | | #101 | Obsidian and chat import, and an editable Markdown view of memory |
 | | #102 | Export and reference formats |
 | | #103 | Security and reliability |
-| | #104 | Universal connector and your own corpus |
+| | #104 | Universal connector, your own corpus, and desktop sources |
 | **6 · Learning, hardening, launch and handbooks** | #105 | Learning core, gated by evaluations |
 | | #106 | Adapts to you v2 and memory v2 |
 | | #107–#109 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
