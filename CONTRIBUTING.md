@@ -1,6 +1,17 @@
 # Contributing to Tern
 
-Tern is a private, pre-alpha project. Contributions are by invitation from the maintainer. If you have access, this is how work moves through the repository.
+Tern is a private, proprietary, pre-alpha project owned by Khubaib Nazeer (Founder) with Hassan Saeed Hashmi (Co-founder). It is not open source.
+
+## Who can contribute
+
+| Rule | Detail |
+| --- | --- |
+| Founding team and invited people only | Contributions come from the founding team or from people the founders have invited in writing. Having read access to the repository is not an invitation to contribute. |
+| No public pull requests | Tern does not accept pull requests, patches, or code from anyone outside the team and its written invitations, and does not accept work from forks. |
+| Ownership | Every contribution (code, docs, designs, tests, assets, and ideas submitted in an issue or pull request) is assigned to and owned by Tern's owners, unless agreed otherwise in writing. See [LICENSE](LICENSE). |
+| Confidentiality | The code, docs, and plans in this repository are confidential. Do not copy, publish, or share them outside the team without written permission. |
+
+If you have been invited, this is how work moves through the repository.
 
 ## Before you start
 
@@ -43,9 +54,9 @@ Scopes follow crate names without the prefix where it helps: `feat(crawl): ...`,
 
 Keep commits atomic: one coherent change each, no "wip" or "misc" commits on a PR branch that is ready for review.
 
-## Rust expectations (once code lands)
+## Rust expectations
 
-There is no Rust code yet. When the workspace is added, every PR is expected to pass:
+Every PR that touches Rust is expected to pass:
 
 ```text
 cargo fmt --all -- --check
@@ -55,8 +66,8 @@ cargo test --workspace
 
 | Expectation | Detail |
 | --- | --- |
-| Toolchain | Stable Rust, pinned in `rust-toolchain.toml` when the workspace lands. |
-| Formatting | `rustfmt` defaults plus the repository `rustfmt.toml`, if one is added. |
+| Toolchain | Stable Rust, pinned in `rust-toolchain.toml`. |
+| Formatting | `rustfmt` defaults plus the repository `rustfmt.toml`. |
 | Lints | Clippy clean with `-D warnings`. Allow a lint locally with a comment that says why. |
 | Errors | `thiserror` in library crates, `anyhow` only at binary edges. No `unwrap()` or `expect()` outside tests without a comment explaining why it cannot fail. |
 | Unsafe | No `unsafe` without maintainer approval and a `// SAFETY:` comment. |
@@ -67,12 +78,12 @@ cargo test --workspace
 
 ## Code of conduct
 
-Everyone with access agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
+Everyone on the team, and every invited collaborator and tester, agrees to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
 
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do not open public issues for them.
+Report vulnerabilities privately by email to [khubaibnazeer8@gmail.com](mailto:khubaibnazeer8@gmail.com), as described in [SECURITY.md](SECURITY.md). Never report them in an issue, discussion, or pull request.
 
 ## Licence
 
-Tern is proprietary (see [LICENSE](LICENSE)). By contributing you agree that your contributions are assigned to the copyright holder unless agreed otherwise in writing.
+Tern is proprietary (see [LICENSE](LICENSE)). By contributing you agree that your contributions are assigned to and owned by Tern's owners, unless agreed otherwise in writing. No licence to use, copy, or distribute Tern is granted by contributing or by having access.

@@ -7,6 +7,7 @@ body:
     attributes:
       value: |
         Check docs/01-product-spec.md and docs/04-roadmap.md first: the idea may already be planned.
+        Ideas submitted here become the property of Tern's owners, like every other contribution (see CONTRIBUTING.md).
   - type: dropdown
     id: harness
     attributes:

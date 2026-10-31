@@ -1,6 +1,6 @@
 Tern
-Copyright (c) Khubaib Nazeer and Tern contributors. Licensed under the
-terms in LICENSE.
+Copyright (c) 2026 Khubaib Nazeer. All rights reserved. Tern is
+proprietary software; see LICENSE.
 
 This file lists third-party pieces that Tern ships beside its own programs
 or downloads on request, with their licences. Rust crates linked into Tern

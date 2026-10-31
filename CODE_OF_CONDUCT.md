@@ -1,20 +1,22 @@
-# Contributor Covenant Code of Conduct
+# Code of Conduct
+
+Tern is a private, proprietary project. This code covers everyone who works on it or with it: the founding team (Khubaib Nazeer, Founder, and Hassan Saeed Hashmi, Co-founder), collaborators invited in writing, and invited testers. It applies in the repository, in issues and pull requests, in test builds and feedback channels, and in any other space where Tern's work happens.
 
 ## Our Pledge
 
-We as members, contributors, and leaders pledge to make participation in the Tern project a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
+We, the Tern team, invited collaborators and testers, pledge to make participation in Tern a harassment-free experience for everyone, regardless of age, body size, visible or invisible disability, ethnicity, sex characteristics, gender identity and expression, level of experience, education, socio-economic status, nationality, personal appearance, race, caste, color, religion, or sexual identity and orientation.
 
-We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community.
+We pledge to act and interact in ways that contribute to a respectful, welcoming, diverse, inclusive, and healthy team.
 
 ## Our Standards
 
-Examples of behavior that contributes to a positive environment for our community include:
+Examples of behavior that contributes to a positive environment for our team include:
 
 * Demonstrating empathy and kindness toward other people
 * Being respectful of differing opinions, viewpoints, and experiences
 * Giving and gracefully accepting constructive feedback
 * Accepting responsibility and apologizing to those affected by our mistakes, and learning from the experience
-* Focusing on what is best not just for us as individuals, but for the overall community
+* Focusing on what is best not just for us as individuals, but for the whole team
 
 Examples of unacceptable behavior include:
 
@@ -26,29 +28,29 @@ Examples of unacceptable behavior include:
 
 ## Enforcement Responsibilities
 
-Community leaders are responsible for clarifying and enforcing our standards of acceptable behavior and will take appropriate and fair corrective action in response to any behavior that they deem inappropriate, threatening, offensive, or harmful.
+The founders are responsible for clarifying and enforcing our standards of acceptable behavior and will take appropriate and fair corrective action in response to any behavior that they deem inappropriate, threatening, offensive, or harmful.
 
-Community leaders have the right and responsibility to remove, edit, or reject comments, commits, code, wiki edits, issues, and other contributions that are not aligned to this Code of Conduct, and will communicate reasons for moderation decisions when appropriate.
+The founders have the right and responsibility to remove, edit, or reject comments, commits, code, wiki edits, issues, and other contributions that are not aligned to this Code of Conduct, and will communicate reasons for moderation decisions when appropriate.
 
 ## Scope
 
-This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces. Examples of representing our community include using an official e-mail address, posting via an official social media account, or acting as an appointed representative at an online or offline event.
+This Code of Conduct applies to the Tern team, invited collaborators and invited testers, in every space where Tern's work happens: the private repository, its issues and pull requests, test builds and feedback channels, and team conversations. It also applies when someone represents Tern elsewhere, for example by email or in a meeting on Tern's behalf.
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement by contacting the maintainer, [@Khubaib7-del](https://github.com/Khubaib7-del), privately. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported privately to the founders by email at [khubaibnazeer8@gmail.com](mailto:khubaibnazeer8@gmail.com). All complaints will be reviewed and investigated promptly and fairly.
 
-All community leaders are obligated to respect the privacy and security of the reporter of any incident.
+The founders are obligated to respect the privacy and security of the reporter of any incident.
 
 ## Enforcement Guidelines
 
-Community leaders will follow these Community Impact Guidelines in determining the consequences for any action they deem in violation of this Code of Conduct:
+The founders will follow these Community Impact Guidelines in determining the consequences for any action they deem in violation of this Code of Conduct:
 
 ### 1. Correction
 
-**Community Impact**: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the community.
+**Community Impact**: Use of inappropriate language or other behavior deemed unprofessional or unwelcome in the team.
 
-**Consequence**: A private, written warning from community leaders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested.
+**Consequence**: A private, written warning from the founders, providing clarity around the nature of the violation and an explanation of why the behavior was inappropriate. A public apology may be requested.
 
 ### 2. Warning
 
@@ -58,15 +60,15 @@ Community leaders will follow these Community Impact Guidelines in determining t
 
 ### 3. Temporary Ban
 
-**Community Impact**: A serious violation of community standards, including sustained inappropriate behavior.
+**Community Impact**: A serious violation of team standards, including sustained inappropriate behavior.
 
-**Consequence**: A temporary ban from any sort of interaction or public communication with the community for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban.
+**Consequence**: A temporary ban from any sort of interaction or public communication with the team for a specified period of time. No public or private interaction with the people involved, including unsolicited interaction with those enforcing the Code of Conduct, is allowed during this period. Violating these terms may lead to a permanent ban.
 
 ### 4. Permanent Ban
 
-**Community Impact**: Demonstrating a pattern of violation of community standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.
+**Community Impact**: Demonstrating a pattern of violation of team standards, including sustained inappropriate behavior, harassment of an individual, or aggression toward or disparagement of classes of individuals.
 
-**Consequence**: A permanent ban from any sort of public interaction within the community.
+**Consequence**: A permanent ban from any sort of public interaction within the team.
 
 ## Attribution
 

@@ -6,7 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Tern is pre-alpha and not yet released. If the problem is in the documentation, choose "Docs" below.
+        Tern is private, proprietary, pre-alpha software, not yet released. Issues are for the Tern team, invited collaborators and invited testers. If the problem is in the documentation, choose "Docs" below.
+        Report security problems by email to khubaibnazeer8@gmail.com, never here.
         Never paste API keys, tokens, or private research content.
   - type: dropdown
     id: area
