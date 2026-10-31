@@ -78,7 +78,7 @@ fn unescape(t: &str) -> String {
 /// One Semantic Scholar paper object (`/graph/v1/paper/search`, a
 /// reference's `citedPaper`, a citation's `citingPaper`).
 pub fn s2_paper(v: &Value) -> Option<Paper> {
-    let title = s(&v["title"])?;
+    let title = crate::hygiene::clean_title(&s(&v["title"])?);
     let ids = &v["externalIds"];
     let doi = s(&ids["DOI"]).and_then(|d| normalize_doi(&d));
     let arxiv = s(&ids["ArXiv"]).map(|a| strip_version(&a));
@@ -237,7 +237,7 @@ pub fn openalex_abstract(v: &Value) -> Option<String> {
 
 /// One OpenAlex work.
 pub fn openalex_work(v: &Value) -> Option<Paper> {
-    let title = s(&v["display_name"]).or_else(|| s(&v["title"]))?;
+    let title = crate::hygiene::clean_title(&s(&v["display_name"]).or_else(|| s(&v["title"]))?);
     let doi = s(&v["doi"])
         .or_else(|| s(&v["ids"]["doi"]))
         .and_then(|d| normalize_doi(&d));
@@ -380,7 +380,8 @@ pub fn crossref_work(v: &Value) -> Option<Paper> {
         .as_array()
         .and_then(|t| t.first())
         .and_then(s)
-        .or_else(|| s(&v["title"]))?;
+        .or_else(|| s(&v["title"]))
+        .map(|t| crate::hygiene::clean_title(&t))?;
     let doi = s(&v["DOI"]).and_then(|d| normalize_doi(&d));
     let year = v["issued"]["date-parts"][0][0]
         .as_i64()

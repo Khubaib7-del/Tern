@@ -2111,11 +2111,22 @@ impl ChatSession {
         } else {
             format!("Checked {} claims: {}", checked.checks.len(), tally.line())
         };
+        // An acronym the answer spells out that no source spells out is
+        // flagged "not from sources" (#85, A14).
+        let texts: Vec<&str> = sources.iter().map(|s| s.text.as_str()).collect();
+        let unsupported: Vec<serde_json::Value> =
+            tern_research::hygiene::unsupported_expansions(answer, &texts)
+                .into_iter()
+                .map(|(acronym, expansion)| {
+                    json!({"acronym": acronym, "expansion": expansion, "flag": "not from sources"})
+                })
+                .collect();
         let mut payload = json!({
             "checks": checked.checks,
             "tally": tally,
             "report": written.as_ref().ok(),
             "evidence": chain,
+            "unsupported_expansions": unsupported,
         });
         if !rendered.forged.is_empty() {
             payload["forged"] = json!(rendered.forged.iter().map(|(_, t)| t).collect::<Vec<_>>());
