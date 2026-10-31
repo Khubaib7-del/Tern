@@ -1,0 +1,7 @@
+{
+  "question": "How does FLARE compare with retrieving before every sentence?",
+  "partial": "FLARE retrieves only when the next sentence has low-confidence tokens",
+  "sources": ["Jiang 2023", "Trivedi 2023"],
+  "tools": ["paper_search", "paper_read", "paper_read"],
+  "stop": "Connection lost"
+}

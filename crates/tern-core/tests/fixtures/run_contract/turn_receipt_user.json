@@ -1,0 +1,11 @@
+{
+  "state": "paused",
+  "paused_by": "user",
+  "line": "Stopped here · you stopped the run",
+  "kept": {
+    "answer_chars": 0,
+    "tool_results": 2,
+    "failed_not_counted": 0
+  },
+  "resumable": true
+}
