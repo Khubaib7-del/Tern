@@ -4,6 +4,8 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+- **Docs: desktop sources and renumbering** (PR #86): the roadmap plans an optional desktop-sources connector in #105 that reads papers from apps such as Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop (Apache-2.0). Every planned pull request after #85 moves up by one: context cascade is now #87, the run-state UI #88, memory #89, the Store beta #90, and v1.0 #111.
+
 ### Added (PR #85): durable turns, rate governor, honest budgets
 
 - **Run-state contract** (`tern-core`): seven run states (needs you, failed, waiting, working, streaming, paused, done, in that priority), ten error classes (short and daily rate limits, overloaded, network, stream cut, auth, budget, context full, tool failed, policy), and the `turn.receipt`, `model.switched`, `context.trimmed` and `turn.digest` events the next pull requests build on.
@@ -34,7 +36,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 ### Tests (PR #85)
 
 - `crates/tern-agent/tests/durable_turns.rs`: acceptance tests A-T1 to A-T9, A-T11, A-T13, A-T15 (S2, S3, S4) and A-T16 against scripted models, plus quick reads, read-once papers and chaos; A-T10 and A-T12 in `tern-research`, A-T14 in `tern-providers::estimate`; unit tests for the follow-up parser, quick reads, the signal tap, the per-chat cache, prices and the governor.
-- Docs: `docs/handbooks/internals.md` and `docs/handbooks/engineering.md` (drafts for the #111 handbook bundle), the README's What works today, and a NOTICE entry for the models.dev price data.
+- Docs: `docs/handbooks/internals.md` and `docs/handbooks/engineering.md` (drafts for the #112 handbook bundle), the README's What works today, and a NOTICE entry for the models.dev price data.
 
 ### Changed: docs
 
