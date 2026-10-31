@@ -427,7 +427,7 @@
     {
       "id": "h-tri-project",
       "kind": "triage",
-      "question": "What evaluation metrics should my project on citation checking report?",
+      "question": "What evaluation metrics should my two-month project on citation checking report?",
       "context": "",
       "choices": [
         {
