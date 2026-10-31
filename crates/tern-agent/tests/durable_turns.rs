@@ -940,3 +940,36 @@ async fn chaos_faults_reach_the_model_call() {
         "the simulated 429 was waited out"
     );
 }
+
+/// A5: a turn has a money budget too, priced from the models.dev
+/// snapshot; past it, the reserved call writes the answer with its gaps.
+#[tokio::test]
+async fn a_money_budget_ends_in_the_wrap_up_answer() {
+    tern_providers::prices::set_override(
+        "script",
+        "test-model",
+        tern_providers::prices::Price {
+            input: 1_000.0,
+            output: 1_000.0,
+            ..Default::default()
+        },
+    );
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.wrap_up = true;
+    // Each call costs about a cent at this price; allow less than two.
+    ctx.hooks.max_cost_micros = Some(1);
+    let model = Script::new(vec![
+        read("https://a.org/1"),
+        Step::Reply("Answer.\n\nNot established: the rest.".into()),
+    ]);
+    let out = ctx.run(&model, "How does FLARE work?").await;
+    assert_eq!(out.state, TurnState::CompletedWithGaps, "{:?}", out.reason);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 0, "the wrap-up came first");
+    let events = sink.events();
+    let replied = events.iter().find(|e| e.kind == "model.replied").unwrap();
+    assert!(replied.usage_delta.as_ref().unwrap().cost_micros.unwrap() > 1);
+    let end = events.iter().find(|e| e.kind == "turn.finished").unwrap();
+    assert!(end.payload["cost_micros"].as_u64().unwrap() > 1);
+}

@@ -27,6 +27,7 @@ pub mod error;
 pub mod estimate;
 pub mod governor;
 pub mod model;
+pub mod prices;
 pub mod retry;
 pub mod rpc_http;
 pub mod stream;

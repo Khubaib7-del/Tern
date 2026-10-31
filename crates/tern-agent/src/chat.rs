@@ -1531,6 +1531,7 @@ impl ChatSession {
                 temperature: self.pinned_temperature(),
                 chaos: None,
                 estimator: None,
+                max_cost_micros: None,
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1919,6 +1920,7 @@ impl ChatSession {
                     temperature: self.pinned_temperature(),
                     chaos: None,
                     estimator: None,
+                    max_cost_micros: None,
                 };
                 TurnLoop {
                     session: self.session,

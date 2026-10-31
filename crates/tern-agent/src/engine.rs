@@ -436,6 +436,11 @@ pub struct RunHooks<'a> {
     /// The token estimator (#85, A3b) this turn calibrates and reads;
     /// `None` uses the process-wide one. Tests give each run its own.
     pub estimator: Option<&'a tern_providers::estimate::Estimator>,
+    /// The turn's budget in money (#85, A5), in micro-dollars, priced
+    /// from the models.dev snapshot: past it, the reserved wrap-up
+    /// answers. `None`, or a model with no known price, has no money
+    /// budget; the token budget still holds.
+    pub max_cost_micros: Option<u64>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -778,6 +783,9 @@ struct Run<'r, 'a> {
     /// `paper_read` calls run for the model's current reply (#85, A12):
     /// at most [`Run::read_batch`] of them, so the next request fits.
     batch_reads: u32,
+    /// What the turn's counted calls cost so far, in micro-dollars (#85,
+    /// A5); `None` once a call's price was unknown.
+    cost_micros: Option<u64>,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -860,6 +868,7 @@ impl<'a> TurnLoop<'a> {
             failed_urls: HashMap::new(),
             papers_read: HashMap::new(),
             batch_reads: 0,
+            cost_micros: Some(0),
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -1795,6 +1804,15 @@ impl Run<'_, '_> {
                     );
                 }
             }
+            // Priced from the models.dev snapshot (#85, A5), cache reads
+            // and writes apart (A19); unknown prices stay unknown.
+            let mut delta = reply.usage.to_delta();
+            delta.cost_micros =
+                tern_providers::prices::cost_micros(&pid, self.cfg.model_name, &reply.usage);
+            self.cost_micros = match (self.cost_micros, delta.cost_micros) {
+                (Some(a), Some(c)) => Some(a + c),
+                _ => None,
+            };
             self.record(
                 self.event(
                     "model.replied",
@@ -1817,8 +1835,28 @@ impl Run<'_, '_> {
                         p
                     },
                 )
-                .with_usage(reply.usage.to_delta()),
+                .with_usage(delta),
             )?;
+            let over_cost = matches!(
+                (self.cfg.hooks.max_cost_micros, self.cost_micros),
+                (Some(max), Some(spent)) if spent > max
+            );
+            if over_cost && !self.wrapping {
+                crate::diag::note(&format!(
+                    "budget: cost {} micro-USD over the turn's {} ; wrap-up next",
+                    self.cost_micros.unwrap_or_default(),
+                    self.cfg.hooks.max_cost_micros.unwrap_or_default()
+                ));
+                if self.cfg.hooks.wrap_up {
+                    self.wrap_pending = true;
+                } else {
+                    return Err(Self::over_budget(format!(
+                        "The turn cost {}, over its limit of {}.",
+                        dollars(self.cost_micros.unwrap_or_default()),
+                        dollars(self.cfg.hooks.max_cost_micros.unwrap_or_default())
+                    )));
+                }
+            }
             if self.usage.total() + self.prior > b.max_tokens && !self.wrapping {
                 // The reserved call writes the answer (#85).
                 if self.cfg.hooks.wrap_up {
@@ -2457,6 +2495,9 @@ impl Run<'_, '_> {
                     "resumable": resumable,
                     "failed_not_counted": self.failed_calls,
                     "replayed": self.journal_hits,
+                    "cost_micros": self.cost_micros,
+                    "cached_tokens": self.usage.cached_tokens,
+                    "reasoning_tokens": self.usage.reasoning_tokens,
                 }),
             )
             .with_usage(self.usage.to_delta()),
@@ -3705,6 +3746,11 @@ fn paper_key(args: &Value) -> String {
             .trim()
             .to_lowercase()
     )
+}
+
+/// Micro-dollars as dollars, for a budget line ("$0.0123").
+pub fn dollars(micros: u64) -> String {
+    format!("${:.4}", micros as f64 / 1_000_000.0)
 }
 
 /// The log line for one model call (#85, A8).
