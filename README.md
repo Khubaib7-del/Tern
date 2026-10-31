@@ -282,6 +282,8 @@ Next, by phase:
 | | #114 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
 | **After v1.0** | #115–#118 | Computer use (on agent-desktop and agent-browser); figures and Explain in 3D v2; git panel; shared rooms |
 
+**Planned after v1.0: Explain in 3D v2 (#116).** Explain in 3D moves from labelled blocks joined by lines to detailed isometric figures of the real mechanism, in the style of [Anatomy](https://github.com/wheresryan22/anatomy) and [Hairline](https://github.com/lucasmarkes/hairline) (both MIT): dozens to hundreds of small parts that explode apart, move and highlight. Each figure plays as a motion tour, with Back and Next for guided steps, a Play button for the full-motion explanation, a progress strip, and a caption per step tied to cited source claims. True 3D and WebGL effects may follow.
+
 **Final-year-project demo path:** #83 → #85 → #89 → #94 → #97 → #98 → #101 (with #93 measuring the numbers). The final-year-project build ends at #102.
 
 <details>

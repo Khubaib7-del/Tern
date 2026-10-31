@@ -127,5 +127,21 @@ Kokoro 82M v1.0
   hexgrad, Apache License 2.0.
   ONNX conversion and voice packs by onnx-community.
 
+-------------------------------------------------------------------------
+Design references for planned work
+-------------------------------------------------------------------------
+
+Figures and Explain in 3D v2 (planned, #116) takes its figure and motion
+tour style from these projects. Any code or assets adapted from them will
+be listed above with their licences when the work ships.
+
+Anatomy
+  https://github.com/wheresryan22/anatomy
+  MIT License.
+
+Hairline
+  https://github.com/lucasmarkes/hairline
+  MIT License.
+
 The Apache License 2.0 is at https://www.apache.org/licenses/LICENSE-2.0
 and the MIT License at https://opensource.org/license/mit.

@@ -391,9 +391,22 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | PR | Scope | Why it waits |
 | --- | --- | --- |
 | #115 | Computer use, off by default, built on agent-desktop (desktop apps) and agent-browser (the web): Tern acts for you, asking first, on research chores only (sign in to a library portal, download the PDF, file it in Zotero), each action a journaled step | Risky, and not needed for research and study |
-| #116 | Interactive figures and Explain in 3D v2; image-occlusion cards from PDF figures | Polish; needs figure extraction |
+| #116 | Figures and Explain in 3D v2: detailed isometric machine and system figures that play as a motion tour (see below); image-occlusion cards from PDF figures | Polish; needs figure extraction and the evidence store |
 | #117 | Git panel: status, diff, history | A coding feature, outside research and study |
 | #118 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
+
+### #116 · Figures and Explain in 3D v2 (backlog, after v1.0)
+
+**Goal:** an explanation you can watch. Today's Explain in 3D draws a concept as labelled blocks joined by lines; v2 draws the real mechanism.
+
+- Detailed isometric machine and system figures in the style of [Anatomy](https://github.com/wheresryan22/anatomy) (MIT) and [Hairline](https://github.com/lucasmarkes/hairline) (MIT): dense figures of the actual mechanism, with dozens to hundreds of small parts, not boxes or cubes joined by lines.
+- Parts explode apart, move and highlight to show how the thing works, assembly by assembly.
+- Every figure plays as a motion tour: **Back** and **Next** step through it, a **Play** button runs the full-motion explanation from start to end, and a progress strip shows where you are.
+- Each step has a short caption tied to cited source claims, so the tour is held to the same evidence rules as a report.
+- Optional true 3D and WebGL effects (fire, flow, depth) later; the isometric tour comes first.
+- Both projects are MIT licensed. Anything adapted from them is credited in `NOTICE` with its licence.
+
+**Depends on:** #113 (v1.0); figure extraction and cited claims from #94.
 
 ## Dependencies
 
@@ -649,6 +662,7 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 | Learning from frustration signals, eval-gated | Planned (signal tap in #85, learning core in #108) |
 | Lecture video and slide intake | Planned (#103) |
 | Computer use, scoped to research chores, on agent-desktop and agent-browser | After v1.0 (#115), off by default |
+| Figures and Explain in 3D v2: detailed isometric figures played as a motion tour with cited captions | After v1.0 (#116) |
 | Shared study and research rooms | After v1.0 (#118) |
 | Skill discovery and repository reading without cloning | Later |
 | Handbooks (user, research reading and writing, study, features, architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources) | Planned (#114), drafted from #85 on |
