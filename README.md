@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is being built as the research tool for its author's final-year project, on Windows, Linux and macOS.
 
-**Status (31 October 2026):** #82 scholarly search, #83 evidence chain and #84 roadmap v3 are shipped. **#85** (this pull request) is engine reliability: a turn is never lost, a rate limit is a wait rather than a failure, and budgets are honest in tokens and money. Next is #86, the context cascade. See the [roadmap](#roadmap).
+**Status (31 October 2026):** #82 scholarly search, #83 evidence chain, #84 roadmap v3 and #85 engine reliability (a turn is never lost, a rate limit is a wait rather than a failure, budgets are honest in tokens and money) are shipped. #86 (this pull request) is docs only. Next is #87, the context cascade. See the [roadmap](#roadmap).
 
 <table>
   <tr>
@@ -170,12 +170,12 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | --- | --- |
 | Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
 | Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
-| Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#105) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
-| Memory | Context cascade v2 and a versioned bootstrap prompt (#86), memory v1 with an explicit profile (#88), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
-| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app (#104) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
+| Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#106) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
+| Memory | Context cascade v2 and a versioned bootstrap prompt (#87), memory v1 with an explicit profile (#89), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
+| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app (#105) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
 | Workspace | The Study playground built on Explain in 3D (Explain in 3D and the built-in browser are built) |
-| Vault | Obsidian vaults and chat import (#101) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
-| Study | FSRS-6 from the first review and cards gated on quotes (#94), a learner model and deadline plans (#97), a guarded tutor and a viva over your own report (#98) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
+| Vault | Obsidian vaults and chat import (#102) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
+| Study | FSRS-6 from the first review and cards gated on quotes (#95), a learner model and deadline plans (#98), a guarded tutor and a viva over your own report (#99) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
 | Library | A model-written handoff summary (chat ranges, sub-sessions, handoffs, the Library with bulk delete, highlights, the side chat, and project folders are built) |
 | Evaluation | Live, pinned, and public scores run with a key and published, and more held-out cases (the ladder, the suites, the metrics, reports, comparison, the CI baseline, and a held-out claims suite are built) |
 | Platforms | Windows' reduced-motion setting, hand testing on Linux desktops and Macs, arm64 Linux and Intel Mac builds in CI (Windows, Linux, and macOS builds are done) |
@@ -228,7 +228,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 
 ## Roadmap
 
-Roadmap v3. #82, #83 and #84 (this roadmap, docs only) are shipped; **#85, the engine, is in review**. Pull requests land one at a time, in this order; dates are not committed.
+Roadmap v3. #82, #83, #84 and #85 (the engine) are shipped, and #86 (docs only) plans desktop sources and moves later pull requests up by one; **#87, the context cascade, is next**. Pull requests land one at a time, in this order; dates are not committed.
 
 Shipped since the earlier phases:
 
@@ -248,39 +248,40 @@ Shipped since the earlier phases:
 | #82 | Scholarly search, and loop and redo guards |
 | #83 | Evidence chain (quote ids, unforgeable citations, stances, agreement, counter-search, Review claims) and scholarly fixes |
 | #84 | Roadmap v3 and README status (docs only) |
+| #85 | Engine: durable turns, rate governor, honest budgets |
+| #86 | Desktop sources planned, later pull requests renumbered (docs only) |
 
 Next, by phase:
 
 | Phase | PR | Focus |
 | --- | --- | --- |
-| **2 · Trustworthy core and private beta** | **#85** | **Engine: durable turns (step journal, Continue that re-runs no tool), rate governor, honest budgets in tokens and money** |
-| | #86 | Context cascade v2 and a versioned bootstrap prompt: "continue" keeps the thread, fresh chats start the same way |
-| | #87 | Run-state UI: every state of a run visible and distinct, a stable right panel |
-| | #88 | Memory v1 and how Tern adapts to you (only to what you state) |
-| | #89 | Private beta through the Microsoft Store (MSIX) |
-| **3 · Research engine v2** | #90 | Evaluations, a consistency gate and observability |
-| | #91 | Research pipelines v2: a router, an evidence store, Quick and Scholarly |
-| | #92 | Deep v2 and Long-run mode |
-| **4 · Study and show** | #93 | Generative UI core and a Depth toggle |
-| | #94 | Study a: grounded study core (FSRS-6, cards gated on quotes, Anki) |
-| | #95 | Conflicting-sources resolver and actions |
-| | #96 | Local RAG and knowledge bases |
-| | #97 | Study b: learner model and deadline plans |
-| | #98 | Study c: guarded tutor and viva over your own report |
-| | #99 | Charts and an analysis sandbox |
-| **5 · Your files and reach** | #100 | Lecture video intake |
-| | #101 | Obsidian and chat import, and an editable Markdown view of memory |
-| | #102 | Export and reference formats |
-| | #103 | Security and reliability |
-| | #104 | Universal connector, your own corpus, and desktop sources |
-| **6 · Learning, hardening, launch and handbooks** | #105 | Learning core, gated by evaluations |
-| | #106 | Adapts to you v2 and memory v2 |
-| | #107–#109 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
-| | #110 | v1.0 release |
-| | #111 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
-| **After v1.0** | #112–#115 | Computer use; figures and Explain in 3D v2; git panel; shared rooms |
+| **2 · Trustworthy core and private beta** | **#87** | **Context cascade v2 and a versioned bootstrap prompt: "continue" keeps the thread, fresh chats start the same way** |
+| | #88 | Run-state UI: every state of a run visible and distinct, a stable right panel |
+| | #89 | Memory v1 and how Tern adapts to you (only to what you state) |
+| | #90 | Private beta through the Microsoft Store (MSIX) |
+| **3 · Research engine v2** | #91 | Evaluations, a consistency gate and observability |
+| | #92 | Research pipelines v2: a router, an evidence store, Quick and Scholarly |
+| | #93 | Deep v2 and Long-run mode |
+| **4 · Study and show** | #94 | Generative UI core and a Depth toggle |
+| | #95 | Study a: grounded study core (FSRS-6, cards gated on quotes, Anki) |
+| | #96 | Conflicting-sources resolver and actions |
+| | #97 | Local RAG and knowledge bases |
+| | #98 | Study b: learner model and deadline plans |
+| | #99 | Study c: guarded tutor and viva over your own report |
+| | #100 | Charts and an analysis sandbox |
+| **5 · Your files and reach** | #101 | Lecture video intake |
+| | #102 | Obsidian and chat import, and an editable Markdown view of memory |
+| | #103 | Export and reference formats |
+| | #104 | Security and reliability |
+| | #105 | Universal connector, your own corpus, and desktop sources |
+| **6 · Learning, hardening, launch and handbooks** | #106 | Learning core, gated by evaluations |
+| | #107 | Adapts to you v2 and memory v2 |
+| | #108–#110 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
+| | #111 | v1.0 release |
+| | #112 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
+| **After v1.0** | #113–#116 | Computer use; figures and Explain in 3D v2; git panel; shared rooms |
 
-**Final-year-project demo path:** #83 → #85 → #86 → #91 → #94 → #95 → #98 (with #90 measuring the numbers). The final-year-project build ends at #99.
+**Final-year-project demo path:** #83 → #85 → #87 → #92 → #95 → #96 → #99 (with #91 measuring the numbers). The final-year-project build ends at #100.
 
 <details>
 <summary>Earlier phases</summary>
@@ -291,7 +292,7 @@ Next, by phase:
 | 4 | Crawler and claim verification | Done (scholarly sources in #82, evidence chain in #83) |
 | 5 | Deep research: plans, workers, checkpoints, steering | Mostly done (an OS scheduler for watches remains) |
 | 6 | Desktop app | Done |
-| 7 | Study harness | Mostly done (FSRS in #94, study plans in #97) |
+| 7 | Study harness | Mostly done (FSRS in #95, study plans in #98) |
 | 8 | Decision model | Mostly done |
 | 9 | Continuity and library | Mostly done |
 | 10 | Extensibility: MCP, ACP, skills | Done |
