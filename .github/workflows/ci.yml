@@ -46,7 +46,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Explain in 3D steps on a 1 MB stack (GPUI-free simulation)
         run: cargo test --locked -p tern-desktop --bin tern-desktop -- step_changes_run_on_a_one_megabyte_stack
       - name: tern doctor
@@ -263,7 +263,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       - name: tern doctor (kernel keyring; the runner has no Secret Service)
         env:
           TERN_HOME: ${{ runner.temp }}/tern-home
@@ -365,7 +365,7 @@ jobs:
       - name: Test
         env:
           TERN_KEYCHAIN_TEST: "1"
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Evaluation (offline suites, 3 trials, baseline check)
         env:
           TERN_HOME: ${{ runner.temp }}/tern-eval-home
