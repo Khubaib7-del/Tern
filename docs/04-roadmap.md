@@ -1,29 +1,29 @@
 # 04 · Roadmap
 
-> Status: 31 October 2026, roadmap v3. #82 (scholarly search) and #83 (evidence chain) are merged; #84 is this roadmap (a docs-only pull request); **#85, the engine, is next**. Work lands one pull request at a time, and each starts only when the owner approves it. Order is committed; dates are not. The phase tables at the end record how Tern got here.
+> Status: 1 November 2026, roadmap v3. #82 to #87 are merged (#85 is the engine; #84, #86 and #87 are docs); #88 is a docs-only pull request (ownership, the Explain in 3D v2 plan and this renumber); **#89, the context cascade, is next**. Work lands one pull request at a time, and each starts only when the owner approves it. Order is committed; dates are not. The phase tables at the end record how Tern got here.
 
 Roadmap v3 replaces the list of #84–#105 that shipped with #83. The old plan put context, memory, cost and the run UI into one pull request (old #84), deep research and evaluation into another (old #85), and left study and packaging near the end. v3 splits those into pull requests that can each be tested in one sitting, puts reliability and evaluation before the research pipelines that depend on them, moves study up to follow the research engine, and adds a private beta early. The full old → new mapping is at the end of this page.
 
-The roadmap follows GitHub's numbers: #84 is this docs pull request, which moved every planned pull request up by one (the engine is #85). If a closed PR or an issue takes a number again (as #81 did), this page and the README are renumbered.
+The roadmap follows GitHub's numbers: #84, #86, #87 and #88 are docs pull requests, and each moved the planned pull requests after it up by one (#88 moved the context cascade to #89 and v1.0 to #113). If a closed PR or an issue takes a number again (as #81 did), this page and the README are renumbered.
 
 ## Phases at a glance
 
 | Phase | PRs | Scope | Ends with | Status |
 | --- | --- | --- | --- | --- |
 | 1 · Foundations and work surface | #72–#80 | Rich answers, folder projects, work surface and sandbox, planner and code mode, Act-mode safety | — | Shipped |
-| 2 · Trustworthy core and private beta | #81–#92 | Scholarly search, evidence chain, never losing a turn, context cascade and bootstrap prompt, run-state UI, memory and an explicit profile, a Store beta | A private beta on signed builds | #82–#85 shipped · #86 docs · **#89 next** |
+| 2 · Trustworthy core and private beta | #81–#92 | Scholarly search, evidence chain, never losing a turn, context cascade and bootstrap prompt, run-state UI, memory and an explicit profile, a Store beta | A private beta on signed builds | #82–#87 shipped · #88 docs · **#89 next** |
 | 3 · Research engine v2 and published proof | #93–#95 | Evaluation harness and consistency gate, router with Quick and Scholarly pipelines, Deep v2 and Long-run mode | Published citation-fidelity numbers | Planned |
-| 4 · Study and show | #96–#102 | Generative UI, grounded study, conflicting-sources resolver, local RAG, learner model, guarded tutor and viva, charts | The final-year-project demo | Planned |
+| 4 · Study and show | #96–#102 | Generative UI, grounded study, conflicting-sources resolver, local RAG, learner model, guarded tutor and viva, charts | The core demo | Planned |
 | 5 · Your files and reach | #103–#107 | Lecture video, Obsidian and chat import, export, security, connectors | — | Planned |
 | 6 · Learning, hardening, launch and handbooks | #108–#114 | Learning core, adaptive user model v2, three buffers, the v1.0 release, the handbook bundle | v1.0 and the handbooks | Planned |
 | After v1.0 | #115–#118 | Computer use, figures and Explain in 3D v2, git panel, shared rooms | — | Backlog |
 
-**Final-year-project demo path:** #83 (every citation resolves to a quote Tern read) → **#85** (a run survives rate limits, crashes and network loss) → **#89** (fresh chats behave the same; "continue" keeps the thread) → **#94** (the Scholarly pipeline with evidence ids owned by code; its numbers measured by **#93**) → **#97** (research becomes quote-anchored cards and a quiz on FSRS, pushed to Anki) → **#98** (the conflicting-sources resolver) → **#101** (a viva that defends the claims of your own report).
+**Demo path:** #83 (every citation resolves to a quote Tern read) → **#85** (a run survives rate limits, crashes and network loss) → **#89** (fresh chats behave the same; "continue" keeps the thread) → **#94** (the Scholarly pipeline with evidence ids owned by code; its numbers measured by **#93**) → **#97** (research becomes quote-anchored cards and a quiz on FSRS, pushed to Anki) → **#98** (the conflicting-sources resolver) → **#101** (a viva that defends the claims of your own report).
 
 - Minimum demo: through #94, plus #97.
 - Full demo: add #98 and #101.
 
-**Cut line: after #102.** #85 to #102 is the final-year-project build. If time runs short, drop in this order: #102 charts → #100 learner model (keep the FSRS queue) → #98 shrinks to the resolver without the actions router. #93 (it produces the measured numbers) and #101's viva are never dropped. #103 to #113 is the work for v1.0, and #114 completes the handbooks.
+**Cut line: after #102.** #85 to #102 is the core build. If time runs short, drop in this order: #102 charts → #100 learner model (keep the FSRS queue) → #98 shrinks to the resolver without the actions router. #93 (it produces the measured numbers) and #101's viva are never dropped. #103 to #113 is the work for v1.0, and #114 completes the handbooks.
 
 ## Phase 1 · Foundations and work surface (#72–#80) — shipped
 
@@ -72,9 +72,13 @@ The roadmap follows GitHub's numbers: #84 is this docs pull request, which moved
 
 A docs-only pull request. It plans two optional pieces in #107, a desktop-sources connector (reading papers from Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop) and a browser for agents (the agent drives the built-in browser, built on agent-browser), names both as the base for computer use in #115, and moves every planned pull request after #85 up by one.
 
-### #87 · Docs: browser for agents and computer use
+### #87 · Docs: browser for agents and computer use — merged
 
 A docs-only pull request. It plans a browser for agents in #107 (the research agent drives the built-in browser, built on agent-browser), names agent-desktop and agent-browser as the base for computer use in #115, and moves every planned pull request after #86 up by one again.
+
+### #88 · Docs: ownership, Explain in 3D v2 plan, and roadmap renumber
+
+A docs-only pull request. It states that Tern is private and proprietary, owned by Khubaib Nazeer (Founder) with Hassan Saeed Hashmi (Co-founder), and brings the README and the community and policy files (contributing, security, code of conduct, templates, notices) in line with that. It plans figures and Explain in 3D v2 as detailed isometric motion tours in #116, and moves every planned pull request from #88 on up by one: the context cascade is now #89, v1.0 #113, the handbook bundle #114, and the backlog #115–#118.
 
 ### #89 · Context cascade v2 and bootstrap prompt v1
 
@@ -371,15 +375,15 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | 3. Research paper writing | Students and thesis writers | From question to outline, the literature review, argument and evidence, citing (APA, IEEE, Harvard), avoiding plagiarism and unsupported claims, using Tern honestly, viva preparation |
 | 4. Study | Learners | The learning science (testing, spacing, interleaving), FSRS, quote-tied cards, tutor and viva, deadline plans |
 | 5. Features | Everyone | Every feature with screenshots: rich blocks, math and Mermaid, generative UI, the conflict resolver, charts, the focus view, lecture video, Obsidian |
-| 6. Technical architecture | Engineers and examiners | Crates, data flow, the turn loop, providers, the rate governor, the journal, the evidence store, the sandbox, diagrams |
+| 6. Technical architecture | Engineers and reviewers | Crates, data flow, the turn loop, providers, the rate governor, the journal, the evidence store, the sandbox, diagrams |
 | 7. Internals | Contributors | The context cascade, bootstrap prompt layers, memory schema, user model, learning core, event types, replay |
 | 8. Engineering | Contributors | Repository layout, build, CI (four jobs), UI tours, evaluations and gates, coding rules, release and packaging |
 | 9. Design | Designers | Design brief, palette, type, spacing, components, motion, brand (the Tern mark, Scout), accessibility |
-| 10. Evaluation | Examiners and researchers | Every evaluation suite, metrics and targets, and how to reproduce the numbers |
+| 10. Evaluation | Reviewers and researchers | Every evaluation suite, metrics and targets, and how to reproduce the numbers |
 | 11. Security and privacy | Everyone | Local-first data, key storage, sandbox and permissions, the taint gate, prompt-injection defences, what leaves the machine |
 | 12. Prompts | Contributors | Versioned prompts, model-family deltas, lints, how to change a prompt safely |
 | 13. Raw (decision log) | Future maintainers | Every ADR, a research digest with sources, the pull request history, what failed and why |
-| 14. Research and sources | Thesis readers, examiners and contributors | Everything researched for Tern, topic by topic (context, memory, evidence, deep research, generative UI, study, adaptation, sandbox) with its findings, and every source: papers (with arXiv ids), repositories (with their licence, and whether ideas or code were used), posts and the people behind them, documentation and benchmarks; where each finding landed (the PR number), and which claims were verified against the source and which rest on an excerpt only |
+| 14. Research and sources | Readers, reviewers and the team | Everything researched for Tern, topic by topic (context, memory, evidence, deep research, generative UI, study, adaptation, sandbox) with its findings, and every source: papers (with arXiv ids), repositories (with their licence, and whether ideas or code were used), posts and the people behind them, documentation and benchmarks; where each finding landed (the PR number), and which claims were verified against the source and which rest on an excerpt only |
 
 **Built PR by PR, starting with #85:** every pull request adds or updates its section under `docs/handbooks/` (a checklist item in the PR template), so #114 edits and assembles rather than writing from scratch. #114 adds screenshots from the UI tours, diagrams, a shared glossary, a PDF build and a ZIP in the release.
 

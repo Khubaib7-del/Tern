@@ -12,9 +12,9 @@
 
 ---
 
-Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is being built as the research tool for its author's final-year project, on Windows, Linux and macOS.
+Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is built for Windows first, then Linux and macOS.
 
-**Status (31 October 2026):** #82 scholarly search, #83 evidence chain, #84 roadmap v3, #85 engine reliability (a turn is never lost, a rate limit is a wait rather than a failure, budgets are honest in tokens and money) and #86 desktop sources are shipped. #87 (this pull request) is docs only. Next is #89, the context cascade. See the [roadmap](#roadmap).
+**Status (1 November 2026):** #82 scholarly search, #83 evidence chain, #84 roadmap v3, #85 engine reliability (a turn is never lost, a rate limit is a wait rather than a failure, budgets are honest in tokens and money), and the #86 and #87 plans for desktop sources and a browser for agents are shipped. #88 (this pull request) is docs only: ownership and status, the Explain in 3D v2 plan, and a roadmap renumber. Next is #89, the context cascade. See the [roadmap](#roadmap).
 
 <table>
   <tr>
@@ -228,7 +228,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 
 ## Roadmap
 
-Roadmap v3. #82 to #86 are shipped (#85 is the engine, #86 plans desktop sources), and #87 (docs only) plans a browser for agents and computer use and moves later pull requests up by one; **#89, the context cascade, is next**. Pull requests land one at a time, in this order; dates are not committed.
+Roadmap v3. #82 to #87 are shipped (#85 is the engine; #86 and #87 plan desktop sources, a browser for agents and computer use), and #88 (docs only) records ownership, plans Explain in 3D v2 and moves later pull requests up by one; **#89, the context cascade, is next**. Pull requests land one at a time, in this order; dates are not committed.
 
 Shipped since the earlier phases:
 
@@ -251,6 +251,7 @@ Shipped since the earlier phases:
 | #85 | Engine: durable turns, rate governor, honest budgets |
 | #86 | Desktop sources planned, later pull requests renumbered (docs only) |
 | #87 | Browser for agents and computer use planned, later pull requests renumbered (docs only) |
+| #88 | Ownership and status, Explain in 3D v2 planned, later pull requests renumbered (docs only, this pull request) |
 
 Next, by phase:
 
@@ -284,7 +285,7 @@ Next, by phase:
 
 **Planned after v1.0: Explain in 3D v2 (#116).** Explain in 3D moves from labelled blocks joined by lines to detailed isometric figures of the real mechanism, in the style of [Anatomy](https://github.com/wheresryan22/anatomy) and [Hairline](https://github.com/lucasmarkes/hairline) (both MIT): dozens to hundreds of small parts that explode apart, move and highlight. Each figure plays as a motion tour, with Back and Next for guided steps, a Play button for the full-motion explanation, a progress strip, and a caption per step tied to cited source claims. True 3D and WebGL effects may follow.
 
-**Final-year-project demo path:** #83 → #85 → #89 → #94 → #97 → #98 → #101 (with #93 measuring the numbers). The final-year-project build ends at #102.
+**Demo path:** #83 → #85 → #89 → #94 → #97 → #98 → #101 (with #93 measuring the numbers). The core build ends at #102.
 
 <details>
 <summary>Earlier phases</summary>
@@ -399,6 +400,17 @@ Motion turns off in the desktop app when the OS asks for reduced motion (GNOME o
 | [Web search](docs/search.md) | Wikipedia (keyless default), Tavily, Brave, SearXNG with its address and JSON output, search errors |
 | [Linux](docs/linux.md) · [macOS](docs/macos.md) | Build dependencies, running, OS details, known limits |
 | [Contributing](CONTRIBUTING.md) · [Agent rules](AGENTS.md) · [Security policy](SECURITY.md) | How work happens here |
+
+## Team
+
+Tern is a private, proprietary project. It is not open source.
+
+| Person | Role |
+| --- | --- |
+| Khubaib Nazeer | Founder |
+| Hassan Saeed Hashmi | Co-founder |
+
+Work on Tern is done by the founding team and people they invite in writing. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 

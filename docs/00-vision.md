@@ -8,7 +8,7 @@ Tern is a local-first agent harness for research and study: it turns a rough que
 
 ## Why it exists
 
-Tern starts as the research tool for its author's final-year project. The problem it answers is common to anyone who researches with AI today:
+Tern starts as the research tool its founding team uses every day. The problem it answers is common to anyone who researches with AI today:
 
 | Problem today | What Tern does instead |
 | --- | --- |
@@ -23,7 +23,7 @@ Tern starts as the research tool for its author's final-year project. The proble
 
 | User | What they need from Tern |
 | --- | --- |
-| The author, first | A daily research and study tool for an FYP that will run for months |
+| The founding team, first | A daily research and study tool for long research projects that run for months |
 | Students | Literature reviews, fact checks, study packs, and viva preparation grounded in real sources |
 | Researchers | Reproducible runs: a methods log, a run report, exportable citations |
 

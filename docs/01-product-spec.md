@@ -7,7 +7,7 @@
 | Concept | What it is |
 | --- | --- |
 | Workspace | Everything on one machine: projects, global memory, settings, keys (in the OS keychain) |
-| Project | A body of work, such as an FYP. Holds sessions, a library, a vault, and project memory |
+| Project | A body of work, such as a thesis or a long report. Holds sessions, a library, a vault, and project memory |
 | Session | One conversation. Can have planned sub-sessions that inherit its context |
 | Message / run | A user query and the agent's work on it. Every query has a stable ID (`Q12`), sub-sessions add a sub-ID (`Q12.3`) |
 | Library | Every file, PDF, URL, DOI, image, and generated output in the project, with IDs |
