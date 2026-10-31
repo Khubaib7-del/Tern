@@ -131,18 +131,24 @@ pub fn clean_title(title: &str) -> String {
 }
 
 /// The claim's main entity: its first acronym (`FLARE`, `GPT-4`), else
-/// its first capitalised word after the first. `None` when it names
-/// none (a refutation is then judged on its words alone).
+/// its first capitalised word after the first, looked for in the claim's
+/// first half only, where its subject is. `None` when it names none
+/// there (a refutation is then judged on its words alone): in "The theory
+/// of general relativity was published by Niels Bohr in 1915" the name is
+/// what the claim says about its subject, and a passage naming another
+/// author still refutes it.
 pub fn main_entity(claim: &str) -> Option<String> {
     let words: Vec<&str> = claim
         .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '(' | ')' | '"'))
         .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
         .filter(|w| !w.is_empty())
         .collect();
-    if let Some(a) = words.iter().find(|w| is_acronym(w)) {
+    let half = words.len().div_ceil(2);
+    let subject = &words[..half];
+    if let Some(a) = subject.iter().find(|w| is_acronym(w)) {
         return Some((*a).to_owned());
     }
-    words
+    subject
         .iter()
         .skip(1)
         .find(|w| {
@@ -343,6 +349,12 @@ mod tests {
             Some("Paris".into())
         );
         assert_eq!(main_entity("Sales rose in May."), None);
+        // A name in the claim's second half is what it says, not whom it
+        // is about: another author in the passage still refutes it.
+        assert_eq!(
+            main_entity("The theory of general relativity was published by Niels Bohr in 1915."),
+            None
+        );
         assert!(may_refute(
             "FLARE retrieves every 64 tokens.",
             "Unlike FLARE, the baseline retrieves every 32 tokens."
