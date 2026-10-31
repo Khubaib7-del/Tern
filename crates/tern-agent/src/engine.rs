@@ -538,7 +538,17 @@ pub fn prefetch_calls(
     // (#83: small models chose `web_search` with `scholar_search` on
     // offer). Never for a folder or file task, nor when the message itself
     // asks for the web ("use the web tool"): that search runs instead.
+    // A follow-up that points back at the previous answer ("read the top
+    // 5 papers from that list") searches nothing new (#85, A9): it is
+    // answered from the papers that answer named.
+    let follow_up = previous.is_some()
+        && crate::followup::points_back(own)
+        && !crate::webintent::asks_for_web(own);
+    if follow_up {
+        crate::diag::note("prefetch: skipped (follow-up points back at the previous answer)");
+    }
     if tools.get("scholar_search").is_some()
+        && !follow_up
         && !crate::webintent::asks_for_web(own)
         && crate::intent::classify(own) == crate::intent::Intent::Academic
         && let Some(query) = crate::intent::scholar_query(own)
@@ -546,6 +556,7 @@ pub fn prefetch_calls(
         out.push(("scholar_search", json!({"query": query})));
     }
     if tools.get("web_search").is_some()
+        && !follow_up
         && let Some(query) = web_prefetch(text, previous)
     {
         out.push(("web_search", json!({"query": query})));
@@ -1332,6 +1343,36 @@ impl Run<'_, '_> {
                 messages.push(ChatMessage::user(format!("{result}\n\n{note}")));
                 searched |= name == "web_search";
                 self.save(&messages[base..], &seen);
+            }
+        }
+        // "Read the top 5 papers from that list" (#85, A9, A-T11): the
+        // previous answer's papers, by id, instead of a new search.
+        if resume.is_none()
+            && let Some(answer) = previous_answer.as_deref()
+        {
+            let (own, _) = crate::attach::split(&message_text);
+            let (_, own) = crate::reply::split(own);
+            if crate::followup::points_back(own) && !crate::webintent::asks_for_web(own) {
+                // The previous exchange: the answer first, then what the
+                // tools returned on the way to it.
+                let start = messages[..base]
+                    .iter()
+                    .rposition(|m| m.role == tern_providers::Role::User)
+                    .unwrap_or(0);
+                let earlier: Vec<&str> = std::iter::once(answer)
+                    .chain(messages[start..base].iter().map(|m| m.content.as_str()))
+                    .collect();
+                let ids = crate::followup::paper_ids(earlier);
+                crate::diag::note(&format!(
+                    "follow-up: points back; previous answer named {} paper id(s)",
+                    ids.len()
+                ));
+                if !ids.is_empty() {
+                    messages.push(ChatMessage::user(crate::followup::note(
+                        &ids,
+                        crate::followup::wanted_count(own),
+                    )));
+                }
             }
         }
         let mut empty_retried = false;

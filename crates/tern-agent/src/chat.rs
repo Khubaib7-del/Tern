@@ -909,11 +909,16 @@ impl ChatSession {
             compacted: None,
             compact_skip: None,
             calls_at_compaction: None,
-            cache: match &paths {
-                Some(p) => crate::toolcache::ToolCache::with_dir(
-                    crate::toolcache::ToolCache::dir_in(&p.data_dir),
-                ),
-                None => crate::toolcache::ToolCache::memory(),
+            cache: {
+                let c = match &paths {
+                    Some(p) => crate::toolcache::ToolCache::with_dir(
+                        crate::toolcache::ToolCache::dir_in(&p.data_dir),
+                    ),
+                    None => crate::toolcache::ToolCache::memory(),
+                };
+                // Searches are kept per chat (#85, A9).
+                c.set_chat(&session.to_string());
+                c
             },
             results,
             ledger: UsageLedger::default(),

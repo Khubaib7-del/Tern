@@ -45,6 +45,7 @@ pub mod doctor;
 pub mod engine;
 pub mod eval;
 pub mod explain;
+pub mod followup;
 pub mod git;
 pub mod handoff;
 pub mod highlight;

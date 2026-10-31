@@ -219,6 +219,15 @@ impl<'a> Ctx<'a> {
     }
 
     async fn run(&self, model: &Script, msg: &str) -> TurnOutcome {
+        self.run_after(model, Vec::new(), msg).await
+    }
+
+    async fn run_after(
+        &self,
+        model: &Script,
+        history: Vec<tern_providers::ChatMessage>,
+        msg: &str,
+    ) -> TurnOutcome {
         let mut gate = PolicyGate::default();
         let on_text = |_: u32, _: &str| {};
         TurnLoop {
@@ -237,7 +246,7 @@ impl<'a> Ctx<'a> {
             on_text: if self.stream { Some(&on_text) } else { None },
             hooks: self.hooks,
         }
-        .run(Vec::new(), msg)
+        .run(history, msg)
         .await
     }
 }
@@ -972,4 +981,109 @@ async fn a_money_budget_ends_in_the_wrap_up_answer() {
     assert!(replied.usage_delta.as_ref().unwrap().cost_micros.unwrap() > 1);
     let end = events.iter().find(|e| e.kind == "turn.finished").unwrap();
     assert!(end.payload["cost_micros"].as_u64().unwrap() > 1);
+}
+
+/// A scholarly search that counts how often it ran.
+#[derive(Debug, Default)]
+struct Search(AtomicUsize);
+
+impl Tool for Search {
+    fn name(&self) -> &'static str {
+        "scholar_search"
+    }
+    fn summary(&self) -> &'static str {
+        "Search the literature"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    }
+    fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(ToolOutput::text("[P1] Top 5 lists of papers (junk)")) })
+    }
+}
+
+#[derive(Debug)]
+struct ArcSearch(std::sync::Arc<Search>);
+
+impl Tool for ArcSearch {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn summary(&self) -> &'static str {
+        self.0.summary()
+    }
+    fn effect(&self) -> EffectClass {
+        self.0.effect()
+    }
+    fn input_schema(&self) -> Value {
+        self.0.input_schema()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.call(args)
+    }
+}
+
+/// A-T11: "read the top 5 papers from that list" runs no prefetch search
+/// and hands the model the previous answer's paper ids, in its order.
+#[tokio::test]
+async fn a_follow_up_reads_the_previous_answers_papers_without_searching() {
+    use tern_providers::ChatMessage;
+    let papers = std::sync::Arc::new(Papers::default());
+    let search = std::sync::Arc::new(Search::default());
+    let mut tools = ToolRegistry::new();
+    tools
+        .register(ArcPapers(papers.clone()))
+        .register(ArcSearch(search.clone()));
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.prefetch = true;
+    let ids = [
+        "2305.06983",
+        "2310.11511",
+        "2005.11401",
+        "2212.10496",
+        "2401.15884",
+        "2004.04906",
+    ];
+    let history = vec![
+        ChatMessage::user("Find papers on adaptive retrieval for RAG"),
+        ChatMessage::assistant(format!(
+            "Papers on adaptive retrieval:\n1. FLARE https://arxiv.org/abs/{}\n2. Self-RAG arXiv:{}\n\
+             3. RAG https://arxiv.org/abs/{}\n4. IRCoT arXiv:{}\n5. CRAG arXiv:{}\n6. DPR arXiv:{}",
+            ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]
+        )),
+    ];
+    let model = Script::new(vec![
+        calls(&ids[..3].iter().copied().map(paper).collect::<Vec<_>>()),
+        calls(&ids[3..5].iter().copied().map(paper).collect::<Vec<_>>()),
+        Step::Reply("All five decide when to retrieve differently [1].".into()),
+    ]);
+    let out = ctx
+        .run_after(&model, history, "Read the top 5 papers from that list")
+        .await;
+    assert!(
+        matches!(
+            out.state,
+            TurnState::Completed | TurnState::CompletedWithGaps
+        ),
+        "{:?} {:?}",
+        out.state,
+        out.reason
+    );
+    assert_eq!(search.0.load(Ordering::SeqCst), 0, "no prefetch search");
+    let first = &model.requests()[0];
+    let note = &first.messages.last().expect("a message").content;
+    for (i, id) in ids.iter().enumerate() {
+        assert!(
+            note.contains(&format!("{}. arXiv:{id}", i + 1)),
+            "id {id} at {} in {note}",
+            i + 1
+        );
+    }
+    assert!(note.contains("first 5"), "{note}");
+    assert_eq!(papers.0.load(Ordering::SeqCst), 5);
 }
