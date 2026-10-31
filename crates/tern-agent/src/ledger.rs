@@ -113,6 +113,31 @@ pub fn of_run(run: &Run) -> Ledger {
                 let error = p["error"].as_str().unwrap_or(&s.note);
                 b.failed(url, worker, error, at);
             }
+            // A fetch Tern answered without running (#85, A6, A12): a
+            // read past the step's batch waits for the budget, a paper
+            // already read is a duplicate.
+            "tool.skipped" => {
+                let url = p["args"]["url"]
+                    .as_str()
+                    .or_else(|| p["args"]["paper"].as_str())
+                    .unwrap_or_default();
+                let reason = match p["reason"].as_str() {
+                    Some("next_batch") => Some(LedgerReason::Budget),
+                    Some("already_read") => Some(LedgerReason::Duplicate),
+                    _ => None,
+                };
+                if let Some(reason) = reason
+                    && url.starts_with("http")
+                {
+                    b.skipped(url, "", "", worker, reason, at);
+                }
+            }
+            // A source the answer cites is never "Skipped" (#85, A15).
+            "turn.finished" => {
+                for url in cited_urls(p["answer"].as_str().unwrap_or_default()) {
+                    b.cited(&url);
+                }
+            }
             "sources.skipped" => {
                 for h in p["skipped"].as_array().into_iter().flatten() {
                     let reason: LedgerReason =
@@ -177,6 +202,42 @@ fn restore(b: &mut LedgerBuilder, p: &Value, n: usize, at: u64) {
     );
 }
 
+/// The links an answer gives (`https://...` up to a space, `)`, `]` or
+/// `>`), trailing punctuation off.
+pub fn cited_urls(answer: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, _) in answer.match_indices("http") {
+        let rest = &answer[i..];
+        if !(rest.starts_with("http://") || rest.starts_with("https://")) {
+            continue;
+        }
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '<'))
+            .unwrap_or(rest.len());
+        let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', '\'']);
+        if !url.is_empty() && !out.iter().any(|u| u == url) {
+            out.push(url.to_owned());
+        }
+    }
+    out
+}
+
 fn str_of<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn links_in_an_answer_are_found_once() {
+        let a = "FLARE [1](https://arxiv.org/abs/2305.06983). See https://a.org/x, and <https://b.org/y>. Again https://a.org/x.";
+        assert_eq!(
+            super::cited_urls(a),
+            [
+                "https://arxiv.org/abs/2305.06983",
+                "https://a.org/x",
+                "https://b.org/y"
+            ]
+        );
+    }
 }

@@ -22,6 +22,9 @@ pub enum SourceFate {
     #[default]
     Skipped,
     Failed,
+    /// Cited in the answer from its listing (title, abstract) without
+    /// being read (#85, A15): never shown as skipped.
+    Cited,
 }
 
 impl SourceFate {
@@ -30,6 +33,7 @@ impl SourceFate {
             Self::Read => "Read",
             Self::Skipped => "Skipped",
             Self::Failed => "Failed",
+            Self::Cited => "Cited, not read",
         }
     }
 }
@@ -59,6 +63,11 @@ pub enum LedgerReason {
     Restored,
     /// The read failed for another reason.
     Error,
+    /// The answer cites it (#85, A15).
+    InAnswer,
+    /// Not read because the turn already had what it needed (#85, A15):
+    /// the detail says how many sources were read.
+    NotNeeded,
 }
 
 impl LedgerReason {
@@ -74,6 +83,8 @@ impl LedgerReason {
             Self::Cancelled => "cancelled",
             Self::Restored => "from checkpoint",
             Self::Error => "error",
+            Self::InAnswer => "cited in the answer",
+            Self::NotNeeded => "not needed",
         }
     }
 }
@@ -172,6 +183,9 @@ pub struct SourceCounts {
     pub cache_hits: usize,
     pub skipped: usize,
     pub failed: usize,
+    /// Cited from a listing without being read (#85, A15).
+    #[serde(default)]
+    pub cited_unread: usize,
 }
 
 impl SourceCounts {
@@ -188,6 +202,9 @@ impl SourceCounts {
         }
         if self.failed > 0 {
             parts.push(format!("{} failed", self.failed));
+        }
+        if self.cited_unread > 0 {
+            parts.push(format!("{} cited, not read", self.cited_unread));
         }
         parts.join(" · ")
     }
@@ -213,6 +230,7 @@ impl Ledger {
                 }
                 SourceFate::Skipped => c.skipped += 1,
                 SourceFate::Failed => c.failed += 1,
+                SourceFate::Cited => c.cited_unread += 1,
             }
         }
         c
@@ -459,6 +477,19 @@ impl LedgerBuilder {
         );
     }
 
+    /// A source the answer cites (#85, A15). A read source keeps its row;
+    /// one only listed (a search hit, a paper's abstract) becomes "Cited,
+    /// not read", never "Skipped". A URL the ledger never saw is left out.
+    pub fn cited(&mut self, url: &str) {
+        let key = url_key(url);
+        for e in self.sources.iter_mut().filter(|s| url_key(&s.url) == key) {
+            if e.fate == SourceFate::Skipped {
+                e.fate = SourceFate::Cited;
+                e.reason = LedgerReason::InAnswer;
+            }
+        }
+    }
+
     /// A page a resumed run brought back from its checkpoint.
     pub fn restored(&mut self, url: &str, site: &str, title: &str, worker: Option<usize>) {
         self.settle(
@@ -581,6 +612,23 @@ impl LedgerBuilder {
             let (url, worker) = (self.sources[i].url.clone(), self.sources[i].worker);
             if self.read_elsewhere(&url, worker) {
                 self.sources[i].reason = LedgerReason::Duplicate;
+                continue;
+            }
+            // Every skip says why (#85, A15): a hit left unread in a lane
+            // that read others was not needed.
+            let read = self
+                .sources
+                .iter()
+                .filter(|s| s.worker == worker && s.fate == SourceFate::Read)
+                .count();
+            if read > 0 {
+                let e = &mut self.sources[i];
+                let why = format!("enough sources: {read} read");
+                e.detail = if e.detail.is_empty() {
+                    why
+                } else {
+                    format!("{why}; {}", e.detail)
+                };
             }
         }
         let mut lanes: Vec<LaneTotal> = Vec::new();
@@ -778,6 +826,38 @@ mod tests {
         assert_eq!(
             c.line(),
             "5 considered · 1 read (1 from cache) · 3 skipped · 1 failed"
+        );
+    }
+
+    #[test]
+    fn a_cited_source_is_never_skipped_and_every_skip_says_why() {
+        let mut b = LedgerBuilder::new();
+        b.considered("https://a.test/1", "a.test", "A", None, "q", 0);
+        b.considered("https://b.test/1", "b.test", "B", None, "q", 0);
+        b.considered("https://c.test/1", "c.test", "C", None, "q", 0);
+        b.read("https://a.test/1", "a.test", "A", None, false, 10);
+        b.cited("https://b.test/1/");
+        b.cited("https://a.test/1");
+        b.cited("https://never.seen/x");
+        let l = b.finish(100, &[]);
+        let row = |u: &str| l.sources.iter().find(|s| s.url == u).unwrap().clone();
+        assert_eq!(row("https://a.test/1").fate, SourceFate::Read);
+        let b1 = row("https://b.test/1");
+        assert_eq!(
+            (b1.fate, b1.reason),
+            (SourceFate::Cited, LedgerReason::InAnswer)
+        );
+        let c1 = row("https://c.test/1");
+        assert_eq!(c1.fate, SourceFate::Skipped);
+        assert!(
+            c1.detail.starts_with("enough sources: 1 read"),
+            "{}",
+            c1.detail
+        );
+        assert_eq!(l.sources.len(), 3);
+        assert_eq!(
+            l.counts().line(),
+            "3 considered · 1 read · 1 skipped · 1 cited, not read"
         );
     }
 
