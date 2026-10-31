@@ -251,7 +251,7 @@ impl IncidentStore {
         i.sessions.push(signal.session);
         if i.sessions.len() > SESSIONS_KEPT {
             let extra = i.sessions.len() - SESSIONS_KEPT;
-            i.sessions.drain(..extra);
+            i.sessions = i.sessions.split_off(extra);
         }
         let count = i.count;
         if let Some(path) = &self.path {
