@@ -117,6 +117,9 @@ pub struct ChatSession {
     mcp_offers: Vec<crate::mcp::MenuItem>,
     /// How hard the model thinks, for models that can.
     effort: Option<tern_providers::Effort>,
+    /// A daily limit on the chat's model may hand the rest of that one
+    /// turn to a smaller model of the same provider (#85, default on).
+    fallback_within_provider: bool,
     /// Receives reasoning as it streams.
     on_reasoning: Option<ReasoningSink>,
     /// What the next turns may do. `None` offers every tool.
@@ -524,6 +527,28 @@ pub fn governor_for(
     (!local).then(tern_providers::governor::global)
 }
 
+/// The temperature Tern pins for chat and research turns (#85, A7).
+pub const PINNED_TEMPERATURE: f32 = 0.3;
+
+/// The smaller model of the same provider a turn may continue on when
+/// the chat's model hits a daily limit (#85, policy D7): the user's data
+/// stays with the provider they chose. `None` when Tern knows no smaller
+/// sibling, or the model is already the small one.
+pub fn within_provider_fallback(provider: &str, model: &str) -> Option<&'static str> {
+    let m = model.to_ascii_lowercase();
+    let pick = match provider {
+        "mistral" if m.starts_with("mistral-large") || m.starts_with("mistral-medium") => {
+            "mistral-small-latest"
+        }
+        "groq" if m.contains("70b") || m.contains("120b") || m.contains("maverick") => {
+            "llama-3.1-8b-instant"
+        }
+        "google" if m.contains("pro") => "gemini-2.5-flash",
+        _ => return None,
+    };
+    (pick != m).then_some(pick)
+}
+
 /// Takes a stopped turn's digest off the end of `history` (#85), when its
 /// question is `message`: a resumed turn brings the turn back itself.
 pub fn drop_interrupted(history: &mut Vec<ChatMessage>, message: &str) {
@@ -875,6 +900,7 @@ impl ChatSession {
             mcp_notes,
             mcp_offers,
             effort: None,
+            fallback_within_provider: true,
             on_reasoning: None,
             turn_mode: None,
             workspace: None,
@@ -969,6 +995,29 @@ impl ChatSession {
     /// no row in the chat list.
     pub fn is_draft(&self) -> bool {
         self.sink.is_draft(self.session)
+    }
+
+    /// Whether a daily limit may hand the rest of a turn to a smaller
+    /// model of the same provider (#85). Never sticky: the next turn and
+    /// new chats use the chat's own model again.
+    pub fn set_fallback_within_provider(&mut self, on: bool) {
+        self.fallback_within_provider = on;
+    }
+
+    /// The sampling temperature a turn pins (#85, A7), for models that
+    /// take one: none for reasoning models, which refuse it or need their
+    /// own.
+    fn pinned_temperature(&self) -> Option<f32> {
+        (self.effort.is_none() && matches!(self.thinking(), tern_providers::Thinking::Unsupported))
+            .then_some(PINNED_TEMPERATURE)
+    }
+
+    /// The model a daily limit hands the rest of a turn to, if any.
+    fn fallback_model(&self) -> Option<&'static str> {
+        if !self.fallback_within_provider {
+            return None;
+        }
+        within_provider_fallback(self.provider.spec().id, &self.model)
     }
 
     /// Sets how hard the model thinks on the next turns. Models without a
@@ -1478,6 +1527,8 @@ impl ChatSession {
                 cache: Some(&self.cache),
                 governor: governor_for(&self.provider),
                 wrap_up: true,
+                fallback_model: self.fallback_model(),
+                temperature: self.pinned_temperature(),
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1862,6 +1913,8 @@ impl ChatSession {
                     cache: Some(&self.cache),
                     governor: governor_for(&self.provider),
                     wrap_up: true,
+                    fallback_model: self.fallback_model(),
+                    temperature: self.pinned_temperature(),
                 };
                 TurnLoop {
                     session: self.session,

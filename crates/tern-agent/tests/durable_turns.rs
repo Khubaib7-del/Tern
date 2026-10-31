@@ -575,3 +575,105 @@ async fn the_governor_waits_for_the_window_and_prefits_big_requests() {
     let chars: usize = sent.messages.iter().map(|m| m.content.len()).sum();
     assert!(chars < long.len() / 2, "sent {chars} chars");
 }
+
+/// A4 / A-T8 / consistency S2: a daily limit hands the rest of this one
+/// turn to the within-provider fallback, with a `model.switched` row; the
+/// next turn starts on the chosen model again (never sticky).
+#[tokio::test]
+async fn a_fallback_lasts_one_turn_and_the_next_turn_uses_the_chosen_model() {
+    let (tools, _) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.fallback_model = Some("small-model");
+    let model = Script::new(vec![
+        Step::Fail(ProviderError::RateLimited {
+            provider: "Mistral",
+            retry_after: None,
+            detail: "requests per day (RPD) exceeded".into(),
+        }),
+        Step::Reply("Answer from the small model.".into()),
+        Step::Reply("Next turn.".into()),
+    ]);
+    let out = ctx.run(&model, "first").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let reqs = model.requests();
+    assert_eq!(reqs[0].model, "test-model");
+    assert_eq!(reqs[1].model, "small-model");
+    let events = sink.events();
+    let sw = events
+        .iter()
+        .find(|e| e.kind == "model.switched")
+        .expect("a row");
+    let sw: tern_core::ModelSwitched = serde_json::from_value(sw.payload.clone()).unwrap();
+    assert_eq!(
+        (sw.from_model.as_str(), sw.to_model.as_str()),
+        ("test-model", "small-model")
+    );
+    assert!(!sw.chosen_by_user);
+    assert_eq!(out.model_calls, 1, "the failed call is not counted");
+    // A new turn (or a new chat) starts on the chosen model.
+    let next = ctx.run(&model, "second").await;
+    assert_eq!(next.state, TurnState::Completed);
+    assert_eq!(model.requests()[2].model, "test-model");
+}
+
+/// A7 / A-T8 / consistency S3: two chats with the same tools and mode get
+/// the same fingerprint (tools hash, prompt hash) and the same pinned
+/// sampling on every request.
+#[tokio::test]
+async fn the_same_tools_and_mode_give_the_same_fingerprint_and_sampling() {
+    let (tools, _) = reader();
+    let mut prints = Vec::new();
+    for _ in 0..2 {
+        let sink = MemorySink::default();
+        let mut ctx = Ctx::new(&tools, &sink);
+        ctx.hooks.temperature = Some(0.3);
+        let model = Script::new(vec![Step::Reply("Done.".into())]);
+        ctx.run(&model, "go").await;
+        assert!(model.requests().iter().all(|r| r.temperature == Some(0.3)));
+        let started = sink
+            .events()
+            .into_iter()
+            .find(|e| e.kind == "turn.started")
+            .unwrap();
+        prints.push(started.payload["fingerprint"].clone());
+    }
+    assert_eq!(prints[0], prints[1]);
+    assert!(
+        prints[0]["tools_hash"]
+            .as_str()
+            .is_some_and(|h| h.len() == 16)
+    );
+    // Registration order does not change the hash.
+    let mut other = ToolRegistry::new();
+    other.register(Stuck).register(Read::default());
+    assert_eq!(other.tools_hash(), tools.tools_hash());
+}
+
+/// A-T16: with native tools the system text carries no input schemas.
+#[tokio::test]
+async fn native_tool_requests_do_not_repeat_the_schemas_in_the_system_text() {
+    let (tools, _) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.native_tools = true;
+    let model = Script::new(vec![Step::Reply("Done.".into())]);
+    ctx.run(&model, "go").await;
+    let req = &model.requests()[0];
+    assert!(!req.tools.is_empty());
+    let system = req.system.as_deref().unwrap();
+    assert!(system.contains("You can use these tools:"));
+    assert!(!system.contains("input schema:"), "{system}");
+    // Without native tools the schemas stay in the text.
+    let sink = MemorySink::default();
+    let ctx = Ctx::new(&tools, &sink);
+    let model = Script::new(vec![Step::Reply("Done.".into())]);
+    ctx.run(&model, "go").await;
+    assert!(
+        model.requests()[0]
+            .system
+            .as_deref()
+            .unwrap()
+            .contains("input schema:")
+    );
+}

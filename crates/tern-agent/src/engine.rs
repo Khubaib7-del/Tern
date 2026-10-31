@@ -421,6 +421,14 @@ pub struct RunHooks<'a> {
     /// out, the model writes its answer from what it gathered, with the
     /// gaps listed, instead of the turn stopping with no answer.
     pub wrap_up: bool,
+    /// A smaller model of the same provider the rest of this turn may run
+    /// on when the chosen model hits its daily limit (#85, policy D7).
+    /// Never sticky: it lasts this turn only, with a `model.switched` row.
+    pub fallback_model: Option<&'a str>,
+    /// Sampling pinned for the turn (#85, A7), for models that take a
+    /// temperature: the same question gets the same kind of answer in
+    /// every chat. `None` leaves the provider's default.
+    pub temperature: Option<f32>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -752,6 +760,8 @@ struct Run<'r, 'a> {
     /// Answer text that streamed before the stop this turn resumes (#85):
     /// sent back as the start of the answer, and kept in front of it.
     resumed_partial: String,
+    /// The turn moved to the within-provider fallback model (#85).
+    switched: bool,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -830,6 +840,7 @@ impl<'a> TurnLoop<'a> {
             journal_hits: 0,
             recorded: Vec::new(),
             resumed_partial: String::new(),
+            switched: false,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -941,6 +952,45 @@ impl Run<'_, '_> {
         } else {
             n
         }
+    }
+
+    /// Hands the rest of this turn to the within-provider fallback model
+    /// (#85), once, with a `model.switched` row. `false` when there is
+    /// none, or the turn already switched.
+    fn switch_model(&mut self, reason: ErrorClass) -> Result<bool, Stop> {
+        let from = self.cfg.model_name;
+        let Some(to) = self.cfg.hooks.fallback_model.filter(|m| *m != from) else {
+            return Ok(false);
+        };
+        if self.switched {
+            return Ok(false);
+        }
+        let provider = self.cfg.model.provider_id().to_owned();
+        let line = format!(
+            "The daily limit for {from} is used up; this turn continues on {to}. New chats and your next message use {from} again."
+        );
+        crate::diag::note(&format!(
+            "model_switch: provider={provider} from={from} to={to} reason={reason:?}"
+        ));
+        let payload = serde_json::to_value(tern_core::ModelSwitched {
+            from_provider: provider.clone(),
+            from_model: from.to_owned(),
+            to_provider: provider,
+            to_model: to.to_owned(),
+            reason,
+            line: line.clone(),
+            chosen_by_user: false,
+        })
+        .unwrap_or_default();
+        self.record(self.event(
+            tern_core::run_state::MODEL_SWITCHED,
+            EffectClass::Network,
+            line,
+            payload,
+        ))?;
+        self.cfg.model_name = to;
+        self.switched = true;
+        Ok(true)
     }
 
     /// The model calls the wrap-up may reach: its one reserved call.
@@ -1102,6 +1152,18 @@ impl Run<'_, '_> {
         if let Some(c) = &resume {
             started["resumed"] = json!({"turn": c.turn, "stage": c.stage, "saved_at": c.saved_at});
         }
+        // The turn fingerprint (#85, A7): what decides how the model
+        // behaves, so two chats can be compared in Plan › Detailed.
+        let fp_system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        started["fingerprint"] = json!({
+            "prompt_version": protocol::PROMPT_VERSION,
+            "prompt_hash": protocol::prompt_hash(&fp_system),
+            "tools_hash": self.cfg.tools.tools_hash(),
+            "model": self.cfg.model_name,
+            "provider": self.cfg.model.provider_id(),
+            "native_tools": self.native,
+            "temperature": self.cfg.hooks.temperature,
+        });
         self.record(self.event(
             "turn.started",
             EffectClass::Analysis,
@@ -1112,7 +1174,10 @@ impl Run<'_, '_> {
             },
             started,
         ))?;
-        let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        // With native tools the schemas travel in the request, so the
+        // system text does not repeat them (#85).
+        let full_system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        let native_system = protocol::system_prompt_native(self.cfg.instructions, self.cfg.tools);
         let mut messages = history;
         // Exchanges an earlier turn left empty would make the provider
         // refuse this request (see [`crate::chat::tidy_history`]).
@@ -1252,7 +1317,7 @@ impl Run<'_, '_> {
         // `file_edit` once (#79).
         let asks_to_add = crate::webintent::asks_to_add(&message_text);
 
-        loop {
+        'calls: loop {
             self.check_cancel()?;
             self.take_steering(&mut messages)?;
             let b = self.cfg.budget;
@@ -1291,12 +1356,17 @@ impl Run<'_, '_> {
             }
             self.go(TurnState::ModelStreaming)?;
             let mut req = ChatRequest::new(self.cfg.model_name, messages.clone())
-                .with_system(system.clone())
+                .with_system(if self.native && !self.wrapping {
+                    native_system.clone()
+                } else {
+                    full_system.clone()
+                })
                 .with_max_tokens(self.cfg.max_output_tokens)
                 .with_effort(self.cfg.hooks.effort);
             if self.native && !self.wrapping {
                 req = req.with_tools(self.cfg.tools.specs());
             }
+            req.temperature = self.cfg.hooks.temperature;
             // The provider said the request was too large for this model
             // (#80: Groq's 413 on an 8000-token cap): every request from
             // here is made to fit, or the turn says plainly why not.
@@ -1389,6 +1459,10 @@ impl Run<'_, '_> {
                         }
                         tern_providers::governor::Admission::TooBig { .. } => break,
                         tern_providers::governor::Admission::Daily { resets_at } => {
+                            if self.switch_model(ErrorClass::RateLimitDaily)? {
+                                self.go(TurnState::Verifying)?;
+                                continue 'calls;
+                            }
                             self.pause = Some((
                                 PausedBy::DailyQuota,
                                 ErrorClass::RateLimitDaily,
@@ -1614,6 +1688,21 @@ impl Run<'_, '_> {
                         ) => Some(PausedBy::Network),
                         _ => None,
                     };
+                    if class == Some(ErrorClass::RateLimitDaily) {
+                        self.cfg
+                            .hooks
+                            .governor
+                            .unwrap_or(tern_providers::governor::global())
+                            .close_for_day(&pid, self.cfg.model_name, None);
+                        if self.switch_model(ErrorClass::RateLimitDaily)? {
+                            // The failed call is not counted (#85).
+                            self.model_calls -= 1;
+                            self.failed_calls += 1;
+                            self.partial.clear();
+                            self.go(TurnState::Verifying)?;
+                            continue 'calls;
+                        }
+                    }
                     let (Some(by), Some(class)) = (by, class) else {
                         return Err(Stop {
                             state: TurnState::Failed,

@@ -156,6 +156,27 @@ pub const TOOL_PROTOCOL: &str = "To use one, reply with only this block and noth
 /// The system prompt for one turn. The effective instructions view
 /// ([`crate::rules::effective`]) is built from this same function.
 pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
+    system_prompt_for(base, tools, false)
+}
+
+/// [`system_prompt`] for a request that also sends the tools natively
+/// (#85): the tool list carries no input schemas, which the request
+/// already holds, so they are not paid for twice.
+pub fn system_prompt_native(base: Option<&str>, tools: &ToolRegistry) -> String {
+    system_prompt_for(base, tools, true)
+}
+
+/// A short hash of a system prompt, for the turn fingerprint (#85, A7).
+pub fn prompt_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(text.as_bytes());
+    d.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The version of Tern's base prompt, for the turn fingerprint.
+pub const PROMPT_VERSION: &str = "core-0";
+
+fn system_prompt_for(base: Option<&str>, tools: &ToolRegistry, native: bool) -> String {
     let mut s = String::from(BASE);
     s.push(' ');
     s.push_str(RENDERING);
@@ -165,7 +186,11 @@ pub fn system_prompt(base: Option<&str>, tools: &ToolRegistry) -> String {
     }
     if !tools.is_empty() {
         s.push_str("\n\nYou can use these tools:\n");
-        s.push_str(&tools.describe());
+        s.push_str(&if native {
+            tools.describe_brief()
+        } else {
+            tools.describe()
+        });
         s.push_str("\n\n");
         s.push_str(TOOL_PROTOCOL);
         if tools.get("scholar_search").is_some() {
