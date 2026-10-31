@@ -331,7 +331,8 @@ mod tests {
             })
             .collect();
         assert!(looks_json_escaped(&ascii));
-        assert!(ascii.len() > URDU.chars().count() * 5, "the old overcount");
+        // Each Arabic-script letter becomes six characters (`\uXXXX`).
+        assert!(ascii.len() > URDU.chars().count() * 4, "the old overcount");
         let decoded = unescape_json(&ascii);
         assert_eq!(decoded.trim_matches('"'), URDU);
         let e = Estimator::new();

@@ -2989,6 +2989,11 @@ impl<'a> Run<'_, 'a> {
             return Ok(search);
         }
         self.quick_read = true;
+        // The addresses are the search's own listing, as its hits are
+        // (`note_provenance`): reading them is not following a page.
+        for u in &urls {
+            self.cfg.gate.know_text(u);
+        }
         let (own, _) = crate::attach::split(&self.message);
         let (_, question) = crate::reply::split(own);
         let question = question.to_owned();
