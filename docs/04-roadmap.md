@@ -309,6 +309,7 @@ The roadmap follows GitHub's numbers: #84 is this docs pull request, which moved
 
 - ACP v1 brought up to date; the MCP Registry, OAuth 2.1 and OpenAPI tools behind the trust preview; presets for literature services you already use.
 - Tern as an MCP server and `tern research --json --wait`; an A2A client behind a flag; MCP Apps in a separate webview; connector actions as journaled steps with idempotency keys.
+- Desktop sources (optional, off by default): read papers from desktop apps such as Zotero, PDF readers, and a library portal the user is already signed in to, through the OS accessibility tree rather than screenshots. Built on [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Apache-2.0, Rust, Windows, macOS and Linux), whose snapshot, ref, act and verify loop also shapes the built-in browser tool and the UI tours. Consent is asked per app, actions are read-only by default, and snapshots are never logged or sent to a model unfiltered.
 
 **Depends on:** #103.
 
@@ -632,6 +633,7 @@ Built in PR #43 ([linux.md](linux.md), [macos.md](macos.md)). **Linux**: keys in
 | --- | --- |
 | Import chats from other assistants with provenance | Planned (#101) |
 | Universal connector for services without MCP | Planned (#104) |
+| Desktop sources through the accessibility tree (agent-desktop) | Planned (#104) |
 | Learning from frustration signals, eval-gated | Planned (signal tap in #85, learning core in #105) |
 | Lecture video and slide intake | Planned (#100) |
 | Computer use, scoped to research chores | After v1.0 (#112), off by default |
