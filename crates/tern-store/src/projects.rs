@@ -253,37 +253,37 @@ mod tests {
         let inbox = s.ensure_project(INBOX).unwrap();
         let a = s.create_session(inbox, Harness::Research, "loose").unwrap();
         s.append(&ev(a)).unwrap();
-        let fyp = s.new_project("  FYP   thesis ", None).unwrap();
+        let atlas = s.new_project("  Atlas   notes ", None).unwrap();
         assert!(
-            s.new_project("fyp THESIS", None).is_err(),
+            s.new_project("atlas NOTES", None).is_err(),
             "names are unique"
         );
         assert!(s.new_project("   ", None).is_err());
         let rows = s.projects().unwrap();
         assert_eq!(rows[0].name, INBOX);
         assert!(rows[0].inbox);
-        assert_eq!(rows[1].name, "FYP thesis");
+        assert_eq!(rows[1].name, "Atlas notes");
         assert_eq!(rows[0].sessions, 1);
 
         // Moving a chat moves its sub-sessions too.
         let sub = s.create_sub_session(a, 1, "sub", None).unwrap();
         let subsub = s.create_sub_session(sub, 1, "subsub", None).unwrap();
-        assert_eq!(s.move_session(a, fyp).unwrap(), 3);
-        assert_eq!(s.session_project(subsub).unwrap(), Some(fyp));
-        assert_eq!(s.session(a).unwrap().unwrap().project, Some(fyp));
+        assert_eq!(s.move_session(a, atlas).unwrap(), 3);
+        assert_eq!(s.session_project(subsub).unwrap(), Some(atlas));
+        assert_eq!(s.session(a).unwrap().unwrap().project, Some(atlas));
         let rows = s.projects().unwrap();
         assert_eq!((rows[0].sessions, rows[1].sessions), (0, 1));
 
-        s.rename_project(fyp, "Final year project").unwrap();
+        s.rename_project(atlas, "Atlas project").unwrap();
         assert!(s.rename_project(inbox, "Other").is_err());
-        s.set_project_root(fyp, Some(Path::new("/tmp/fyp")))
+        s.set_project_root(atlas, Some(Path::new("/tmp/atlas")))
             .unwrap();
         assert_eq!(
-            s.project(fyp).unwrap().unwrap().root,
-            Some(PathBuf::from("/tmp/fyp"))
+            s.project(atlas).unwrap().unwrap().root,
+            Some(PathBuf::from("/tmp/atlas"))
         );
 
-        assert_eq!(s.delete_project(fyp).unwrap(), 3);
+        assert_eq!(s.delete_project(atlas).unwrap(), 3);
         assert_eq!(s.session_project(a).unwrap(), Some(inbox));
         assert!(s.delete_project(inbox).is_err());
         assert_eq!(s.projects().unwrap().len(), 1);

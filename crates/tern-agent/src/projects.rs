@@ -283,13 +283,13 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("TERN.md"), "rules").unwrap();
-        let id = create(&s, "FYP", Some(dir.path())).unwrap();
+        let id = create(&s, "Atlas", Some(dir.path())).unwrap();
         assert!(create(&s, "Other", Some(&dir.path().join("missing"))).is_err());
         let all = list(&s).unwrap();
         assert_eq!(all[0].row.name, INBOX);
-        let fyp = all.iter().find(|p| p.row.id == id).unwrap();
-        assert!(fyp.tern_md.is_some());
-        assert_eq!(find(&s, "fyp").unwrap().id, id);
+        let atlas = all.iter().find(|p| p.row.id == id).unwrap();
+        assert!(atlas.tern_md.is_some());
+        assert_eq!(find(&s, "atlas").unwrap().id, id);
         assert_eq!(find(&s, &id.to_string()).unwrap().id, id);
         assert!(find(&s, "nope").is_err());
         let ses = s.create_session(id, Harness::Research, "x").unwrap();

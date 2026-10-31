@@ -324,7 +324,7 @@
  {
   "id": "src-viva",
   "kind": "source_rank",
-  "question": "How should a final-year project viva be prepared for?",
+  "question": "How should a project viva be prepared for?",
   "context": "",
   "choices": [
    {
@@ -958,7 +958,7 @@
  {
   "id": "tri-viva",
   "kind": "triage",
-  "question": "Prepare for my final-year project viva next week",
+  "question": "Prepare for my project viva next week",
   "context": "",
   "choices": [
    {

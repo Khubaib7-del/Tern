@@ -303,17 +303,17 @@ mod tests {
 
     #[test]
     fn chats_sit_in_their_project_with_sub_sessions_and_the_inbox_last() {
-        let fyp = project("FYP", false);
+        let docs = project("Docs", false);
         let inbox = project("Inbox", true);
         let empty = project("Later", false);
-        let a = session(Some(fyp.row.id), None, "3");
-        let a1 = session(Some(fyp.row.id), Some(a.id), "4");
+        let a = session(Some(docs.row.id), None, "3");
+        let a1 = session(Some(docs.row.id), Some(a.id), "4");
         let loose = session(Some(inbox.row.id), None, "2");
         let orphan = session(None, None, "1");
         let sessions = vec![a.clone(), a1, loose, orphan];
         let order = crate::continuity::tree(&sessions);
         let mut t = ProjectTree {
-            projects: vec![inbox.clone(), fyp.clone(), empty.clone()],
+            projects: vec![inbox.clone(), docs.clone(), empty.clone()],
             ..Default::default()
         };
         let rows = t.rows(&sessions, &order);
@@ -327,11 +327,11 @@ mod tests {
             .collect();
         assert_eq!(
             shape,
-            ["[FYP 1]", "3", "4", "[Later 0]", "[Inbox 2]", "2", "1"]
+            ["[Docs 1]", "3", "4", "[Later 0]", "[Inbox 2]", "2", "1"]
         );
 
-        let saved = t.toggle(fyp.row.id);
-        assert_eq!(saved, [fyp.row.id.to_string()]);
+        let saved = t.toggle(docs.row.id);
+        assert_eq!(saved, [docs.row.id.to_string()]);
         let rows = t.rows(&sessions, &order);
         assert!(matches!(
             &rows[0],
@@ -341,7 +341,7 @@ mod tests {
             }
         ));
         assert!(matches!(&rows[1], TreeRow::Project { name, .. } if name == "Later"));
-        t.toggle(fyp.row.id);
+        t.toggle(docs.row.id);
         assert!(t.collapsed.is_empty());
     }
 

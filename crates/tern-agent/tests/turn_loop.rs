@@ -524,7 +524,7 @@ async fn estimated_usage_stays_marked_estimated() {
 #[tokio::test]
 async fn the_whole_turn_replays_from_the_store_in_order() {
     let store = Store::open_in_memory().unwrap();
-    let project = store.create_project("FYP", None).unwrap();
+    let project = store.create_project("Atlas", None).unwrap();
     let ses = store
         .create_session(project, Harness::Research, "Survey")
         .unwrap();

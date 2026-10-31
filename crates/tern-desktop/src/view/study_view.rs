@@ -1488,7 +1488,7 @@ impl Workspace {
                 div()
                     .text_sm()
                     .text_color(p.faint)
-                    .child("Nothing yet. Add lecture PDFs, your notes, or your FYP report."),
+                    .child("Nothing yet. Add lecture PDFs, your notes, or your project report."),
             );
         }
         for m in &lib.materials {
