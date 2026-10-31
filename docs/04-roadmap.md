@@ -475,6 +475,7 @@ The plan published with #83 listed #84–#103 (the Old column). Where each item 
 | — | (new) | #114 | Handbook bundle |
 | — | (new) | #86 | Docs: desktop sources and renumbering |
 | — | (new) | #87 | Docs: browser for agents and computer use |
+| — | (new) | #88 | Docs: ownership, Explain in 3D v2 plan, and roadmap renumber |
 | #94 | Computer use | #115 | Computer use (after v1.0) |
 | #96 | Interactive figures and Explain in 3D v2 | #116 | Figures and Explain in 3D v2 (after v1.0) |
 | #97 | Git panel | #117 | Git panel (after v1.0) |
