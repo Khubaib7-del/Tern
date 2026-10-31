@@ -1,0 +1,14 @@
+{
+  "state": "paused",
+  "paused_by": "daily_quota",
+  "error": "rate_limit_daily",
+  "line": "Stopped here · this key's daily limit is used up",
+  "kept": {
+    "answer_chars": 412,
+    "sources": ["Jiang 2023", "Asai 2023"],
+    "tool_results": 7,
+    "failed_not_counted": 1
+  },
+  "resumable": true,
+  "resets_at": "2026-11-01T00:00:00Z"
+}

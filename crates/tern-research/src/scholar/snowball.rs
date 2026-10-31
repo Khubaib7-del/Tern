@@ -209,11 +209,18 @@ impl Snowball {
         out
     }
 
-    /// Whether `p` is on the topic.
+    /// Whether `p` is on the topic: it covers the topic's key terms, or
+    /// the seed's own title terms (#85, A11: a seed found by its arXiv id
+    /// or DOI is its own best description of what is on topic).
     pub fn relevant(&self, p: &Paper) -> bool {
-        !p.retracted
-            && (self.terms.is_empty()
-                || coverage(&self.terms, &p.text()) + 1e-6 >= self.rule.min_coverage)
+        if p.retracted {
+            return false;
+        }
+        let text = p.text();
+        self.terms.is_empty()
+            || coverage(&self.terms, &text) + 1e-6 >= self.rule.min_coverage
+            || (!self.seed_terms.is_empty()
+                && coverage(&self.seed_terms, &text) + 1e-6 >= self.rule.min_coverage)
     }
 
     /// Whether another round should run.
@@ -365,6 +372,57 @@ mod tests {
         let b = a.clone();
         a.year = Some(1999);
         assert_eq!(s.score(&a), s.score(&b));
+    }
+
+    /// A-T10 (#85): snowballing from arXiv:1706.03762 (a recorded set of
+    /// its citers) puts at least five on-topic citers in the top ten, even
+    /// when the topic the model gave is loose; off-topic citers stay out.
+    #[test]
+    fn a_seed_by_arxiv_id_finds_its_on_topic_citers() {
+        let seed = Paper {
+            title: "Attention Is All You Need".into(),
+            arxiv: Some("1706.03762".into()),
+            abstract_text: Some(
+                "The dominant sequence transduction models are based on recurrent or convolutional neural networks. We propose the Transformer, based solely on attention mechanisms."
+                    .into(),
+            ),
+            ..Paper::default()
+        };
+        let cite = |title: &str, cites: u64| Paper {
+            title: title.into(),
+            citations: Some(cites),
+            ..Paper::default()
+        };
+        let on_topic = [
+            "BERT: bidirectional transformers with self-attention for language understanding",
+            "Self-attention with relative position representations",
+            "Linformer: self-attention with linear complexity",
+            "Vision transformers: attention for image recognition at scale",
+            "Longformer: attention for long documents",
+            "Efficient attention for long sequences",
+            "Reformer: efficient attention with hashing",
+        ];
+        let off_topic = [
+            "Protein structure prediction from sequence",
+            "Crop yield forecasting in arid regions",
+            "Wind turbine gearbox fault detection",
+            "A survey of blockchain consensus",
+            "Soil moisture estimation from satellites",
+        ];
+        let mut linked: Vec<Paper> = on_topic.iter().map(|t| cite(t, 5_000)).collect();
+        linked.extend(off_topic.iter().map(|t| cite(t, 50_000)));
+        let mut s = Snowball::new("transformer citers", vec![seed], StopRule::default());
+        s.round(linked);
+        let top: Vec<String> = s.ranked().into_iter().take(10).map(|p| p.title).collect();
+        let hits = top
+            .iter()
+            .filter(|t| on_topic.contains(&t.as_str()))
+            .count();
+        assert!(hits >= 5, "{top:?}");
+        assert!(
+            top.iter().all(|t| !off_topic.contains(&t.as_str())),
+            "{top:?}"
+        );
     }
 
     #[test]

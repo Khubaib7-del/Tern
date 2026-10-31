@@ -1,0 +1,9 @@
+{
+  "from_provider": "mistral",
+  "from_model": "mistral-large-latest",
+  "to_provider": "mistral",
+  "to_model": "mistral-small-latest",
+  "reason": "rate_limit_daily",
+  "line": "Mistral's daily limit for mistral-large-latest is used up; this turn continues on mistral-small-latest",
+  "chosen_by_user": false
+}

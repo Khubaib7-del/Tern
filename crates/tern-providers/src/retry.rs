@@ -15,6 +15,9 @@
 //! - A spending cap or exhausted quota (Anthropic's "usage limits",
 //!   OpenAI's `insufficient_quota`) is a 429 that waiting will not fix: it
 //!   is never retried ([`ProviderError::SpendCap`]).
+//! - A daily limit ("requests per day", a free tier's daily quota) is
+//!   never retried either (#85, [`Class::Daily`]): the governor closes the
+//!   key until it resets.
 //! - A wrong key, a bad request, a missing model, an unreadable reply, a
 //!   DNS or TLS failure, or a local server that is not running are not
 //!   retried either.
@@ -71,6 +74,10 @@ pub enum Class {
     },
     /// A spending cap or quota: waiting will not help.
     SpendCap,
+    /// A daily limit (requests or tokens per day): never retried, since
+    /// each retry spends a request of the day (#85). The turn pauses until
+    /// it resets, or continues on a model the user picks.
+    Daily,
     /// Anything else: trying again would fail the same way.
     Terminal,
 }
@@ -85,6 +92,8 @@ pub fn classify(e: &ProviderError) -> Class {
         } => {
             if is_spend_cap(detail) {
                 Class::SpendCap
+            } else if crate::governor::is_daily(detail) {
+                Class::Daily
             } else {
                 Class::Transient {
                     reason: "rate limited",
@@ -834,5 +843,29 @@ mod tests {
         .await;
         assert!(out.is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// #85 (A3): a daily limit is never retried.
+    #[tokio::test]
+    async fn a_daily_limit_is_never_retried() {
+        let e = limited(
+            None,
+            "Rate limit reached for model in organization on requests per day (RPD): Limit 1000, Used 1000",
+        );
+        assert_eq!(classify(&e), Class::Daily);
+        let calls = AtomicU32::new(0);
+        let out: ProviderResult<()> = with_retry(
+            policy(),
+            |_| panic!("no wait is announced"),
+            || true,
+            |_| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let e = e.clone();
+                async move { Err(e) }
+            },
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "tried once");
     }
 }

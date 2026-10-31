@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tern_agent::{ApprovalAnswer, ApprovalRequest, TurnOutcome, Usage};
-use tern_core::{Measure, TurnState};
+use tern_core::TurnState;
 
 /// One row group in the transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,11 +167,7 @@ impl App {
             model: model.into(),
             harness: "Research",
             search: None,
-            usage: Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-                measure: Measure::Measured,
-            },
+            usage: Usage::measured(0, 0),
             scroll: 0,
             show_help: false,
             tick: 0,

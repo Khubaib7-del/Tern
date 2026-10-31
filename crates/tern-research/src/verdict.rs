@@ -254,6 +254,8 @@ pub(crate) fn negated(text: &str) -> bool {
 /// match). Number words (`two doses`) are left to [`conflict`], which only
 /// uses them where the words around them match.
 pub(crate) fn numbers(text: &str) -> BTreeSet<String> {
+    // Reference markers are not numbers (#85, A14: "[130]").
+    let text = crate::hygiene::strip_markers(text);
     text.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
         .map(|w| w.trim_matches(['.', ',']).replace(',', ""))
         .filter(|w| !w.is_empty() && w.chars().any(|c| c.is_ascii_digit()))
@@ -437,8 +439,13 @@ impl Conflict {
 /// best. Each check is narrow on purpose: it fires only when the passage
 /// puts something else in the very place the claim fills.
 pub fn conflict(claim: &str, passage: &str) -> Option<Conflict> {
-    let ct = tokens(claim);
-    let pt = tokens(passage);
+    // A passage about something else refutes nothing (#85, A14), and
+    // reference markers are not numbers.
+    if !crate::hygiene::may_refute(claim, passage) {
+        return None;
+    }
+    let ct = tokens(&crate::hygiene::strip_markers(claim));
+    let pt = tokens(&crate::hygiene::strip_markers(passage));
     let p_stems: BTreeSet<String> = pt.iter().map(|t| t.stem.clone()).collect();
     let c_stems: BTreeSet<String> = ct.iter().map(|t| t.stem.clone()).collect();
     let c_nums: BTreeSet<&str> = ct.iter().filter_map(|t| t.number.as_deref()).collect();

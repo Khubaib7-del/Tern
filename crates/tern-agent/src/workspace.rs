@@ -101,7 +101,7 @@ impl Workspace {
     /// Resolves a path the model gave (relative to the root, `/`
     /// separated) to a path inside the workspace, or says why not.
     pub fn resolve(&self, rel: &str) -> Result<PathBuf, ToolError> {
-        let rel = self.unroot(rel);
+        let rel = self.unroot(root_relative(rel).unwrap_or(rel));
         let rel = rel.as_str();
         let p = Path::new(rel);
         if p.is_absolute() || p.has_root() {
@@ -215,6 +215,7 @@ impl Workspace {
     /// `~/a.md`, quoted or not). A full path outside the workspace is read
     /// too; the turn loop asks the user first ([`Workspace::outside`]).
     pub fn read(&self, rel: &str) -> Result<String, ToolError> {
+        let rel = root_relative(rel).unwrap_or(rel);
         if crate::paths::looks_absolute(rel) {
             return read_text_file(&crate::paths::user_path(rel));
         }
@@ -224,7 +225,7 @@ impl Workspace {
     /// The full path `raw` names when it is one and lies outside the
     /// workspace (or is not its one file), so reading it needs approval.
     pub fn outside(&self, raw: &str) -> Option<PathBuf> {
-        if !crate::paths::looks_absolute(raw) {
+        if root_relative(raw).is_some() || !crate::paths::looks_absolute(raw) {
             return None;
         }
         let p = crate::paths::user_path(raw);
@@ -972,6 +973,25 @@ impl TurnMode {
     }
 }
 
+/// A path the model wrote from the chat folder's root, such as
+/// `/draft.md` (#85, A18: a script's `/draft.md` was refused as a path at
+/// the top of the disk). It is a folder path when its first part does
+/// not exist at the top of the disk; a real full path (`/home/me/a.md`,
+/// `/tmp/x`) names something that does. Returns the path without its
+/// leading `/`, or `None` when it is not one.
+pub fn root_relative(rel: &str) -> Option<&str> {
+    let t = rel.trim();
+    let rest = t.strip_prefix('/')?;
+    if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') {
+        return None;
+    }
+    let first = rest.split(['/', '\\']).next()?;
+    if first.is_empty() || first == ".." || Path::new("/").join(first).exists() {
+        return None;
+    }
+    Some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,9 +1054,16 @@ mod tests {
     #[test]
     fn refuses_paths_that_leave() {
         let (_d, w) = ws();
-        for bad in ["../x", "/etc/passwd", "src/../../x"] {
+        for bad in ["../x", "src/../../x"] {
             assert!(w.resolve(bad).is_err(), "{bad}");
         }
+        // A real full path stays refused; on Windows `/etc` is not a
+        // folder at the top of the disk, so `/etc/passwd` reads as one in
+        // the chat folder (#85, A18) and never leaves it.
+        #[cfg(unix)]
+        assert!(w.resolve("/etc/passwd").is_err());
+        #[cfg(windows)]
+        assert!(w.resolve("/etc/passwd").unwrap().starts_with(w.root()));
         #[cfg(unix)]
         {
             let d = &_d;
@@ -1046,6 +1073,27 @@ mod tests {
                 .unwrap();
             assert!(w.read("link.txt").is_err());
         }
+    }
+
+    #[test]
+    fn a_path_from_the_folder_root_stays_in_the_folder() {
+        // A18 (#85): `/draft.md` in a chat folder is the folder's draft.md.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let first = "tern-a18-no-such-top-folder";
+        let p = ws.resolve(&format!("/{first}/draft.md")).unwrap();
+        assert!(p.starts_with(ws.root()));
+        assert_eq!(root_relative("/draft-a18-x.md"), Some("draft-a18-x.md"));
+        // A real full path is left alone.
+        let tmp = std::env::temp_dir();
+        if let Some(top) = tmp.components().nth(1) {
+            let top = top.as_os_str().to_string_lossy();
+            assert_eq!(root_relative(&format!("/{top}/x.md")), None);
+        }
+        assert_eq!(root_relative("/"), None);
+        assert_eq!(root_relative("//server/share"), None);
+        assert_eq!(root_relative("notes.md"), None);
+        assert!(ws.outside(&format!("/{first}/draft.md")).is_none());
     }
 
     #[test]

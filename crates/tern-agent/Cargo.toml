@@ -95,6 +95,6 @@ asr-onnx = ["audio", "dep:ort"]
 tts = ["dep:loqui-kokoro", "dep:loqui-g2p", "dep:ort"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 wiremock.workspace = true
 tempfile.workspace = true

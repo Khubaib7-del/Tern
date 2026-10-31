@@ -353,6 +353,48 @@ impl ToolRegistry {
             .join("\n")
     }
 
+    /// [`ToolRegistry::describe`] without the input schemas (#85, cost
+    /// R1): when the tools go to the provider natively, their schemas are
+    /// already in the request, so the system text lists one line per tool.
+    pub fn describe_brief(&self) -> String {
+        let (mcp, own): (Vec<&str>, Vec<&str>) = self.names().partition(|n| n.starts_with("mcp__"));
+        own.into_iter()
+            .chain(mcp)
+            .filter_map(|n| self.get(n))
+            .map(|t| {
+                format!(
+                    "- {} (v{}, {}): {}",
+                    t.name(),
+                    t.version(),
+                    t.effect().label(),
+                    t.summary()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A hash of the tools offered (#85, A7): their names, versions and
+    /// schemas, sorted by name, so the same tools give the same hash in
+    /// every chat whatever order they were registered in.
+    pub fn tools_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut names: Vec<&str> = self.names().collect();
+        names.sort_unstable();
+        let mut h = Sha256::new();
+        for n in names {
+            if let Some(t) = self.get(n) {
+                h.update(n.as_bytes());
+                h.update([0u8]);
+                h.update(t.version().to_le_bytes());
+                h.update(t.input_schema().to_string().as_bytes());
+                h.update([0u8]);
+            }
+        }
+        let d = h.finalize();
+        d.iter().take(8).map(|b| format!("{b:02x}")).collect()
+    }
+
     /// The listed tools' entries, in the order given.
     pub fn describe_only(&self, names: &[&str]) -> String {
         names

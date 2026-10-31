@@ -452,6 +452,10 @@ impl Run {
 
     /// Adds an event. The first event's time is the turn's start.
     pub fn push(&mut self, e: &EventEnvelope) {
+        // Streamed text checkpoints (#85) are not steps of the run.
+        if e.kind == crate::transcript::ANSWER_PROGRESS {
+            return;
+        }
         let started = *self.started.get_or_insert(e.ts);
         let at = (e.ts - started).try_into().unwrap_or_default();
         if matches!(

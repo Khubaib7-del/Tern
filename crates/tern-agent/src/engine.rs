@@ -25,7 +25,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tern_core::{EffectClass, EventEnvelope, SessionId, TurnId, TurnState, TurnStateMachine};
+use tern_core::{
+    EffectClass, ErrorClass, EventEnvelope, KeptSummary, PausedBy, SessionId, TurnId, TurnReceipt,
+    TurnState, TurnStateMachine,
+};
 use tern_providers::{
     ChatMessage, ChatRequest, ChatResponse, Provider, ProviderResult, Usage, UsageLedger,
 };
@@ -97,6 +100,20 @@ impl Model for Provider {
         Box::pin(self.chat_stream_deltas(req, on))
     }
 }
+
+/// Streamed reply text is checkpointed in the log after this many new
+/// characters (#85)...
+const PROGRESS_CHARS: usize = 200;
+/// ...or after this long, whichever comes first.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// What the model reads when the turn's budget is used up and its one
+/// reserved call is spent on the answer (#85).
+pub const WRAP_UP_PROMPT: &str = "(Tern note: this turn's budget is used up. Do not call any more tools. Write your answer now from what you already gathered, citing it as before. End with a short section titled \"Not established\" listing what you could not check in this turn.)";
+
+/// What the model reads instead of a tool result once the budget is used
+/// up (#85).
+const WRAP_UP_TOOL: &str = "Tern did not run this call: the turn's budget is used up. Do not call any more tools; write the answer from what you have.";
 
 /// How much of a reply's reasoning the log keeps.
 const REASONING_KEEP: usize = 20_000;
@@ -310,6 +327,10 @@ pub fn is_length_stop(finish_reason: Option<&str>) -> bool {
 /// The message a Continue sends after an answer was cut off.
 pub const CONTINUE_PROMPT: &str = "Your last answer was cut off at the length limit. Continue exactly where it stopped, without repeating what you already wrote.";
 
+/// The message a resumed turn sends after the answer text that streamed
+/// before the stop (#85).
+pub const RESUME_PROMPT: &str = "(Tern note: your answer above was interrupted. Continue it exactly where it stopped, without repeating what you already wrote.)";
+
 /// Limits for one turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Budget {
@@ -380,6 +401,10 @@ pub struct RunHooks<'a> {
     /// outside the workspace) and a web search when it says "use the web"
     /// (`web_search`). Works with models that never call tools.
     pub prefetch: bool,
+    /// After a web search for a general question, read its top three
+    /// results (#85, A13): the first part of each page and its best
+    /// passage go back with the search, so quotes come from read pages.
+    pub quick_reads: bool,
     /// How transient provider failures (429, 5xx, 529, a dropped
     /// connection) are retried; `None` is the default policy. Each
     /// wait is a `provider.retry` event first (#72).
@@ -392,6 +417,34 @@ pub struct RunHooks<'a> {
     /// same call again gets the kept result, marked on its card. `None`
     /// caches nothing.
     pub cache: Option<&'a crate::toolcache::ToolCache>,
+    /// The rate-limit governor (#85): asked before every model call, so a
+    /// call waits for its window, is made to fit, or pauses for the day
+    /// instead of being sent to fail. `None` sends every call at once.
+    pub governor: Option<&'a tern_providers::governor::Governor>,
+    /// Keep one model call in reserve (#85): when the turn's budget runs
+    /// out, the model writes its answer from what it gathered, with the
+    /// gaps listed, instead of the turn stopping with no answer.
+    pub wrap_up: bool,
+    /// A smaller model of the same provider the rest of this turn may run
+    /// on when the chosen model hits its daily limit (#85, policy D7).
+    /// Never sticky: it lasts this turn only, with a `model.switched` row.
+    pub fallback_model: Option<&'a str>,
+    /// Sampling pinned for the turn (#85, A7), for models that take a
+    /// temperature: the same question gets the same kind of answer in
+    /// every chat. `None` leaves the provider's default.
+    pub temperature: Option<f32>,
+    /// Dev chaos (#85, A17): faults injected into this turn's model
+    /// calls. `None` uses the process-wide switches (`TERN_DEV=1` with
+    /// `TERN_CHAOS`), which are off in normal use.
+    pub chaos: Option<&'a crate::chaos::Chaos>,
+    /// The token estimator (#85, A3b) this turn calibrates and reads;
+    /// `None` uses the process-wide one. Tests give each run its own.
+    pub estimator: Option<&'a tern_providers::estimate::Estimator>,
+    /// The turn's budget in money (#85, A5), in micro-dollars, priced
+    /// from the models.dev snapshot: past it, the reserved wrap-up
+    /// answers. `None`, or a model with no known price, has no money
+    /// budget; the token budget still holds.
+    pub max_cost_micros: Option<u64>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -489,7 +542,17 @@ pub fn prefetch_calls(
     // (#83: small models chose `web_search` with `scholar_search` on
     // offer). Never for a folder or file task, nor when the message itself
     // asks for the web ("use the web tool"): that search runs instead.
+    // A follow-up that points back at the previous answer ("read the top
+    // 5 papers from that list") searches nothing new (#85, A9): it is
+    // answered from the papers that answer named.
+    let follow_up = previous.is_some()
+        && crate::followup::points_back(own)
+        && !crate::webintent::asks_for_web(own);
+    if follow_up {
+        crate::diag::note("prefetch: skipped (follow-up points back at the previous answer)");
+    }
     if tools.get("scholar_search").is_some()
+        && !follow_up
         && !crate::webintent::asks_for_web(own)
         && crate::intent::classify(own) == crate::intent::Intent::Academic
         && let Some(query) = crate::intent::scholar_query(own)
@@ -497,6 +560,7 @@ pub fn prefetch_calls(
         out.push(("scholar_search", json!({"query": query})));
     }
     if tools.get("web_search").is_some()
+        && !follow_up
         && let Some(query) = web_prefetch(text, previous)
     {
         out.push(("web_search", json!({"query": query})));
@@ -695,6 +759,58 @@ struct Run<'r, 'a> {
     /// The answer Tern ends the turn with when the model keeps redoing a
     /// change it was told is done (#82).
     closing: Option<String>,
+    /// Calls that failed (#85): logged with their tokens, never counted
+    /// against the budget.
+    failed_calls: u32,
+    /// Tool results recorded this turn, for the receipt.
+    tool_results: u32,
+    /// Pages read this turn, by address, for the receipt.
+    sources: Vec<String>,
+    /// Why the turn paused (#85), when it did: by what, the error class,
+    /// and when a daily limit resets.
+    pause: Option<(PausedBy, ErrorClass, Option<std::time::SystemTime>)>,
+    /// The budget ran out and the next model call is the reserved
+    /// wrap-up (#85).
+    wrap_pending: bool,
+    /// The reserved wrap-up call is under way.
+    wrapping: bool,
+    /// The model call number the wrap-up is allowed (one past the limit).
+    wrap_at: u32,
+    /// The step journal (#85): every tool call that ran, by its key, with
+    /// the text the model read. A resumed turn replays a step instead of
+    /// running it again.
+    journal: Vec<crate::checkpoint::JournalStep>,
+    /// Steps replayed from the journal this turn.
+    journal_hits: u32,
+    /// Steps recorded this turn, added to the journal when it is saved.
+    recorded: Vec<crate::checkpoint::JournalStep>,
+    /// Answer text that streamed before the stop this turn resumes (#85):
+    /// sent back as the start of the answer, and kept in front of it.
+    resumed_partial: String,
+    /// The whitespace the model's last reply opened with (#85): a resumed
+    /// answer keeps it between the text that streamed before the stop and
+    /// the rest, which [`protocol::parse`] trims.
+    reply_lead: String,
+    /// A `paper_read` the call just made waits for the next step (#85,
+    /// A12): Tern asked the model to ask for it again, so that ask is not
+    /// a repeat.
+    deferred: bool,
+    /// The turn moved to the within-provider fallback model (#85).
+    switched: bool,
+    /// The top results of a search were read this turn (#85, A13).
+    quick_read: bool,
+    /// Addresses that failed this turn, with the error (#85, A6): the same
+    /// address is not fetched again in the turn (a 403 is fetched once).
+    failed_urls: HashMap<String, String>,
+    /// Papers `paper_read` returned this turn (#85, A6), by paper and
+    /// question, with the call that read them: read once per turn.
+    papers_read: HashMap<String, u32>,
+    /// `paper_read` calls run for the model's current reply (#85, A12):
+    /// at most [`Run::read_batch`] of them, so the next request fits.
+    batch_reads: u32,
+    /// What the turn's counted calls cost so far, in micro-dollars (#85,
+    /// A5); `None` once a call's price was unknown.
+    cost_micros: Option<u64>,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -762,6 +878,25 @@ impl<'a> TurnLoop<'a> {
             script_actions: None,
             asked_edit: false,
             closing: None,
+            failed_calls: 0,
+            tool_results: 0,
+            sources: Vec::new(),
+            pause: None,
+            wrap_pending: false,
+            wrapping: false,
+            wrap_at: 0,
+            journal: Vec::new(),
+            journal_hits: 0,
+            recorded: Vec::new(),
+            resumed_partial: String::new(),
+            reply_lead: String::new(),
+            deferred: false,
+            switched: false,
+            quick_read: false,
+            failed_urls: HashMap::new(),
+            papers_read: HashMap::new(),
+            batch_reads: 0,
+            cost_micros: Some(0),
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -834,6 +969,20 @@ impl Run<'_, '_> {
         Ok(())
     }
 
+    /// Waits `d` (a rate-limit window, #85), stopping early when the user
+    /// stops the run.
+    async fn sleep_or_cancel(&self, d: std::time::Duration) -> Result<(), Stop> {
+        let until = tokio::time::Instant::now() + d;
+        loop {
+            self.check_cancel()?;
+            let now = tokio::time::Instant::now();
+            if now >= until {
+                return Ok(());
+            }
+            tokio::time::sleep((until - now).min(std::time::Duration::from_millis(100))).await;
+        }
+    }
+
     /// Whether the turn works through an open plan in Act mode (the file
     /// tools are offered): it gets twice the call limits (#79: a plan
     /// turn stopped at 12 model calls with steps still open).
@@ -859,6 +1008,50 @@ impl Run<'_, '_> {
         } else {
             n
         }
+    }
+
+    /// Hands the rest of this turn to the within-provider fallback model
+    /// (#85), once, with a `model.switched` row. `false` when there is
+    /// none, or the turn already switched.
+    fn switch_model(&mut self, reason: ErrorClass) -> Result<bool, Stop> {
+        let from = self.cfg.model_name;
+        let Some(to) = self.cfg.hooks.fallback_model.filter(|m| *m != from) else {
+            return Ok(false);
+        };
+        if self.switched {
+            return Ok(false);
+        }
+        let provider = self.cfg.model.provider_id().to_owned();
+        let line = format!(
+            "The daily limit for {from} is used up; this turn continues on {to}. New chats and your next message use {from} again."
+        );
+        crate::diag::note(&format!(
+            "model_switch: provider={provider} from={from} to={to} reason={reason:?}"
+        ));
+        let payload = serde_json::to_value(tern_core::ModelSwitched {
+            from_provider: provider.clone(),
+            from_model: from.to_owned(),
+            to_provider: provider,
+            to_model: to.to_owned(),
+            reason,
+            line: line.clone(),
+            chosen_by_user: false,
+        })
+        .unwrap_or_default();
+        self.record(self.event(
+            tern_core::run_state::MODEL_SWITCHED,
+            EffectClass::Network,
+            line,
+            payload,
+        ))?;
+        self.cfg.model_name = to;
+        self.switched = true;
+        Ok(true)
+    }
+
+    /// The model calls the wrap-up may reach: its one reserved call.
+    fn model_calls_at_wrap(&self) -> u32 {
+        self.wrap_at
     }
 
     fn over_budget(reason: String) -> Stop {
@@ -985,6 +1178,11 @@ impl Run<'_, '_> {
     ) -> Result<(TurnState, String), Stop> {
         self.go(TurnState::Preparing)?;
         let resume = self.cfg.hooks.resume.cloned();
+        // A resumed turn keeps its turn id (#85): its steps, ledger and
+        // evidence stay keyed to the one turn however often it resumes.
+        if let Some(id) = resume.as_ref().and_then(|c| c.turn.parse::<TurnId>().ok()) {
+            self.turn = id;
+        }
         let message_text = match &resume {
             Some(c) => c.message.clone(),
             None => user_message.content.clone(),
@@ -1010,6 +1208,18 @@ impl Run<'_, '_> {
         if let Some(c) = &resume {
             started["resumed"] = json!({"turn": c.turn, "stage": c.stage, "saved_at": c.saved_at});
         }
+        // The turn fingerprint (#85, A7): what decides how the model
+        // behaves, so two chats can be compared in Plan › Detailed.
+        let fp_system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        started["fingerprint"] = json!({
+            "prompt_version": protocol::PROMPT_VERSION,
+            "prompt_hash": protocol::prompt_hash(&fp_system),
+            "tools_hash": self.cfg.tools.tools_hash(),
+            "model": self.cfg.model_name,
+            "provider": self.cfg.model.provider_id(),
+            "native_tools": self.native,
+            "temperature": self.cfg.hooks.temperature,
+        });
         self.record(self.event(
             "turn.started",
             EffectClass::Analysis,
@@ -1020,7 +1230,10 @@ impl Run<'_, '_> {
             },
             started,
         ))?;
-        let system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        // With native tools the schemas travel in the request, so the
+        // system text does not repeat them (#85).
+        let full_system = protocol::system_prompt(self.cfg.instructions, self.cfg.tools);
+        let native_system = protocol::system_prompt_native(self.cfg.instructions, self.cfg.tools);
         let mut messages = history;
         // Exchanges an earlier turn left empty would make the provider
         // refuse this request (see [`crate::chat::tidy_history`]).
@@ -1041,6 +1254,14 @@ impl Run<'_, '_> {
                 }
                 seen.extend(q.seen);
                 self.redo = crate::redo::Redo::from_marks(q.writes);
+                self.journal = q.journal;
+                // What streamed before the stop goes back as the start of
+                // the answer (#85), so the model goes on from there.
+                if !q.partial.trim().is_empty() {
+                    messages.push(ChatMessage::assistant(q.partial.clone()));
+                    messages.push(ChatMessage::user(RESUME_PROMPT));
+                    self.resumed_partial = q.partial;
+                }
                 self.model_calls = c.model_calls;
                 self.tool_calls = c.tool_calls;
                 self.prior = c.tokens_in + c.tokens_out;
@@ -1114,7 +1335,10 @@ impl Run<'_, '_> {
                 self.check_cancel()?;
                 self.go(TurnState::ToolRequested)?;
                 self.called.push(name.to_owned());
-                let result = self.tool_step(name, &args).await?;
+                let mut result = self.tool_step(name, &args).await?;
+                if name == "web_search" {
+                    result = self.quick_reads(result).await?;
+                }
                 // As if the model had asked: its call, then the result.
                 messages.push(ChatMessage::assistant(tern_providers::tool_block(
                     name, &args,
@@ -1141,6 +1365,36 @@ impl Run<'_, '_> {
                 self.save(&messages[base..], &seen);
             }
         }
+        // "Read the top 5 papers from that list" (#85, A9, A-T11): the
+        // previous answer's papers, by id, instead of a new search.
+        if resume.is_none()
+            && let Some(answer) = previous_answer.as_deref()
+        {
+            let (own, _) = crate::attach::split(&message_text);
+            let (_, own) = crate::reply::split(own);
+            if crate::followup::points_back(own) && !crate::webintent::asks_for_web(own) {
+                // The previous exchange: the answer first, then what the
+                // tools returned on the way to it.
+                let start = messages[..base]
+                    .iter()
+                    .rposition(|m| m.role == tern_providers::Role::User)
+                    .unwrap_or(0);
+                let earlier: Vec<&str> = std::iter::once(answer)
+                    .chain(messages[start..base].iter().map(|m| m.content.as_str()))
+                    .collect();
+                let ids = crate::followup::paper_ids(earlier);
+                crate::diag::note(&format!(
+                    "follow-up: points back; previous answer named {} paper id(s)",
+                    ids.len()
+                ));
+                if !ids.is_empty() {
+                    messages.push(ChatMessage::user(crate::followup::note(
+                        &ids,
+                        crate::followup::wanted_count(own),
+                    )));
+                }
+            }
+        }
         let mut empty_retried = false;
         let mut file_nudged = false;
         let mut confirm_nudged = false;
@@ -1152,24 +1406,56 @@ impl Run<'_, '_> {
         // `file_edit` once (#79).
         let asks_to_add = crate::webintent::asks_to_add(&message_text);
 
-        loop {
+        'calls: loop {
             self.check_cancel()?;
             self.take_steering(&mut messages)?;
             let b = self.cfg.budget;
             let limit = self.model_limit();
-            if self.model_calls >= limit {
-                return Err(Self::over_budget(format!(
-                    "The turn reached its limit of {limit} model calls."
-                )));
+            if self.model_calls >= limit && !self.wrapping {
+                if self.cfg.hooks.wrap_up {
+                    self.wrap_pending = true;
+                } else {
+                    return Err(Self::over_budget(format!(
+                        "The turn reached its limit of {limit} model calls."
+                    )));
+                }
+            } else if self.wrapping && self.model_calls >= limit.max(self.model_calls_at_wrap()) {
+                return Err(Self::over_budget(
+                    "The turn's budget ran out before the model wrote its answer.".into(),
+                ));
+            }
+            if std::mem::take(&mut self.wrap_pending) && !self.wrapping {
+                self.wrapping = true;
+                self.wrap_at = self.model_calls + 1;
+                self.record(self.event(
+                    "budget.wrap_up",
+                    EffectClass::Analysis,
+                    "The turn's budget is used up; the model writes its answer from what it has",
+                    json!({"model_calls": self.model_calls, "tool_calls": self.tool_calls,
+                           "tokens": self.usage.total() + self.prior,
+                           "failed_not_counted": self.failed_calls}),
+                ))?;
+                match messages.last_mut() {
+                    Some(last) if last.role == tern_providers::Role::User => {
+                        last.content.push_str("\n\n");
+                        last.content.push_str(WRAP_UP_PROMPT);
+                    }
+                    _ => messages.push(ChatMessage::user(WRAP_UP_PROMPT)),
+                }
             }
             self.go(TurnState::ModelStreaming)?;
             let mut req = ChatRequest::new(self.cfg.model_name, messages.clone())
-                .with_system(system.clone())
+                .with_system(if self.native && !self.wrapping {
+                    native_system.clone()
+                } else {
+                    full_system.clone()
+                })
                 .with_max_tokens(self.cfg.max_output_tokens)
                 .with_effort(self.cfg.hooks.effort);
-            if self.native {
+            if self.native && !self.wrapping {
                 req = req.with_tools(self.cfg.tools.specs());
             }
+            req.temperature = self.cfg.hooks.temperature;
             // The provider said the request was too large for this model
             // (#80: Groq's 413 on an 8000-token cap): every request from
             // here is made to fit, or the turn says plainly why not.
@@ -1189,8 +1475,113 @@ impl Run<'_, '_> {
                     }
                 };
             }
+            // The governor first (#85): wait for the window, make the
+            // request fit, or pause for the day; never send it to fail.
+            let pid = self.cfg.model.provider_id().to_owned();
+            let mut census = request_census(&req);
+            let estimator = self
+                .cfg
+                .hooks
+                .estimator
+                .unwrap_or(tern_providers::estimate::global());
+            let mut est_in = estimator.estimate_census(&pid, self.cfg.model_name, &census);
+            if let Some(gov) = self.cfg.hooks.governor {
+                let mut prefitted = false;
+                loop {
+                    let need = est_in + u64::from(req.max_tokens.min(1024));
+                    match gov.admit(&pid, self.cfg.model_name, need) {
+                        tern_providers::governor::Admission::Now => break,
+                        tern_providers::governor::Admission::Wait(d) => {
+                            let secs = d.as_secs_f64().ceil() as u64;
+                            crate::diag::note(&format!(
+                                "governor: provider={pid} model={} wait_ms={} need={need}",
+                                self.cfg.model_name,
+                                d.as_millis()
+                            ));
+                            self.record(self.event(
+                                "governor.wait",
+                                EffectClass::Network,
+                                format!("Waiting {secs} s for the rate limit, then continuing"),
+                                json!({"provider": pid, "model": self.cfg.model_name,
+                                       "wait_ms": d.as_millis() as u64, "tokens": need,
+                                       "run_state": tern_core::RunState::Waiting,
+                                       "error": ErrorClass::RateLimitShort}),
+                            ))?;
+                            self.sleep_or_cancel(d).await?;
+                            gov.take(&pid, self.cfg.model_name, need);
+                            break;
+                        }
+                        tern_providers::governor::Admission::TooBig { max_tokens }
+                            if !prefitted =>
+                        {
+                            prefitted = true;
+                            let cap = tern_providers::retry::RequestCap {
+                                limit: max_tokens,
+                                requested: Some(need),
+                            };
+                            self.record(self.event(
+                                "context.trimmed",
+                                EffectClass::Analysis,
+                                format!(
+                                    "Tern made the request fit {}'s {max_tokens}-token window before sending it",
+                                    self.cfg.model_name
+                                ),
+                                serde_json::to_value(tern_core::ContextTrimmed {
+                                    tier: "prefit".into(),
+                                    before_tokens: need,
+                                    after_tokens: max_tokens,
+                                    items: Vec::new(),
+                                    line: format!("Request made to fit {max_tokens} tokens"),
+                                })
+                                .unwrap_or_default(),
+                            ))?;
+                            req = match fit_request(req, base, cap, self.cfg.tools, &self.called) {
+                                Ok(r) => r,
+                                Err(n) => {
+                                    return Err(Stop {
+                                        state: TurnState::Failed,
+                                        reason: too_large_line(self.cfg.model_name, &pid, cap, n),
+                                    });
+                                }
+                            };
+                            if self.request_cap.is_none() {
+                                self.request_cap = Some(cap);
+                            }
+                            census = request_census(&req);
+                            est_in = estimator.estimate_census(&pid, self.cfg.model_name, &census);
+                        }
+                        tern_providers::governor::Admission::TooBig { .. } => break,
+                        tern_providers::governor::Admission::Daily { resets_at } => {
+                            if self.switch_model(ErrorClass::RateLimitDaily)? {
+                                self.go(TurnState::Verifying)?;
+                                continue 'calls;
+                            }
+                            self.pause = Some((
+                                PausedBy::DailyQuota,
+                                ErrorClass::RateLimitDaily,
+                                Some(resets_at),
+                            ));
+                            return Err(Stop {
+                                state: TurnState::Paused,
+                                reason: daily_line(self.cfg.model_name, resets_at),
+                            });
+                        }
+                    }
+                }
+            }
             self.model_calls += 1;
-            let model = self.cfg.model;
+            // Dev chaos (#85, A17) sits in front of the model when on.
+            let chaos_model;
+            let model: &dyn Model = match self.cfg.hooks.chaos.or(crate::chaos::global()) {
+                Some(chaos) if chaos.remaining() > 0 => {
+                    chaos_model = crate::chaos::ChaosModel {
+                        inner: self.cfg.model,
+                        chaos,
+                    };
+                    &chaos_model
+                }
+                _ => self.cfg.model,
+            };
             let thought = Mutex::new((
                 String::new(),
                 None::<std::time::Instant>,
@@ -1222,59 +1613,92 @@ impl Run<'_, '_> {
             // Native tool calls' arguments as they stream, by index, for
             // the Files tab's live preview of a file being written (#75).
             let writes: Mutex<HashMap<usize, (String, String, usize)>> = Mutex::default();
-            let reply = match self.cfg.on_text {
-                Some(sink) => {
-                    let call = self.model_calls;
-                    let cancel = self.cfg.cancel.clone();
-                    let on_reasoning = self.cfg.hooks.on_reasoning;
-                    let thought = &thought;
-                    let streamed = &streamed;
-                    let writes = &writes;
-                    let forward = move |d: tern_providers::Delta<'_>| {
-                        match d {
-                            tern_providers::Delta::Tool { index, name, args } => {
-                                stream_write_preview(writes, index, name, args);
+            // What streamed is checkpointed in the log every second or 200
+            // characters (#85), so a crash mid-reply keeps it.
+            let progress = Mutex::new((0usize, std::time::Instant::now()));
+            let call = async {
+                match self.cfg.on_text {
+                    Some(sink) => {
+                        let call = self.model_calls;
+                        let cancel = self.cfg.cancel.clone();
+                        let on_reasoning = self.cfg.hooks.on_reasoning;
+                        let thought = &thought;
+                        let streamed = &streamed;
+                        let writes = &writes;
+                        let progress = &progress;
+                        let forward = move |d: tern_providers::Delta<'_>| {
+                            match d {
+                                tern_providers::Delta::Tool { index, name, args } => {
+                                    stream_write_preview(writes, index, name, args);
+                                }
+                                tern_providers::Delta::Text(t) => {
+                                    let mut th = thought.lock().expect("thought lock");
+                                    if th.1.is_some() && th.2.is_none() {
+                                        th.2 = Some(asked.elapsed());
+                                    }
+                                    drop(th);
+                                    // Nothing after the stop reaches the window.
+                                    if cancel.is_cancelled() {
+                                        return false;
+                                    }
+                                    if let Ok(mut s) = streamed.lock() {
+                                        s.push_str(t);
+                                        // A text-fenced tool call (providers
+                                        // without native tools) previews a file
+                                        // write as it streams too (#76).
+                                        stream_fence_preview(&s, writes);
+                                        if let Ok(mut p) = progress.lock()
+                                            && (s.len() - p.0 >= PROGRESS_CHARS
+                                                || p.1.elapsed() >= PROGRESS_EVERY)
+                                        {
+                                            let _ = events.record(
+                                            EventEnvelope::new(
+                                                session,
+                                                crate::transcript::ANSWER_PROGRESS,
+                                                EffectClass::Analysis,
+                                                "",
+                                                json!({"call": call, "from": p.0, "text": &s[p.0..]}),
+                                            )
+                                            .with_turn(turn),
+                                        );
+                                            *p = (s.len(), std::time::Instant::now());
+                                        }
+                                    }
+                                    sink(call, t);
+                                }
+                                tern_providers::Delta::Reasoning(r) => {
+                                    let mut th = thought.lock().expect("thought lock");
+                                    th.0.push_str(r);
+                                    th.1.get_or_insert_with(std::time::Instant::now);
+                                    drop(th);
+                                    if let Some(f) = on_reasoning {
+                                        f(call, r);
+                                    }
+                                }
                             }
-                            tern_providers::Delta::Text(t) => {
-                                let mut th = thought.lock().expect("thought lock");
-                                if th.1.is_some() && th.2.is_none() {
-                                    th.2 = Some(asked.elapsed());
-                                }
-                                drop(th);
-                                // Nothing after the stop reaches the window.
-                                if cancel.is_cancelled() {
-                                    return false;
-                                }
-                                if let Ok(mut s) = streamed.lock() {
-                                    s.push_str(t);
-                                    // A text-fenced tool call (providers
-                                    // without native tools) previews a file
-                                    // write as it streams too (#76).
-                                    stream_fence_preview(&s, writes);
-                                }
-                                sink(call, t);
-                            }
-                            tern_providers::Delta::Reasoning(r) => {
-                                let mut th = thought.lock().expect("thought lock");
-                                th.0.push_str(r);
-                                th.1.get_or_insert_with(std::time::Instant::now);
-                                drop(th);
-                                if let Some(f) = on_reasoning {
-                                    f(call, r);
-                                }
-                            }
-                        }
-                        !cancel.is_cancelled()
-                    };
-                    tern_providers::with_retry(retry, &notify, &may_retry, |_| {
-                        model.complete_deltas(&req, &forward)
-                    })
-                    .await
-                }
-                None => {
-                    tern_providers::with_retry(retry, &notify, &may_retry, |_| model.complete(&req))
+                            !cancel.is_cancelled()
+                        };
+                        tern_providers::with_retry(retry, &notify, &may_retry, |_| {
+                            model.complete_deltas(&req, &forward)
+                        })
                         .await
+                    }
+                    None => {
+                        tern_providers::with_retry(retry, &notify, &may_retry, |_| {
+                            model.complete(&req)
+                        })
+                        .await
+                    }
                 }
+            };
+            // Stop works within a second even when the stream is silent
+            // (#85): the call is dropped, which closes the connection.
+            let reply = match or_cancel(&self.cfg.cancel, call).await {
+                Some(r) => r,
+                None => Err(tern_providers::ProviderError::Network {
+                    provider: "Tern",
+                    reason: "stopped".into(),
+                }),
             };
             // Stopped mid-reply: what streamed up to the stop is kept with
             // the stop (#71), and nothing more is asked.
@@ -1343,11 +1767,69 @@ impl Run<'_, '_> {
                     continue;
                 }
                 r => r,
-            }
-            .map_err(|e| Stop {
-                state: TurnState::Failed,
-                reason: e.to_string(),
-            })?;
+            };
+            let reply = match reply {
+                Ok(r) => r,
+                Err(e) => {
+                    // What streamed before the failure is kept with it
+                    // (#85), like a stop's (#71).
+                    self.partial = streamed.lock().map(|s| s.clone()).unwrap_or_default();
+                    let class = error_class(&e, !self.partial.trim().is_empty());
+                    crate::diag::note(&format!(
+                        "provider: error class={class:?} provider={pid} model={} streamed_chars={}",
+                        self.cfg.model_name,
+                        self.partial.len()
+                    ));
+                    // A passing failure pauses the turn with its work kept;
+                    // Continue picks it up (#85). Anything else fails.
+                    let by = match class {
+                        Some(ErrorClass::RateLimitDaily) => Some(PausedBy::DailyQuota),
+                        Some(
+                            ErrorClass::StreamCut
+                            | ErrorClass::Network
+                            | ErrorClass::RateLimitShort
+                            | ErrorClass::Overloaded,
+                        ) => Some(PausedBy::Network),
+                        _ => None,
+                    };
+                    if class == Some(ErrorClass::RateLimitDaily) {
+                        self.cfg
+                            .hooks
+                            .governor
+                            .unwrap_or(tern_providers::governor::global())
+                            .close_for_day(&pid, self.cfg.model_name, None);
+                        if self.switch_model(ErrorClass::RateLimitDaily)? {
+                            // The failed call is not counted (#85).
+                            self.model_calls -= 1;
+                            self.failed_calls += 1;
+                            self.partial.clear();
+                            self.go(TurnState::Verifying)?;
+                            continue 'calls;
+                        }
+                    }
+                    let (Some(by), Some(class)) = (by, class) else {
+                        return Err(Stop {
+                            state: TurnState::Failed,
+                            reason: e.to_string(),
+                        });
+                    };
+                    let resets = (class == ErrorClass::RateLimitDaily).then(|| {
+                        self.cfg
+                            .hooks
+                            .governor
+                            .unwrap_or(tern_providers::governor::global())
+                            .close_for_day(&pid, self.cfg.model_name, None)
+                    });
+                    self.pause = Some((by, class, resets));
+                    return Err(Stop {
+                        state: TurnState::Paused,
+                        reason: match resets {
+                            Some(at) => format!("{e} {}", daily_line(self.cfg.model_name, at)),
+                            None => e.to_string(),
+                        },
+                    });
+                }
+            };
             // A stopped stream returns what arrived; it is not an answer.
             self.check_cancel()?;
             self.cfg.ledger.record(
@@ -1356,6 +1838,42 @@ impl Run<'_, '_> {
                 reply.usage,
             );
             self.add_usage(reply.usage);
+            // One line per model call (#85, A8): tokens in, out and
+            // cached, the estimate it was sent on, and how long it took.
+            crate::diag::note(&call_line(
+                &pid,
+                self.cfg.model_name,
+                self.model_calls,
+                &reply.usage,
+                est_in,
+                asked.elapsed(),
+                self.failed_calls,
+            ));
+            if reply.usage.measure == tern_core::Measure::Measured && reply.usage.input_tokens > 0 {
+                estimator.observe_census(
+                    &pid,
+                    self.cfg.model_name,
+                    &census,
+                    reply.usage.input_tokens,
+                );
+                if let Some(gov) = self.cfg.hooks.governor {
+                    gov.settle(
+                        &pid,
+                        self.cfg.model_name,
+                        est_in + u64::from(req.max_tokens.min(1024)),
+                        reply.usage.total(),
+                    );
+                }
+            }
+            // Priced from the models.dev snapshot (#85, A5), cache reads
+            // and writes apart (A19); unknown prices stay unknown.
+            let mut delta = reply.usage.to_delta();
+            delta.cost_micros =
+                tern_providers::prices::cost_micros(&pid, self.cfg.model_name, &reply.usage);
+            self.cost_micros = match (self.cost_micros, delta.cost_micros) {
+                (Some(a), Some(c)) => Some(a + c),
+                _ => None,
+            };
             self.record(
                 self.event(
                     "model.replied",
@@ -1363,7 +1881,9 @@ impl Run<'_, '_> {
                     format!("{} replied", self.cfg.model_name),
                     {
                         let (text, _, took) = thought.into_inner().unwrap_or_default();
-                        let mut p = json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len()});
+                        let mut p = json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len(), "estimated_input": est_in,
+                            "cached_tokens": reply.usage.cached_tokens, "cache_write_tokens": reply.usage.cache_write_tokens,
+                            "reasoning_tokens": reply.usage.reasoning_tokens});
                         if !text.is_empty() {
                             // The reasoning is kept (capped) so a reopened chat
                             // still has its Thinking section.
@@ -1376,16 +1896,46 @@ impl Run<'_, '_> {
                         p
                     },
                 )
-                .with_usage(reply.usage.to_delta()),
+                .with_usage(delta),
             )?;
-            if self.usage.total() + self.prior > b.max_tokens {
-                return Err(Self::over_budget(format!(
-                    "The turn used {} tokens, over its limit of {}.",
-                    self.usage.total() + self.prior,
-                    b.max_tokens
-                )));
+            let over_cost = matches!(
+                (self.cfg.hooks.max_cost_micros, self.cost_micros),
+                (Some(max), Some(spent)) if spent > max
+            );
+            if over_cost && !self.wrapping {
+                crate::diag::note(&format!(
+                    "budget: cost {} micro-USD over the turn's {} ; wrap-up next",
+                    self.cost_micros.unwrap_or_default(),
+                    self.cfg.hooks.max_cost_micros.unwrap_or_default()
+                ));
+                if self.cfg.hooks.wrap_up {
+                    self.wrap_pending = true;
+                } else {
+                    return Err(Self::over_budget(format!(
+                        "The turn cost {}, over its limit of {}.",
+                        dollars(self.cost_micros.unwrap_or_default()),
+                        dollars(self.cfg.hooks.max_cost_micros.unwrap_or_default())
+                    )));
+                }
+            }
+            if self.usage.total() + self.prior > b.max_tokens && !self.wrapping {
+                // The reserved call writes the answer (#85).
+                if self.cfg.hooks.wrap_up {
+                    self.wrap_pending = true;
+                } else {
+                    return Err(Self::over_budget(format!(
+                        "The turn used {} tokens, over its limit of {}.",
+                        self.usage.total() + self.prior,
+                        b.max_tokens
+                    )));
+                }
             }
 
+            self.reply_lead = reply
+                .text
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
             match protocol::parse(&reply.text) {
                 // An empty reply (only reasoning, or nothing) is asked for
                 // once more as it stands; a second empty one ends the turn
@@ -1691,9 +2241,10 @@ impl Run<'_, '_> {
                             })).collect::<Vec<_>>(),
                         }),
                     ))?;
+                    self.batch_reads = 0;
                     for (i, (name, args)) in calls.iter().enumerate() {
                         let key = format!("{name}:{args}");
-                        let n = seen.entry(key).or_default();
+                        let n = seen.entry(key.clone()).or_default();
                         *n += 1;
                         if *n >= REPEAT_LIMIT {
                             // A change already done, asked for again
@@ -1740,7 +2291,15 @@ impl Run<'_, '_> {
                         }
                         self.next_call = Some(first + i as u32);
                         self.asked_edit = edits.get(i).copied().unwrap_or(false);
+                        self.deferred = false;
                         results.push(self.dispatch(name, args).await?);
+                        // Tern asked for this one again next step (#85,
+                        // A12): asking again is not a repeat.
+                        if std::mem::take(&mut self.deferred)
+                            && let Some(n) = seen.get_mut(&key)
+                        {
+                            *n = n.saturating_sub(1);
+                        }
                     }
                     let mut back = results.join("\n\n");
                     // The plan stays current (#78: a plan sat at 0 of 3
@@ -1781,6 +2340,8 @@ impl Run<'_, '_> {
             messages,
             seen: seen.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             writes,
+            journal: self.journal.iter().chain(&self.recorded).cloned().collect(),
+            partial: String::new(),
         });
         ck.model_calls = self.model_calls;
         ck.tool_calls = self.tool_calls;
@@ -1870,6 +2431,9 @@ impl Run<'_, '_> {
     fn add_usage(&mut self, u: Usage) {
         self.usage.input_tokens += u.input_tokens;
         self.usage.output_tokens += u.output_tokens;
+        self.usage.cached_tokens += u.cached_tokens;
+        self.usage.cache_write_tokens += u.cache_write_tokens;
+        self.usage.reasoning_tokens += u.reasoning_tokens;
         if u.measure == tern_core::Measure::Estimated {
             self.usage.measure = tern_core::Measure::Estimated;
         }
@@ -1891,6 +2455,16 @@ impl Run<'_, '_> {
             (r, _) => r,
         };
         let (state, answer, reason) = match result {
+            // The reserved wrap-up answered (#85): an answer with its gaps
+            // listed, not a stop.
+            Ok((TurnState::Completed, text)) if self.wrapping => (
+                TurnState::CompletedWithGaps,
+                Some(text),
+                Some(
+                    "The turn's budget ran out; the answer lists what was not established."
+                        .to_owned(),
+                ),
+            ),
             Ok((state, text)) => {
                 let gap = (state == TurnState::CompletedWithGaps)
                     .then(|| "The model gave an empty answer.".to_owned());
@@ -1898,6 +2472,17 @@ impl Run<'_, '_> {
             }
             Err(stop) => (stop.state, None, Some(stop.reason)),
         };
+        // A resumed answer keeps the text that streamed before the stop
+        // in front of it (#85).
+        let answer = answer.map(|a| {
+            if self.resumed_partial.is_empty() {
+                a
+            } else if self.resumed_partial.ends_with(char::is_whitespace) {
+                format!("{}{a}", self.resumed_partial)
+            } else {
+                format!("{}{}{a}", self.resumed_partial, self.reply_lead)
+            }
+        });
         if self.fsm.state() != state {
             // A failure to move here only happens after an earlier failure,
             // which already set a terminal state.
@@ -1919,6 +2504,56 @@ impl Run<'_, '_> {
             let _ = sink.clear(&self.cfg.session.to_string());
         }
         let resumable = !answered && self.cfg.hooks.checkpoints.is_some() && self.ck.is_some();
+        // The partial answer joins the checkpoint (#85), so Continue sends
+        // it back as the start of the answer.
+        if resumable && let (Some(sink), Some(ck)) = (self.cfg.hooks.checkpoints, self.ck.as_mut())
+        {
+            if let Some(q) = ck.quick.as_mut() {
+                q.partial = format!("{}{}", self.resumed_partial, self.partial);
+                q.journal = self.journal.iter().chain(&self.recorded).cloned().collect();
+            }
+            let _ = sink.save(ck);
+        }
+        // Every turn that stops before its answer leaves a receipt (#85):
+        // how it stopped and what it kept.
+        if !answered {
+            let kept = KeptSummary {
+                answer_chars: (self.resumed_partial.len() + self.partial.len()) as u64,
+                sources: self.sources.clone(),
+                tool_results: self.tool_results,
+                failed_not_counted: self.failed_calls,
+            };
+            let (by, class, resets) = match (self.pause, state) {
+                (Some(p), _) => (Some(p.0), Some(p.1), p.2),
+                (None, TurnState::Cancelled) => (Some(PausedBy::User), None, None),
+                (None, TurnState::BudgetExceeded) => {
+                    (Some(PausedBy::Budget), Some(ErrorClass::Budget), None)
+                }
+                (None, TurnState::Blocked) => (None, Some(ErrorClass::Policy), None),
+                _ => (None, None, None),
+            };
+            let mut receipt = match by {
+                Some(by) => TurnReceipt::paused(by, class, kept),
+                None => TurnReceipt {
+                    state: tern_core::RunState::of_turn(state),
+                    paused_by: None,
+                    error: class,
+                    line: reason.clone().unwrap_or_default(),
+                    kept,
+                    resumable,
+                    resets_at: None,
+                },
+            };
+            receipt.resumable = resumable || receipt.resumable;
+            receipt.resets_at = resets.map(rfc3339);
+            let line = format!("{} · {}", receipt.line, receipt.kept.line());
+            let _ = self.record(self.event(
+                tern_core::run_state::TURN_RECEIPT,
+                EffectClass::Analysis,
+                line,
+                serde_json::to_value(&receipt).unwrap_or_default(),
+            ));
+        }
         // The log may be what failed; the outcome still reports the stop.
         let _ = self.record(
             self.event(
@@ -1931,9 +2566,14 @@ impl Run<'_, '_> {
                     "tool_calls": self.tool_calls,
                     "answer_chars": answer.as_ref().map(String::len),
                     "answer": answer,
-                    "partial": (state == TurnState::Cancelled && !self.partial.trim().is_empty())
+                    "partial": (answer.is_none() && !self.partial.trim().is_empty())
                         .then(|| self.partial.clone()),
                     "resumable": resumable,
+                    "failed_not_counted": self.failed_calls,
+                    "replayed": self.journal_hits,
+                    "cost_micros": self.cost_micros,
+                    "cached_tokens": self.usage.cached_tokens,
+                    "reasoning_tokens": self.usage.reasoning_tokens,
                 }),
             )
             .with_usage(self.usage.to_delta()),
@@ -1963,20 +2603,172 @@ impl<'a> Run<'_, 'a> {
         let text = match pre? {
             Pre::Done(text) => text,
             Pre::Go(r) => {
+                // A step this turn already ran (recorded in its journal
+                // before a stop) is replayed, never run again (#85).
+                let key = crate::toolcache::key(&r.name, &r.args);
+                if let Some(j) = self.journal.iter().find(|j| j.key == key).cloned() {
+                    self.go(TurnState::Executing)?;
+                    self.go(TurnState::RecordResult)?;
+                    self.journal_hits += 1;
+                    self.record(self.event(
+                        "tool.replayed",
+                        r.tool.effect(),
+                        format!("Used `{}`'s recorded result; it was not run again", r.name),
+                        json!({"tool": r.name, "call": r.call, "step": j.step, "args": brief_args(&r.args)}),
+                    ))?;
+                    self.last_post = Some((true, Value::Null));
+                    return Ok(j.result);
+                }
+                // A failed address, a paper already read, or a read past
+                // this step's batch is answered without running (#85, A6,
+                // A12), and never counted.
+                if let Some(text) = self.skip_fetch(&r)? {
+                    return Ok(text);
+                }
                 self.begin(&r)?;
                 self.started(&r)?;
-                let (out, age) =
-                    execute(r.tool, &r.name, r.args.clone(), self.cfg.hooks.cache).await;
-                let (tool, ran, ran_args) = (r.tool, r.name.clone(), r.args.clone());
+                let cancel = self.cfg.cancel.clone();
+                let (out, age) = match or_cancel(
+                    &cancel,
+                    execute(r.tool, &r.name, r.args.clone(), self.cfg.hooks.cache),
+                )
+                .await
+                {
+                    Some(done) => done,
+                    // Stop kills the running tool (#85): its future is
+                    // dropped and the turn stops at the next check.
+                    None => (Err(ToolError::Failed("stopped by the user".into())), None),
+                };
+                let (tool, ran, ran_args, call) = (r.tool, r.name.clone(), r.args.clone(), r.call);
+                let failed = out.as_ref().err().map(ToString::to_string);
                 let text = self.post(r, out, age)?;
+                self.note_fetch(&ran, tool, &ran_args, call, failed);
                 if matches!(self.last_post, Some((true, _))) {
                     self.note_done(asked, &ran, tool, &ran_args);
+                    self.recorded.push(crate::checkpoint::JournalStep {
+                        step: format!("{}:{call}", self.turn),
+                        key,
+                        tool: ran.clone(),
+                        result: text.clone(),
+                    });
                 }
                 text
             }
         };
         self.note_write(name, args, &text);
         Ok(text)
+    }
+
+    /// How many `paper_read` results one step returns (#85, A12): 3, or
+    /// fewer when the model's token window is small, so the request that
+    /// carries them fits it.
+    fn read_batch(&self) -> u32 {
+        read_batch_for(self.envelope())
+    }
+
+    /// The largest request the governor lets one call carry, in tokens.
+    fn envelope(&self) -> Option<u64> {
+        self.cfg
+            .hooks
+            .governor
+            .unwrap_or(tern_providers::governor::global())
+            .envelope(self.cfg.model.provider_id(), self.cfg.model_name)
+    }
+
+    /// The characters of one tool result the model reads (#85, A12): a
+    /// paper's passages get their share of the window, the full text
+    /// stays in the result store.
+    fn result_limit(&self, name: &str) -> usize {
+        if name != "paper_read" {
+            return RESULT_LIMIT;
+        }
+        paper_share(self.envelope(), self.read_batch()).min(RESULT_LIMIT)
+    }
+
+    /// Answers a fetch without running it (#85, A6, A12): an address that
+    /// already failed this turn, a paper already read for the same
+    /// question, or a `paper_read` past this step's batch. `None` runs it.
+    fn skip_fetch(&mut self, r: &Ready<'_>) -> Result<Option<String>, Stop> {
+        let Some(key) = fetch_key(&r.name, &r.args) else {
+            return Ok(None);
+        };
+        let (kind, summary, text) = if let Some(err) = self.failed_urls.get(&key) {
+            (
+                "failed_before",
+                format!("`{}` was not run: {key} already failed this turn", r.name),
+                format!(
+                    "Tool `{}` was not run: {key} already failed in this turn ({err}). Do not ask for it again; use another source.",
+                    r.name
+                ),
+            )
+        } else if r.name == "paper_read"
+            && let Some(at) = self.papers_read.get(&paper_key(&r.args))
+        {
+            (
+                "already_read",
+                format!("`paper_read` was not run: the paper was read in call {at}"),
+                format!(
+                    "Tool `paper_read` was not run: this paper was already read in this turn (call {at}); its passages are in that result above. Do not read it again."
+                ),
+            )
+        } else if r.name == "paper_read" && self.batch_reads >= self.read_batch() {
+            self.deferred = true;
+            let k = self.read_batch();
+            (
+                "next_batch",
+                format!("`paper_read` waits for the next step ({k} papers per step)"),
+                format!(
+                    "Tool `paper_read` was not run yet: Tern reads {k} paper{} per step so the next request fits {}'s rate window. Ask for `paper_read` of {key} again in your next reply if you still need it.",
+                    if k == 1 { "" } else { "s" },
+                    self.cfg.model_name
+                ),
+            )
+        } else {
+            if r.name == "paper_read" {
+                self.batch_reads += 1;
+            }
+            return Ok(None);
+        };
+        self.go(TurnState::Executing)?;
+        self.go(TurnState::RecordResult)?;
+        crate::diag::note(&format!("fetch: skipped `{}` ({kind}) key={key}", r.name));
+        self.record(self.event(
+            "tool.skipped",
+            r.tool.effect(),
+            summary,
+            json!({"tool": r.name, "call": r.call, "reason": kind, "counted": false,
+                   "args": brief_args(&r.args)}),
+        ))?;
+        self.last_post = Some((false, Value::Null));
+        Ok(Some(text))
+    }
+
+    /// Remembers a fetch that ran (#85, A6): a failed address so it is not
+    /// fetched again this turn, a paper read so it is read once.
+    fn note_fetch(
+        &mut self,
+        name: &str,
+        tool: &dyn Tool,
+        args: &Value,
+        call: u32,
+        failed: Option<String>,
+    ) {
+        if tool.effect() != EffectClass::Network {
+            return;
+        }
+        let Some(key) = fetch_key(name, args) else {
+            return;
+        };
+        match failed {
+            Some(err) => {
+                crate::diag::note(&format!("fetch: remembered failure key={key} error={err}"));
+                self.failed_urls.insert(key, err);
+            }
+            None if name == "paper_read" => {
+                self.papers_read.entry(paper_key(args)).or_insert(call);
+            }
+            None => {}
+        }
     }
 
     /// A change that ran, for [`crate::redo`] and a script's result line
@@ -2171,8 +2963,68 @@ impl<'a> Run<'_, 'a> {
                     None => text,
                 })
             }
+            "web_search" => {
+                let text = self.tool_step(name, args).await?;
+                self.quick_reads(text).await
+            }
             _ => self.tool_step(name, args).await,
         }
+    }
+
+    /// Quick-path auto-read (#85, A13): after the first web search of a
+    /// general question, the top three results are read, and the opening
+    /// and best passage of each go back with the search, so the answer
+    /// quotes pages Tern read rather than snippets. Once per turn; a page
+    /// that fails is left out.
+    async fn quick_reads(&mut self, search: String) -> Result<String, Stop> {
+        if !self.cfg.hooks.quick_reads
+            || self.quick_read
+            || self.cfg.tools.get("read_url").is_none()
+            || !crate::quickread::applies(&self.message)
+        {
+            return Ok(search);
+        }
+        let urls = crate::quickread::links(&search, crate::quickread::TOP);
+        if urls.is_empty() {
+            return Ok(search);
+        }
+        self.quick_read = true;
+        // The addresses are the search's own listing, as its hits are
+        // (`note_provenance`): reading them is not following a page.
+        for u in &urls {
+            self.cfg.gate.know_text(u);
+        }
+        let (own, _) = crate::attach::split(&self.message);
+        let (_, question) = crate::reply::split(own);
+        let question = question.to_owned();
+        let mut read = Vec::new();
+        for u in &urls {
+            self.check_cancel()?;
+            // Each read is a call of its own: back to ToolRequested after
+            // the search's (or the last read's) result is recorded.
+            if self.fsm.state() != TurnState::ToolRequested {
+                self.go(TurnState::ToolRequested)?;
+            }
+            let text = self.tool_step("read_url", &json!({"url": u})).await?;
+            if matches!(self.last_post, Some((true, _))) {
+                read.push(format!(
+                    "\n[{u}]\n{}",
+                    crate::quickread::excerpt(&text, &question)
+                ));
+            }
+        }
+        crate::diag::note(&format!(
+            "quick reads: read {} of the top {} results",
+            read.len(),
+            urls.len()
+        ));
+        if read.is_empty() {
+            return Ok(search);
+        }
+        Ok(format!(
+            "{search}\n\nTern read the top results for you (each page's opening and its passage that best matches the question). Quote from these and cite them by their numbers above:\n{}",
+            read.join("\n")
+        ))
     }
 
     /// Everything before a call runs: is it known, are its arguments
@@ -2311,13 +3163,28 @@ impl<'a> Run<'_, 'a> {
             return Ok(Pre::Done(skip.line));
         }
         let limit = self.tool_limit();
-        if self.tool_calls >= limit {
+        if self.tool_calls >= limit || self.wrap_pending || self.wrapping {
             if name == "file_write" {
                 crate::live::clear_preview();
             }
-            return Err(Self::over_budget(format!(
-                "The turn reached its limit of {limit} tool calls."
-            )));
+            // With a reserved wrap-up (#85) the call is not run and the
+            // model is told to answer; otherwise the turn stops.
+            if self.cfg.hooks.wrap_up && !self.wrapping {
+                self.wrap_pending = true;
+                self.go(TurnState::RecordResult)?;
+                self.record(self.event(
+                    "tool.skipped",
+                    tool.effect(),
+                    format!("`{name}` was not run: the turn's budget is used up"),
+                    json!({"tool": name, "call": call, "note": WRAP_UP_TOOL, "args": brief_args(args)}),
+                ))?;
+                return Ok(Pre::Done(WRAP_UP_TOOL.to_owned()));
+            }
+            return Err(Self::over_budget(if self.wrapping {
+                "The model kept calling tools after its budget ran out.".to_owned()
+            } else {
+                format!("The turn reached its limit of {limit} tool calls.")
+            }));
         }
 
         if name == "file_write" {
@@ -2535,6 +3402,12 @@ impl<'a> Run<'_, 'a> {
         }
         if let Ok(o) = &out {
             self.note_provenance(name, o);
+            self.tool_results += 1;
+            if let Some(u) = o.meta["page"]["url"].as_str()
+                && !self.sources.iter().any(|s| s == u)
+            {
+                self.sources.push(u.to_owned());
+            }
         }
         self.last_post = Some(match &out {
             Ok(o) => (true, o.meta.get("py").cloned().unwrap_or(Value::Null)),
@@ -2545,7 +3418,8 @@ impl<'a> Run<'_, 'a> {
                 // A long result keeps its head and tail; the whole text is
                 // saved for `read_result` (#72). A `read_result` page is
                 // never saved again.
-                let cut = o.content.len() > RESULT_LIMIT;
+                let limit = self.result_limit(name);
+                let cut = o.content.len() > limit;
                 let saved = match self.cfg.hooks.results {
                     Some(store) if cut && name != "read_result" => {
                         let id = result_id(&self.turn.to_string(), call);
@@ -2553,7 +3427,7 @@ impl<'a> Run<'_, 'a> {
                     }
                     _ => None,
                 };
-                let shown = crate::results::head_tail(&o.content, RESULT_LIMIT, saved.as_deref());
+                let shown = crate::results::head_tail(&o.content, limit, saved.as_deref());
                 let mut p = json!({"tool": name, "call": call, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta, "output": output_head_tail(&o.content)});
                 if let Some(age) = cached {
                     p["cached"] = json!(true);
@@ -2589,11 +3463,15 @@ impl<'a> Run<'_, 'a> {
                 }
             }
             Err(e) => {
+                // A failed call is logged but never counted against the
+                // turn's budget (#85).
+                self.tool_calls = self.tool_calls.saturating_sub(1);
+                self.failed_calls += 1;
                 self.record(self.event(
                     "tool.failed",
                     tool.effect(),
                     format!("`{name}` {e}"),
-                    json!({"tool": name, "call": call, "args": args, "error": e, "retry_safe": tool.idempotent()}),
+                    json!({"tool": name, "call": call, "args": args, "error": e, "retry_safe": tool.idempotent(), "counted": false}),
                 ))?;
                 format!("Tool `{name}` {e}.")
             }
@@ -2905,6 +3783,183 @@ impl<'a> Run<'_, 'a> {
 /// Runs a checked call: a kept result when the cache has a fresh one
 /// (with its age), else the tool itself within its time limit. Results
 /// worth keeping are kept; a change empties the kept file reads (#77).
+/// Runs `fut` until it finishes or `cancel` is set (#85: Stop works
+/// within a second even while a stream or a tool is silent). `None` when
+/// it was stopped; the future is dropped, which closes its connection.
+async fn or_cancel<T>(cancel: &CancelFlag, fut: impl std::future::Future<Output = T>) -> Option<T> {
+    let watch = async {
+        while !cancel.is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+    tokio::select! {
+        v = fut => Some(v),
+        () = watch => None,
+    }
+}
+
+/// The [`ErrorClass`] of a provider error. `streamed` says whether any
+/// reply text arrived before it, which makes a dropped connection a cut
+/// stream.
+/// `None` when the error fits no class (a spending cap, a bad request).
+pub fn error_class(e: &tern_providers::ProviderError, streamed: bool) -> Option<ErrorClass> {
+    use tern_providers::ProviderError as P;
+    use tern_providers::retry::Class;
+    Some(match (e, tern_providers::retry::classify(e)) {
+        (P::Auth { .. } | P::MissingKey { .. }, _) => ErrorClass::Auth,
+        (_, Class::Daily) => ErrorClass::RateLimitDaily,
+        (P::Network { .. }, _) if streamed => ErrorClass::StreamCut,
+        (P::RateLimited { .. }, Class::Transient { .. }) => ErrorClass::RateLimitShort,
+        (P::Unavailable { .. }, Class::Transient { .. }) => ErrorClass::Overloaded,
+        (P::Network { .. }, Class::Transient { .. }) => ErrorClass::Network,
+        _ if tern_providers::retry::request_cap(e).is_some() => ErrorClass::ContextFull,
+        _ => return None,
+    })
+}
+
+/// `paper_read` results per step for a request envelope of `envelope`
+/// tokens (#85, A12): 3 by default, 2 under 24k tokens, 1 under 12k.
+pub fn read_batch_for(envelope: Option<u64>) -> u32 {
+    match envelope {
+        Some(e) if e < 12_000 => 1,
+        Some(e) if e < 24_000 => 2,
+        _ => 3,
+    }
+}
+
+/// The characters one paper's passages may take in the next request
+/// (#85, A12): the envelope shared by the batch and the rest of the
+/// request, at least 2,000.
+pub fn paper_share(envelope: Option<u64>, batch: u32) -> usize {
+    match envelope {
+        Some(e) => ((e as usize * CHARS_PER_TOKEN) / (batch as usize + 1)).max(2_000),
+        None => usize::MAX,
+    }
+}
+
+/// The address a network call fetches, for the failed-address memory
+/// (#85, A6): its `url` without a fragment or a trailing slash, or the
+/// paper id `paper_read` was given. `None` for calls that fetch no
+/// address (a search).
+pub fn fetch_key(name: &str, args: &Value) -> Option<String> {
+    if name == "paper_read" {
+        return args["paper"].as_str().map(paper_id);
+    }
+    let url = args["url"].as_str()?.trim();
+    let url = url.split('#').next().unwrap_or(url);
+    let url = url.trim_end_matches('/');
+    (!url.is_empty()).then(|| url.to_owned())
+}
+
+/// A paper id as one form (#85, A6): a DOI or arXiv id without its
+/// prefix or link, lower case.
+pub fn paper_id(paper: &str) -> String {
+    let p = paper.trim().to_ascii_lowercase();
+    let p = p.trim_end_matches('/');
+    for prefix in [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "doi:",
+        "https://arxiv.org/abs/",
+        "http://arxiv.org/abs/",
+        "arxiv:",
+    ] {
+        if let Some(rest) = p.strip_prefix(prefix) {
+            return rest.trim().to_owned();
+        }
+    }
+    p.to_owned()
+}
+
+/// A `paper_read` call's paper and question, for the read-once memory.
+fn paper_key(args: &Value) -> String {
+    format!(
+        "{}|{}",
+        paper_id(args["paper"].as_str().unwrap_or_default()),
+        args["question"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+    )
+}
+
+/// Micro-dollars as dollars, for a budget line ("$0.0123").
+pub fn dollars(micros: u64) -> String {
+    format!("${:.4}", micros as f64 / 1_000_000.0)
+}
+
+/// The log line for one model call (#85, A8).
+pub fn call_line(
+    provider: &str,
+    model: &str,
+    call: u32,
+    u: &Usage,
+    estimated_in: u64,
+    took: std::time::Duration,
+    failed_so_far: u32,
+) -> String {
+    format!(
+        "call: n={call} provider={provider} model={model} in={} out={} cached={} cache_write={} reasoning={} est_in={estimated_in} measured={} ms={} failed_not_counted={failed_so_far}",
+        u.input_tokens,
+        u.output_tokens,
+        u.cached_tokens,
+        u.cache_write_tokens,
+        u.reasoning_tokens,
+        u.measure == tern_core::Measure::Measured,
+        took.as_millis()
+    )
+}
+
+/// "The daily limit for X is used up; it resets at 05:00 (UTC)."
+pub fn daily_line(model: &str, resets_at: std::time::SystemTime) -> String {
+    format!(
+        "The daily limit for {model} is used up, so Tern did not retry; it resets at {} (UTC). Continue with another model, or continue after the reset.",
+        rfc3339(resets_at)
+    )
+}
+
+/// A wall-clock time as RFC 3339 in UTC, to the second.
+fn rfc3339(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()
+        .and_then(|d| {
+            d.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+/// Characters per script in what a request sends (#85, A3b): the system
+/// text, every message and the tool schemas, decoded from any JSON
+/// escapes.
+pub fn request_census(req: &ChatRequest) -> [u64; 4] {
+    use tern_providers::estimate::{census, unescape_json};
+    let mut n = [0u64; 4];
+    let mut add = |t: &str| {
+        for (a, b) in n.iter_mut().zip(census(&unescape_json(t))) {
+            *a += b;
+        }
+    };
+    if let Some(s) = &req.system {
+        add(s);
+    }
+    for m in &req.messages {
+        add(&m.content);
+    }
+    for t in &req.tools {
+        add(&t.name);
+        add(&t.description);
+        add(&t.parameters.to_string());
+    }
+    n
+}
+
 async fn execute(
     tool: &dyn Tool,
     name: &str,

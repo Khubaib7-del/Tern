@@ -11,6 +11,7 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod redact;
+pub mod run_state;
 pub mod secret;
 pub mod turn;
 
@@ -19,5 +20,9 @@ pub use error::{CoreError, CoreResult};
 pub use event::{EVENT_VERSION, EventEnvelope, Measure, UsageDelta};
 pub use ids::{EventId, MessageRef, ProjectId, SessionId, TurnId};
 pub use redact::Redactor;
+pub use run_state::{
+    ContextTrimmed, ErrorClass, KeptSummary, ModelSwitched, PausedBy, RunState, TurnDigest,
+    TurnReceipt,
+};
 pub use secret::SecretString;
 pub use turn::{TurnState, TurnStateMachine};

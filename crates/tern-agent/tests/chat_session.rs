@@ -174,7 +174,7 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!((ctx.prompt, ctx.calls), (1259, 0));
     assert_eq!(
         turns[0].exchange(),
-        Some(("What is RAG?", "Hello from the mock."))
+        Some(("What is RAG?".to_owned(), "Hello from the mock.".to_owned()))
     );
     again
         .send("And GraphRAG?", &DenyAll, CancelFlag::default(), &observer)

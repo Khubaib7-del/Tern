@@ -1072,6 +1072,29 @@ impl Workspace {
             })
             .collect();
 
+        // The fallback toggle (#85, A4): a daily limit may move the turn
+        // to a smaller model of the same provider, for that turn only.
+        let fallback_on = !prefs.fallback_off;
+        let fallback = Self::row(
+            "Finish on a smaller model",
+            if fallback_on {
+                "On: the turn goes on on a smaller model of the same provider, for that turn only, and says so. New chats start on your model"
+            } else {
+                "Off: the turn pauses with what it has, and you choose how to continue"
+            },
+            Some(
+                Switch::new("model-fallback")
+                    .checked(fallback_on)
+                    .small()
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        let off = !*checked;
+                        this.save_ui_prefs(move |p| p.fallback_off = off);
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ),
+            p,
+        );
         // The catalogue, by capability.
         let rows = settings::catalog_rows(&models, st.group, &st.filter);
         let present: Vec<Group> = Group::ALL
@@ -1199,6 +1222,7 @@ impl Workspace {
             None,
             vec![
                 Self::settings_card("Default model per job", p, roles),
+                Self::settings_card("When a model hits its daily limit", p, vec![fallback]),
                 catalogue_block,
             ],
         )

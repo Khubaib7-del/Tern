@@ -477,7 +477,10 @@ impl Provider {
         };
         let mut body = body;
         crate::effort::apply(&mut body, self.spec, req);
-        let json = self.send(self.http.post(url).json(&body), &what).await?;
+        let rb = self.with_wire_headers(self.authed(self.http.post(url).json(&body)));
+        let resp = self.dispatch(rb).await?;
+        observe_limits(self.spec.id, &req.model, resp.headers());
+        let json = self.check(resp, &what).await?;
         let decode = |reason: String| ProviderError::Decode {
             provider: self.spec.name,
             reason,
@@ -552,6 +555,7 @@ impl Provider {
         let mut resp = self
             .dispatch(self.with_wire_headers(self.authed(rb)))
             .await?;
+        observe_limits(self.spec.id, &req.model, resp.headers());
         if !resp.status().is_success() {
             return Err(self
                 .check(resp, &what)
@@ -843,8 +847,7 @@ fn without_url(e: &reqwest::Error) -> String {
 
 /// How long the provider asked Tern to wait, in whole seconds (rounded
 /// up): `retry-after-ms` (OpenAI), else `retry-after` as seconds (a
-/// fraction is rounded up). An HTTP-date `retry-after` is not read; the
-/// backoff applies then.
+/// fraction is rounded up) or as an HTTP date, which is a deadline (#85).
 pub(crate) fn retry_after_secs(h: &reqwest::header::HeaderMap) -> Option<u64> {
     let get = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(str::trim);
     if let Some(ms) = get("retry-after-ms").and_then(|v| v.parse::<f64>().ok())
@@ -853,10 +856,27 @@ pub(crate) fn retry_after_secs(h: &reqwest::header::HeaderMap) -> Option<u64> {
     {
         return Some((ms / 1000.0).ceil() as u64);
     }
-    get("retry-after")
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(|s| s.ceil() as u64)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    get("retry-after").and_then(|v| crate::governor::retry_after_from(v, now))
+}
+
+/// Hands a reply's rate-limit headers to the governor (#85), which
+/// believes them over its seed limits.
+fn observe_limits(provider: &str, model: &str, h: &reqwest::header::HeaderMap) {
+    let pairs: Vec<(&str, &str)> = h
+        .iter()
+        .filter(|(k, _)| {
+            let k = k.as_str();
+            k.starts_with("x-ratelimit") || k.starts_with("anthropic-ratelimit")
+        })
+        .filter_map(|(k, v)| Some((k.as_str(), v.to_str().ok()?)))
+        .collect();
+    if !pairs.is_empty() {
+        crate::governor::global().observe(provider, model, pairs);
+    }
 }
 
 /// The provider's own words from an error body (`error.message`,
@@ -969,11 +989,17 @@ mod network_tests {
         assert_eq!(super::retry_after_secs(&h), Some(7));
         h.insert("retry-after", HeaderValue::from_static("1.2"));
         assert_eq!(super::retry_after_secs(&h), Some(2));
+        // An HTTP date is a deadline (#85): past is now, future is a wait.
         h.insert(
             "retry-after",
             HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
         );
-        assert_eq!(super::retry_after_secs(&h), None);
+        assert_eq!(super::retry_after_secs(&h), Some(0));
+        h.insert(
+            "retry-after",
+            HeaderValue::from_static("Fri, 01 Jan 2100 00:00:00 GMT"),
+        );
+        assert!(super::retry_after_secs(&h).is_some_and(|s| s > 0));
         h.insert("retry-after-ms", HeaderValue::from_static("250"));
         assert_eq!(super::retry_after_secs(&h), Some(1));
     }

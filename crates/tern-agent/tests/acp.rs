@@ -234,9 +234,11 @@ async fn a_session_round_trips_and_loads_again() {
         .filter(|m| m["role"] == "user")
         .map(|m| m["content"].as_str().unwrap_or_default().to_owned())
         .collect();
+    // The stopped turn stays in history with its digest (#85, A1), so
+    // the model knows it was asked and cut off.
     assert_eq!(
         said,
-        ["Say hello", "And again"],
-        "the loaded history goes to the model"
+        ["Say hello", "take your time", "And again"],
+        "the loaded history goes to the model, the stopped turn included"
     );
 }

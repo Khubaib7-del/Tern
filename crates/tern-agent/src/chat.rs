@@ -65,6 +65,13 @@ pub struct ChatOptions {
     pub approval_mode: crate::permissions::ApprovalMode,
     /// Permission rules (#75).
     pub permission_rules: Vec<crate::permissions::PermissionRule>,
+    /// Read the top three results of a web search for a general question
+    /// before the model answers (#85, A13), so its quotes come from pages
+    /// Tern read. Off unless set (the app turns it on).
+    pub quick_reads: bool,
+    /// Never move a turn to a smaller model of the same provider when the
+    /// chosen one hits its daily limit (#85, A4; Settings › Models).
+    pub no_fallback: bool,
 }
 
 pub(crate) const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -100,6 +107,10 @@ pub struct ChatSession {
     /// Research or Study.
     harness: Harness,
     check_claims: crate::verify::CheckClaims,
+    /// Whether a general question's web search reads its top results (#85, A13).
+    quick_reads: bool,
+    /// Signatures of what went wrong, counted across chats (#85, A16).
+    incidents: Option<crate::signals::IncidentStore>,
     /// Where runs save their checkpoints (`<data>/checkpoints`).
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
     /// Steering notes for the running turn, from the front end or `tern steer`.
@@ -117,6 +128,9 @@ pub struct ChatSession {
     mcp_offers: Vec<crate::mcp::MenuItem>,
     /// How hard the model thinks, for models that can.
     effort: Option<tern_providers::Effort>,
+    /// A daily limit on the chat's model may hand the rest of that one
+    /// turn to a smaller model of the same provider (#85, default on).
+    fallback_within_provider: bool,
     /// Receives reasoning as it streams.
     on_reasoning: Option<ReasoningSink>,
     /// What the next turns may do. `None` offers every tool.
@@ -509,6 +523,58 @@ pub async fn connect_chat_model(
     Ok((p, m))
 }
 
+/// The rate-limit governor for calls to `provider` (#85): the shared one
+/// for a provider on the network, none for a server on this computer
+/// (Ollama, LM Studio, a test server), which has no rate limits.
+pub fn governor_for(
+    provider: &tern_providers::Provider,
+) -> Option<&'static tern_providers::governor::Governor> {
+    let local = url::Url::parse(provider.base_url()).is_ok_and(|u| {
+        matches!(
+            u.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0")
+        )
+    });
+    (!local).then(tern_providers::governor::global)
+}
+
+/// The temperature Tern pins for chat and research turns (#85, A7).
+pub const PINNED_TEMPERATURE: f32 = 0.3;
+
+/// The smaller model of the same provider a turn may continue on when
+/// the chat's model hits a daily limit (#85, policy D7): the user's data
+/// stays with the provider they chose. `None` when Tern knows no smaller
+/// sibling, or the model is already the small one.
+pub fn within_provider_fallback(provider: &str, model: &str) -> Option<&'static str> {
+    let m = model.to_ascii_lowercase();
+    let pick = match provider {
+        "mistral" if m.starts_with("mistral-large") || m.starts_with("mistral-medium") => {
+            "mistral-small-latest"
+        }
+        "groq" if m.contains("70b") || m.contains("120b") || m.contains("maverick") => {
+            "llama-3.1-8b-instant"
+        }
+        "google" if m.contains("pro") => "gemini-2.5-flash",
+        _ => return None,
+    };
+    (pick != m).then_some(pick)
+}
+
+/// Takes a stopped turn's digest off the end of `history` (#85), when its
+/// question is `message`: a resumed turn brings the turn back itself.
+pub fn drop_interrupted(history: &mut Vec<ChatMessage>, message: &str) {
+    let n = history.len();
+    if n >= 2
+        && history[n - 2].role == tern_providers::Role::User
+        && history[n - 2].content == message
+        && history[n - 1]
+            .content
+            .contains("(Tern note: this turn stopped before it finished")
+    {
+        history.truncate(n - 2);
+    }
+}
+
 /// The model's history for a reopened chat: carried-over context, each
 /// finished exchange, and sub-sessions' reports back, in order. Turns
 /// removed by ID range are not in `turns` (see [`live_turns`]).
@@ -614,11 +680,16 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
 struct Tee<'a> {
     inner: &'a StoreSink,
     observer: &'a (dyn Fn(&EventEnvelope) + Send + Sync),
+    /// The signal tap (#85, A16): every recorded event passes it.
+    incidents: Option<&'a crate::signals::IncidentStore>,
 }
 
 impl EventSink for Tee<'_> {
     fn record(&self, event: EventEnvelope) -> Result<EventEnvelope, String> {
         let stored = self.inner.record(event)?;
+        if let Some(store) = self.incidents {
+            store.observe(&stored);
+        }
         (self.observer)(&stored);
         Ok(stored)
     }
@@ -845,6 +916,7 @@ impl ChatSession {
             mcp_notes,
             mcp_offers,
             effort: None,
+            fallback_within_provider: !opts.no_fallback,
             on_reasoning: None,
             turn_mode: None,
             workspace: None,
@@ -853,11 +925,16 @@ impl ChatSession {
             compacted: None,
             compact_skip: None,
             calls_at_compaction: None,
-            cache: match &paths {
-                Some(p) => crate::toolcache::ToolCache::with_dir(
-                    crate::toolcache::ToolCache::dir_in(&p.data_dir),
-                ),
-                None => crate::toolcache::ToolCache::memory(),
+            cache: {
+                let c = match &paths {
+                    Some(p) => crate::toolcache::ToolCache::with_dir(
+                        crate::toolcache::ToolCache::dir_in(&p.data_dir),
+                    ),
+                    None => crate::toolcache::ToolCache::memory(),
+                };
+                // Searches are kept per chat (#85, A9).
+                c.set_chat(&session.to_string());
+                c
             },
             results,
             ledger: UsageLedger::default(),
@@ -870,6 +947,10 @@ impl ChatSession {
             search,
             budget: opts.budget,
             check_claims: opts.check_claims,
+            quick_reads: opts.quick_reads,
+            incidents: paths
+                .as_ref()
+                .map(|p| crate::signals::IncidentStore::in_dir(&p.data_dir)),
             max_output_tokens: if opts.max_output_tokens == 0 {
                 tern_providers::default_max_output(provider_id, &model_id)
             } else {
@@ -939,6 +1020,29 @@ impl ChatSession {
     /// no row in the chat list.
     pub fn is_draft(&self) -> bool {
         self.sink.is_draft(self.session)
+    }
+
+    /// Whether a daily limit may hand the rest of a turn to a smaller
+    /// model of the same provider (#85). Never sticky: the next turn and
+    /// new chats use the chat's own model again.
+    pub fn set_fallback_within_provider(&mut self, on: bool) {
+        self.fallback_within_provider = on;
+    }
+
+    /// The sampling temperature a turn pins (#85, A7), for models that
+    /// take one: none for reasoning models, which refuse it or need their
+    /// own.
+    fn pinned_temperature(&self) -> Option<f32> {
+        (self.effort.is_none() && matches!(self.thinking(), tern_providers::Thinking::Unsupported))
+            .then_some(PINNED_TEMPERATURE)
+    }
+
+    /// The model a daily limit hands the rest of a turn to, if any.
+    fn fallback_model(&self) -> Option<&'static str> {
+        if !self.fallback_within_provider {
+            return None;
+        }
+        within_provider_fallback(self.provider.spec().id, &self.model)
     }
 
     /// Sets how hard the model thinks on the next turns. Models without a
@@ -1403,6 +1507,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         self.steering.clear();
         // The decision model's hint for the first step, logged just before
@@ -1443,9 +1548,17 @@ impl ChatSession {
                 on_reasoning: self.on_reasoning.as_deref(),
                 native_tools: crate::engine::native_tools_ok(self.provider.spec().id, &self.model),
                 prefetch: true,
+                quick_reads: self.quick_reads,
                 retry: None,
                 results: self.results.as_deref(),
                 cache: Some(&self.cache),
+                governor: governor_for(&self.provider),
+                wrap_up: true,
+                fallback_model: self.fallback_model(),
+                temperature: self.pinned_temperature(),
+                chaos: None,
+                estimator: None,
+                max_cost_micros: None,
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1511,6 +1624,26 @@ impl ChatSession {
                 .push(ChatMessage::user(text).with_images(images));
             self.history.push(ChatMessage::assistant(answer.clone()));
             self.auto_compact(observer).await;
+        } else if out.answer.is_none()
+            && let Ok(Ok(events)) = self.sink.with_store(|s| s.replay(self.session, 0))
+            && let Some((_, kept)) = live_turns(&events).last().and_then(|t| t.exchange())
+        {
+            // #85 (A1): a turn that stopped before its answer stays in the
+            // history with what it kept (the partial text, its sources and
+            // the tools it ran), so a typed "continue" picks it up. A
+            // picture the provider refused stays out of it: it would make
+            // every later request fail the same way.
+            let refused = out
+                .reason
+                .as_deref()
+                .is_some_and(crate::media::rejects_images);
+            let asked = if refused {
+                ChatMessage::user(text)
+            } else {
+                ChatMessage::user(text).with_images(images)
+            };
+            self.history.push(asked);
+            self.history.push(ChatMessage::assistant(kept));
         }
         out
     }
@@ -1554,6 +1687,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let deps = crate::deep::DeepDeps {
             session: self.session,
@@ -1675,6 +1809,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         tee.record(done.event(self.session))?;
         self.history =
@@ -1769,6 +1904,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let sink = self
             .checkpoints
@@ -1800,6 +1936,9 @@ impl ChatSession {
                 crate::deep::resume_deep(deps, ck, &opts, control).await
             }
             RunMode::Quick => {
+                // The stopped turn's digest leaves the history: the
+                // checkpoint carries the turn itself (#85).
+                drop_interrupted(&mut self.history, &message);
                 let instructions = self.instructions(self.search_name.map(|_| WEB_INSTRUCTIONS));
                 let hooks = crate::engine::RunHooks {
                     checkpoints: sink,
@@ -1812,9 +1951,17 @@ impl ChatSession {
                         &self.model,
                     ),
                     prefetch: false,
+                    quick_reads: false,
                     retry: None,
                     results: self.results.as_deref(),
                     cache: Some(&self.cache),
+                    governor: governor_for(&self.provider),
+                    wrap_up: true,
+                    fallback_model: self.fallback_model(),
+                    temperature: self.pinned_temperature(),
+                    chaos: None,
+                    estimator: None,
+                    max_cost_micros: None,
                 };
                 TurnLoop {
                     session: self.session,
@@ -1860,6 +2007,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let events = self
             .sink
@@ -2005,11 +2153,22 @@ impl ChatSession {
         } else {
             format!("Checked {} claims: {}", checked.checks.len(), tally.line())
         };
+        // An acronym the answer spells out that no source spells out is
+        // flagged "not from sources" (#85, A14).
+        let texts: Vec<&str> = sources.iter().map(|s| s.text.as_str()).collect();
+        let unsupported: Vec<serde_json::Value> =
+            tern_research::hygiene::unsupported_expansions(answer, &texts)
+                .into_iter()
+                .map(|(acronym, expansion)| {
+                    json!({"acronym": acronym, "expansion": expansion, "flag": "not from sources"})
+                })
+                .collect();
         let mut payload = json!({
             "checks": checked.checks,
             "tally": tally,
             "report": written.as_ref().ok(),
             "evidence": chain,
+            "unsupported_expansions": unsupported,
         });
         if !rendered.forged.is_empty() {
             payload["forged"] = json!(rendered.forged.iter().map(|(_, t)| t).collect::<Vec<_>>());

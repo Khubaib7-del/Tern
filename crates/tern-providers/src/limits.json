@@ -1,0 +1,24 @@
+{
+  "as_of": "2026-10-31",
+  "note": "Seed rate limits for free and entry tiers, as each provider documented them on as_of. Tern reconciles them from the provider's rate-limit headers and 429 bodies at run time; a paid key's real limits replace these after its first reply.",
+  "providers": {
+    "groq": {
+      "default": { "rpm": 30, "tpm": 8000, "rpd": 1000 }
+    },
+    "mistral": {
+      "default": { "rpm": 60, "tpm": 20000 }
+    },
+    "google": {
+      "default": { "rpm": 10, "tpm": 250000, "rpd": 250 }
+    },
+    "openrouter": {
+      "default": {},
+      "models": {
+        ":free": { "rpm": 20, "rpd": 50 }
+      }
+    },
+    "cerebras": {
+      "default": { "rpm": 30, "tpm": 60000 }
+    }
+  }
+}

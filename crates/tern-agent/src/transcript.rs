@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use tern_core::EventEnvelope;
+use tern_core::{EventEnvelope, TurnDigest};
 
 use crate::run::Run;
 use crate::sources::{PageRef, page_of, push_unique};
@@ -53,16 +53,63 @@ pub struct SubReport {
 }
 
 impl PastTurn {
-    /// Whether this turn can join the model's history on reopen.
-    pub fn exchange(&self) -> Option<(&str, &str)> {
-        match (&self.message, &self.answer) {
-            (Some(m), Some(a)) if !m.is_empty() && !a.is_empty() && self.stop.is_none() => {
-                Some((m, a))
-            }
+    /// The user message and assistant message this turn adds to the
+    /// model's history on reopen, or `None` when it adds nothing (a turn
+    /// logged before Tern kept the message).
+    ///
+    /// A turn that stopped before its answer (stopped, failed, over
+    /// budget, or cut off when Tern closed) still joins (#85): its
+    /// assistant message is the text that streamed before the stop, then
+    /// a note saying how it stopped, which sources it read and which
+    /// tools it ran ([`PastTurn::digest`]). "Continue" can then pick it
+    /// up instead of starting over.
+    pub fn exchange(&self) -> Option<(String, String)> {
+        let m = self.message.as_deref().filter(|m| !m.is_empty())?;
+        match (&self.answer, &self.stop) {
+            (Some(a), None) if !a.is_empty() => Some((m.to_owned(), a.clone())),
+            (_, Some(_)) => Some((m.to_owned(), self.digest()?.history_text())),
             _ => None,
         }
     }
+
+    /// The digest of a turn that stopped before its answer: its question,
+    /// the partial answer, the sources it read and the tools it ran.
+    /// `None` for a turn that finished.
+    pub fn digest(&self) -> Option<TurnDigest> {
+        let stop = self.stop.as_ref()?;
+        Some(TurnDigest {
+            question: self.message.clone().unwrap_or_default(),
+            partial: self.answer.clone().filter(|a| !a.trim().is_empty()),
+            sources: self
+                .pages
+                .iter()
+                .take(DIGEST_SOURCES)
+                .map(|p| {
+                    if p.title.trim().is_empty() {
+                        p.url.clone()
+                    } else {
+                        format!("{} ({})", p.title.trim(), p.url)
+                    }
+                })
+                .collect(),
+            tools: self
+                .run
+                .steps
+                .iter()
+                .filter(|s| s.event == "tool.executed")
+                .filter_map(|s| s.payload["tool"].as_str().map(str::to_owned))
+                .collect(),
+            stop: stop.clone(),
+        })
+    }
 }
+
+/// Sources an interrupted turn's digest names at most.
+const DIGEST_SOURCES: usize = 12;
+
+/// The event that carries reply text as it streams (#85), every second
+/// or 200 characters, so a turn cut off by a crash keeps what arrived.
+pub const ANSWER_PROGRESS: &str = "answer.progress";
 
 const ENDS: [&str; 3] = ["turn.finished", "run.cancelled", "budget.exceeded"];
 
@@ -175,6 +222,9 @@ pub fn removed_numbers(events: &[EventEnvelope]) -> Vec<u32> {
 fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
     let mut out = Vec::new();
     let mut open: Option<(PastTurn, time::OffsetDateTime)> = None;
+    // Reply text that streamed in the open turn (#85): the model call it
+    // came from and the text so far.
+    let mut progress: (u64, String) = (0, String::new());
     // Decisions made just before a turn starts (the first-tool hint)
     // belong to that turn.
     let mut early: Vec<&EventEnvelope> = Vec::new();
@@ -186,8 +236,12 @@ fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
         if e.kind == "turn.started" {
             if let Some((mut t, _)) = open.take() {
                 t.stop = Some("This turn did not finish.".into());
+                if t.answer.is_none() && !progress.1.trim().is_empty() {
+                    t.answer = Some(std::mem::take(&mut progress.1));
+                }
                 out.push(t);
             }
+            progress = (0, String::new());
             let mut turn = PastTurn {
                 message: text_at(&e.payload, "message"),
                 ..PastTurn::default()
@@ -208,11 +262,22 @@ fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
             }
             continue;
         };
+        if e.kind == ANSWER_PROGRESS {
+            let call = e.payload["call"].as_u64().unwrap_or_default();
+            if call != progress.0 {
+                progress = (call, String::new());
+            }
+            if let Some(t) = e.payload["text"].as_str() {
+                progress.1.push_str(t);
+            }
+            continue;
+        }
         turn.run.push(e);
         if ENDS.contains(&e.kind.as_str()) {
             // A run stopped mid-reply keeps what streamed up to the stop
             // (#71), with the stop still recorded.
             turn.answer = text_at(&e.payload, "answer").or_else(|| text_at(&e.payload, "partial"));
+            progress = (0, String::new());
             let completed = e.kind == "turn.finished"
                 && e.payload
                     .get("state")
@@ -232,6 +297,9 @@ fn group(events: &[EventEnvelope]) -> Vec<PastTurn> {
     }
     if let Some((mut t, _)) = open {
         t.stop = Some("This turn did not finish.".into());
+        if t.answer.is_none() && !progress.1.trim().is_empty() {
+            t.answer = Some(progress.1);
+        }
         out.push(t);
     }
     out
@@ -302,7 +370,10 @@ mod tests {
         ];
         let t = past_turns(&events);
         assert_eq!(t.len(), 4);
-        assert_eq!(t[0].exchange(), Some(("What is RAG?", "Retrieval...")));
+        assert_eq!(
+            t[0].exchange(),
+            Some(("What is RAG?".to_owned(), "Retrieval...".to_owned()))
+        );
         assert_eq!(t[0].run.steps[0].event, "turn.started");
         assert_eq!(t[0].run.steps[1].summary, "Searched the web");
         assert_eq!(t[0].run.end, Some(crate::run::RunEnd::Answered));
@@ -314,7 +385,14 @@ mod tests {
             "checks logged after the turn ends join it"
         );
         assert_eq!(t[1].stop.as_deref(), Some("You stopped the run."));
-        assert_eq!(t[1].exchange(), None);
+        // A stopped turn still joins the history, with a note (#85).
+        let (m, a) = t[1].exchange().expect("a stopped turn joins the history");
+        assert_eq!(m, "More");
+        assert!(
+            a.contains("stopped before it finished: You stopped the run."),
+            "{a}"
+        );
+        assert_eq!(t[2].exchange(), None, "no message logged");
         assert_eq!(
             (t[2].message.as_deref(), t[2].answer.as_deref()),
             (None, None)
@@ -374,5 +452,76 @@ mod tests {
         let t = past_turns(&with_context);
         assert_eq!(t[0].context.as_deref(), Some("# Context"));
         assert_eq!(trailing_context(&with_context), None);
+    }
+
+    /// #85 (A1): a turn cut off by a crash keeps the text that streamed,
+    /// and an interrupted turn joins the history with its sources and the
+    /// tools it ran.
+    #[test]
+    fn interrupted_turns_keep_their_partial_text_and_join_the_history() {
+        let s = SessionId::new();
+        let events = vec![
+            ev(
+                s,
+                "turn.started",
+                "Started",
+                json!({"message": "What is FLARE?"}),
+            ),
+            ev(
+                s,
+                "tool.executed",
+                "Ran `read_url`",
+                json!({"tool": "read_url", "meta": {"page": {"title": "FLARE", "url": "https://a.org/flare", "site": "a.org"}}}),
+            ),
+            ev(
+                s,
+                ANSWER_PROGRESS,
+                "",
+                json!({"call": 1, "text": "Draft that is "}),
+            ),
+            ev(
+                s,
+                ANSWER_PROGRESS,
+                "",
+                json!({"call": 2, "text": "FLARE retrieves "}),
+            ),
+            ev(
+                s,
+                ANSWER_PROGRESS,
+                "",
+                json!({"call": 2, "text": "when unsure."}),
+            ),
+        ];
+        let t = past_turns(&events);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].answer.as_deref(), Some("FLARE retrieves when unsure."));
+        assert_eq!(t[0].stop.as_deref(), Some("This turn did not finish."));
+        assert!(
+            t[0].run.steps.iter().all(|s| s.event != ANSWER_PROGRESS),
+            "progress is not a step"
+        );
+        let (m, a) = t[0].exchange().unwrap();
+        assert_eq!(m, "What is FLARE?");
+        assert!(
+            a.starts_with("FLARE retrieves when unsure.\n\n(Tern note:"),
+            "{a}"
+        );
+        assert!(a.contains("FLARE (https://a.org/flare)"), "{a}");
+        assert!(a.contains("Tools run: read_url."), "{a}");
+
+        let failed = vec![
+            ev(s, "turn.started", "Started", json!({"message": "Q"})),
+            ev(
+                s,
+                "turn.finished",
+                "Mistral is rate limiting this key.",
+                json!({"state": "failed", "partial": "Half an answer"}),
+            ),
+        ];
+        let t = past_turns(&failed);
+        assert_eq!(t[0].answer.as_deref(), Some("Half an answer"));
+        let (_, a) = t[0].exchange().unwrap();
+        assert!(a.starts_with("Half an answer"), "{a}");
+        assert!(a.contains("Mistral is rate limiting this key"), "{a}");
     }
 }

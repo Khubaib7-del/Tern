@@ -115,6 +115,10 @@ struct Entry {
     /// Unix seconds when it was stored.
     at: u64,
     content: String,
+    /// The chat that stored it (#85, A9): a search from another chat is
+    /// not handed to this one as its own.
+    #[serde(default)]
+    chat: Option<String>,
     #[serde(default)]
     evidence_refs: Vec<String>,
     #[serde(default)]
@@ -133,6 +137,8 @@ pub struct Hit {
 pub struct ToolCache {
     mem: Mutex<HashMap<String, Entry>>,
     dir: Option<PathBuf>,
+    /// The chat the cache serves now (#85, A9).
+    chat: Mutex<Option<String>>,
 }
 
 impl ToolCache {
@@ -146,7 +152,19 @@ impl ToolCache {
         Self {
             mem: Mutex::default(),
             dir: Some(dir.into()),
+            chat: Mutex::default(),
         }
+    }
+
+    /// Sets the chat the next calls are for (#85, A9): searches are kept
+    /// per chat, and another chat's search is run again rather than
+    /// handed over as this chat's result.
+    pub fn set_chat(&self, chat: &str) {
+        *self.chat.lock().unwrap_or_else(|e| e.into_inner()) = Some(chat.to_owned());
+    }
+
+    fn current_chat(&self) -> Option<String> {
+        self.chat.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// The folder under the app's data folder.
@@ -165,7 +183,19 @@ impl ToolCache {
         }
         let ttl = ttl(tool)?;
         let k = key(tool, args);
-        let fresh = |e: &Entry| e.tool == tool && now().saturating_sub(e.at) < ttl.as_secs();
+        // A search another chat ran is not this chat's (#85, A9: one
+        // chat's prefetched results were injected into another).
+        let chat = self.current_chat();
+        let same_chat = |e: &Entry| {
+            !per_chat(tool)
+                || match (&e.chat, &chat) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                }
+        };
+        let fresh = |e: &Entry| {
+            e.tool == tool && now().saturating_sub(e.at) < ttl.as_secs() && same_chat(e)
+        };
         let found = {
             let mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
             mem.get(&k).filter(|e| fresh(e)).cloned()
@@ -176,6 +206,12 @@ impl ToolCache {
             }
             let p = self.path(&k)?;
             let e: Entry = serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+            if !same_chat(&e) {
+                crate::diag::note(&format!(
+                    "cache: `{tool}` from another chat not reused (searches are kept per chat)"
+                ));
+                return None;
+            }
             if !fresh(&e) {
                 let _ = std::fs::remove_file(&p);
                 return None;
@@ -206,6 +242,7 @@ impl ToolCache {
             tool: tool.to_owned(),
             at: now(),
             content: out.content.clone(),
+            chat: self.current_chat(),
             evidence_refs: out.evidence_refs.clone(),
             meta: out.meta.clone(),
         };
@@ -239,6 +276,12 @@ impl ToolCache {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Tools whose cached results belong to the chat that ran them (#85, A9):
+/// searches, whose results a chat's answer is built on.
+fn per_chat(tool: &str) -> bool {
+    matches!(tool, "web_search" | "scholar_search" | "paper_snowball")
 }
 
 /// `TERN_NO_TOOL_CACHE=1` turns the cache off.
@@ -281,6 +324,22 @@ mod tests {
             normalize(&json!({"url": "https://x.org/"}))["url"],
             "https://x.org/"
         );
+    }
+
+    #[test]
+    fn searches_are_kept_per_chat_and_reads_are_shared() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = ToolCache::with_dir(dir.path());
+        a.set_chat("chat-a");
+        let q = json!({"query": "flare retrieval"});
+        let page = json!({"url": "https://arxiv.org/abs/2305.06983"});
+        a.put("web_search", &q, &ToolOutput::text("[S1] results"));
+        a.put("read_url", &page, &ToolOutput::text("page text"));
+        assert!(a.get("web_search", &q).is_some(), "same chat");
+        let b = ToolCache::with_dir(dir.path());
+        b.set_chat("chat-b");
+        assert!(b.get("web_search", &q).is_none(), "another chat's search");
+        assert!(b.get("read_url", &page).is_some(), "a page read is shared");
     }
 
     #[test]
@@ -353,6 +412,7 @@ mod tests {
                 tool: "read_url".into(),
                 at: now() - 7 * 3600,
                 content: "stale".into(),
+                chat: None,
                 evidence_refs: Vec::new(),
                 meta: Value::Null,
             })

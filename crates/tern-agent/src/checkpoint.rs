@@ -225,6 +225,27 @@ pub struct QuickState {
     /// Paths written so far (#82), so "Continue" counts on from them.
     #[serde(default)]
     pub writes: Vec<crate::redo::WriteMark>,
+    /// The step journal (#85): every tool call that ran, so a resumed turn
+    /// replays its result instead of running it again.
+    #[serde(default)]
+    pub journal: Vec<JournalStep>,
+    /// Answer text that streamed before the stop (#85); a resumed turn
+    /// sends it back as the start of its answer.
+    #[serde(default)]
+    pub partial: String,
+}
+
+/// One recorded step of a turn (#85): a tool call that ran, with the text
+/// the model read from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalStep {
+    /// Stable id: the turn id and the call's number in the turn.
+    pub step: String,
+    /// The tool and its normalised arguments ([`crate::toolcache::key`]).
+    pub key: String,
+    pub tool: String,
+    /// What the model read.
+    pub result: String,
 }
 
 /// One chat's latest unfinished run.
@@ -313,6 +334,23 @@ impl RunCheckpoint {
                 None => false,
             },
         }
+    }
+
+    /// The receipt for a turn found on launch with no end (#85, A-T5):
+    /// Tern closed (or was killed) while it ran. What it kept is what the
+    /// last save holds: the text streamed so far and the tool results in
+    /// its journal, which Continue replays instead of running again.
+    pub fn closed_receipt(&self) -> tern_core::TurnReceipt {
+        let q = self.quick.as_ref();
+        let kept = tern_core::KeptSummary {
+            answer_chars: q.map_or(0, |q| q.partial.len() as u64),
+            sources: Vec::new(),
+            tool_results: q.map_or(self.tool_calls, |q| q.journal.len() as u32),
+            failed_not_counted: 0,
+        };
+        let mut r = tern_core::TurnReceipt::paused(tern_core::PausedBy::Closed, None, kept);
+        r.resumable = self.can_resume();
+        r
     }
 
     /// "Deep research · 3 of 5 done · 2 failed" or "Quick turn · 3 tool results",

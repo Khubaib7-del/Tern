@@ -1,0 +1,7 @@
+{
+  "tier": "batch",
+  "before_tokens": 31200,
+  "after_tokens": 7900,
+  "items": ["t3-r4", "t3-r5", "t3-r6"],
+  "line": "Paper reads sent in 2 batches to fit 8,000 tokens"
+}
