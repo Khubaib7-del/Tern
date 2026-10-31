@@ -100,6 +100,11 @@ panel, #81)
   to show which service a result came from, which implies no endorsement
   by, or affiliation with, those owners.
 
+models.dev price data (the cost of a model call, #85)
+  https://github.com/sst/models.dev
+  MIT License, Copyright (c) 2025 models.dev. A dated snapshot of its
+  per-model prices is kept in crates/tern-providers/src/prices.json.
+
 -------------------------------------------------------------------------
 Models Tern downloads on request (never bundled)
 -------------------------------------------------------------------------

@@ -4,6 +4,38 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+### Added (PR #85): durable turns, rate governor, honest budgets
+
+- **Run-state contract** (`tern-core`): seven run states (needs you, failed, waiting, working, streaming, paused, done, in that priority), ten error classes (short and daily rate limits, overloaded, network, stream cut, auth, budget, context full, tool failed, policy), and the `turn.receipt`, `model.switched`, `context.trimmed` and `turn.digest` events the next pull requests build on.
+- **Interrupted turns stay in history**: a failed, stopped or budget-ended turn keeps its question, the text streamed so far, its sources and a one-line digest of its tools in the chat's history, so the next message is not answered as if it never happened. Streamed text is checkpointed every second or 200 characters, and the partial text is kept on a failure too.
+- **Receipts**: every turn that stops before its answer leaves one ("Stopped here · connection lost · Kept: 412 characters, 3 sources, 5 tool results"), with the reset time for a daily limit; a turn found on launch with no end gets "Tern closed while this turn was running" (`RunCheckpoint::closed_receipt`).
+- **Step journal and Continue**: each tool call that ran is recorded with a stable step id under the turn's id; Continue resumes the same turn, replays recorded results instead of running the tools again, and sends the partial answer back as the start of the answer.
+- **Rate-limit governor** (`tern-providers::governor`): request and token windows per key, seeded from a dated `limits.json` and corrected from `x-ratelimit-*` headers and 429 bodies; an HTTP-date `Retry-After` is a deadline; a daily-quota 429 is never retried; `:free` models get their own limits; a request bigger than the token window is made to fit before it is sent.
+- **Calibrated token estimator** (`tern-providers::estimate`): characters times a per-model ratio learned from reported prompt tokens, seeded per script (Latin, Arabic script, CJK), never computed over JSON-escaped text.
+- **Fallback for one turn only**: on a daily limit the rest of the turn may run on a smaller model of the same provider, with a `model.switched` row; the next turn and new chats use your model. **Settings › Models › When a model hits its daily limit** turns it off (`fallback_off` in `preferences.json`).
+- **Budgets in tokens and dollars**: prices from a dated models.dev snapshot (`prices.json`, cache reads and writes priced apart; no price, no cost shown), failed calls excluded, and one writer call kept in reserve so a spent budget still gives an answer that lists what was not established (it had stopped with no answer at 12 calls).
+- **Stop within 2 s**: Stop drops the in-flight stream and the running tool; the turn pauses with a receipt.
+- **Tool-call hygiene**: arguments sent as a JSON string or in a `{tool, args}` (or `arguments`, `parameters`) envelope are unwrapped and an argument error is not counted; an address that failed (a 403) is fetched once per turn; a paper is read once per turn; `paper_read` results come back in window-sized batches (3, or 2 and 1 on small token windows), each trimmed to its share with the full text kept for `read_result`.
+- **Follow-ups that point back**: "read the top 5 papers from that list" runs no prefetch search; the model gets the previous answer's paper ids (arXiv ids and DOIs, in its order) and reads them. Searches are cached per chat and never handed to another chat as its own.
+- **Quick-path auto-read**: a general question answered from `web_search` reads its top three results (each page's opening and its best-matching passage), so its quotes come from pages Tern read.
+- **Snowball by id**: seeds are resolved by arXiv id or DOI through Semantic Scholar, then OpenAlex, and finds are scored against the seed's own title and abstract.
+- **Evidence hygiene**: reference markers are taken out of every passage before number checks ("[130]" is never 130), titles are HTML-decoded once and untagged, a refuting passage must name the claim's main entity, and an acronym expansion that no read passage spells out is flagged as not from the sources.
+- **Ledger states**: a cited source is never "Skipped" (it is Cited, even when not read), and every unread hit says why (off topic, duplicate, budget, robots, policy, not needed); batch and duplicate paper skips reach the Ledger.
+- **Consistency and cost**: the tool list is the same for the same mode, folder and MCP set; tool schemas are not repeated in the system text when tools go natively; sampling is pinned per harness where the model accepts it; each turn records a fingerprint (prompt version and hash, tools hash, model, provider, sampling); cached and reasoning tokens are parsed on the OpenAI-compatible, Anthropic and Gemini wires.
+- **Logging**: one line per model call (tokens in, out and cached, status, retries, waits, switches, cost), plus prefetch, follow-up, snowball and quick-read lines.
+- **Signal tap and incident store**: provider, tool, verifier and loop events and corrections from you become deterministic signatures counted across chats (`signals/incidents.json` in the data folder), for the memory inbox and the later learning core. Learned context passes a boundary filter (entries made for this harness version only), has a kill switch (`TERN_NO_LEARNED=1`) and a snapshot per version; nothing is learned yet. No model is asked and there is no setting.
+- **Developer chaos switches**: with `TERN_DEV=1`, `TERN_CHAOS` simulates short and daily rate limits, a stream dropped after N characters, malformed arguments and a kill mid-step.
+
+### Fixed (PR #85)
+
+- A path written from the chat folder's root (`/draft.md`) resolves inside the folder instead of failing with a permission error.
+- A rate limit in the middle of a scholarly turn no longer ends it as Failed: the FLARE question on a 20k-tokens-a-minute key is paced and answered.
+
+### Tests (PR #85)
+
+- `crates/tern-agent/tests/durable_turns.rs`: acceptance tests A-T1 to A-T9, A-T11, A-T13, A-T15 (S2, S3, S4) and A-T16 against scripted models, plus quick reads, read-once papers and chaos; A-T10 and A-T12 in `tern-research`, A-T14 in `tern-providers::estimate`; unit tests for the follow-up parser, quick reads, the signal tap, the per-chat cache, prices and the governor.
+- Docs: `docs/handbooks/internals.md` and `docs/handbooks/engineering.md` (drafts for the #111 handbook bundle), the README's What works today, and a NOTICE entry for the models.dev price data.
+
 ### Changed: docs
 
 - **Docs: roadmap v3** (PR #84): the README's status says #82 and #83 are shipped, #84 is this docs pull request and #85 (engine reliability: never lose a turn) is next; What works today covers the #83 scholarly follow-ups; the README roadmap is a phased summary of #85–#111 (#111 the handbook bundle) and the post-v1.0 backlog (#112–#115). [docs/04-roadmap.md](docs/04-roadmap.md) is rewritten as roadmap v3: phases, a goal, scope and exit check per pull request, dependencies, and where each item of the old #84–#103 plan went. Every planned pull request moved up by one because this docs pull request is #84.
