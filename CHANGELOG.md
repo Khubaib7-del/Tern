@@ -4,7 +4,7 @@ All notable changes to Tern are documented here. The format follows [Keep a Chan
 
 ## [Unreleased]
 
-- **Docs: desktop sources and renumbering** (PR #86): the roadmap plans an optional desktop-sources connector in #105 that reads papers from apps such as Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop (Apache-2.0). Every planned pull request after #85 moves up by one: context cascade is now #87, the run-state UI #88, memory #89, the Store beta #90, and v1.0 #111.
+- **Docs: desktop sources and renumbering** (PR #86): the roadmap plans an optional desktop-sources connector in #105 that reads papers from apps such as Zotero, PDF readers and signed-in library portals through the OS accessibility tree, built on agent-desktop (Apache-2.0), and a browser for agents in #105 that lets research drive the built-in browser on pages that need clicks or a signed-in session, built on agent-browser (Apache-2.0). Computer use (#113, after v1.0) builds on both. Every planned pull request after #85 moves up by one: context cascade is now #87, the run-state UI #88, memory #89, the Store beta #90, and v1.0 #111.
 
 ### Added (PR #85): durable turns, rate governor, honest budgets
 
