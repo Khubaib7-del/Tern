@@ -133,6 +133,15 @@ pub struct ChaosModel<'m> {
     pub chaos: &'m Chaos,
 }
 
+impl std::fmt::Debug for ChaosModel<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChaosModel")
+            .field("provider", &self.inner.provider_id())
+            .field("chaos", &self.chaos)
+            .finish()
+    }
+}
+
 fn rate_limited(daily: bool) -> ProviderError {
     ProviderError::RateLimited {
         provider: "Tern chaos",
