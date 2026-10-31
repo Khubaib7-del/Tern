@@ -65,6 +65,13 @@ pub struct ChatOptions {
     pub approval_mode: crate::permissions::ApprovalMode,
     /// Permission rules (#75).
     pub permission_rules: Vec<crate::permissions::PermissionRule>,
+    /// Read the top three results of a web search for a general question
+    /// before the model answers (#85, A13), so its quotes come from pages
+    /// Tern read. Off unless set (the app turns it on).
+    pub quick_reads: bool,
+    /// Never move a turn to a smaller model of the same provider when the
+    /// chosen one hits its daily limit (#85, A4; Settings › Models).
+    pub no_fallback: bool,
 }
 
 pub(crate) const WEB_INSTRUCTIONS: &str = "You can search the web and read pages with your tools. Read a page before you rely on it, and cite pages you read inline as [n] with a short list of the links at the end.";
@@ -100,6 +107,8 @@ pub struct ChatSession {
     /// Research or Study.
     harness: Harness,
     check_claims: crate::verify::CheckClaims,
+    /// Whether a general question's web search reads its top results (#85, A13).
+    quick_reads: bool,
     /// Where runs save their checkpoints (`<data>/checkpoints`).
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
     /// Steering notes for the running turn, from the front end or `tern steer`.
@@ -900,7 +909,7 @@ impl ChatSession {
             mcp_notes,
             mcp_offers,
             effort: None,
-            fallback_within_provider: true,
+            fallback_within_provider: !opts.no_fallback,
             on_reasoning: None,
             turn_mode: None,
             workspace: None,
@@ -931,6 +940,7 @@ impl ChatSession {
             search,
             budget: opts.budget,
             check_claims: opts.check_claims,
+            quick_reads: opts.quick_reads,
             max_output_tokens: if opts.max_output_tokens == 0 {
                 tern_providers::default_max_output(provider_id, &model_id)
             } else {
@@ -1527,6 +1537,7 @@ impl ChatSession {
                 on_reasoning: self.on_reasoning.as_deref(),
                 native_tools: crate::engine::native_tools_ok(self.provider.spec().id, &self.model),
                 prefetch: true,
+                quick_reads: self.quick_reads,
                 retry: None,
                 results: self.results.as_deref(),
                 cache: Some(&self.cache),
@@ -1916,6 +1927,7 @@ impl ChatSession {
                         &self.model,
                     ),
                     prefetch: false,
+                    quick_reads: false,
                     retry: None,
                     results: self.results.as_deref(),
                     cache: Some(&self.cache),

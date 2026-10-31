@@ -142,6 +142,10 @@ pub struct Preferences {
     /// (`None` means 80), and the turns kept word for word (`None` means 4).
     pub compact_off: bool,
     pub compact_at_percent: Option<u8>,
+    /// Never move a turn to a smaller model of the same provider when the
+    /// chosen model hits its daily limit (#85, A4). Off: the turn goes on
+    /// on the smaller model, for that turn only.
+    pub fallback_off: bool,
     pub compact_keep_turns: Option<usize>,
     /// Thinking effort for models that can think (`none` … `max`).
     /// `None` leaves each provider's default.
@@ -520,6 +524,8 @@ impl Preferences {
             approval_mode: self.approval(),
             permission_rules: self.permission_rules.clone(),
             model: self.model.clone(),
+            quick_reads: true,
+            no_fallback: self.fallback_off,
             search: self.effective_search(),
             search_url: self.search_url.clone(),
             max_output_tokens: self.max_output_tokens.unwrap_or(0),
@@ -673,6 +679,7 @@ mod tests {
             text_size: Some("large".into()),
             compact_off: false,
             compact_at_percent: Some(85),
+            fallback_off: true,
             compact_keep_turns: Some(6),
             density: Some("compact".into()),
             onboarded: true,
@@ -714,6 +721,7 @@ mod tests {
         };
         assert_eq!(p.effort(), Some(tern_providers::Effort::High));
         let c = p.chat_options().compaction;
+        assert!(p.chat_options().no_fallback && p.chat_options().quick_reads);
         assert!(c.auto && (c.at - 0.85).abs() < 1e-6 && c.keep_turns == 6);
         assert_eq!(p.quiz_spec(None).count, 10);
         assert_eq!(p.quiz_spec(None).difficulty, crate::study::Difficulty::Hard);

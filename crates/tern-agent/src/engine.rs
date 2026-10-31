@@ -401,6 +401,10 @@ pub struct RunHooks<'a> {
     /// outside the workspace) and a web search when it says "use the web"
     /// (`web_search`). Works with models that never call tools.
     pub prefetch: bool,
+    /// After a web search for a general question, read its top three
+    /// results (#85, A13): the first part of each page and its best
+    /// passage go back with the search, so quotes come from read pages.
+    pub quick_reads: bool,
     /// How transient provider failures (429, 5xx, 529, a dropped
     /// connection) are retried; `None` is the default policy. Each
     /// wait is a `provider.retry` event first (#72).
@@ -785,6 +789,8 @@ struct Run<'r, 'a> {
     resumed_partial: String,
     /// The turn moved to the within-provider fallback model (#85).
     switched: bool,
+    /// The top results of a search were read this turn (#85, A13).
+    quick_read: bool,
     /// Addresses that failed this turn, with the error (#85, A6): the same
     /// address is not fetched again in the turn (a 403 is fetched once).
     failed_urls: HashMap<String, String>,
@@ -876,6 +882,7 @@ impl<'a> TurnLoop<'a> {
             recorded: Vec::new(),
             resumed_partial: String::new(),
             switched: false,
+            quick_read: false,
             failed_urls: HashMap::new(),
             papers_read: HashMap::new(),
             batch_reads: 0,
@@ -1318,7 +1325,10 @@ impl Run<'_, '_> {
                 self.check_cancel()?;
                 self.go(TurnState::ToolRequested)?;
                 self.called.push(name.to_owned());
-                let result = self.tool_step(name, &args).await?;
+                let mut result = self.tool_step(name, &args).await?;
+                if name == "web_search" {
+                    result = self.quick_reads(result).await?;
+                }
                 // As if the model had asked: its call, then the result.
                 messages.push(ChatMessage::assistant(tern_providers::tool_block(
                     name, &args,
@@ -2927,8 +2937,58 @@ impl<'a> Run<'_, 'a> {
                     None => text,
                 })
             }
+            "web_search" => {
+                let text = self.tool_step(name, args).await?;
+                self.quick_reads(text).await
+            }
             _ => self.tool_step(name, args).await,
         }
+    }
+
+    /// Quick-path auto-read (#85, A13): after the first web search of a
+    /// general question, the top three results are read, and the opening
+    /// and best passage of each go back with the search, so the answer
+    /// quotes pages Tern read rather than snippets. Once per turn; a page
+    /// that fails is left out.
+    async fn quick_reads(&mut self, search: String) -> Result<String, Stop> {
+        if !self.cfg.hooks.quick_reads
+            || self.quick_read
+            || self.cfg.tools.get("read_url").is_none()
+            || !crate::quickread::applies(&self.message)
+        {
+            return Ok(search);
+        }
+        let urls = crate::quickread::links(&search, crate::quickread::TOP);
+        if urls.is_empty() {
+            return Ok(search);
+        }
+        self.quick_read = true;
+        let (own, _) = crate::attach::split(&self.message);
+        let (_, question) = crate::reply::split(own);
+        let question = question.to_owned();
+        let mut read = Vec::new();
+        for u in &urls {
+            self.check_cancel()?;
+            let text = self.tool_step("read_url", &json!({"url": u})).await?;
+            if matches!(self.last_post, Some((true, _))) {
+                read.push(format!(
+                    "\n[{u}]\n{}",
+                    crate::quickread::excerpt(&text, &question)
+                ));
+            }
+        }
+        crate::diag::note(&format!(
+            "quick reads: read {} of the top {} results",
+            read.len(),
+            urls.len()
+        ));
+        if read.is_empty() {
+            return Ok(search);
+        }
+        Ok(format!(
+            "{search}\n\nTern read the top results for you (each page's opening and its passage that best matches the question). Quote from these and cite them by their numbers above:\n{}",
+            read.join("\n")
+        ))
     }
 
     /// Everything before a call runs: is it known, are its arguments

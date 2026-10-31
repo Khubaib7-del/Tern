@@ -1087,3 +1087,92 @@ async fn a_follow_up_reads_the_previous_answers_papers_without_searching() {
     assert!(note.contains("first 5"), "{note}");
     assert_eq!(papers.0.load(Ordering::SeqCst), 5);
 }
+
+/// A web search that lists four results.
+#[derive(Debug)]
+struct Web;
+
+impl Tool for Web {
+    fn name(&self) -> &'static str {
+        "web_search"
+    }
+    fn summary(&self) -> &'static str {
+        "Search the web"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    }
+    fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async {
+            let mut out = String::from("Web search results for \"eiffel tower height\":\n");
+            for (i, u) in [
+                "https://a.org/eiffel",
+                "https://b.org/tower",
+                "https://c.org/paris",
+                "https://d.org/more",
+            ]
+            .iter()
+            .enumerate()
+            {
+                out.push_str(&format!("{}. Result ({u})\n   {u}\n   snippet\n", i + 1));
+            }
+            Ok(ToolOutput::text(out))
+        })
+    }
+}
+
+/// A13: a general question's web search reads its top three results
+/// before the model answers, and their text goes back with the search.
+#[tokio::test]
+async fn a_general_questions_search_reads_its_top_three_results() {
+    let r = std::sync::Arc::new(Read::default());
+    let mut tools = ToolRegistry::new();
+    tools.register(ArcRead(r.clone())).register(Web);
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.quick_reads = true;
+    let model = Script::new(vec![
+        Step::Reply(format!(
+            "```tool\n{}\n```",
+            json!({"tool": "web_search", "args": {"query": "eiffel tower height"}})
+        )),
+        Step::Reply("330 m, finished in 1889 [1].".into()),
+    ]);
+    let out = ctx
+        .run(
+            &model,
+            "How tall is the Eiffel Tower, and when was it finished?",
+        )
+        .await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(r.0.load(Ordering::SeqCst), 3, "top three read");
+    let reqs = model.requests();
+    let last = reqs[1]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(last.contains("Tern read the top results"), "{last}");
+    for u in ["a.org/eiffel", "b.org/tower", "c.org/paris"] {
+        assert!(last.contains(&format!("Page text of https://{u}")), "{u}");
+    }
+    assert!(!last.contains("Page text of https://d.org"), "only three");
+    // Off by default: the same turn without the switch reads nothing.
+    let r2 = std::sync::Arc::new(Read::default());
+    let mut tools2 = ToolRegistry::new();
+    tools2.register(ArcRead(r2.clone())).register(Web);
+    let ctx2 = Ctx::new(&tools2, &sink);
+    let model2 = Script::new(vec![
+        Step::Reply(format!(
+            "```tool\n{}\n```",
+            json!({"tool": "web_search", "args": {"query": "eiffel tower height"}})
+        )),
+        Step::Reply("330 m.".into()),
+    ]);
+    ctx2.run(&model2, "How tall is the Eiffel Tower?").await;
+    assert_eq!(r2.0.load(Ordering::SeqCst), 0);
+}

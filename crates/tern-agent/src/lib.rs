@@ -69,6 +69,7 @@ pub mod prompts;
 pub mod protocol;
 pub mod providers;
 pub mod python;
+pub mod quickread;
 pub mod range;
 /// Read aloud with the local voice model (#69; needs the speakers).
 #[cfg(feature = "mic")]
