@@ -1,5 +1,8 @@
-//! Durable turns (#85): acceptance tests A-T2, A-T3, A-T4, A-T9, A-T13 and
-//! the governor's wait and pre-fit, against scripted models. No live keys.
+//! Durable turns (#85): acceptance tests A-T1 to A-T9, A-T11, A-T13,
+//! A-T15 and A-T16 (A-T10, A-T12 and A-T14 are unit tests in tern-research
+//! and tern-providers), the
+//! governor's wait and pre-fit, quick reads and chaos, against scripted
+//! models. No live keys.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -1175,4 +1178,113 @@ async fn a_general_questions_search_reads_its_top_three_results() {
     ]);
     ctx2.run(&model2, "How tall is the Eiffel Tower?").await;
     assert_eq!(r2.0.load(Ordering::SeqCst), 0);
+}
+
+/// A-T5: Tern killed mid-step (the run dropped with no end written).
+/// The next launch finds the saved turn and shows "Tern closed while this
+/// turn was running"; Continue replays the journal and runs no tool again.
+#[tokio::test(start_paused = true)]
+async fn a_turn_killed_mid_step_leaves_a_receipt_and_resumes_from_its_journal() {
+    use tern_agent::checkpoint::CheckpointDir;
+    let (tools, reads) = reader();
+    let dir = tempfile::tempdir().unwrap();
+    let saved = CheckpointDir::new(dir.path());
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.checkpoints = Some(&saved);
+    let model = Script::new(vec![read("https://a.org/flare"), Step::Hang]);
+    let killed =
+        tokio::time::timeout(Duration::from_secs(30), ctx.run(&model, "Explain FLARE")).await;
+    assert!(killed.is_err(), "the run was killed mid-step");
+    assert!(
+        !sink.events().iter().any(|e| e.kind == "turn.finished"),
+        "no end written"
+    );
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1);
+
+    // The next launch: a fresh reader of the same folder.
+    let relaunch = CheckpointDir::new(dir.path());
+    let ck = relaunch
+        .load(&ctx.session.to_string())
+        .unwrap()
+        .expect("the turn was saved");
+    let r = ck.closed_receipt();
+    assert_eq!(r.paused_by, Some(tern_core::PausedBy::Closed));
+    assert_eq!(r.line, "Tern closed while this turn was running");
+    assert!(r.resumable);
+    assert_eq!(r.kept.tool_results, 1);
+
+    let resumed = Script::new(vec![
+        read("https://a.org/flare"),
+        Step::Reply("FLARE retrieves when it is unsure.".into()),
+    ]);
+    let sink2 = MemorySink::default();
+    let mut ctx2 = Ctx::new(&tools, &sink2);
+    ctx2.session = ctx.session;
+    ctx2.hooks.checkpoints = Some(&relaunch);
+    ctx2.hooks.resume = Some(&ck);
+    let done = ctx2.run(&resumed, "Explain FLARE").await;
+    assert_eq!(done.state, TurnState::Completed, "{:?}", done.reason);
+    let replayed = sink2
+        .events()
+        .iter()
+        .filter(|e| e.kind == "tool.replayed")
+        .count();
+    assert_eq!(replayed, 1, "the journal was replayed");
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1, "no tool ran again");
+}
+
+/// A web search that counts how often it really ran.
+#[derive(Debug)]
+struct CountWeb(std::sync::Arc<AtomicUsize>);
+
+impl Tool for CountWeb {
+    fn name(&self) -> &'static str {
+        Web.name()
+    }
+    fn summary(&self) -> &'static str {
+        Web.summary()
+    }
+    fn effect(&self) -> EffectClass {
+        Web.effect()
+    }
+    fn input_schema(&self) -> Value {
+        Web.input_schema()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        static WEB: Web = Web;
+        self.0.fetch_add(1, Ordering::SeqCst);
+        WEB.call(args)
+    }
+}
+
+/// A-T15, consistency S4 (prefetch reuse): one chat's prefetched search
+/// is never handed to another chat as its own; the same chat may reuse
+/// it. (S2, sticky fallback, and S3, pinned sampling, are
+/// `a_fallback_lasts_one_turn_and_the_next_turn_uses_the_chosen_model`
+/// and `the_same_tools_and_mode_give_the_same_fingerprint_and_sampling`.)
+#[tokio::test]
+async fn a_prefetched_search_is_not_reused_across_chats() {
+    use tern_agent::toolcache::ToolCache;
+    let ran = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::new();
+    tools.register(CountWeb(ran.clone()));
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (
+        ToolCache::with_dir(dir.path()),
+        ToolCache::with_dir(dir.path()),
+    );
+    a.set_chat("chat-a");
+    b.set_chat("chat-b");
+    let msg = "search the web for FLARE active retrieval";
+    for (cache, expected) in [(&a, 1), (&b, 2), (&a, 2)] {
+        let sink = MemorySink::default();
+        let mut ctx = Ctx::new(&tools, &sink);
+        ctx.hooks.prefetch = true;
+        ctx.hooks.cache = Some(cache);
+        let model = Script::new(vec![Step::Reply("Done.".into())]);
+        let out = ctx.run(&model, msg).await;
+        assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+        assert_eq!(ran.load(Ordering::SeqCst), expected);
+    }
 }
