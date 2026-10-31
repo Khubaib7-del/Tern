@@ -412,6 +412,7 @@ mod tests {
                 tool: "read_url".into(),
                 at: now() - 7 * 3600,
                 content: "stale".into(),
+                chat: None,
                 evidence_refs: Vec::new(),
                 meta: Value::Null,
             })
