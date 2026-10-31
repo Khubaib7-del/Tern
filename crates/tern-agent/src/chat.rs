@@ -109,6 +109,8 @@ pub struct ChatSession {
     check_claims: crate::verify::CheckClaims,
     /// Whether a general question's web search reads its top results (#85, A13).
     quick_reads: bool,
+    /// Signatures of what went wrong, counted across chats (#85, A16).
+    incidents: Option<crate::signals::IncidentStore>,
     /// Where runs save their checkpoints (`<data>/checkpoints`).
     checkpoints: Option<crate::checkpoint::CheckpointDir>,
     /// Steering notes for the running turn, from the front end or `tern steer`.
@@ -678,11 +680,16 @@ pub async fn preview_instructions(opts: &ChatOptions) -> Result<crate::rules::Ef
 struct Tee<'a> {
     inner: &'a StoreSink,
     observer: &'a (dyn Fn(&EventEnvelope) + Send + Sync),
+    /// The signal tap (#85, A16): every recorded event passes it.
+    incidents: Option<&'a crate::signals::IncidentStore>,
 }
 
 impl EventSink for Tee<'_> {
     fn record(&self, event: EventEnvelope) -> Result<EventEnvelope, String> {
         let stored = self.inner.record(event)?;
+        if let Some(store) = self.incidents {
+            store.observe(&stored);
+        }
         (self.observer)(&stored);
         Ok(stored)
     }
@@ -941,6 +948,9 @@ impl ChatSession {
             budget: opts.budget,
             check_claims: opts.check_claims,
             quick_reads: opts.quick_reads,
+            incidents: paths
+                .as_ref()
+                .map(|p| crate::signals::IncidentStore::in_dir(&p.data_dir)),
             max_output_tokens: if opts.max_output_tokens == 0 {
                 tern_providers::default_max_output(provider_id, &model_id)
             } else {
@@ -1497,6 +1507,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         self.steering.clear();
         // The decision model's hint for the first step, logged just before
@@ -1666,6 +1677,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let deps = crate::deep::DeepDeps {
             session: self.session,
@@ -1787,6 +1799,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         tee.record(done.event(self.session))?;
         self.history =
@@ -1881,6 +1894,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let sink = self
             .checkpoints
@@ -1983,6 +1997,7 @@ impl ChatSession {
         let tee = Tee {
             inner: &self.sink,
             observer,
+            incidents: self.incidents.as_ref(),
         };
         let events = self
             .sink

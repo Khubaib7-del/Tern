@@ -86,6 +86,7 @@ pub mod sandbox;
 pub mod scholar;
 pub mod search;
 pub mod side;
+pub mod signals;
 pub mod skill_author;
 pub mod skills;
 pub mod sources;
