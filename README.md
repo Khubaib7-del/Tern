@@ -273,7 +273,7 @@ Next, by phase:
 | | #102 | Obsidian and chat import, and an editable Markdown view of memory |
 | | #103 | Export and reference formats |
 | | #104 | Security and reliability |
-| | #105 | Universal connector, your own corpus, and desktop sources, and a browser for agents |
+| | #105 | Universal connector, your own corpus, desktop sources and a browser for agents |
 | **6 · Learning, hardening, launch and handbooks** | #106 | Learning core, gated by evaluations |
 | | #107 | Adapts to you v2 and memory v2 |
 | | #108–#110 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
