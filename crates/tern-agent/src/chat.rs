@@ -509,6 +509,36 @@ pub async fn connect_chat_model(
     Ok((p, m))
 }
 
+/// The rate-limit governor for calls to `provider` (#85): the shared one
+/// for a provider on the network, none for a server on this computer
+/// (Ollama, LM Studio, a test server), which has no rate limits.
+pub fn governor_for(
+    provider: &tern_providers::Provider,
+) -> Option<&'static tern_providers::governor::Governor> {
+    let local = url::Url::parse(provider.base_url()).is_ok_and(|u| {
+        matches!(
+            u.host_str(),
+            Some("localhost" | "127.0.0.1" | "::1" | "[::1]" | "0.0.0.0")
+        )
+    });
+    (!local).then(tern_providers::governor::global)
+}
+
+/// Takes a stopped turn's digest off the end of `history` (#85), when its
+/// question is `message`: a resumed turn brings the turn back itself.
+pub fn drop_interrupted(history: &mut Vec<ChatMessage>, message: &str) {
+    let n = history.len();
+    if n >= 2
+        && history[n - 2].role == tern_providers::Role::User
+        && history[n - 2].content == message
+        && history[n - 1]
+            .content
+            .contains("(Tern note: this turn stopped before it finished")
+    {
+        history.truncate(n - 2);
+    }
+}
+
 /// The model's history for a reopened chat: carried-over context, each
 /// finished exchange, and sub-sessions' reports back, in order. Turns
 /// removed by ID range are not in `turns` (see [`live_turns`]).
@@ -1446,6 +1476,8 @@ impl ChatSession {
                 retry: None,
                 results: self.results.as_deref(),
                 cache: Some(&self.cache),
+                governor: governor_for(&self.provider),
+                wrap_up: true,
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1810,6 +1842,9 @@ impl ChatSession {
                 crate::deep::resume_deep(deps, ck, &opts, control).await
             }
             RunMode::Quick => {
+                // The stopped turn's digest leaves the history: the
+                // checkpoint carries the turn itself (#85).
+                drop_interrupted(&mut self.history, &message);
                 let instructions = self.instructions(self.search_name.map(|_| WEB_INSTRUCTIONS));
                 let hooks = crate::engine::RunHooks {
                     checkpoints: sink,
@@ -1825,6 +1860,8 @@ impl ChatSession {
                     retry: None,
                     results: self.results.as_deref(),
                     cache: Some(&self.cache),
+                    governor: governor_for(&self.provider),
+                    wrap_up: true,
                 };
                 TurnLoop {
                     session: self.session,

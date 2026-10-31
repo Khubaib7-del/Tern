@@ -1,0 +1,577 @@
+//! Durable turns (#85): acceptance tests A-T2, A-T3, A-T4, A-T9, A-T13 and
+//! the governor's wait and pre-fit, against scripted models. No live keys.
+
+use std::collections::VecDeque;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use tern_agent::checkpoint::MemoryCheckpoints;
+use tern_agent::engine::{RESUME_PROMPT, RunHooks, WRAP_UP_PROMPT};
+use tern_agent::tools::BoxFuture;
+use tern_agent::{
+    Budget, CancelFlag, DenyAll, MemorySink, Model, PolicyGate, Tool, ToolError, ToolOutput,
+    ToolRegistry, TurnLoop, TurnOutcome,
+};
+use tern_core::{EffectClass, EventEnvelope, SessionId, TurnReceipt, TurnState};
+use tern_providers::governor::Governor;
+use tern_providers::{
+    ChatRequest, ChatResponse, ProviderError, ProviderResult, Usage, UsageLedger,
+};
+
+/// One scripted step: a reply, an error, a reply that streams some text
+/// and then drops, or a reply that never comes.
+enum Step {
+    Reply(String),
+    Fail(ProviderError),
+    DropAfter(String),
+    Hang,
+}
+
+struct Script {
+    steps: Mutex<VecDeque<Step>>,
+    seen: Mutex<Vec<ChatRequest>>,
+}
+
+impl Script {
+    fn new(steps: Vec<Step>) -> Self {
+        Self {
+            steps: Mutex::new(steps.into()),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+    fn requests(&self) -> Vec<ChatRequest> {
+        self.seen.lock().unwrap().clone()
+    }
+    fn next(&self, req: &ChatRequest) -> Step {
+        self.seen.lock().unwrap().push(req.clone());
+        self.steps
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Step::Reply("out of script".into()))
+    }
+}
+
+fn reply(text: String) -> ProviderResult<ChatResponse> {
+    Ok(ChatResponse {
+        text,
+        usage: Usage::measured(100, 10),
+        finish_reason: Some("stop".into()),
+        model: None,
+    })
+}
+
+impl Model for Script {
+    fn provider_id(&self) -> &str {
+        "script"
+    }
+    fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        let step = self.next(req);
+        Box::pin(async move {
+            match step {
+                Step::Reply(t) | Step::DropAfter(t) => reply(t),
+                Step::Fail(e) => Err(e),
+                Step::Hang => {
+                    tokio::time::sleep(Duration::from_secs(600)).await;
+                    reply("too late".into())
+                }
+            }
+        })
+    }
+    fn complete_stream<'a>(
+        &'a self,
+        req: &'a ChatRequest,
+        on_text: &'a (dyn Fn(&str) -> bool + Send + Sync),
+    ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
+        let step = self.next(req);
+        Box::pin(async move {
+            match step {
+                Step::Reply(t) => {
+                    on_text(&t);
+                    reply(t)
+                }
+                Step::DropAfter(t) => {
+                    on_text(&t);
+                    Err(ProviderError::Network {
+                        provider: "Script",
+                        reason: "the connection was reset".into(),
+                    })
+                }
+                Step::Fail(e) => Err(e),
+                Step::Hang => {
+                    on_text("Thinking about it");
+                    tokio::time::sleep(Duration::from_secs(600)).await;
+                    reply("too late".into())
+                }
+            }
+        })
+    }
+}
+
+/// A web read that counts how often it really ran and returns a page.
+#[derive(Debug, Default)]
+struct Read(AtomicUsize);
+
+impl Tool for Read {
+    fn name(&self) -> &'static str {
+        "read_url"
+    }
+    fn summary(&self) -> &'static str {
+        "Read a page"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]})
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let url = args["url"].as_str().unwrap_or_default().to_owned();
+            if url.contains("broken") {
+                return Err(ToolError::Failed("HTTP 403".into()));
+            }
+            Ok(ToolOutput {
+                content: format!("Page text of {url}"),
+                meta: json!({"page": {"title": "A page", "url": url, "site": "a.org"}}),
+                evidence_refs: vec![url],
+            })
+        })
+    }
+}
+
+/// A tool that never finishes on its own.
+#[derive(Debug)]
+struct Stuck;
+
+impl Tool for Stuck {
+    fn name(&self) -> &'static str {
+        "stuck"
+    }
+    fn summary(&self) -> &'static str {
+        "Never finishes"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Read
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(600)
+    }
+    fn call<'a>(&'a self, _args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            Ok(ToolOutput::text("late"))
+        })
+    }
+}
+
+fn read(url: &str) -> Step {
+    Step::Reply(format!(
+        "```tool\n{}\n```",
+        json!({"tool": "read_url", "args": {"url": url}})
+    ))
+}
+
+struct Ctx<'a> {
+    tools: &'a ToolRegistry,
+    sink: &'a MemorySink,
+    session: SessionId,
+    budget: Budget,
+    cancel: CancelFlag,
+    hooks: RunHooks<'a>,
+    stream: bool,
+}
+
+impl<'a> Ctx<'a> {
+    fn new(tools: &'a ToolRegistry, sink: &'a MemorySink) -> Self {
+        Self {
+            tools,
+            sink,
+            session: SessionId::new(),
+            budget: Budget::default(),
+            cancel: CancelFlag::default(),
+            hooks: RunHooks::default(),
+            stream: true,
+        }
+    }
+
+    async fn run(&self, model: &Script, msg: &str) -> TurnOutcome {
+        let mut gate = PolicyGate::default();
+        let on_text = |_: u32, _: &str| {};
+        TurnLoop {
+            session: self.session,
+            model,
+            model_name: "test-model",
+            tools: self.tools,
+            gate: &mut gate,
+            approver: &DenyAll,
+            sink: self.sink,
+            ledger: &UsageLedger::default(),
+            budget: self.budget,
+            cancel: self.cancel.clone(),
+            instructions: None,
+            max_output_tokens: 512,
+            on_text: if self.stream { Some(&on_text) } else { None },
+            hooks: self.hooks,
+        }
+        .run(Vec::new(), msg)
+        .await
+    }
+}
+
+fn kinds(events: &[EventEnvelope]) -> Vec<String> {
+    events.iter().map(|e| e.kind.clone()).collect()
+}
+
+fn receipt(events: &[EventEnvelope]) -> TurnReceipt {
+    let e = events
+        .iter()
+        .rev()
+        .find(|e| e.kind == "turn.receipt")
+        .expect("a receipt");
+    serde_json::from_value(e.payload.clone()).expect("a receipt payload")
+}
+
+fn reader() -> (ToolRegistry, std::sync::Arc<Read>) {
+    let r = std::sync::Arc::new(Read::default());
+    let mut tools = ToolRegistry::new();
+    tools.register(ArcRead(r.clone())).register(Stuck);
+    (tools, r)
+}
+
+#[derive(Debug)]
+struct ArcRead(std::sync::Arc<Read>);
+
+impl Tool for ArcRead {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn summary(&self) -> &'static str {
+        self.0.summary()
+    }
+    fn effect(&self) -> EffectClass {
+        self.0.effect()
+    }
+    fn input_schema(&self) -> Value {
+        self.0.input_schema()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.call(args)
+    }
+}
+
+/// A-T2: a 429 with Retry-After 10 after seven tool results is one
+/// visible wait, and the same turn goes on; the sources read never go down.
+#[tokio::test(start_paused = true)]
+async fn a_short_rate_limit_waits_once_and_the_turn_continues() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let ctx = Ctx::new(&tools, &sink);
+    let mut steps: Vec<Step> = (0..7)
+        .map(|i| read(&format!("https://a.org/{i}")))
+        .collect();
+    steps.push(Step::Fail(ProviderError::RateLimited {
+        provider: "Mistral",
+        retry_after: Some(10),
+        detail: "Rate limit reached for tokens per minute".into(),
+    }));
+    steps.push(Step::Reply("FLARE retrieves when unsure.".into()));
+    let model = Script::new(steps);
+    let budget = Budget {
+        max_model_calls: 20,
+        ..Budget::default()
+    };
+    let ctx = Ctx { budget, ..ctx };
+    let out = ctx.run(&model, "How does FLARE work?").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 7);
+    let events = sink.events();
+    let waits: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "provider.retry")
+        .collect();
+    assert_eq!(waits.len(), 1, "one wait");
+    assert_eq!(waits[0].payload["wait_ms"], 10_000);
+    // The ledger (pages read) never goes down within the turn.
+    let mut read_so_far = 0;
+    let mut counts = Vec::new();
+    for e in &events {
+        if e.kind == "tool.executed" {
+            read_so_far += 1;
+        }
+        counts.push(read_so_far);
+    }
+    assert!(counts.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(read_so_far, 7);
+    assert!(events.iter().all(|e| e.turn_id == Some(out.turn_id)));
+}
+
+/// A-T3: a daily limit is not retried; the turn pauses with what it kept,
+/// and Continue on another model finishes the same turn id.
+#[tokio::test]
+async fn a_daily_limit_pauses_and_another_model_continues_the_same_turn() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let saved = MemoryCheckpoints::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.checkpoints = Some(&saved);
+    let model = Script::new(vec![
+        read("https://a.org/flare"),
+        read("https://a.org/selfrag"),
+        Step::Fail(ProviderError::RateLimited {
+            provider: "Mistral",
+            retry_after: None,
+            detail: "Rate limit reached on requests per day (RPD): Limit 1000, Used 1000".into(),
+        }),
+    ]);
+    let out = ctx.run(&model, "Compare FLARE and Self-RAG").await;
+    assert_eq!(out.state, TurnState::Paused, "{:?}", out.reason);
+    assert!(
+        out.reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("daily limit")
+    );
+    let events = sink.events();
+    assert!(
+        !kinds(&events).contains(&"provider.retry".to_owned()),
+        "never retried"
+    );
+    assert_eq!(model.requests().len(), 3);
+    let r = receipt(&events);
+    assert_eq!(r.state, tern_core::RunState::Paused);
+    assert_eq!(r.paused_by, Some(tern_core::PausedBy::DailyQuota));
+    assert_eq!(r.error, Some(tern_core::ErrorClass::RateLimitDaily));
+    assert_eq!(
+        r.kept.sources,
+        ["https://a.org/flare", "https://a.org/selfrag"]
+    );
+    assert_eq!(r.kept.tool_results, 2);
+    assert!(r.resumable);
+    assert!(r.resets_at.is_some());
+
+    let ck = saved.latest().expect("a checkpoint");
+    let other = Script::new(vec![Step::Reply("Both retrieve adaptively.".into())]);
+    let sink2 = MemorySink::default();
+    let mut ctx2 = Ctx::new(&tools, &sink2);
+    ctx2.session = ctx.session;
+    ctx2.hooks.checkpoints = Some(&saved);
+    ctx2.hooks.resume = Some(&ck);
+    let done = ctx2.run(&other, "Compare FLARE and Self-RAG").await;
+    assert_eq!(done.state, TurnState::Completed, "{:?}", done.reason);
+    assert_eq!(done.turn_id, out.turn_id, "the same turn");
+    assert!(
+        sink2
+            .events()
+            .iter()
+            .all(|e| e.turn_id == Some(out.turn_id))
+    );
+    assert_eq!(reads.0.load(Ordering::SeqCst), 2, "no read ran again");
+}
+
+/// A-T4: a stream dropped after 400 characters keeps them; Continue sends
+/// them back as the start of the answer and runs no tool again.
+#[tokio::test]
+async fn a_dropped_stream_resumes_with_its_prefix_and_no_tool_reruns() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let saved = MemoryCheckpoints::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.checkpoints = Some(&saved);
+    let partial = "x".repeat(400);
+    let model = Script::new(vec![
+        read("https://a.org/flare"),
+        Step::DropAfter(partial.clone()),
+    ]);
+    let out = ctx.run(&model, "Explain FLARE").await;
+    assert_eq!(out.state, TurnState::Paused, "{:?}", out.reason);
+    let events = sink.events();
+    let end = events.iter().find(|e| e.kind == "turn.finished").unwrap();
+    assert_eq!(
+        end.payload["partial"],
+        partial.as_str(),
+        "partial persisted"
+    );
+    let r = receipt(&events);
+    assert_eq!(r.error, Some(tern_core::ErrorClass::StreamCut));
+    assert_eq!(r.kept.answer_chars, 400);
+    let turns = tern_agent::transcript::past_turns(&events);
+    assert_eq!(turns[0].answer.as_deref(), Some(partial.as_str()));
+
+    let ck = saved.latest().expect("a checkpoint");
+    assert_eq!(ck.quick.as_ref().unwrap().partial, partial);
+    assert_eq!(ck.quick.as_ref().unwrap().journal.len(), 1);
+    // The resumed model asks for the same read again, then finishes.
+    let resumed = Script::new(vec![
+        read("https://a.org/flare"),
+        Step::Reply(" and the rest.".into()),
+    ]);
+    let sink2 = MemorySink::default();
+    let mut ctx2 = Ctx::new(&tools, &sink2);
+    ctx2.session = ctx.session;
+    ctx2.hooks.checkpoints = Some(&saved);
+    ctx2.hooks.resume = Some(&ck);
+    let done = ctx2.run(&resumed, "Explain FLARE").await;
+    assert_eq!(done.state, TurnState::Completed, "{:?}", done.reason);
+    assert_eq!(done.answer.unwrap(), format!("{partial} and the rest."));
+    let first = &resumed.requests()[0];
+    let n = first.messages.len();
+    assert_eq!(first.messages[n - 2].content, partial, "prefix re-sent");
+    assert_eq!(first.messages[n - 1].content, RESUME_PROMPT);
+    // Journal hits equal the tools the stopped turn ran: nothing re-ran.
+    let replayed = sink2
+        .events()
+        .iter()
+        .filter(|e| e.kind == "tool.replayed")
+        .count();
+    assert_eq!(replayed, 1);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1);
+}
+
+/// A-T9: the budget runs out and the reserved call still answers, with
+/// the gaps listed; a failed call is not counted.
+#[tokio::test]
+async fn a_spent_budget_still_yields_an_answer_with_gaps() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.wrap_up = true;
+    ctx.budget = Budget {
+        max_model_calls: 8,
+        max_tool_calls: 2,
+        max_tokens: 200_000,
+    };
+    let model = Script::new(vec![
+        read("https://a.org/broken"),
+        read("https://a.org/1"),
+        read("https://a.org/2"),
+        read("https://a.org/3"),
+        Step::Reply("FLARE answer.\n\nNot established: its cost.".into()),
+    ]);
+    let out = ctx.run(&model, "How does FLARE work?").await;
+    assert_eq!(out.state, TurnState::CompletedWithGaps, "{:?}", out.reason);
+    assert!(out.answer.unwrap().contains("Not established"));
+    // The 403 did not count: two reads ran after it within a budget of two.
+    assert_eq!(reads.0.load(Ordering::SeqCst), 3);
+    assert_eq!(out.tool_calls, 2);
+    let events = sink.events();
+    assert!(kinds(&events).contains(&"budget.wrap_up".to_owned()));
+    let failed = events.iter().find(|e| e.kind == "tool.failed").unwrap();
+    assert_eq!(failed.payload["counted"], false);
+    let last = model.requests().pop().unwrap();
+    assert!(last.tools.is_empty(), "the wrap-up offers no tools");
+    assert!(
+        last.messages
+            .last()
+            .unwrap()
+            .content
+            .contains(WRAP_UP_PROMPT)
+    );
+    let end = events.iter().find(|e| e.kind == "turn.finished").unwrap();
+    assert_eq!(end.payload["failed_not_counted"], 1);
+}
+
+/// Without the reserve (the default for bare loops), the old stop holds.
+#[tokio::test]
+async fn without_a_reserve_the_budget_still_stops_the_turn() {
+    let (tools, _) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.budget.max_tool_calls = 1;
+    let model = Script::new(vec![read("https://a.org/1"), read("https://a.org/2")]);
+    let out = ctx.run(&model, "go").await;
+    assert_eq!(out.state, TurnState::BudgetExceeded);
+    let r = receipt(&sink.events());
+    assert_eq!(r.paused_by, Some(tern_core::PausedBy::Budget));
+}
+
+/// A-T13: Stop changes the state within 2 s on a silent stream, and on a
+/// tool that never returns.
+#[tokio::test]
+async fn stop_lands_within_two_seconds_on_a_silent_stream_and_a_stuck_tool() {
+    let (tools, _) = reader();
+    for steps in [
+        vec![Step::Hang],
+        vec![Step::Reply(
+            "```tool\n{\"tool\": \"stuck\", \"args\": {}}\n```".into(),
+        )],
+    ] {
+        let sink = MemorySink::default();
+        let ctx = Ctx::new(&tools, &sink);
+        let model = Script::new(steps);
+        let cancel = ctx.cancel.clone();
+        let started = Instant::now();
+        let (out, ()) = tokio::join!(ctx.run(&model, "go"), async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            cancel.cancel();
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(out.state, TurnState::Cancelled);
+        let r = receipt(&sink.events());
+        assert_eq!(r.paused_by, Some(tern_core::PausedBy::User));
+        assert_eq!(r.state, tern_core::RunState::Paused);
+    }
+}
+
+/// A3: the governor makes a call wait for its window (one visible
+/// `governor.wait` row) and shrinks a request bigger than the window
+/// before sending it.
+#[tokio::test(start_paused = true)]
+async fn the_governor_waits_for_the_window_and_prefits_big_requests() {
+    let (tools, _) = reader();
+    let sink = MemorySink::default();
+    let gov = Governor::new();
+    gov.observe(
+        "script",
+        "test-model",
+        [
+            ("x-ratelimit-limit-requests", "1"),
+            ("x-ratelimit-remaining-requests", "0"),
+        ],
+    );
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.governor = Some(&gov);
+    let model = Script::new(vec![Step::Reply("Done.".into())]);
+    let out = ctx.run(&model, "go").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let events = sink.events();
+    let wait = events
+        .iter()
+        .find(|e| e.kind == "governor.wait")
+        .expect("a wait");
+    assert_eq!(wait.payload["run_state"], "waiting");
+    assert!(wait.payload["wait_ms"].as_u64().unwrap() > 0);
+
+    let big = Governor::new();
+    big.observe(
+        "script",
+        "test-model",
+        [("x-ratelimit-limit-tokens", "3000")],
+    );
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.governor = Some(&big);
+    let model = Script::new(vec![Step::Reply("Done.".into())]);
+    let long = "word ".repeat(4_000);
+    let out = ctx.run(&model, &long).await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    let trim = sink
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "context.trimmed")
+        .expect("a pre-fit");
+    assert_eq!(trim.payload["tier"], "prefit");
+    let sent = &model.requests()[0];
+    let chars: usize = sent.messages.iter().map(|m| m.content.len()).sum();
+    assert!(chars < long.len() / 2, "sent {chars} chars");
+}

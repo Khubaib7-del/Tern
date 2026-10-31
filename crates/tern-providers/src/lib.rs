@@ -24,6 +24,8 @@ pub mod custom;
 pub mod download;
 pub mod effort;
 pub mod error;
+pub mod estimate;
+pub mod governor;
 pub mod model;
 pub mod retry;
 pub mod rpc_http;
