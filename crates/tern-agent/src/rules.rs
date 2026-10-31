@@ -418,11 +418,11 @@ mod tests {
     fn rules_merge_global_parents_then_project() {
         let data = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        let root = home.path().join("uni").join("fyp");
+        let root = home.path().join("work").join("site");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(data.path().join(FILE), "Use British spelling.").unwrap();
         std::fs::write(home.path().join(FILE), "Be brief.").unwrap();
-        std::fs::write(home.path().join("uni").join(FILE), "Cite with APA.").unwrap();
+        std::fs::write(home.path().join("work").join(FILE), "Cite with APA.").unwrap();
         std::fs::write(root.join(FILE), "Cite with IEEE.").unwrap();
         let files = discover(data.path(), Some(&root), Some(home.path()));
         let scopes: Vec<_> = files.iter().map(|f| f.scope).collect();

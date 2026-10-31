@@ -135,7 +135,7 @@ pub fn weak(answer: &str, sources: &[Source]) -> bool {
 /// The examiner's instructions.
 pub fn examiner_system(title: &str, topics: &[Topic], sources: &[Source]) -> String {
     let mut s = format!(
-        "You are a fair but demanding viva examiner for a final-year project or course: \"{title}\". You ask one question at a time, grounded in the candidate's own materials (numbered passages below). Questions get harder by level: 1 recall and define, 2 explain how it works, 3 justify choices and assumptions, 4 limitations, alternatives, and threats to validity, 5 defend against critique and extend to new situations. A follow-up probes the candidate's last answer: quote a few of their words and ask for precision, evidence, or the step they skipped. Reply with the question only, one or two sentences, no preamble, no feedback, no numbering.\n"
+        "You are a fair but demanding viva examiner for a project or course: \"{title}\". You ask one question at a time, grounded in the candidate's own materials (numbered passages below). Questions get harder by level: 1 recall and define, 2 explain how it works, 3 justify choices and assumptions, 4 limitations, alternatives, and threats to validity, 5 defend against critique and extend to new situations. A follow-up probes the candidate's last answer: quote a few of their words and ask for precision, evidence, or the step they skipped. Reply with the question only, one or two sentences, no preamble, no feedback, no numbering.\n"
     );
     if !topics.is_empty() {
         s.push_str("\nTopics in the materials:\n");
@@ -575,7 +575,7 @@ mod tests {
         vec![Source {
             n: 1,
             chunk: "m1#1".into(),
-            anchor: Anchor { material: "m1".into(), file: "fyp.pdf".into(), page: Some(3), section: None },
+            anchor: Anchor { material: "m1".into(), file: "report.pdf".into(), page: Some(3), section: None },
             text: "The system uses a transformer encoder to classify support tickets. Accuracy reached 91 percent on the held-out test set of tickets. A limitation is class imbalance in the ticket categories.".into(),
         }]
     }

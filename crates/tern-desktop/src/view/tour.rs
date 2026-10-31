@@ -133,7 +133,7 @@ const ANSWER: &str = "**Short answer:** the strongest agentic RAG systems treat 
 2. **Route by difficulty.** Adaptive-RAG classifies each question's complexity and routes it to no retrieval, single-step or multi-step retrieval [3].\n\
 3. **Check what came back.** Corrective RAG scores retrieved documents with a lightweight evaluator and falls back to web search when they look wrong [4].\n\
 4. **Retrieve for the long tail.** Retrieval helps most for less popular entities; skipping it for popular ones saves cost with little loss in accuracy [5].\n\n\
-For your FYP, start with a confidence-triggered policy (FLARE-style) plus a CRAG-style evaluator, and compare both against always-retrieve on cost and accuracy.";
+For your project, start with a confidence-triggered policy (FLARE-style) plus a CRAG-style evaluator, and compare both against always-retrieve on cost and accuracy.";
 
 const REASONING: &str = "Three workers came back. Self-RAG and FLARE both make retrieval a per-step choice; Adaptive-RAG routes per question; CRAG adds a check after retrieval. The steer asked about cost, so I will end with the long-tail finding and a recommendation.";
 
@@ -1173,7 +1173,7 @@ impl Tour {
             others: vec![
                 (SessionId::new(), "Chunking strategies for long PDFs"),
                 (SessionId::new(), "Reranker comparison: Cohere vs BGE"),
-                (SessionId::new(), "FYP literature map"),
+                (SessionId::new(), "Project literature map"),
             ],
             connected: false,
             streamed: String::new(),
@@ -1246,7 +1246,7 @@ pub(crate) fn seed() {
     if let Ok(v) = tern_agent::vault::Vault::open_default() {
         let _ = v.write(
             "Retrieval policies",
-            "# Retrieval policies\n\nNotes for the FYP chapter on agentic RAG.\n\n- Always-retrieve baseline\n- FLARE: retrieve on low confidence\n- Self-RAG: reflection tokens\n- Adaptive-RAG: route by complexity\n- CRAG: evaluate, then fall back to web search\n\nSee [[Evaluation plan]].\n",
+            "# Retrieval policies\n\nNotes for the project chapter on agentic RAG.\n\n- Always-retrieve baseline\n- FLARE: retrieve on low confidence\n- Self-RAG: reflection tokens\n- Adaptive-RAG: route by complexity\n- CRAG: evaluate, then fall back to web search\n\nSee [[Evaluation plan]].\n",
         );
         let _ = v.write(
             "Evaluation plan",
@@ -3128,9 +3128,9 @@ fn tour_python() -> &'static str {
 /// The work tour's slow conversion script: one line a quarter second.
 const WORK_SCRIPT: &str = "import sys, time\nname = sys.argv[1] if len(sys.argv) > 1 else 'notes.md'\nfor i in range(1, 61):\n    print(f'{name}: converted section {i} of 60', flush=True)\n    if i % 7 == 0:\n        print(f'warning: section {i} has no heading', file=sys.stderr, flush=True)\n    time.sleep(0.25)\nprint('done')\n";
 /// The summary the work tour's first write proposes.
-const WORK_SUMMARY: &str = "# Summary\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE policy next\n- Evaluation last\n";
+const WORK_SUMMARY: &str = "# Summary\n\nThe project demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE policy next\n- Evaluation last\n";
 /// The second draft (rejected in the tour): two lines change.
-const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe FYP demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE and Self-RAG policies next\n- Evaluation last\n";
+const WORK_SUMMARY_2: &str = "# Summary (draft 2)\n\nThe project demo is on 14 November in Lab 3.\n\n- Retrieval baseline first\n- FLARE and Self-RAG policies next\n- Evaluation last\n";
 
 /// #76: the new file the work tour writes in Ask mode (six lines).
 const WORK_NOTES: &str = "# Reading notes\n\n- Self-RAG: retrieve on demand, critique the draft\n- FLARE: retrieve when the next sentence is unsure\n- Adaptive-RAG: route by question complexity\n- CRAG: grade documents, fall back to web search\n";
@@ -3142,7 +3142,7 @@ const WORK_CODE_MODE: &str = "names = ['reading-notes.md', 'meeting-notes.md', '
 /// #79: code mode writes a file, then renames it.
 const WORK_WRITE_RENAME: &str = "file_write('draft-79.md', '# Draft\\n\\nHello from the tour.\\n')\nfile_rename('draft-79.md', 'hello-79.md')\nprint('renamed draft-79.md to hello-79.md')\n";
 
-const WORK_MEETING: &str = "# Meeting notes\n\n- Supervisor wants the FLARE baseline by Friday\n- Lab 3 is booked for the demo\n";
+const WORK_MEETING: &str = "# Meeting notes\n\n- Reviewer wants the FLARE baseline by Friday\n- Lab 3 is booked for the demo\n";
 /// #76: an answer with every block kind the focus view opens.
 const FOCUS_BLOCKS_A: &str = "Here is each kind.\n\n```python\ndef retrieve(query, k=5):\n    hits = index.search(embed(query), k)\n    return [h.text for h in hits if h.score > 0.3]\n```\n\n| Policy | Recall@5 | Latency (ms) |\n| --- | --- | --- |\n| Always retrieve | 0.71 | 420 |\n| FLARE | 0.78 | 610 |\n| Self-RAG | 0.81 | 1,150 |\n| No retrieval | 0.42 | 95 |\n\n$$\nP(\\text{retrieve} \\mid x) = \\sigma\\left(w^\\top h_x + b\\right)\n$$\n\n```mermaid\nflowchart LR\n    Q[Question] --> D{Unsure?}\n    D -- yes --> R[Retrieve]\n    D -- no --> A[Answer]\n    R --> A\n```\n";
 
@@ -3333,14 +3333,14 @@ fn focus_beats() -> Vec<Beat> {
         ),
         b(Act::WPick(0), 2500),
         b(
-            Act::CTypePath("Tour: rename summary.md to fyp-summary.md"),
+            Act::CTypePath("Tour: rename summary.md to project-summary.md"),
             200,
         ),
         b(Act::CSend, 3000),
         scene(
             "x02-rename-card",
             "tern-only",
-            "file_rename asks with the old and the new path (summary.md → fyp-summary.md)",
+            "file_rename asks with the old and the new path (summary.md → project-summary.md)",
             Act::WState("rename waiting"),
             3000,
         ),
@@ -3391,7 +3391,7 @@ fn focus_beats() -> Vec<Beat> {
         scene(
             "x20-outputs-after-rename",
             "tern-only",
-            "Files › Outputs after summary.md → fyp-summary.md: the output follows the new name (no greyed Moved or deleted row), no \\\\?\\ in any path",
+            "Files › Outputs after summary.md → project-summary.md: the output follows the new name (no greyed Moved or deleted row), no \\\\?\\ in any path",
             Act::CFolderState("outputs after rename"),
             3000,
         ),
@@ -3862,8 +3862,8 @@ const RICH_MATH_A: &str = "Scaled dot-product attention weighs each value by how
 const RETRY_A: &str = "Answered on the second attempt: the provider asked Tern to wait, and Tern said so in the status line instead of retrying silently.";
 /// #72: the first request asking this gets HTTP 429 with `Retry-After: 4`.
 const RETRY_Q: &str = "Tour: answer after a rate limit";
-const MEMO_TEXT: &str = "Remind me to send the FYP draft to Doctor Amina on Friday.";
-const TOUR_NOTES: &str = "# Tour notes\n\nThe FYP demo is on 14 November in Lab 3.\n";
+const MEMO_TEXT: &str = "Remind me to send the project draft to Doctor Amina on Friday.";
+const TOUR_NOTES: &str = "# Tour notes\n\nThe project demo is on 14 November in Lab 3.\n";
 const TOUR_PLAN: &str =
     "# Plan\n\nWeek 1: retrieval baseline. Week 2: FLARE policy. Week 3: evaluation.\n";
 
@@ -5261,15 +5261,15 @@ mod mock {
             // A title or other side request.
             return ("Tour chat".into(), None);
         }
-        if user.contains(super::MEMO_TEXT) || user.contains("FYP draft") {
+        if user.contains(super::MEMO_TEXT) || user.contains("project draft") {
             return (
-                "Your memo asks to send the FYP draft to Doctor Amina on Friday.".into(),
+                "Your memo asks to send the project draft to Doctor Amina on Friday.".into(),
                 None,
             );
         }
-        if user.contains("FYP demo is on 14 November") {
+        if user.contains("project demo is on 14 November") {
             return (
-                "From the attached notes: the FYP demo is on 14 November in Lab 3.".into(),
+                "From the attached notes: the project demo is on 14 November in Lab 3.".into(),
                 None,
             );
         }
@@ -5349,7 +5349,7 @@ mod mock {
                             {"id": "read_reading_notes", "tool": "file_read", "args": {"path": "reading-notes.md"}},
                             {"id": "read_meeting", "tool": "file_read", "args": {"path": "meeting-notes.md"}},
                             {"id": "read_todo", "tool": "file_read", "args": {"path": "todo.md"}},
-                            {"id": "read_summary", "tool": "file_read", "args": {"path": "fyp-summary.md"}, "after": ["list_folder"]}
+                            {"id": "read_summary", "tool": "file_read", "args": {"path": "project-summary.md"}, "after": ["list_folder"]}
                         ]}),
                     )],
                 )),
@@ -5591,7 +5591,7 @@ mod mock {
                     String::new(),
                     vec![(
                         "file_rename".to_owned(),
-                        json!({"from": "summary.md", "to": "fyp-summary.md"}),
+                        json!({"from": "summary.md", "to": "project-summary.md"}),
                     )],
                 )
             });

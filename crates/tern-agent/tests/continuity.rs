@@ -78,7 +78,7 @@ async fn a_new_session_starts_from_the_packet_alone() {
     turn(
         &mut old,
         s,
-        "Which vector database should my FYP use?",
+        "Which vector database should my app use?",
         "I recommend pgvector. SECRET-OLD-DETAIL lives only in the old log.",
     );
     turn(
@@ -114,7 +114,7 @@ async fn a_new_session_starts_from_the_packet_alone() {
         3,
         "the packet, its acknowledgement, the question"
     );
-    assert!(msgs[0].contains("Which vector database should my FYP use?"));
+    assert!(msgs[0].contains("Which vector database should my app use?"));
     assert!(msgs[0].contains("benchmark recall at 10"));
     assert!(msgs[0].contains("## Decisions"));
     assert!(!msgs.iter().any(|m| m.contains("SECRET-OLD-DETAIL")));

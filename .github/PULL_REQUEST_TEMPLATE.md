@@ -27,6 +27,7 @@ cargo test --workspace
 
 ## Checklist
 
+- [ ] I am on the founding team or invited in writing, and this contribution is assigned to Tern's owners (see `CONTRIBUTING.md`)
 - [ ] Branch is not `main`; commits follow Conventional Commits
 - [ ] Docs and `CHANGELOG.md` updated in this PR where behaviour or plans changed
 - [ ] Nothing planned is described as shipped

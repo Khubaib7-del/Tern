@@ -29,7 +29,7 @@ Revised after the owner's review of the v2 concept video, with the ChatGPT deskt
 │ ◷ │ PINNED ▾          │          └─────────────────────┘     │ ───────────── │
 │ ✎ │   Lit review      │  Chat · Report · Sources · +         │ 1 ✓ Scope     │
 │ ⚙ │ PROJECTS          │                                      │ 2 ◌ Search    │
-│ ⋯ │ ▸ FYP-thesis      │   user message                       │ 3   Verify    │
+│ ⋯ │ ▸ thesis          │   user message                       │ 3   Verify    │
 │   │     Lit review    │   Worked for 4m 12s · 14 sources  ›  │ 4   Write     │
 │   │     ↳ RAG eval    │   Answer text with citations [1] [2] │               │
 │   │ RECENTS           │  ┌────────────────────────────────┐  │               │

@@ -845,7 +845,7 @@ mod tests {
         s.open_viva();
         assert!(!s.ticking());
         let t0 = Instant::now();
-        let mut v = Viva::new("v1", "FYP", 3, 0);
+        let mut v = Viva::new("v1", "Project", 3, 0);
         v.turns.push(VivaTurn {
             level: 1,
             question: "What is it?".into(),

@@ -1,6 +1,6 @@
 # Engineering handbook (draft)
 
-> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #113, the handbook bundle. It covers how Tern is built, tested and merged. How the engine works inside is in [internals.md](internals.md).
+> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #114, the handbook bundle. It covers how Tern is built, tested and merged. How the engine works inside is in [internals.md](internals.md).
 
 ## 1. How work lands
 

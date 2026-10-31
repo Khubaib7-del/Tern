@@ -425,9 +425,9 @@
       "gold": 3
     },
     {
-      "id": "h-tri-fyp",
+      "id": "h-tri-project",
       "kind": "triage",
-      "question": "What evaluation metrics should my final-year project on citation checking report?",
+      "question": "What evaluation metrics should my two-month project on citation checking report?",
       "context": "",
       "choices": [
         {

@@ -1,20 +1,20 @@
 # Security Policy
 
-Tern is pre-alpha. There is no released build, so there is nothing in users' hands to patch yet. This policy covers how to report problems now and the security model the code is being built against.
+Tern is a private, proprietary, pre-alpha project. There is no released build, so there is nothing in users' hands to patch yet. This policy covers how the team, invited collaborators and invited testers report problems now, and the security model the code is built against.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
-| None released | Not applicable. Reports against `main`, open branches, or the design docs are welcome. |
+| None released | No version is released. Reports against `main`, open branches, private test builds, or the design docs are welcome. |
 
-When the first build is released, this table will list which versions receive fixes.
+When the first build is released (the private beta, then v1.0), this table will list which versions receive fixes.
 
 ## Reporting a vulnerability
 
-Report privately through GitHub Security Advisories: **Security → Report a vulnerability** on this repository, or open [a new advisory](https://github.com/Khubaib7-del/Tern/security/advisories/new) directly.
+Report privately by email to **[khubaibnazeer8@gmail.com](mailto:khubaibnazeer8@gmail.com)**, with "Tern security" in the subject.
 
-- Do not open a public issue, discussion, or pull request for a suspected vulnerability.
+- Never report a suspected vulnerability in an issue, discussion, or pull request, even in this private repository.
 - Include what you found, where (file, crate, commit or doc section), how to reproduce it, and what an attacker could do with it.
 - Never include real API keys or anyone's private research data in a report. Redact first.
 
@@ -24,13 +24,13 @@ What to expect:
 | --- | --- |
 | Acknowledgement | Within 5 days |
 | First assessment (severity, scope) | Within 14 days |
-| Fix or design change | Depends on severity; tracked privately in the advisory until resolved |
+| Fix or design change | Depends on severity; tracked privately by the team until resolved |
 
-Tern is a self-funded, pre-release project, so there is no paid bounty. Reporters are credited in the changelog with their consent.
+Tern is a self-funded, pre-release project, so there is no paid bounty. Reporters are credited in the changelog with their consent. Reporting a problem does not grant any licence to Tern's code or docs.
 
 ## Security model highlights
 
-The full model is in [docs/05-security-model.md](docs/05-security-model.md). These are the commitments every crate is built against. All of them are **planned**; none is implemented yet.
+The full model is in [docs/05-security-model.md](docs/05-security-model.md). These are the commitments every crate is built against. The security model records which are built and which are still planned.
 
 | Area | Commitment |
 | --- | --- |
@@ -46,4 +46,4 @@ The full model is in [docs/05-security-model.md](docs/05-security-model.md). The
 
 In scope: the design documents, the crates as they land, the crawler's network guard, secret handling, permission checks, prompt-injection handling, and anything that could leak keys or research data.
 
-Out of scope for now: vulnerabilities in third-party providers' own services, social engineering of the maintainer, and attacks that need physical access to an unlocked machine.
+Out of scope for now: vulnerabilities in third-party providers' own services, social engineering of the team, and attacks that need physical access to an unlocked machine.

@@ -628,7 +628,7 @@ mod tests {
 
     fn setup() -> (Store, SessionId) {
         let s = Store::open_in_memory().unwrap();
-        let p = s.create_project("FYP", None).unwrap();
+        let p = s.create_project("Atlas", None).unwrap();
         let ses = s
             .create_session(p, Harness::Research, "Transformers survey")
             .unwrap();
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn recent_sessions_skip_empty_ones_and_rename_works() {
         let (mut s, ses) = setup();
-        let p = s.ensure_project("FYP").unwrap();
+        let p = s.ensure_project("Atlas").unwrap();
         let empty = s.create_session(p, Harness::Study, "Nothing yet").unwrap();
         assert!(s.recent_sessions(10).unwrap().is_empty());
         s.append(&ev(ses, "turn.started")).unwrap();
@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(s.project_by_name("Inbox").unwrap(), None);
         let a = s.ensure_project("Inbox").unwrap();
         assert_eq!(s.ensure_project("Inbox").unwrap(), a);
-        assert_ne!(s.ensure_project("FYP").unwrap(), a);
+        assert_ne!(s.ensure_project("Atlas").unwrap(), a);
     }
 
     #[test]
@@ -811,7 +811,7 @@ mod tests {
         let path = dir.path().join("t.sqlite3");
         let ses = {
             let mut s = Store::open(&path).unwrap();
-            let p = s.create_project("FYP", None).unwrap();
+            let p = s.create_project("Atlas", None).unwrap();
             let ses = s.create_session(p, Harness::Research, "t").unwrap();
             s.append(&ev(ses, "one")).unwrap();
             ses

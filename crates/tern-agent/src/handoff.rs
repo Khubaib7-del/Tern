@@ -410,8 +410,8 @@ mod tests {
         turn(
             &mut old,
             s,
-            "Which vector database should my FYP use?",
-            "I recommend pgvector for a small project. Should it run on the university server?",
+            "Which vector database should my app use?",
+            "I recommend pgvector for a small project. Should it run on the lab server?",
         );
         turn(
             &mut old,
@@ -420,7 +420,7 @@ mod tests {
             "HNSW. Next step: benchmark recall at 10.",
         );
         let packet = for_session(&old, s, 7).unwrap();
-        assert_eq!(packet.goal, "Which vector database should my FYP use?");
+        assert_eq!(packet.goal, "Which vector database should my app use?");
         assert!(
             packet
                 .decisions

@@ -419,10 +419,10 @@ mod tests {
 
     #[test]
     fn tsv_is_anki_ready_and_reads_back() {
-        let tsv = export_delimited(&cards(), Delim::Tab, "My FYP");
+        let tsv = export_delimited(&cards(), Delim::Tab, "My project");
         let lines: Vec<&str> = tsv.lines().collect();
         assert_eq!(lines[0], "#separator:tab");
-        assert_eq!(lines[4], "#deck:My FYP");
+        assert_eq!(lines[4], "#deck:My project");
         let first: Vec<&str> = lines[5].split('\t').collect();
         assert_eq!(first.len(), 4);
         assert_eq!(
