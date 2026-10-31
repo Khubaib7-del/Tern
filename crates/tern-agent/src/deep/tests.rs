@@ -3,7 +3,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tern_core::Measure;
 use tern_crawl::SourceIcon;
 use tern_providers::{ChatResponse, ProviderResult};
 
@@ -54,11 +53,7 @@ impl Mock {
 fn reply(text: String, input: u64) -> ProviderResult<ChatResponse> {
     Ok(ChatResponse {
         text,
-        usage: Usage {
-            input_tokens: input,
-            output_tokens: 100,
-            measure: Measure::Measured,
-        },
+        usage: Usage::measured(input, 100),
         finish_reason: None,
         model: Some("mock".into()),
     })

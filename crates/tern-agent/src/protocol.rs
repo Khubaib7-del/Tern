@@ -94,7 +94,51 @@ pub fn unwrap_call(name: String, args: Value) -> (String, Value) {
         }
         break;
     }
+    let args = normalize_args(&name, args);
     (name, args)
+}
+
+/// A call's arguments as the tool's schema expects them (#85, A6): a JSON
+/// string holding an object is read as that object, and an envelope
+/// around them (`{"tool": "<this tool>", "args": {...}}`, or a lone
+/// `args` / `arguments` / `parameters` key) is opened. Anything else is
+/// returned as it came, for the schema check to judge.
+pub fn normalize_args(name: &str, args: Value) -> Value {
+    let mut args = args;
+    for _ in 0..3 {
+        args = match args {
+            Value::String(s) => match serde_json::from_str::<Value>(s.trim()) {
+                Ok(v) if v.is_object() || v.is_string() => v,
+                _ => return Value::String(s),
+            },
+            Value::Null => return Value::Object(Default::default()),
+            Value::Object(o) => {
+                let named = call_name(&Value::Object(o.clone()));
+                let wrapper = ["args", "arguments", "parameters"]
+                    .iter()
+                    .filter(|k| o.contains_key(**k))
+                    .count()
+                    == 1;
+                let only_envelope_keys = o.keys().all(|k| {
+                    matches!(
+                        k.as_str(),
+                        "tool" | "name" | "args" | "arguments" | "parameters"
+                    )
+                });
+                let same_tool = named.as_deref().is_none_or(|n| n == name);
+                if wrapper && only_envelope_keys && same_tool {
+                    match call_args(&Value::Object(o.clone())) {
+                        Some(inner) => inner,
+                        None => return Value::Object(o),
+                    }
+                } else {
+                    return Value::Object(o);
+                }
+            }
+            other => return other,
+        };
+    }
+    args
 }
 
 /// The tool a wrapped call names (`tool` or `name`).
@@ -137,8 +181,9 @@ pub fn parse_calls(text: &str) -> Vec<(String, Value)> {
         {
             out.push(unwrap_call(
                 name.to_owned(),
-                json.get("args")
-                    .cloned()
+                ["args", "arguments", "parameters"]
+                    .iter()
+                    .find_map(|k| json.get(*k).cloned())
                     .unwrap_or(Value::Object(Default::default())),
             ));
         }
@@ -259,6 +304,58 @@ mod tests {
             ]
         );
         assert!(parse_calls("no tools").is_empty());
+    }
+
+    #[test]
+    fn string_and_envelope_arguments_are_opened() {
+        // A-T6 (#85): arguments sent as a JSON string.
+        let r = "```tool\n{\"tool\": \"read_url\", \"args\": \"{\\\"url\\\": \\\"https://a.org\\\"}\"}\n```";
+        assert_eq!(
+            parse_calls(r),
+            vec![("read_url".to_owned(), json!({"url": "https://a.org"}))]
+        );
+        // `arguments` instead of `args`.
+        let r = format!(
+            "```tool\n{}\n```",
+            json!({"tool": "web_search", "arguments": {"query": "x"}})
+        );
+        assert_eq!(
+            parse_calls(&r),
+            vec![("web_search".to_owned(), json!({"query": "x"}))]
+        );
+        // A `{tool, args}` envelope around the arguments of the same tool.
+        assert_eq!(
+            normalize_args(
+                "web_search",
+                json!({"tool": "web_search", "args": {"query": "x"}})
+            ),
+            json!({"query": "x"})
+        );
+        // A lone `parameters` key holding a JSON string.
+        assert_eq!(
+            normalize_args("web_search", json!({"parameters": "{\"query\": \"y\"}"})),
+            json!({"query": "y"})
+        );
+        // Twice-encoded.
+        assert_eq!(
+            normalize_args("web_search", json!("\"{\\\"query\\\": \\\"z\\\"}\"")),
+            json!({"query": "z"})
+        );
+        // Ordinary arguments, another tool's envelope and junk are left
+        // for the schema check.
+        assert_eq!(
+            normalize_args("web_search", json!({"query": "q", "args": {"a": 1}})),
+            json!({"query": "q", "args": {"a": 1}})
+        );
+        assert_eq!(
+            normalize_args(
+                "web_search",
+                json!({"tool": "file_read", "args": {"path": "a"}})
+            ),
+            json!({"tool": "file_read", "args": {"path": "a"}})
+        );
+        assert_eq!(normalize_args("now", Value::Null), json!({}));
+        assert_eq!(normalize_args("now", json!("not json")), json!("not json"));
     }
 
     #[test]

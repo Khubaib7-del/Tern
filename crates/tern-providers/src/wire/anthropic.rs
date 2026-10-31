@@ -72,7 +72,12 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
         u64_at(v, &["usage", "input_tokens"]),
         u64_at(v, &["usage", "output_tokens"]),
     ) {
-        (Some(i), Some(o)) => Usage::measured(i, o),
+        (Some(i), Some(o)) => {
+            // Cache reads and writes are billed input that Anthropic
+            // leaves out of `input_tokens` (#85, A19).
+            let (read, write) = crate::usage::anthropic_details(v.get("usage"));
+            Usage::measured(i + read + write, o).with_details(read, write, 0)
+        }
         _ => Usage::estimated(req.prompt_chars(), text.len()),
     };
     Ok(ChatResponse {

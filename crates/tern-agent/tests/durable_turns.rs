@@ -15,6 +15,7 @@ use tern_agent::{
     ToolRegistry, TurnLoop, TurnOutcome,
 };
 use tern_core::{EffectClass, EventEnvelope, SessionId, TurnReceipt, TurnState};
+use tern_providers::estimate::Estimator;
 use tern_providers::governor::Governor;
 use tern_providers::{
     ChatRequest, ChatResponse, ProviderError, ProviderResult, Usage, UsageLedger,
@@ -54,10 +55,19 @@ impl Script {
     }
 }
 
-fn reply(text: String) -> ProviderResult<ChatResponse> {
+/// The characters a request sends, for a realistic reported token count
+/// (about four characters a token, like a real tokenizer on English).
+fn sent_chars(req: &ChatRequest) -> usize {
+    req.system.as_deref().map_or(0, str::len)
+        + req.messages.iter().map(|m| m.content.len()).sum::<usize>()
+}
+
+fn reply(text: String, sent: usize) -> ProviderResult<ChatResponse> {
+    let input = (sent as u64).div_ceil(4).max(1);
+    let output = (text.len() as u64).div_ceil(4).max(1);
     Ok(ChatResponse {
         text,
-        usage: Usage::measured(100, 10),
+        usage: Usage::measured(input, output),
         finish_reason: Some("stop".into()),
         model: None,
     })
@@ -69,13 +79,14 @@ impl Model for Script {
     }
     fn complete<'a>(&'a self, req: &'a ChatRequest) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
         let step = self.next(req);
+        let sent = sent_chars(req);
         Box::pin(async move {
             match step {
-                Step::Reply(t) | Step::DropAfter(t) => reply(t),
+                Step::Reply(t) | Step::DropAfter(t) => reply(t, sent),
                 Step::Fail(e) => Err(e),
                 Step::Hang => {
                     tokio::time::sleep(Duration::from_secs(600)).await;
-                    reply("too late".into())
+                    reply("too late".into(), sent)
                 }
             }
         })
@@ -86,11 +97,12 @@ impl Model for Script {
         on_text: &'a (dyn Fn(&str) -> bool + Send + Sync),
     ) -> BoxFuture<'a, ProviderResult<ChatResponse>> {
         let step = self.next(req);
+        let sent = sent_chars(req);
         Box::pin(async move {
             match step {
                 Step::Reply(t) => {
                     on_text(&t);
-                    reply(t)
+                    reply(t, sent)
                 }
                 Step::DropAfter(t) => {
                     on_text(&t);
@@ -103,7 +115,7 @@ impl Model for Script {
                 Step::Hang => {
                     on_text("Thinking about it");
                     tokio::time::sleep(Duration::from_secs(600)).await;
-                    reply("too late".into())
+                    reply("too late".into(), sent)
                 }
             }
         })
@@ -196,7 +208,12 @@ impl<'a> Ctx<'a> {
             session: SessionId::new(),
             budget: Budget::default(),
             cancel: CancelFlag::default(),
-            hooks: RunHooks::default(),
+            // Each run calibrates its own estimator, so tests running in
+            // parallel never skew each other's estimates (#85, A3b).
+            hooks: RunHooks {
+                estimator: Some(Box::leak(Box::new(Estimator::new()))),
+                ..RunHooks::default()
+            },
             stream: true,
         }
     }
@@ -675,5 +692,251 @@ async fn native_tool_requests_do_not_repeat_the_schemas_in_the_system_text() {
             .as_deref()
             .unwrap()
             .contains("input schema:")
+    );
+}
+
+/// A paper reader that counts its reads and returns a long paper.
+#[derive(Debug, Default)]
+struct Papers(AtomicUsize);
+
+impl Tool for Papers {
+    fn name(&self) -> &'static str {
+        "paper_read"
+    }
+    fn summary(&self) -> &'static str {
+        "Read a paper"
+    }
+    fn effect(&self) -> EffectClass {
+        EffectClass::Network
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "required": ["paper"],
+               "properties": {"paper": {"type": "string"}, "question": {"type": "string"}}})
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let id = args["paper"].as_str().unwrap_or_default().to_owned();
+            Ok(ToolOutput {
+                content: format!("[p. 1 · Abstract] {id} ") + &"retrieval passage ".repeat(1_800),
+                meta: json!({"page": {"title": id, "url": format!("https://arxiv.org/abs/{id}"), "site": "arxiv.org"}}),
+                evidence_refs: vec![id],
+            })
+        })
+    }
+}
+
+fn calls(blocks: &[Value]) -> Step {
+    Step::Reply(
+        blocks
+            .iter()
+            .map(|b| format!("```tool\n{b}\n```"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn paper(id: &str) -> Value {
+    json!({"tool": "paper_read", "args": {"paper": id, "question": "how does FLARE decide when to retrieve"}})
+}
+
+/// A-T1: the FLARE turn that failed at 22:34 (five long papers asked for
+/// in one reply on a 20k-token-a-minute key), replayed against a fake
+/// provider with that window: papers are read a few per step, the turn
+/// is paced and ends with an answer, and no request is larger than the
+/// envelope.
+#[tokio::test(start_paused = true)]
+async fn the_flare_turn_is_paced_on_a_small_token_window() {
+    let papers = std::sync::Arc::new(Papers::default());
+    let mut tools = ToolRegistry::new();
+    tools.register(ArcPapers(papers.clone()));
+    let sink = MemorySink::default();
+    let gov = Governor::new();
+    gov.observe(
+        "script",
+        "test-model",
+        [("x-ratelimit-limit-tokens", "20000")],
+    );
+    let envelope = gov.envelope("script", "test-model").expect("an envelope");
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.governor = Some(&gov);
+    ctx.hooks.wrap_up = true;
+    ctx.budget = Budget {
+        max_model_calls: 12,
+        max_tool_calls: 12,
+        max_tokens: 400_000,
+    };
+    let ids = [
+        "2305.06983",
+        "2310.11511",
+        "2005.11401",
+        "2212.10496",
+        "2401.15884",
+    ];
+    let model = Script::new(vec![
+        calls(&ids.iter().copied().map(paper).collect::<Vec<_>>()),
+        calls(&ids[2..].iter().copied().map(paper).collect::<Vec<_>>()),
+        calls(&ids[4..].iter().copied().map(paper).collect::<Vec<_>>()),
+        Step::Reply("FLARE retrieves when a sentence has low-confidence tokens [1].".into()),
+    ]);
+    let out = ctx
+        .run(&model, "How does FLARE decide when to retrieve?")
+        .await;
+    assert!(
+        matches!(
+            out.state,
+            TurnState::Completed | TurnState::CompletedWithGaps
+        ),
+        "{:?} {:?}",
+        out.state,
+        out.reason
+    );
+    // Each paper read once, two per step on a 20k window.
+    assert_eq!(papers.0.load(Ordering::SeqCst), 5);
+    let events = sink.events();
+    let deferred = events
+        .iter()
+        .filter(|e| e.kind == "tool.skipped" && e.payload["reason"] == "next_batch")
+        .count();
+    assert_eq!(deferred, 3 + 1, "3 waited in step one, 1 in step two");
+    // No request went over the envelope (about four characters a token).
+    for r in model.requests() {
+        let tokens = (sent_chars(&r) as u64).div_ceil(4);
+        assert!(tokens <= envelope, "a request of {tokens} > {envelope}");
+    }
+}
+
+#[derive(Debug)]
+struct ArcPapers(std::sync::Arc<Papers>);
+
+impl Tool for ArcPapers {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn summary(&self) -> &'static str {
+        self.0.summary()
+    }
+    fn effect(&self) -> EffectClass {
+        self.0.effect()
+    }
+    fn input_schema(&self) -> Value {
+        self.0.input_schema()
+    }
+    fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
+        self.0.call(args)
+    }
+}
+
+/// A6: a paper asked for twice in one turn is read once.
+#[tokio::test]
+async fn a_paper_is_read_once_per_turn() {
+    let papers = std::sync::Arc::new(Papers::default());
+    let mut tools = ToolRegistry::new();
+    tools.register(ArcPapers(papers.clone()));
+    let sink = MemorySink::default();
+    let ctx = Ctx::new(&tools, &sink);
+    let model = Script::new(vec![
+        calls(&[paper("arXiv:2305.06983")]),
+        calls(&[paper("https://arxiv.org/abs/2305.06983")]),
+        Step::Reply("Done.".into()),
+    ]);
+    let out = ctx.run(&model, "Read FLARE").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(papers.0.load(Ordering::SeqCst), 1);
+    assert_eq!(out.tool_calls, 1);
+    assert!(sink.events().iter().any(|e| e.kind == "tool.skipped"
+        && e.payload["reason"] == "already_read"
+        && e.payload["counted"] == false));
+}
+
+/// A-T6: arguments sent as a JSON string or inside a `{tool, args}`
+/// envelope run; a call with bad arguments is refused and not counted.
+#[tokio::test]
+async fn string_and_envelope_arguments_run_and_bad_ones_are_not_counted() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.budget.max_tool_calls = 2;
+    let model = Script::new(vec![
+        calls(&[json!({"tool": "read_url", "args": {}})]),
+        calls(&[json!({"tool": "read_url", "args": "{\"url\": \"https://a.org/1\"}"})]),
+        calls(&[
+            json!({"tool": "read_url", "args": {"tool": "read_url", "args": {"url": "https://a.org/2"}}}),
+        ]),
+        Step::Reply("Both pages read.".into()),
+    ]);
+    let out = ctx.run(&model, "read two pages").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 2);
+    assert_eq!(out.tool_calls, 2);
+    let events = sink.events();
+    assert_eq!(
+        events.iter().filter(|e| e.kind == "tool.rejected").count(),
+        1
+    );
+    let urls: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == "tool.executed")
+        .map(|e| {
+            e.payload["args"]["url"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(urls, ["https://a.org/1", "https://a.org/2"]);
+}
+
+/// A-T7: the same address failing with a 403 is fetched once in a turn,
+/// however the model writes it again (a trailing slash, a fragment).
+#[tokio::test]
+async fn a_failed_address_is_fetched_once_per_turn() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let ctx = Ctx::new(&tools, &sink);
+    let model = Script::new(vec![
+        read("https://x.org/broken"),
+        read("https://x.org/broken/"),
+        read("https://x.org/broken#top"),
+        Step::Reply("That page refused Tern; answered from others.".into()),
+    ]);
+    let out = ctx.run(&model, "read it").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1);
+    let events = sink.events();
+    let skipped: Vec<_> = events.iter().filter(|e| e.kind == "tool.skipped").collect();
+    assert_eq!(skipped.len(), 2);
+    assert!(
+        skipped
+            .iter()
+            .all(|e| e.payload["reason"] == "failed_before" && e.payload["counted"] == false)
+    );
+    assert_eq!(
+        out.tool_calls, 0,
+        "failed and skipped calls are not counted"
+    );
+}
+
+/// A17: chaos switches sit in front of the model call: `bad-args` sends
+/// the next call's arguments as a JSON string (read back by A6), `429`
+/// fails the call after it once with a short rate limit, retried.
+#[tokio::test(start_paused = true)]
+async fn chaos_faults_reach_the_model_call() {
+    let (tools, reads) = reader();
+    let sink = MemorySink::default();
+    let chaos = tern_agent::chaos::Chaos::new("bad-args,429");
+    let mut ctx = Ctx::new(&tools, &sink);
+    ctx.hooks.chaos = Some(&chaos);
+    let model = Script::new(vec![
+        read("https://a.org/1"),
+        Step::Reply("Read it.".into()),
+    ]);
+    let out = ctx.run(&model, "read it").await;
+    assert_eq!(out.state, TurnState::Completed, "{:?}", out.reason);
+    assert_eq!(reads.0.load(Ordering::SeqCst), 1);
+    assert_eq!(chaos.remaining(), 0);
+    assert!(
+        sink.events().iter().any(|e| e.kind == "provider.retry"),
+        "the simulated 429 was waited out"
     );
 }

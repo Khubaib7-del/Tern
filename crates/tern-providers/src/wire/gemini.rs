@@ -132,7 +132,12 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
         u64_at(v, &["usageMetadata", "promptTokenCount"]),
         u64_at(v, &["usageMetadata", "candidatesTokenCount"]),
     ) {
-        (Some(i), Some(o)) => Usage::measured(i, o),
+        (Some(i), Some(o)) => {
+            // Thoughts are billed output Gemini leaves out of
+            // `candidatesTokenCount` (#85, A19).
+            let (cached, thoughts) = crate::usage::gemini_details(v.get("usageMetadata"));
+            Usage::measured(i, o + thoughts).with_details(cached, 0, thoughts)
+        }
         _ => Usage::estimated(req.prompt_chars(), text.len()),
     };
     Ok(ChatResponse {

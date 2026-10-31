@@ -429,6 +429,13 @@ pub struct RunHooks<'a> {
     /// temperature: the same question gets the same kind of answer in
     /// every chat. `None` leaves the provider's default.
     pub temperature: Option<f32>,
+    /// Dev chaos (#85, A17): faults injected into this turn's model
+    /// calls. `None` uses the process-wide switches (`TERN_DEV=1` with
+    /// `TERN_CHAOS`), which are off in normal use.
+    pub chaos: Option<&'a crate::chaos::Chaos>,
+    /// The token estimator (#85, A3b) this turn calibrates and reads;
+    /// `None` uses the process-wide one. Tests give each run its own.
+    pub estimator: Option<&'a tern_providers::estimate::Estimator>,
 }
 
 /// A `provider.retry` event's payload: who, which retry of how many, how
@@ -762,6 +769,15 @@ struct Run<'r, 'a> {
     resumed_partial: String,
     /// The turn moved to the within-provider fallback model (#85).
     switched: bool,
+    /// Addresses that failed this turn, with the error (#85, A6): the same
+    /// address is not fetched again in the turn (a 403 is fetched once).
+    failed_urls: HashMap<String, String>,
+    /// Papers `paper_read` returned this turn (#85, A6), by paper and
+    /// question, with the call that read them: read once per turn.
+    papers_read: HashMap<String, u32>,
+    /// `paper_read` calls run for the model's current reply (#85, A12):
+    /// at most [`Run::read_batch`] of them, so the next request fits.
+    batch_reads: u32,
 }
 
 /// A call checked by the gate and ready to run (#77).
@@ -841,6 +857,9 @@ impl<'a> TurnLoop<'a> {
             recorded: Vec::new(),
             resumed_partial: String::new(),
             switched: false,
+            failed_urls: HashMap::new(),
+            papers_read: HashMap::new(),
+            batch_reads: 0,
             cfg: self,
         };
         let result = run.drive(history, message).await;
@@ -1390,7 +1409,11 @@ impl Run<'_, '_> {
             // request fit, or pause for the day; never send it to fail.
             let pid = self.cfg.model.provider_id().to_owned();
             let mut census = request_census(&req);
-            let estimator = tern_providers::estimate::global();
+            let estimator = self
+                .cfg
+                .hooks
+                .estimator
+                .unwrap_or(tern_providers::estimate::global());
             let mut est_in = estimator.estimate_census(&pid, self.cfg.model_name, &census);
             if let Some(gov) = self.cfg.hooks.governor {
                 let mut prefitted = false;
@@ -1477,7 +1500,18 @@ impl Run<'_, '_> {
                 }
             }
             self.model_calls += 1;
-            let model = self.cfg.model;
+            // Dev chaos (#85, A17) sits in front of the model when on.
+            let chaos_model;
+            let model: &dyn Model = match self.cfg.hooks.chaos.or(crate::chaos::global()) {
+                Some(chaos) if chaos.remaining() > 0 => {
+                    chaos_model = crate::chaos::ChaosModel {
+                        inner: self.cfg.model,
+                        chaos,
+                    };
+                    &chaos_model
+                }
+                _ => self.cfg.model,
+            };
             let thought = Mutex::new((
                 String::new(),
                 None::<std::time::Instant>,
@@ -1734,6 +1768,17 @@ impl Run<'_, '_> {
                 reply.usage,
             );
             self.add_usage(reply.usage);
+            // One line per model call (#85, A8): tokens in, out and
+            // cached, the estimate it was sent on, and how long it took.
+            crate::diag::note(&call_line(
+                &pid,
+                self.cfg.model_name,
+                self.model_calls,
+                &reply.usage,
+                est_in,
+                asked.elapsed(),
+                self.failed_calls,
+            ));
             if reply.usage.measure == tern_core::Measure::Measured && reply.usage.input_tokens > 0 {
                 estimator.observe_census(
                     &pid,
@@ -1757,7 +1802,9 @@ impl Run<'_, '_> {
                     format!("{} replied", self.cfg.model_name),
                     {
                         let (text, _, took) = thought.into_inner().unwrap_or_default();
-                        let mut p = json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len(), "estimated_input": est_in});
+                        let mut p = json!({"finish_reason": reply.finish_reason, "model": reply.model, "chars": reply.text.len(), "estimated_input": est_in,
+                            "cached_tokens": reply.usage.cached_tokens, "cache_write_tokens": reply.usage.cache_write_tokens,
+                            "reasoning_tokens": reply.usage.reasoning_tokens});
                         if !text.is_empty() {
                             // The reasoning is kept (capped) so a reopened chat
                             // still has its Thinking section.
@@ -2090,6 +2137,7 @@ impl Run<'_, '_> {
                             })).collect::<Vec<_>>(),
                         }),
                     ))?;
+                    self.batch_reads = 0;
                     for (i, (name, args)) in calls.iter().enumerate() {
                         let key = format!("{name}:{args}");
                         let n = seen.entry(key).or_default();
@@ -2271,6 +2319,9 @@ impl Run<'_, '_> {
     fn add_usage(&mut self, u: Usage) {
         self.usage.input_tokens += u.input_tokens;
         self.usage.output_tokens += u.output_tokens;
+        self.usage.cached_tokens += u.cached_tokens;
+        self.usage.cache_write_tokens += u.cache_write_tokens;
+        self.usage.reasoning_tokens += u.reasoning_tokens;
         if u.measure == tern_core::Measure::Estimated {
             self.usage.measure = tern_core::Measure::Estimated;
         }
@@ -2451,6 +2502,12 @@ impl<'a> Run<'_, 'a> {
                     self.last_post = Some((true, Value::Null));
                     return Ok(j.result);
                 }
+                // A failed address, a paper already read, or a read past
+                // this step's batch is answered without running (#85, A6,
+                // A12), and never counted.
+                if let Some(text) = self.skip_fetch(&r)? {
+                    return Ok(text);
+                }
                 self.begin(&r)?;
                 self.started(&r)?;
                 let cancel = self.cfg.cancel.clone();
@@ -2466,7 +2523,9 @@ impl<'a> Run<'_, 'a> {
                     None => (Err(ToolError::Failed("stopped by the user".into())), None),
                 };
                 let (tool, ran, ran_args, call) = (r.tool, r.name.clone(), r.args.clone(), r.call);
+                let failed = out.as_ref().err().map(ToString::to_string);
                 let text = self.post(r, out, age)?;
+                self.note_fetch(&ran, tool, &ran_args, call, failed);
                 if matches!(self.last_post, Some((true, _))) {
                     self.note_done(asked, &ran, tool, &ran_args);
                     self.recorded.push(crate::checkpoint::JournalStep {
@@ -2481,6 +2540,117 @@ impl<'a> Run<'_, 'a> {
         };
         self.note_write(name, args, &text);
         Ok(text)
+    }
+
+    /// How many `paper_read` results one step returns (#85, A12): 3, or
+    /// fewer when the model's token window is small, so the request that
+    /// carries them fits it.
+    fn read_batch(&self) -> u32 {
+        read_batch_for(self.envelope())
+    }
+
+    /// The largest request the governor lets one call carry, in tokens.
+    fn envelope(&self) -> Option<u64> {
+        self.cfg
+            .hooks
+            .governor
+            .unwrap_or(tern_providers::governor::global())
+            .envelope(self.cfg.model.provider_id(), self.cfg.model_name)
+    }
+
+    /// The characters of one tool result the model reads (#85, A12): a
+    /// paper's passages get their share of the window, the full text
+    /// stays in the result store.
+    fn result_limit(&self, name: &str) -> usize {
+        if name != "paper_read" {
+            return RESULT_LIMIT;
+        }
+        paper_share(self.envelope(), self.read_batch()).min(RESULT_LIMIT)
+    }
+
+    /// Answers a fetch without running it (#85, A6, A12): an address that
+    /// already failed this turn, a paper already read for the same
+    /// question, or a `paper_read` past this step's batch. `None` runs it.
+    fn skip_fetch(&mut self, r: &Ready<'_>) -> Result<Option<String>, Stop> {
+        let Some(key) = fetch_key(&r.name, &r.args) else {
+            return Ok(None);
+        };
+        let (kind, summary, text) = if let Some(err) = self.failed_urls.get(&key) {
+            (
+                "failed_before",
+                format!("`{}` was not run: {key} already failed this turn", r.name),
+                format!(
+                    "Tool `{}` was not run: {key} already failed in this turn ({err}). Do not ask for it again; use another source.",
+                    r.name
+                ),
+            )
+        } else if r.name == "paper_read"
+            && let Some(at) = self.papers_read.get(&paper_key(&r.args))
+        {
+            (
+                "already_read",
+                format!("`paper_read` was not run: the paper was read in call {at}"),
+                format!(
+                    "Tool `paper_read` was not run: this paper was already read in this turn (call {at}); its passages are in that result above. Do not read it again."
+                ),
+            )
+        } else if r.name == "paper_read" && self.batch_reads >= self.read_batch() {
+            let k = self.read_batch();
+            (
+                "next_batch",
+                format!("`paper_read` waits for the next step ({k} papers per step)"),
+                format!(
+                    "Tool `paper_read` was not run yet: Tern reads {k} paper{} per step so the next request fits {}'s rate window. Ask for `paper_read` of {key} again in your next reply if you still need it.",
+                    if k == 1 { "" } else { "s" },
+                    self.cfg.model_name
+                ),
+            )
+        } else {
+            if r.name == "paper_read" {
+                self.batch_reads += 1;
+            }
+            return Ok(None);
+        };
+        self.go(TurnState::Executing)?;
+        self.go(TurnState::RecordResult)?;
+        crate::diag::note(&format!("fetch: skipped `{}` ({kind}) key={key}", r.name));
+        self.record(self.event(
+            "tool.skipped",
+            r.tool.effect(),
+            summary,
+            json!({"tool": r.name, "call": r.call, "reason": kind, "counted": false,
+                   "args": brief_args(&r.args)}),
+        ))?;
+        self.last_post = Some((false, Value::Null));
+        Ok(Some(text))
+    }
+
+    /// Remembers a fetch that ran (#85, A6): a failed address so it is not
+    /// fetched again this turn, a paper read so it is read once.
+    fn note_fetch(
+        &mut self,
+        name: &str,
+        tool: &dyn Tool,
+        args: &Value,
+        call: u32,
+        failed: Option<String>,
+    ) {
+        if tool.effect() != EffectClass::Network {
+            return;
+        }
+        let Some(key) = fetch_key(name, args) else {
+            return;
+        };
+        match failed {
+            Some(err) => {
+                crate::diag::note(&format!("fetch: remembered failure key={key} error={err}"));
+                self.failed_urls.insert(key, err);
+            }
+            None if name == "paper_read" => {
+                self.papers_read.entry(paper_key(args)).or_insert(call);
+            }
+            None => {}
+        }
     }
 
     /// A change that ran, for [`crate::redo`] and a script's result line
@@ -3070,7 +3240,8 @@ impl<'a> Run<'_, 'a> {
                 // A long result keeps its head and tail; the whole text is
                 // saved for `read_result` (#72). A `read_result` page is
                 // never saved again.
-                let cut = o.content.len() > RESULT_LIMIT;
+                let limit = self.result_limit(name);
+                let cut = o.content.len() > limit;
                 let saved = match self.cfg.hooks.results {
                     Some(store) if cut && name != "read_result" => {
                         let id = result_id(&self.turn.to_string(), call);
@@ -3078,7 +3249,7 @@ impl<'a> Run<'_, 'a> {
                     }
                     _ => None,
                 };
-                let shown = crate::results::head_tail(&o.content, RESULT_LIMIT, saved.as_deref());
+                let shown = crate::results::head_tail(&o.content, limit, saved.as_deref());
                 let mut p = json!({"tool": name, "call": call, "version": tool.version(), "args": args, "chars": o.content.len(), "truncated": cut, "saved_as": saved, "meta": o.meta, "output": output_head_tail(&o.content)});
                 if let Some(age) = cached {
                     p["cached"] = json!(true);
@@ -3466,6 +3637,96 @@ pub fn error_class(e: &tern_providers::ProviderError, streamed: bool) -> Option<
         _ if tern_providers::retry::request_cap(e).is_some() => ErrorClass::ContextFull,
         _ => return None,
     })
+}
+
+/// `paper_read` results per step for a request envelope of `envelope`
+/// tokens (#85, A12): 3 by default, 2 under 24k tokens, 1 under 12k.
+pub fn read_batch_for(envelope: Option<u64>) -> u32 {
+    match envelope {
+        Some(e) if e < 12_000 => 1,
+        Some(e) if e < 24_000 => 2,
+        _ => 3,
+    }
+}
+
+/// The characters one paper's passages may take in the next request
+/// (#85, A12): the envelope shared by the batch and the rest of the
+/// request, at least 2,000.
+pub fn paper_share(envelope: Option<u64>, batch: u32) -> usize {
+    match envelope {
+        Some(e) => ((e as usize * CHARS_PER_TOKEN) / (batch as usize + 1)).max(2_000),
+        None => usize::MAX,
+    }
+}
+
+/// The address a network call fetches, for the failed-address memory
+/// (#85, A6): its `url` without a fragment or a trailing slash, or the
+/// paper id `paper_read` was given. `None` for calls that fetch no
+/// address (a search).
+pub fn fetch_key(name: &str, args: &Value) -> Option<String> {
+    if name == "paper_read" {
+        return args["paper"].as_str().map(paper_id);
+    }
+    let url = args["url"].as_str()?.trim();
+    let url = url.split('#').next().unwrap_or(url);
+    let url = url.trim_end_matches('/');
+    (!url.is_empty()).then(|| url.to_owned())
+}
+
+/// A paper id as one form (#85, A6): a DOI or arXiv id without its
+/// prefix or link, lower case.
+pub fn paper_id(paper: &str) -> String {
+    let p = paper.trim().to_ascii_lowercase();
+    let p = p.trim_end_matches('/');
+    for prefix in [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "doi:",
+        "https://arxiv.org/abs/",
+        "http://arxiv.org/abs/",
+        "arxiv:",
+    ] {
+        if let Some(rest) = p.strip_prefix(prefix) {
+            return rest.trim().to_owned();
+        }
+    }
+    p.to_owned()
+}
+
+/// A `paper_read` call's paper and question, for the read-once memory.
+fn paper_key(args: &Value) -> String {
+    format!(
+        "{}|{}",
+        paper_id(args["paper"].as_str().unwrap_or_default()),
+        args["question"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+    )
+}
+
+/// The log line for one model call (#85, A8).
+pub fn call_line(
+    provider: &str,
+    model: &str,
+    call: u32,
+    u: &Usage,
+    estimated_in: u64,
+    took: std::time::Duration,
+    failed_so_far: u32,
+) -> String {
+    format!(
+        "call: n={call} provider={provider} model={model} in={} out={} cached={} cache_write={} reasoning={} est_in={estimated_in} measured={} ms={} failed_not_counted={failed_so_far}",
+        u.input_tokens,
+        u.output_tokens,
+        u.cached_tokens,
+        u.cache_write_tokens,
+        u.reasoning_tokens,
+        u.measure == tern_core::Measure::Measured,
+        took.as_millis()
+    )
 }
 
 /// "The daily limit for X is used up; it resets at 05:00 (UTC)."

@@ -93,6 +93,11 @@ pub struct Piece {
     pub reasoning: String,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Cache reads, cache writes and reasoning tokens (#85, A19), parts of
+    /// the input and output counts above.
+    pub cached_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
     pub finish_reason: Option<String>,
     pub model: Option<String>,
     /// The stream said it is over (`[DONE]`, `message_stop`).
@@ -174,6 +179,15 @@ fn openai(v: &Value) -> Piece {
         reasoning,
         input_tokens: u64_at(v, &["usage", "prompt_tokens"]),
         output_tokens: u64_at(v, &["usage", "completion_tokens"]),
+        cached_tokens: v
+            .get("usage")
+            .filter(|u| u.is_object())
+            .map(|u| crate::usage::openai_details(Some(u)).0),
+        cache_write_tokens: None,
+        reasoning_tokens: v
+            .get("usage")
+            .filter(|u| u.is_object())
+            .map(|u| crate::usage::openai_details(Some(u)).1),
         finish_reason: choice
             .and_then(|c| str_at(c, &["finish_reason"]))
             .map(str::to_owned),
@@ -245,8 +259,14 @@ fn anthropic(event: Option<&str>, v: &Value) -> Piece {
     let mut p = Piece::default();
     match kind {
         "message_start" => {
-            p.input_tokens = u64_at(v, &["message", "usage", "input_tokens"]);
+            // Cache reads and writes are billed input that Anthropic
+            // leaves out of `input_tokens` (#85, A19).
+            let (read, write) = crate::usage::anthropic_details(v.pointer("/message/usage"));
+            p.input_tokens =
+                u64_at(v, &["message", "usage", "input_tokens"]).map(|i| i + read + write);
             p.output_tokens = u64_at(v, &["message", "usage", "output_tokens"]);
+            p.cached_tokens = Some(read);
+            p.cache_write_tokens = Some(write);
             p.model = str_at(v, &["message", "model"]).map(str::to_owned);
         }
         "content_block_start" if str_at(v, &["content_block", "type"]) == Some("tool_use") => {
@@ -310,7 +330,17 @@ fn gemini(v: &Value) -> Piece {
         text: pick(false),
         reasoning: pick(true),
         input_tokens: u64_at(v, &["usageMetadata", "promptTokenCount"]),
-        output_tokens: u64_at(v, &["usageMetadata", "candidatesTokenCount"]),
+        // Thoughts are billed output Gemini leaves out of
+        // `candidatesTokenCount` (#85, A19).
+        output_tokens: u64_at(v, &["usageMetadata", "candidatesTokenCount"])
+            .map(|o| o + crate::usage::gemini_details(v.get("usageMetadata")).1),
+        cached_tokens: v
+            .get("usageMetadata")
+            .map(|m| crate::usage::gemini_details(Some(m)).0),
+        cache_write_tokens: None,
+        reasoning_tokens: v
+            .get("usageMetadata")
+            .map(|m| crate::usage::gemini_details(Some(m)).1),
         finish_reason: cand
             .and_then(|c| str_at(c, &["finishReason"]))
             .map(str::to_owned),
@@ -337,6 +367,9 @@ pub struct Assembler {
     reasoning: String,
     input: Option<u64>,
     output: Option<u64>,
+    cached: Option<u64>,
+    cache_write: Option<u64>,
+    reasoning_tokens: Option<u64>,
     finish: Option<String>,
     model: Option<String>,
     /// Native tool calls by slot: name, argument text, whole arguments.
@@ -356,6 +389,15 @@ impl Assembler {
         }
         if p.output_tokens.is_some() {
             self.output = p.output_tokens;
+        }
+        if p.cached_tokens.is_some() {
+            self.cached = p.cached_tokens;
+        }
+        if p.cache_write_tokens.is_some() {
+            self.cache_write = p.cache_write_tokens;
+        }
+        if p.reasoning_tokens.is_some() {
+            self.reasoning_tokens = p.reasoning_tokens;
         }
         if p.finish_reason.is_some() {
             self.finish.clone_from(&p.finish_reason);
@@ -408,7 +450,11 @@ impl Assembler {
 
     pub fn finish(self, req: &ChatRequest, stopped: bool) -> ChatResponse {
         let usage = match (self.input, self.output) {
-            (Some(i), Some(o)) => Usage::measured(i, o),
+            (Some(i), Some(o)) => Usage::measured(i, o).with_details(
+                self.cached.unwrap_or(0),
+                self.cache_write.unwrap_or(0),
+                self.reasoning_tokens.unwrap_or(0),
+            ),
             _ => Usage::estimated(req.prompt_chars(), self.text.len()),
         };
         ChatResponse {

@@ -1529,6 +1529,8 @@ impl ChatSession {
                 wrap_up: true,
                 fallback_model: self.fallback_model(),
                 temperature: self.pinned_temperature(),
+                chaos: None,
+                estimator: None,
             };
             let out = TurnLoop {
                 session: self.session,
@@ -1915,6 +1917,8 @@ impl ChatSession {
                     wrap_up: true,
                     fallback_model: self.fallback_model(),
                     temperature: self.pinned_temperature(),
+                    chaos: None,
+                    estimator: None,
                 };
                 TurnLoop {
                     session: self.session,

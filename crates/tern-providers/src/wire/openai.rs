@@ -79,7 +79,10 @@ pub(crate) fn parse_chat(v: &Value, req: &ChatRequest) -> Result<ChatResponse, S
         u64_at(v, &["usage", "prompt_tokens"]),
         u64_at(v, &["usage", "completion_tokens"]),
     ) {
-        (Some(i), Some(o)) => Usage::measured(i, o),
+        (Some(i), Some(o)) => {
+            let (cached, reasoning) = crate::usage::openai_details(v.get("usage"));
+            Usage::measured(i, o).with_details(cached, 0, reasoning)
+        }
         _ => Usage::estimated(req.prompt_chars(), text.len()),
     };
     Ok(ChatResponse {

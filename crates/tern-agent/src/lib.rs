@@ -31,6 +31,7 @@ pub mod attach;
 pub mod branch;
 pub mod browse;
 pub mod cards;
+pub mod chaos;
 pub mod chat;
 pub mod checkpoint;
 pub mod compact;
