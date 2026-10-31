@@ -787,6 +787,14 @@ struct Run<'r, 'a> {
     /// Answer text that streamed before the stop this turn resumes (#85):
     /// sent back as the start of the answer, and kept in front of it.
     resumed_partial: String,
+    /// The whitespace the model's last reply opened with (#85): a resumed
+    /// answer keeps it between the text that streamed before the stop and
+    /// the rest, which [`protocol::parse`] trims.
+    reply_lead: String,
+    /// A `paper_read` the call just made waits for the next step (#85,
+    /// A12): Tern asked the model to ask for it again, so that ask is not
+    /// a repeat.
+    deferred: bool,
     /// The turn moved to the within-provider fallback model (#85).
     switched: bool,
     /// The top results of a search were read this turn (#85, A13).
@@ -881,6 +889,8 @@ impl<'a> TurnLoop<'a> {
             journal_hits: 0,
             recorded: Vec::new(),
             resumed_partial: String::new(),
+            reply_lead: String::new(),
+            deferred: false,
             switched: false,
             quick_read: false,
             failed_urls: HashMap::new(),
@@ -1921,6 +1931,11 @@ impl Run<'_, '_> {
                 }
             }
 
+            self.reply_lead = reply
+                .text
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect();
             match protocol::parse(&reply.text) {
                 // An empty reply (only reasoning, or nothing) is asked for
                 // once more as it stands; a second empty one ends the turn
@@ -2229,7 +2244,7 @@ impl Run<'_, '_> {
                     self.batch_reads = 0;
                     for (i, (name, args)) in calls.iter().enumerate() {
                         let key = format!("{name}:{args}");
-                        let n = seen.entry(key).or_default();
+                        let n = seen.entry(key.clone()).or_default();
                         *n += 1;
                         if *n >= REPEAT_LIMIT {
                             // A change already done, asked for again
@@ -2276,7 +2291,15 @@ impl Run<'_, '_> {
                         }
                         self.next_call = Some(first + i as u32);
                         self.asked_edit = edits.get(i).copied().unwrap_or(false);
+                        self.deferred = false;
                         results.push(self.dispatch(name, args).await?);
+                        // Tern asked for this one again next step (#85,
+                        // A12): asking again is not a repeat.
+                        if std::mem::take(&mut self.deferred)
+                            && let Some(n) = seen.get_mut(&key)
+                        {
+                            *n = n.saturating_sub(1);
+                        }
                     }
                     let mut back = results.join("\n\n");
                     // The plan stays current (#78: a plan sat at 0 of 3
@@ -2454,8 +2477,10 @@ impl Run<'_, '_> {
         let answer = answer.map(|a| {
             if self.resumed_partial.is_empty() {
                 a
-            } else {
+            } else if self.resumed_partial.ends_with(char::is_whitespace) {
                 format!("{}{a}", self.resumed_partial)
+            } else {
+                format!("{}{}{a}", self.resumed_partial, self.reply_lead)
             }
         });
         if self.fsm.state() != state {
@@ -2687,6 +2712,7 @@ impl<'a> Run<'_, 'a> {
                 ),
             )
         } else if r.name == "paper_read" && self.batch_reads >= self.read_batch() {
+            self.deferred = true;
             let k = self.read_batch();
             (
                 "next_batch",
@@ -2969,6 +2995,11 @@ impl<'a> Run<'_, 'a> {
         let mut read = Vec::new();
         for u in &urls {
             self.check_cancel()?;
+            // Each read is a call of its own: back to ToolRequested after
+            // the search's (or the last read's) result is recorded.
+            if self.fsm.state() != TurnState::ToolRequested {
+                self.go(TurnState::ToolRequested)?;
+            }
             let text = self.tool_step("read_url", &json!({"url": u})).await?;
             if matches!(self.last_post, Some((true, _))) {
                 read.push(format!(
