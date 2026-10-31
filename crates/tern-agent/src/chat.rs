@@ -1630,9 +1630,19 @@ impl ChatSession {
         {
             // #85 (A1): a turn that stopped before its answer stays in the
             // history with what it kept (the partial text, its sources and
-            // the tools it ran), so a typed "continue" picks it up.
-            self.history
-                .push(ChatMessage::user(text).with_images(images));
+            // the tools it ran), so a typed "continue" picks it up. A
+            // picture the provider refused stays out of it: it would make
+            // every later request fail the same way.
+            let refused = out
+                .reason
+                .as_deref()
+                .is_some_and(crate::media::rejects_images);
+            let asked = if refused {
+                ChatMessage::user(text)
+            } else {
+                ChatMessage::user(text).with_images(images)
+            };
+            self.history.push(asked);
             self.history.push(ChatMessage::assistant(kept));
         }
         out
