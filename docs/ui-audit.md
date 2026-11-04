@@ -1,6 +1,6 @@
 # UI audit and agentic UI plan
 
-Status: planned. This is a docs-only audit. It folds the fixes into existing roadmap items (#90, #96, #97, #98, #101, #111), so no planned PR number changes.
+Status: planned. This is a docs-only audit. It folds the fixes into existing roadmap items (#91, #97, #98, #99, #102, #112), so no planned PR number changes.
 
 ## Why
 
@@ -22,20 +22,20 @@ The answers Tern produces are well structured. The interface around them is not 
 
 | # | Issue | Principle | Fix in |
 |---|---|---|---|
-| U1 | Blocks and the text inside them are not responsive; long lines and bloated text | 6 | #90 (layout tokens, max line length, reflow tests at 3 widths), #111 |
-| U2 | Explain in 3D in Study has no Back, Reset or Close once generated | 7 | #97 (now), #116 (v2 tour with Back / Next / Play) |
-| U3 | The sidebar lists every folder used in Research even when it holds no chat | state | #90 (sidebar derives from chats; empty folders hidden or greyed with a count of 0) |
-| U4 | The tool-call ledger shows a plain `#`; links are plain | 3, 4 | #90 (ledger rows with tool icon, target, duration and result), #96 |
-| U5 | Retry shows only `2/4`, with no micro-animation | 4 | #90 (attempt dots with backoff countdown; one row updated in place) |
-| U6 | Options in the right panel and the Study chat are not uniform; only some have affordances | 1 | #96 (one OptionRow component, used everywhere) |
-| U7 | Chat text appears too fast and in jerks (a block at a time) | 5 | #90 (a smoothed token pacer: steady characters per frame, catches up without jumps, off with reduced motion) |
-| U8 | Web crawler, searching, creating, loading, retrying and queued states look alike | 4 | #90 (state glyph set plus shimmer, sweep and pulse motions) |
-| U9 | Citations are hard to find (`1 2 3`, underlined only) | 3 | #90 (citation chips: favicon or logo, `Author Year`, quote on hover), #96 (SourceCard rich container) |
-| U10 | Icons are not the real logos | 8 | #90 (audit every icon against the logo rule) |
-| U11 | Chats and text need cleaner organisation | 6 | #90 (sidebar grouping by date and folder, pinned, search), #111 |
-| U12 | Flashcards, quiz and the side panel need a redesign | 1, 6 | #97 (Flashcard and Quiz components), #101 (tutor surfaces) |
-| U13 | Verification and authenticity scores are not yet engaging | 9 | #98 (ClaimBoard verdict meters, per-claim evidence strip), #94 (scores from code) |
-| U14 | Reply has no quoted context | 2 | #96 (quote-to-composer chip on any block or option) |
+| U1 | Blocks and the text inside them are not responsive; long lines and bloated text | 6 | #91 (layout tokens, max line length, reflow tests at 3 widths), #112 |
+| U2 | Explain in 3D in Study has no Back, Reset or Close once generated | 7 | #98 (now), #117 (v2 tour with Back / Next / Play) |
+| U3 | The sidebar lists every folder used in Research even when it holds no chat | state | #91 (sidebar derives from chats; empty folders hidden or greyed with a count of 0) |
+| U4 | The tool-call ledger shows a plain `#`; links are plain | 3, 4 | #91 (ledger rows with tool icon, target, duration and result), #97 |
+| U5 | Retry shows only `2/4`, with no micro-animation | 4 | #91 (attempt dots with backoff countdown; one row updated in place) |
+| U6 | Options in the right panel and the Study chat are not uniform; only some have affordances | 1 | #97 (one OptionRow component, used everywhere) |
+| U7 | Chat text appears too fast and in jerks (a block at a time) | 5 | #91 (a smoothed token pacer: steady characters per frame, catches up without jumps, off with reduced motion) |
+| U8 | Web crawler, searching, creating, loading, retrying and queued states look alike | 4 | #91 (state glyph set plus shimmer, sweep and pulse motions) |
+| U9 | Citations are hard to find (`1 2 3`, underlined only) | 3 | #91 (citation chips: favicon or logo, `Author Year`, quote on hover), #97 (SourceCard rich container) |
+| U10 | Icons are not the real logos | 8 | #91 (audit every icon against the logo rule) |
+| U11 | Chats and text need cleaner organisation | 6 | #91 (sidebar grouping by date and folder, pinned, search), #112 |
+| U12 | Flashcards, quiz and the side panel need a redesign | 1, 6 | #98 (Flashcard and Quiz components), #102 (tutor surfaces) |
+| U13 | Verification and authenticity scores are not yet engaging | 9 | #99 (ClaimBoard verdict meters, per-claim evidence strip), #95 (scores from code) |
+| U14 | Reply has no quoted context | 2 | #97 (quote-to-composer chip on any block or option) |
 
 ## Reference libraries (patterns only)
 
@@ -49,5 +49,5 @@ Tern's desktop UI is GPUI (Rust). These are React and Tailwind libraries, so Ter
 
 ## Later
 
-- **Proof UI:** when the evidence engine matures (#94, #98), a clean "proof" view: each claim, its quote, its source, its verification score, and an overall authenticity summary.
+- **Proof UI:** when the evidence engine matures (#95, #99), a clean "proof" view: each claim, its quote, its source, its verification score, and an overall authenticity summary.
 - **A third Tern mode (idea, unscoped):** after Research and Study, a harness where people bring any project, software or their own field, and discuss it with modes (technical, and other domain modes). Name and scope are open. It is not on the numbered roadmap yet.
