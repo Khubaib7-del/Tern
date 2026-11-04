@@ -114,6 +114,7 @@ A docs-only pull request. It states that Tern is private and proprietary, owned 
 - The model shown per turn (the one chosen and the one that answered); a model picker without truncation.
 - Links and citation chips with AA contrast (lichen for links only); favicon chips, `Author Year` for papers, an "(abstract only)" badge, the quote on hover.
 - The right panel keeps its tab order and widths, and per-chat width, tab and scroll; closing the browser leaves the panel open; Graph and Spend empty states say why.
+- UI audit fixes U1, U3–U5, U7–U11 (see `docs/ui-audit.md`): responsive blocks and inner text (max line length, reflow at three widths); the sidebar derives from chats, so empty folders do not show; a tool-call ledger with icons, targets and durations instead of a plain `#`; retry as attempt dots with a backoff countdown; a smoothed streaming pacer (steady typing, no paragraph jumps); a distinct glyph and micro-animation for queued, searching, crawling, reading, writing, retrying and waiting; citation chips that are easy to find; real logos only; cleaner chat grouping.
 
 **Exit check:** every state passes a greyscale test; the tab strip does not move between states; link contrast is at least 4.5:1 in both themes; the UI tour records every new state.
 **Depends on:** #85 (events); #89 (context events).
@@ -198,6 +199,7 @@ A docs-only pull request. It states that Tern is private and proprietary, owned 
 - An evidence binder: a component that cites an id Tern never minted is not drawn, and verdicts set by the model are stripped.
 - Three tiers: deterministic from the ledger, controlled typed decisions, and composed surfaces; form-router rules, with an optional bring-your-own-key UI router off by default.
 - Components: CompareTable, ClaimBoard, SourceTriage, DecisionCard, ClarifyCard, Timeline, Quiz and Flashcard; a Markdown fallback for ACP and headless use; a Depth toggle; one dotted reveal per generated component (a fade with reduced motion); "Create from report".
+- Agentic UI patterns (U6, U9, U14): one OptionRow component, so offered choices are actionable buttons everywhere (right panel, Study chat); a quote-to-composer chip, so a reply carries its context; a SourceCard rich container for any URL or source (logo, title, site, year or pages).
 
 **Exit check:** form choice precision at least 0.85; valid output at least 95% on strong models and 85% on small ones; evidence integrity 100%; no layout shift.
 **Depends on:** #90, #94.
@@ -212,6 +214,7 @@ A docs-only pull request. It states that Tern is private and proprietary, owned 
 - FSRS-6 from the first review, desired retention 0.90 (adjustable), the optimiser only once a deck has enough reviews and only if it improves held-out predictions; SM-2 kept only to migrate imported decks.
 - Card-quality marks (`✓ verified · p. 12`, `◌ check`) and a "Not added (n)" drawer.
 - AnkiConnect push and review pull with dedupe, and `.apkg` import; fixed-width Study segments; keyboard shortcuts.
+- Study UI redesign (U2, U12): Explain in 3D gets Back, Reset and Close; Flashcard and Quiz are redesigned as responsive components with clear states and gentle motion.
 
 **Exit check:** at least 97% of items grounded and no forged ids; at least 85% of cards usable and at most 2% duplicates; no question with two correct options; a re-push to Anki creates no duplicates.
 **Depends on:** #83, #85, #93, #96.
@@ -222,6 +225,7 @@ A docs-only pull request. It states that Tern is private and proprietary, owned 
 
 - A conflicting-sources resolver: each disagreement with its bound quotes, visible checks (date, primary or secondary, method, retraction, sample), a preview of what each resolution keeps and drops, and Apply into the report with Undo. It asks first in Chat, Plan and Deep; it applies on its own (with Undo) only in Long-run, under the criteria card.
 - An evidence matrix and an inline paper map with a Graph handoff.
+- Proof UI (U13): per-claim verdict meters and an evidence strip (quote, source, check results), plus a clean authenticity summary per report; every score comes from code and evidence ids, never from the model.
 - An actions router through the policy gate with idempotent action ids.
 - One approval inbox, shared by memory, the resolver and later the learning core (diffs, badges, history and revert); an editable compaction summary card; an outline approval card for long runs.
 
@@ -354,7 +358,7 @@ Startup, memory and token budgets measured and met; retrieval and curation off t
 
 ### #111 · Buffer 2: polish and the Windows test list
 
-The owner's end-of-cycle Windows test list passes; fixes from beta feedback.
+The owner's end-of-cycle Windows test list passes; fixes from beta feedback. A full design pass against `docs/ui-audit.md`: every surface checked at three panel widths, in both themes and with reduced motion.
 
 ### #112 · Buffer 3: accessibility, Urdu, edge cases
 
@@ -398,6 +402,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | #116 | Figures and Explain in 3D v2: detailed isometric machine and system figures that play as a motion tour (see below); image-occlusion cards from PDF figures | Polish; needs figure extraction and the evidence store |
 | #117 | Git panel: status, diff, history | A coding feature, outside research and study |
 | #118 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
+| idea | A third Tern mode after Research and Study: a harness to discuss any project (software or your own field) with modes such as technical; name and scope open (see `docs/ui-audit.md`, Later) | Unscoped idea |
 
 ### #116 · Figures and Explain in 3D v2 (backlog, after v1.0)
 
