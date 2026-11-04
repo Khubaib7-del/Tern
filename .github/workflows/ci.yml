@@ -27,11 +27,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # New key when whisper.cpp's CMake flags change: its build script
-          # does not rerun for them, so a cached build keeps the old ones.
-          key: windows-msvc-o2-vulkan
       # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK
       # (headers, vulkan-1.lib, glslc for its shaders). Only the SDK: the
       # runtime (vulkan-1.dll) is left out on purpose, so the tests and the
@@ -41,6 +36,13 @@ jobs:
         with:
           cache: true
           install_runtime: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # New key when whisper.cpp's CMake flags change: its build script
+          # does not rerun for them, so a cached build keeps the old ones.
+          # The SDK version is in the key: the cached whisper.cpp CMake build
+          # points at one SDK folder, and a newer SDK leaves that path missing.
+          key: windows-msvc-o2-vulkan-${{ env.VULKAN_VERSION }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -85,10 +87,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # New key when whisper.cpp's CMake flags change (see above).
-          key: desktop-release-msvc-o2-vulkan
       # whisper.cpp's Vulkan backend (#67) builds against the Vulkan SDK
       # (headers, vulkan-1.lib, glslc for its shaders). Only the SDK: the
       # runtime (vulkan-1.dll) is left out on purpose, so the tests and the
@@ -98,6 +96,12 @@ jobs:
         with:
           cache: true
           install_runtime: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # New key when whisper.cpp's CMake flags change (see above).
+          # The SDK version is in the key: the cached whisper.cpp CMake build
+          # points at one SDK folder, and a newer SDK leaves that path missing.
+          key: desktop-release-msvc-o2-vulkan-${{ env.VULKAN_VERSION }}
       - name: Build tern-desktop, tern and the browser helper (release)
         run: cargo build --release --locked -p tern-desktop -p tern-tui -p tern-browser
       # The local vision helper (#69): llama.cpp's llama-mtmd-cli as
