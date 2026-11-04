@@ -24,10 +24,10 @@ The answers Tern produces are well structured. The interface around them is not 
 |---|---|---|---|
 | U1 | Blocks and the text inside them are not responsive; long lines and bloated text | 6 | #91 (layout tokens, max line length, reflow tests at 3 widths), #112 |
 | U2 | Explain in 3D in Study has no Back, Reset or Close once generated | 7 | #98 (now), #117 (v2 tour with Back / Next / Play) |
-| U3 | The sidebar lists every folder used in Research even when it holds no chat | state | #91 (sidebar derives from chats; empty folders hidden or greyed with a count of 0) |
-| U4 | The tool-call ledger shows a plain `#`; links are plain | 3, 4 | #91 (ledger rows with tool icon, target, duration and result), #97 |
+| U3 | When you switch from Research to Study, the sidebar still shows the Research folders. In Study they are empty: opening one shows no chats | state | #91 (the sidebar is scoped to the current mode and built from that mode's real chats; a folder appears only where it holds chats in that mode; switching modes swaps the list cleanly, with no stale entries) |
+| U4 | Not only the tool-call ledger: every option list in the side panel is plain (a bare `#`, plain text rows) and unstructured | 3, 4 | #91 (structured rows across the whole side panel: icon, label, short meta and state; the ledger row adds target, duration and result), #97 |
 | U5 | Retry shows only `2/4`, with no micro-animation | 4 | #91 (attempt dots with backoff countdown; one row updated in place) |
-| U6 | Options in the right panel and the Study chat are not uniform; only some have affordances | 1 | #97 (one OptionRow component, used everywhere) |
+| U6 | Options and buttons are not uniform or clean (right panel, Study chat, everywhere). The view that opens when you click one is not clean either | 1, 6 | #97 (one OptionRow component everywhere: clean, consistent buttons; the panel or screen it opens is calm and distinctive, easy to read, and lets the user focus on the content without effort) |
 | U7 | Chat text appears too fast and in jerks (a block at a time) | 5 | #91 (a smoothed token pacer: steady characters per frame, catches up without jumps, off with reduced motion) |
 | U8 | Web crawler, searching, creating, loading, retrying and queued states look alike | 4 | #91 (state glyph set plus shimmer, sweep and pulse motions) |
 | U9 | Citations are hard to find (`1 2 3`, underlined only) | 3 | #91 (citation chips: favicon or logo, `Author Year`, quote on hover), #97 (SourceCard rich container) |

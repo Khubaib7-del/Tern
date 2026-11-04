@@ -118,7 +118,7 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - The model shown per turn (the one chosen and the one that answered); a model picker without truncation.
 - Links and citation chips with AA contrast (lichen for links only); favicon chips, `Author Year` for papers, an "(abstract only)" badge, the quote on hover.
 - The right panel keeps its tab order and widths, and per-chat width, tab and scroll; closing the browser leaves the panel open; Graph and Spend empty states say why.
-- UI audit fixes U1, U3–U5, U7–U11 (see `docs/ui-audit.md`): responsive blocks and inner text (max line length, reflow at three widths); the sidebar derives from chats, so empty folders do not show; a tool-call ledger with icons, targets and durations instead of a plain `#`; retry as attempt dots with a backoff countdown; a smoothed streaming pacer (steady typing, no paragraph jumps); a distinct glyph and micro-animation for queued, searching, crawling, reading, writing, retrying and waiting; citation chips that are easy to find; real logos only; cleaner chat grouping.
+- UI audit fixes U1, U3–U5, U7–U11 (see `docs/ui-audit.md`): responsive blocks and inner text (max line length, reflow at three widths); the sidebar is scoped to the current mode (switching from Research to Study no longer shows Research's empty folders) and built from real chats; every side-panel option list becomes structured rows, and the tool-call ledger gains icons, targets and durations instead of a plain `#`; retry as attempt dots with a backoff countdown; a smoothed streaming pacer (steady typing, no paragraph jumps); a distinct glyph and micro-animation for queued, searching, crawling, reading, writing, retrying and waiting; citation chips that are easy to find; real logos only; cleaner chat grouping.
 
 **Exit check:** every state passes a greyscale test; the tab strip does not move between states; link contrast is at least 4.5:1 in both themes; the UI tour records every new state.
 **Depends on:** #85 (events); #90 (context events).
@@ -203,7 +203,7 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - An evidence binder: a component that cites an id Tern never minted is not drawn, and verdicts set by the model are stripped.
 - Three tiers: deterministic from the ledger, controlled typed decisions, and composed surfaces; form-router rules, with an optional bring-your-own-key UI router off by default.
 - Components: CompareTable, ClaimBoard, SourceTriage, DecisionCard, ClarifyCard, Timeline, Quiz and Flashcard; a Markdown fallback for ACP and headless use; a Depth toggle; one dotted reveal per generated component (a fade with reduced motion); "Create from report".
-- Agentic UI patterns (U6, U9, U14): one OptionRow component, so offered choices are actionable buttons everywhere (right panel, Study chat); a quote-to-composer chip, so a reply carries its context; a SourceCard rich container for any URL or source (logo, title, site, year or pages).
+- Agentic UI patterns (U6, U9, U14): one OptionRow component, so offered choices are clean, uniform, actionable buttons everywhere (right panel, Study chat), and the panel each one opens is calm, distinctive and easy to read; a quote-to-composer chip, so a reply carries its context; a SourceCard rich container for any URL or source (logo, title, site, year or pages).
 
 **Exit check:** form choice precision at least 0.85; valid output at least 95% on strong models and 85% on small ones; evidence integrity 100%; no layout shift.
 **Depends on:** #91, #95.
