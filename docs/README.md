@@ -10,6 +10,7 @@ Tern is pre-alpha. These documents describe what is planned; nothing in them is 
 | [03 · Architecture](03-architecture.md) | Planned crates, dependency rules, event and tool contracts, memory, platform order |
 | [04 · Roadmap](04-roadmap.md) | Phases 0 to 12 with deliverables and exit checks |
 | [05 · Security model](05-security-model.md) | Assets, threats, controls, trust order, effect classes, data handling |
+| [UI audit](ui-audit.md) | Agentic UI principles, the 2026-11-04 UI issue list (U1–U14) and the PR that fixes each |
 | [Evaluation](evaluation.md) | The test ladder, suites, metrics and intervals, first scores, and how to add cases |
 | [Built-in browser](browser.md) | The page beside the chat: the half-and-half split, no flash on open, the run panel's Auto-open |
 | [Using Tern in Zed](zed.md) | Running Tern as an ACP agent inside Zed |
