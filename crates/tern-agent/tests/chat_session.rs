@@ -155,8 +155,8 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!(turns.len(), 1);
     let ctx = again.context();
     assert!(ctx.estimated, "no call yet in the reopened window");
-    // 32 characters of history and the system prompt (the opening line, then `file_read` for full paths, which every chat has
-    // since #64, and how to call a tool, one or several at once since
+    // 32 characters of history and the system prompt (the opening line,
+    // then `file_read` for full paths, which every chat has since #64, and how to call a tool, one or several at once since
     // #66, and `read_result` for long tool results since #72, and the
     // workbench tools every chat has since #75: `run_python` and
     // `show_in_panel`, and the tool rules since #76: approval cards
