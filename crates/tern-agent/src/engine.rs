@@ -329,7 +329,78 @@ pub const CONTINUE_PROMPT: &str = "Your last answer was cut off at the length li
 
 /// The message a resumed turn sends after the answer text that streamed
 /// before the stop (#85).
-pub const RESUME_PROMPT: &str = "(Tern note: your answer above was interrupted. Continue it exactly where it stopped, without repeating what you already wrote.)";
+/// What the model reads after the kept part of an interrupted answer
+/// (#90): the exact characters it stopped after, and to go on from the
+/// very next one. "Continue where it stopped" alone made a model restart
+/// the cut sentence ("… not in the cu" then "Since the papers …").
+pub fn resume_prompt(kept: &str) -> String {
+    let tail: String = {
+        let chars: Vec<char> = kept.trim_end_matches(['\n', '\r']).chars().collect();
+        chars[chars.len().saturating_sub(80)..].iter().collect()
+    };
+    let mid_word = kept.chars().last().is_some_and(char::is_alphanumeric);
+    format!(
+        "(Tern note: your answer above was cut off. It ends with these exact characters: \"{tail}\". Reply with only the text that comes next, starting from the very next character{}. Do not restart the sentence, do not repeat anything already written, and add nothing before the continuation.)",
+        if mid_word {
+            ": it stopped inside a word, so finish that word first with no space before it"
+        } else {
+            ""
+        }
+    )
+}
+
+/// The kept part of an interrupted answer joined with what the resumed
+/// call wrote (#90). `lead` is the whitespace the resumed reply began
+/// with. A continuation that repeats the end of the kept text loses the
+/// repeat; one that restarts the cut sentence replaces the cut fragment,
+/// so the answer never reads "… not in the cuSince the papers …".
+pub fn stitch(kept: &str, lead: &str, more: &str) -> String {
+    if kept.is_empty() {
+        return more.to_owned();
+    }
+    if more.is_empty() {
+        return kept.to_owned();
+    }
+    // The continuation starts with the end of the kept text: drop the
+    // repeated part.
+    let longest = kept.len().min(more.len());
+    for k in (4..=longest).rev() {
+        if more.is_char_boundary(k) && kept.ends_with(&more[..k]) {
+            return format!("{kept}{}", &more[k..]);
+        }
+    }
+    // The continuation restarts the sentence the cut fell in.
+    let cut = kept
+        .char_indices()
+        .rev()
+        .find(|(i, c)| {
+            *c == '\n'
+                || (matches!(*c, '.' | '!' | '?')
+                    && kept[i + c.len_utf8()..].starts_with(char::is_whitespace))
+        })
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    let fragment = kept[cut..].trim_start();
+    let first_word = |t: &str| {
+        t.split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    let w = first_word(fragment);
+    if !fragment.is_empty()
+        && fragment.chars().count() >= 3
+        && w.chars().count() >= 2
+        && w == first_word(more)
+    {
+        let head = &kept[..kept.len() - fragment.len()];
+        return format!("{head}{more}");
+    }
+    if kept.ends_with(char::is_whitespace) || more.starts_with(char::is_whitespace) {
+        return format!("{kept}{more}");
+    }
+    format!("{kept}{lead}{more}")
+}
 
 /// Limits for one turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1324,7 +1395,7 @@ impl Run<'_, '_> {
                 // the answer (#85), so the model goes on from there.
                 if !q.partial.trim().is_empty() {
                     messages.push(ChatMessage::assistant(q.partial.clone()));
-                    messages.push(ChatMessage::user(RESUME_PROMPT));
+                    messages.push(ChatMessage::user(resume_prompt(&q.partial)));
                     self.resumed_partial = q.partial;
                 }
                 self.model_calls = c.model_calls;
@@ -2541,15 +2612,7 @@ impl Run<'_, '_> {
         };
         // A resumed answer keeps the text that streamed before the stop
         // in front of it (#85).
-        let answer = answer.map(|a| {
-            if self.resumed_partial.is_empty() {
-                a
-            } else if self.resumed_partial.ends_with(char::is_whitespace) {
-                format!("{}{a}", self.resumed_partial)
-            } else {
-                format!("{}{}{a}", self.resumed_partial, self.reply_lead)
-            }
-        });
+        let answer = answer.map(|a| stitch(&self.resumed_partial, &self.reply_lead, &a));
         if self.fsm.state() != state {
             // A failure to move here only happens after an earlier failure,
             // which already set a terminal state.
@@ -4301,6 +4364,55 @@ fn stream_fence_preview(streamed: &str, writes: &Mutex<HashMap<usize, (String, S
         && !text.is_empty()
     {
         crate::live::preview_write(&path, &text, false);
+    }
+}
+
+#[cfg(test)]
+mod pr90_tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_answer_joins_its_kept_text_without_a_seam() {
+        let kept = "FLARE reads when unsure. Since this paper is not in the cu";
+        // The continuation that goes on mid-word.
+        assert_eq!(
+            stitch(kept, "", "rrent list, I rely on its abstract."),
+            "FLARE reads when unsure. Since this paper is not in the current list, I rely on its abstract."
+        );
+        // One that restarts the cut sentence replaces the fragment.
+        assert_eq!(
+            stitch(
+                kept,
+                "",
+                "Since the papers here do not include it, see [2]."
+            ),
+            "FLARE reads when unsure. Since the papers here do not include it, see [2]."
+        );
+        // One that repeats the end of the kept text loses the repeat.
+        assert_eq!(
+            stitch(kept, "", "is not in the current list."),
+            "FLARE reads when unsure. Since this paper is not in the current list."
+        );
+        // A plain continuation after a space.
+        assert_eq!(stitch("xxxx", " ", "and the rest."), "xxxx and the rest.");
+        assert_eq!(stitch("", " ", "all of it"), "all of it");
+        let p = resume_prompt(kept);
+        assert!(p.contains("\"FLARE reads when unsure. Since this paper is not in the cu\""));
+        assert!(p.contains("inside a word"));
+    }
+
+    #[test]
+    fn a_citation_request_names_no_topic_but_its_own() {
+        assert_eq!(
+            snowball_topic(
+                "Follow the citations of arXiv 1706.03762 and list 8 papers that build on it"
+            ),
+            ""
+        );
+        assert_eq!(
+            snowball_topic("papers that build on arXiv:1706.03762 about efficient attention"),
+            "efficient attention"
+        );
     }
 }
 

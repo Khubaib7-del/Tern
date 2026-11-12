@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tern_agent::checkpoint::MemoryCheckpoints;
-use tern_agent::engine::{RESUME_PROMPT, RunHooks, WRAP_UP_PROMPT};
+use tern_agent::engine::{RunHooks, WRAP_UP_PROMPT, resume_prompt};
 use tern_agent::tools::BoxFuture;
 use tern_agent::{
     Budget, CancelFlag, DenyAll, MemorySink, Model, PolicyGate, Tool, ToolError, ToolOutput,
@@ -452,7 +452,7 @@ async fn a_dropped_stream_resumes_with_its_prefix_and_no_tool_reruns() {
     let first = &resumed.requests()[0];
     let n = first.messages.len();
     assert_eq!(first.messages[n - 2].content, partial, "prefix re-sent");
-    assert_eq!(first.messages[n - 1].content, RESUME_PROMPT);
+    assert_eq!(first.messages[n - 1].content, resume_prompt(&partial));
     // Journal hits equal the tools the stopped turn ran: nothing re-ran.
     let replayed = sink2
         .events()
