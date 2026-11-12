@@ -557,7 +557,7 @@ pub fn search_output(
     match &ranked.sufficiency {
         Sufficiency::NotEnough(why) => {
             out.push_str(&format!(
-                "Not enough evidence: the scholarly search for \"{query}\" found nothing that supports an answer ({why}). Asked: {}.\nTell the user plainly there is not enough evidence in the literature Tern searched; do not answer from memory as if it were sourced. You may suggest a broader or differently worded search.\n",
+                "Not enough evidence: the scholarly search for \"{query}\" found nothing that supports an answer ({why}). Asked: {}. Tern already tried broader wordings.\nDo not ask the user which search to run or whether to search more broadly. If one more keyword query with different terms could find it, call scholar_search with it now; otherwise use web_search for background, or tell the user plainly there is not enough evidence in the literature Tern searched. Never answer from memory as if it were sourced.\n",
                 asked.join(", ")
             ));
         }
@@ -670,7 +670,7 @@ impl Tool for ScholarSearchTool {
         "scholar_search"
     }
     fn summary(&self) -> &'static str {
-        "Search scholarly papers (Semantic Scholar, OpenAlex, arXiv, Crossref; CORE with a key) at once. Use it first for academic or scientific questions. Short keyword query; optional year_from, year_to, open_access. Returns merged, ranked papers with authors, year, venue, DOI, citations and open-access PDF links, or \"not enough evidence\" when nothing found is on topic."
+        "Search scholarly papers (Semantic Scholar, OpenAlex, arXiv, Crossref; CORE with a key) at once. Use it first for academic or scientific questions. `query` is a few keywords naming the topic and its key entities (for example \"FLARE active retrieval augmented generation\"), never the user's sentence and never instructions such as cite, sources or \"in 5 lines\". For a question with several parts, give up to 3 keyword `queries` and they run in parallel. A weak search is retried with broader wordings by itself. Optional year_from, year_to, open_access. Returns merged, ranked papers with authors, year, venue, DOI, citations and open-access PDF links, or \"not enough evidence\" when nothing found is on topic."
     }
     fn effect(&self) -> EffectClass {
         EffectClass::Network
@@ -678,7 +678,9 @@ impl Tool for ScholarSearchTool {
     fn input_schema(&self) -> Value {
         json!({"type": "object", "required": ["query"], "additionalProperties": false,
                "properties": {
-                   "query": {"type": "string", "description": "A short keyword query: the topic's key terms."},
+                   "query": {"type": "string", "description": "A short keyword query: the topic's key terms and named entities, no instructions."},
+                   "queries": {"type": "array", "items": {"type": "string"},
+                               "description": "Up to 3 keyword queries run in parallel, one per part of the question."},
                    "limit": {"type": "integer", "description": "Papers per service (default 8, at most 20)."},
                    "year_from": {"type": "integer"},
                    "year_to": {"type": "integer"},
@@ -697,8 +699,24 @@ impl Tool for ScholarSearchTool {
     }
     fn call<'a>(&'a self, args: Value) -> BoxFuture<'a, Result<ToolOutput, ToolError>> {
         Box::pin(async move {
-            let query = args["query"].as_str().unwrap_or_default().trim().to_owned();
-            if query.is_empty() {
+            // One query or several run at once (#90), each cut down to its
+            // key terms: a sentence with "cite sources" in it finds
+            // nothing on topic.
+            let mut asked: Vec<String> = Vec::new();
+            let typed = args["queries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .chain(args["query"].as_str());
+            for q in typed {
+                let q = crate::query::clean(q);
+                if !q.is_empty() && !asked.iter().any(|a| a.eq_ignore_ascii_case(&q)) {
+                    asked.push(q);
+                }
+            }
+            asked.truncate(MAX_QUERIES);
+            if asked.is_empty() {
                 return Err(ToolError::BadInput("`query` is empty".into()));
             }
             let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 20) as usize;
@@ -714,7 +732,7 @@ impl Tool for ScholarSearchTool {
                 .filter_map(|v| v.as_str().and_then(Service::parse))
                 .collect();
             let services = self.0.services_for(&wanted);
-            let results = self.0.search_all(&services, &query, limit, &f).await;
+            let mut results = self.search_many(&services, &asked, limit, &f).await;
             if results.iter().all(|r| r.error.is_some()) {
                 let why: Vec<String> = results
                     .iter()
@@ -725,58 +743,217 @@ impl Tool for ScholarSearchTool {
                     why.join("; ")
                 )));
             }
-            let mut all: Vec<Paper> = Vec::new();
-            let mut passages: Vec<Passage> = Vec::new();
-            for r in &results {
-                all.extend(r.papers.iter().cloned());
-                passages.extend(r.passages.iter().cloned());
-            }
-            let mut papers = sch::merge_all(all);
-            // Unpaywall finds a free PDF for the best papers that lack one.
-            let mut looked = 0;
-            for p in papers.iter_mut() {
-                if looked >= 5 {
-                    break;
-                }
-                if p.oa_pdf.is_some() {
-                    continue;
-                }
-                let Some(doi) = p.doi.clone() else {
-                    continue;
-                };
-                looked += 1;
-                if let Some(u) = self.0.unpaywall(&doi).await {
-                    p.absorb(u);
-                }
-            }
             let cfg = FunnelConfig {
                 this_year: this_year(),
                 ..FunnelConfig::default()
             };
-            // Papers are judged on their title, abstract and any snippet.
-            let texts: Vec<String> = papers
-                .iter()
-                .map(|p| {
-                    let keys = p.keys();
-                    let mut t = p.text();
-                    for ps in passages.iter().filter(|ps| keys.contains(&ps.paper)) {
-                        t.push(' ');
-                        t.push_str(&ps.text);
-                    }
-                    t
-                })
-                .collect();
-            let refs: Vec<&Paper> = papers.iter().collect();
-            let ranked = funnel::rank_texts(&query, &refs, &texts, &cfg);
-            crate::diag::note(&format!(
-                "scholar_search: query={query:?} services={} found={} kept={} enough={}",
-                services.len(),
-                papers.len(),
-                ranked.kept().len(),
-                ranked.sufficiency.is_enough()
-            ));
-            Ok(search_output(&query, &results, &papers, &ranked, &passages))
+            let (papers, passages) = gather(&results);
+            let enough = rank_all(&asked, &papers, &passages, &cfg)
+                .sufficiency
+                .is_enough();
+            // A weak search is tried again with one or two wider wordings
+            // before Tern ever says there is not enough evidence (#90).
+            let mut widened = Vec::new();
+            if !enough {
+                widened = crate::query::broader(&asked[0])
+                    .into_iter()
+                    .filter(|w| !asked.iter().any(|a| a.eq_ignore_ascii_case(w)))
+                    .collect();
+                if !widened.is_empty() {
+                    results.extend(self.search_many(&services, &widened, limit, &f).await);
+                    asked.extend(widened.iter().cloned());
+                    let (papers, passages) = gather(&results);
+                    return Ok(self
+                        .finish(&asked, &widened, &results, papers, passages, &cfg)
+                        .await);
+                }
+            }
+            Ok(self
+                .finish(&asked, &widened, &results, papers, passages, &cfg)
+                .await)
         })
+    }
+}
+
+/// The most queries one `scholar_search` call runs at once.
+const MAX_QUERIES: usize = 3;
+
+/// Every paper and passage the services returned, merged.
+fn gather(results: &[ServiceResult]) -> (Vec<Paper>, Vec<Passage>) {
+    let mut all: Vec<Paper> = Vec::new();
+    let mut passages: Vec<Passage> = Vec::new();
+    for r in results {
+        all.extend(r.papers.iter().cloned());
+        passages.extend(r.passages.iter().cloned());
+    }
+    (sch::merge_all(all), passages)
+}
+
+/// What each paper is judged on: its title, abstract and any snippet.
+fn judged_texts(papers: &[Paper], passages: &[Passage]) -> Vec<String> {
+    papers
+        .iter()
+        .map(|p| {
+            let keys = p.keys();
+            let mut t = p.text();
+            for ps in passages.iter().filter(|ps| keys.contains(&ps.paper)) {
+                t.push(' ');
+                t.push_str(&ps.text);
+            }
+            t
+        })
+        .collect()
+}
+
+/// The funnel over `papers` for every query asked: a paper passes when it
+/// passes for any of them, with its best score (#90: several queries run
+/// at once, each about one part of the question).
+pub fn rank_all(
+    asked: &[String],
+    papers: &[Paper],
+    passages: &[Passage],
+    cfg: &FunnelConfig,
+) -> funnel::Ranked {
+    let texts = judged_texts(papers, passages);
+    let refs: Vec<&Paper> = papers.iter().collect();
+    let ranks: Vec<funnel::Ranked> = asked
+        .iter()
+        .map(|q| funnel::rank_texts(q, &refs, &texts, cfg))
+        .collect();
+    merge_ranked(ranks, cfg.keep)
+}
+
+/// One verdict from several rankings of the same papers.
+fn merge_ranked(mut ranks: Vec<funnel::Ranked>, keep: usize) -> funnel::Ranked {
+    if ranks.len() <= 1 {
+        return ranks.pop().unwrap_or(funnel::Ranked {
+            scored: Vec::new(),
+            sufficiency: Sufficiency::NotEnough("nothing was searched".into()),
+            terms: Vec::new(),
+        });
+    }
+    let mut best: BTreeMap<usize, funnel::Scored> = BTreeMap::new();
+    let mut terms: Vec<String> = Vec::new();
+    for r in &ranks {
+        for t in &r.terms {
+            if !terms.contains(t) {
+                terms.push(t.clone());
+            }
+        }
+        for s in &r.scored {
+            match best.get_mut(&s.index) {
+                Some(b) => {
+                    let passed = b.passed || s.passed;
+                    if s.score > b.score {
+                        *b = s.clone();
+                    }
+                    b.passed = passed;
+                }
+                None => {
+                    best.insert(s.index, s.clone());
+                }
+            }
+        }
+    }
+    let mut scored: Vec<funnel::Scored> = best.into_values().collect();
+    scored.sort_by(|a, b| {
+        b.passed
+            .cmp(&a.passed)
+            .then(
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.index.cmp(&b.index))
+    });
+    let mut kept = 0;
+    for s in &mut scored {
+        if s.passed {
+            kept += 1;
+            if kept > keep {
+                s.passed = false;
+            }
+        }
+    }
+    let sufficiency = if scored.iter().any(|s| s.passed) {
+        Sufficiency::Enough
+    } else {
+        ranks
+            .into_iter()
+            .map(|r| r.sufficiency)
+            .find(|s| !s.is_enough())
+            .unwrap_or(Sufficiency::NotEnough("nothing on topic was found".into()))
+    };
+    funnel::Ranked {
+        scored,
+        sufficiency,
+        terms,
+    }
+}
+
+impl ScholarSearchTool {
+    /// Every query on every service, all at once.
+    async fn search_many(
+        &self,
+        services: &[Service],
+        queries: &[String],
+        limit: usize,
+        f: &Filters,
+    ) -> Vec<ServiceResult> {
+        futures::future::join_all(
+            queries
+                .iter()
+                .map(|q| self.0.search_all(services, q, limit, f)),
+        )
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// Looks up free PDFs for the best papers, ranks them, and writes the
+    /// search's output.
+    async fn finish(
+        &self,
+        asked: &[String],
+        widened: &[String],
+        results: &[ServiceResult],
+        mut papers: Vec<Paper>,
+        passages: Vec<Passage>,
+        cfg: &FunnelConfig,
+    ) -> ToolOutput {
+        // Unpaywall finds a free PDF for the best papers that lack one.
+        let mut looked = 0;
+        for p in papers.iter_mut() {
+            if looked >= 5 {
+                break;
+            }
+            if p.oa_pdf.is_some() {
+                continue;
+            }
+            let Some(doi) = p.doi.clone() else {
+                continue;
+            };
+            looked += 1;
+            if let Some(u) = self.0.unpaywall(&doi).await {
+                p.absorb(u);
+            }
+        }
+        let ranked = rank_all(asked, &papers, &passages, cfg);
+        let shown = asked.join("; ");
+        crate::diag::note(&format!(
+            "scholar_search: queries={asked:?} widened={} found={} kept={} enough={}",
+            widened.len(),
+            papers.len(),
+            ranked.kept().len(),
+            ranked.sufficiency.is_enough()
+        ));
+        let mut out = search_output(&shown, results, &papers, &ranked, &passages);
+        if !widened.is_empty() {
+            out.meta["widened"] = json!(widened);
+        }
+        out.meta["queries"] = json!(asked);
+        out
     }
 }
 

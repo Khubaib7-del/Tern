@@ -407,15 +407,18 @@ const SCHOLAR_FILLER: &[&str] = &[
     "any",
 ];
 
+/// Whether `lower` (a lower-case word) is filler a scholarly search
+/// cannot use.
+pub fn is_scholar_filler(lower: &str) -> bool {
+    SCHOLAR_FILLER.contains(&lower)
+}
+
 /// The keyword query Tern sends `scholar_search` for an academic
-/// question: its key terms without filler, at most eight.
+/// question: its key terms without filler or instructions ("cite
+/// sources", "in 5 lines"), at most eight (#90, see [`crate::query`]).
 pub fn scholar_query(text: &str) -> Option<String> {
-    let kept: Vec<String> = crate::webintent::keywords(text)
-        .into_iter()
-        .filter(|w| !SCHOLAR_FILLER.contains(&w.to_lowercase().as_str()))
-        .take(8)
-        .collect();
-    (!kept.is_empty()).then(|| kept.join(" "))
+    let q = crate::query::scholar_keywords(text);
+    (!q.is_empty()).then_some(q)
 }
 
 #[cfg(test)]
@@ -501,6 +504,11 @@ mod tests {
         assert_eq!(
             scholar_query("Do octopuses dream in binary code?").as_deref(),
             Some("octopuses dream binary code")
+        );
+        // #90: the instructions in the message never reach the search.
+        assert_eq!(
+            scholar_query("What are the main critiques of RLHF? Cite sources.").as_deref(),
+            Some("critiques RLHF")
         );
     }
 }

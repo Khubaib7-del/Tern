@@ -143,7 +143,7 @@ jobs:
         with:
           name: tern-ui-tour-linux
           path: out/
-          retention-days: 14
+          retention-days: 3
 
   windows:
     name: Windows tour (gdigrab, best effort)
@@ -197,4 +197,4 @@ jobs:
         with:
           name: tern-ui-tour-windows
           path: out/
-          retention-days: 14
+          retention-days: 3

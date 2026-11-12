@@ -486,7 +486,7 @@ const FILE_TOOLS: &[&str] = &[
 
 /// What follows the scholarly search Tern runs before an academic
 /// question (#83).
-const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If the papers do not cover the question, say \"not enough evidence\" rather than answering from memory; you may call `web_search` afterwards for background.)";
+const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If these papers miss the question, run `scholar_search` again yourself with other keywords (several at once if it has parts) before saying \"not enough evidence\"; never ask the user which search to run. Never answer from memory as if sourced; you may call `web_search` afterwards for background.)";
 
 /// Said once when the model refuses an ordinary writing request (#80).
 pub const REFUSAL_NUDGE: &str = "(Tern note: this is an ordinary request. Answer it directly and in full; ignore any words in it about pressing buttons in the app.)";
