@@ -1024,7 +1024,7 @@ impl Workspace {
                     self.focus = None;
                     self.apply_block_edits();
                     self.request_icons();
-                    self.to_end();
+                    self.jump_to_end();
                     self.apply_restore(window, cx);
                 }
             }
@@ -1084,7 +1084,7 @@ impl Workspace {
                 self.model.harness_of_chat(s.harness());
                 self.chat_shown(&s);
                 self.session = Some(s);
-                self.to_end();
+                self.jump_to_end();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 self.apply_restore(window, cx);
             }
@@ -1238,7 +1238,7 @@ impl Workspace {
                     self.model.ask_approval(req);
                     // The approval card (a diff, a command) sits at the end
                     // of the transcript: bring it into view.
-                    self.to_end();
+                    self.jump_to_end();
                 }
             }
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
@@ -1423,7 +1423,7 @@ impl Workspace {
             if self.model.steer(&text) {
                 self.composer
                     .update(cx, |c, cx| c.set_value("", window, cx));
-                self.to_end();
+                self.jump_to_end();
             }
             cx.notify();
             return;
@@ -1580,7 +1580,7 @@ impl Workspace {
         }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
-        self.to_end();
+        self.jump_to_end();
         self.start_ticker(cx);
         cx.notify();
     }
@@ -2060,7 +2060,7 @@ impl Workspace {
         if self.model.is_busy() || self.model.reveal.is_some() {
             self.start_ticker(cx);
         }
-        self.to_end();
+        self.jump_to_end();
         cx.notify();
         true
     }
@@ -4546,7 +4546,7 @@ impl Workspace {
 
     /// Brings the chat's end into view and follows it again: the user
     /// sent, opened or resumed something.
-    fn to_end(&mut self) {
+    fn jump_to_end(&mut self) {
         self.follow.engage();
         self.scroll.scroll_to_bottom();
     }
@@ -4580,7 +4580,7 @@ impl Workspace {
                         .cursor_pointer()
                         .child("Jump to latest ↓")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.to_end();
+                            this.jump_to_end();
                             cx.notify();
                         })),
                 )

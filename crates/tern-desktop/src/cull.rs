@@ -48,11 +48,12 @@ impl Spot {
     /// Whether the row is far enough outside the viewport (its top and
     /// height in window px) to draw as an empty box, at scroll offset
     /// `offset_y`.
+    #[cfg(test)]
     pub fn hidden(&self, offset_y: f32, view_top: f32, view_h: f32) -> bool {
         self.hidden_within(offset_y, view_top, view_h, MARGIN)
     }
 
-    /// [`Spot::hidden`] with its own margin.
+    /// Whether the row draws as an empty box, with its own margin.
     pub fn hidden_within(&self, offset_y: f32, view_top: f32, view_h: f32, margin: f32) -> bool {
         if view_h <= 0. || self.h <= 0. {
             return false;
@@ -83,11 +84,12 @@ impl Rows {
     }
 
     /// Whether the row `key` draws as an empty box (see [`Spot::hidden`]).
+    #[cfg(test)]
     pub fn hidden(&self, key: &str, offset_y: f32, view_top: f32, view_h: f32) -> Option<f32> {
         self.hidden_within(key, offset_y, view_top, view_h, MARGIN)
     }
 
-    /// [`Rows::hidden`] with its own margin.
+    /// Whether the row `key` draws as an empty box, with its own margin.
     pub fn hidden_within(
         &self,
         key: &str,
