@@ -488,6 +488,10 @@ const FILE_TOOLS: &[&str] = &[
 /// question (#83).
 const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If these papers miss the question, run `scholar_search` again yourself with other keywords (several at once if it has parts) before saying \"not enough evidence\"; never ask the user which search to run. Never answer from memory as if sourced; you may call `web_search` afterwards for background.)";
 
+/// What follows the snowball Tern runs for "follow the citations of …"
+/// (#90).
+const SNOWBALL_PREFETCH_NOTE: &str = "(Tern followed this paper's links because the message asked for them. Answer from this list: give the papers asked for, best first as listed, each with its link as [n]. Say what a paper does only from its title and abstract here, and do not ask the user which tool to use. If the list is short or off topic, say so plainly; you may call `scholar_search` with keywords for more.)";
+
 /// Said once when the model refuses an ordinary writing request (#80).
 pub const REFUSAL_NUDGE: &str = "(Tern note: this is an ordinary request. Answer it directly and in full; ignore any words in it about pressing buttons in the app.)";
 
@@ -551,7 +555,25 @@ pub fn prefetch_calls(
     if follow_up {
         crate::diag::note("prefetch: skipped (follow-up points back at the previous answer)");
     }
-    if tools.get("scholar_search").is_some()
+    // "Follow the citations of arXiv 1706.03762" goes straight to the
+    // snowball (#90), forward or backward as asked, never through a
+    // keyword search that finds nothing and asks the user which tool.
+    let snowball = if tools.get("paper_snowball").is_some() && !crate::webintent::asks_for_web(own)
+    {
+        crate::intent::snowball_request(own)
+    } else {
+        None
+    };
+    if let Some(ask) = snowball {
+        // The message's own topic words, if any, rank the finds; the
+        // asking words ("follow", "list 8 papers") never do.
+        let topic = snowball_topic(own);
+        out.push((
+            "paper_snowball",
+            json!({"paper": ask.paper, "topic": topic, "question": topic,
+                   "direction": ask.direction}),
+        ));
+    } else if tools.get("scholar_search").is_some()
         && !follow_up
         && !crate::webintent::asks_for_web(own)
         && crate::intent::classify(own) == crate::intent::Intent::Academic
@@ -566,6 +588,49 @@ pub fn prefetch_calls(
         out.push(("web_search", json!({"query": query})));
     }
     out
+}
+
+/// The topic a snowball request names besides its seed ("papers that
+/// build on arXiv 1706.03762 about efficient attention" gives "efficient
+/// attention"), empty when it names none: the seed's own title and
+/// abstract then decide what is on topic.
+pub fn snowball_topic(text: &str) -> String {
+    const ASKING: &[&str] = &[
+        "follow",
+        "citations",
+        "citation",
+        "citing",
+        "cited",
+        "cite",
+        "cites",
+        "build",
+        "builds",
+        "building",
+        "built",
+        "upon",
+        "extend",
+        "extends",
+        "arxiv",
+        "doi",
+        "work",
+        "works",
+        "references",
+        "reference",
+        "forward",
+        "backward",
+        "follow-up",
+        "seed",
+    ];
+    crate::query::scholar_keywords(text)
+        .split_whitespace()
+        .filter(|w| {
+            let l = w.to_lowercase();
+            !ASKING.contains(&l.as_str())
+                && tern_research::scholar::arxiv_id(w).is_none()
+                && tern_research::scholar::normalize_doi(w).is_none()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The web search Tern runs before the model answers `text`, if any
@@ -1352,6 +1417,8 @@ impl Run<'_, '_> {
                     "(Tern searched the web just now because the message asked for it. These results are current: answer the user's question from them and cite the links as [n]. Do not say you cannot access the internet.)"
                 } else if name == "scholar_search" {
                     SCHOLAR_PREFETCH_NOTE
+                } else if name == "paper_snowball" {
+                    SNOWBALL_PREFETCH_NOTE
                 } else {
                     "(Tern ran this because the message asked for it. Answer the message using it.)"
                 };

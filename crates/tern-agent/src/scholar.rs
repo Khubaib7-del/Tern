@@ -417,6 +417,48 @@ impl Scholar {
         }
     }
 
+    /// The OpenAlex id of `p` (`W…`): its own, or looked up by its DOI
+    /// (an arXiv paper by its arXiv DOI).
+    pub async fn openalex_id(&self, p: &Paper) -> Option<String> {
+        if let Some(id) = &p.openalex {
+            return Some(id.clone());
+        }
+        let doi = p
+            .doi
+            .clone()
+            .or_else(|| p.arxiv.as_ref().map(|a| arxiv_doi(a)))?;
+        self.openalex_doi(&doi).await?.openalex
+    }
+
+    /// The papers citing the work `openalex_id`, most cited first (#90:
+    /// Semantic Scholar lists a famous paper's citers newest first, so
+    /// its first page was 2026 preprints on tomato seedlings and PET
+    /// denoising, not the work that builds on it).
+    pub async fn openalex_citers(
+        &self,
+        openalex_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Paper>, String> {
+        let s = Service::OpenAlex;
+        let mut q = vec![
+            ("filter", format!("cites:{openalex_id}")),
+            ("sort", "cited_by_count:desc".to_owned()),
+            ("per-page", limit.clamp(1, 200).to_string()),
+            ("select", OPENALEX_SELECT.to_owned()),
+        ];
+        if let Some(k) = self.key(s) {
+            q.push(("api_key", k.to_owned()));
+        }
+        let url = self.url(s, "/works", &q);
+        let a = self
+            .http
+            .get(&self.request(s, url))
+            .await
+            .map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&a.body).map_err(|e| e.to_string())?;
+        Ok(parse::openalex(&v))
+    }
+
     /// A paper's references or citations from Semantic Scholar.
     pub async fn links(
         &self,
@@ -453,6 +495,11 @@ fn year_range(f: &Filters, sep: &str) -> Option<String> {
             b.map(|y| y.to_string()).unwrap_or_default()
         )),
     }
+}
+
+/// The DOI arXiv gives a paper: `10.48550/arxiv.<id>`.
+pub fn arxiv_doi(id: &str) -> String {
+    format!("10.48550/arxiv.{}", id.to_ascii_lowercase())
 }
 
 /// How Semantic Scholar names a paper: `DOI:…`, `ARXIV:…`, or its id.
@@ -1350,8 +1397,20 @@ impl Tool for PaperSnowballTool {
                 .to_owned();
             let mut ball = Snowball::new(&topic, vec![seed.clone()], rule).with_question(&question);
             let mut errors = Vec::new();
+            // The seed's most cited citers first (#90): the work that
+            // builds on it, not the newest papers that mention it.
+            let mut most_cited = Vec::new();
+            if matches!(direction, Direction::Citations | Direction::Both) {
+                match self.0.openalex_id(&seed).await {
+                    Some(w) => match self.0.openalex_citers(&w, 100).await {
+                        Ok(ps) => most_cited = ps,
+                        Err(e) => errors.push(e),
+                    },
+                    None => errors.push("OpenAlex does not know the seed paper".to_owned()),
+                }
+            }
             while !ball.done() {
-                let mut linked = Vec::new();
+                let mut linked = std::mem::take(&mut most_cited);
                 for p in ball.frontier.iter().take(5) {
                     let Some(id) = s2_id_for(p) else {
                         continue;

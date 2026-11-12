@@ -421,6 +421,81 @@ pub fn scholar_query(text: &str) -> Option<String> {
     (!q.is_empty()).then_some(q)
 }
 
+/// A request to follow a named paper's citations or references (#90): the
+/// seed (an arXiv id or a DOI in the message) and the direction. Such a
+/// request goes straight to `paper_snowball`; a keyword search for "follow
+/// the citations of arXiv 1706.03762" finds nothing on topic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnowballAsk {
+    /// `arXiv:<id>` or the DOI.
+    pub paper: String,
+    /// `citations` (papers that cite it) or `references` (papers it cites).
+    pub direction: &'static str,
+}
+
+/// Phrases that ask for the papers citing a paper.
+const FORWARD: &[&str] = &[
+    "follow the citations",
+    "follow its citations",
+    "follow citations",
+    "forward citations",
+    "papers citing",
+    "papers that cite",
+    "papers which cite",
+    "works citing",
+    "that cite it",
+    "which cite it",
+    "who cite",
+    "who cites",
+    "cited by",
+    "citing papers",
+    "citing it",
+    "build on",
+    "builds on",
+    "building on",
+    "built on",
+    "built upon",
+    "follow-up work",
+    "follow up work",
+    "follow-up papers",
+    "papers that extend",
+    "extend it",
+    "extends it",
+];
+
+/// Phrases that ask for the papers a paper cites.
+const BACKWARD: &[&str] = &[
+    "its references",
+    "the references of",
+    "references of",
+    "reference list",
+    "papers it cites",
+    "what it cites",
+    "backward citations",
+];
+
+/// The snowball a message asks for, if any: a seed it names and a phrase
+/// that asks for its citers or its references.
+pub fn snowball_request(text: &str) -> Option<SnowballAsk> {
+    let lower = text.to_lowercase();
+    let direction = if FORWARD.iter().any(|p| lower.contains(p)) {
+        "citations"
+    } else if BACKWARD.iter().any(|p| lower.contains(p)) {
+        "references"
+    } else {
+        return None;
+    };
+    let paper = text
+        .split(|c: char| c.is_whitespace() || ",;()[]{}<>\"'`".contains(c))
+        .map(|w| w.trim_end_matches(['.', '?', '!', ':']))
+        .filter(|w| !w.is_empty())
+        .find_map(|w| {
+            tern_research::scholar::normalize_doi(w)
+                .or_else(|| tern_research::scholar::arxiv_id(w).map(|a| format!("arXiv:{a}")))
+        })?;
+    Some(SnowballAsk { paper, direction })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,6 +567,28 @@ mod tests {
         assert!(safety_net_allowed("what is new in Node.js?", false, false));
         assert!(safety_net_allowed("what is new in Node.js?", true, false));
         assert!(!safety_net_allowed("fix the bug in server.js", true, false));
+    }
+
+    #[test]
+    fn citation_requests_name_their_seed_and_direction() {
+        assert_eq!(
+            snowball_request(
+                "Follow the citations of arXiv 1706.03762 and list 8 papers that build on it"
+            ),
+            Some(SnowballAsk {
+                paper: "arXiv:1706.03762".into(),
+                direction: "citations"
+            })
+        );
+        assert_eq!(
+            snowball_request("what are the references of doi:10.18653/v1/N19-1423?"),
+            Some(SnowballAsk {
+                paper: "10.18653/v1/n19-1423".into(),
+                direction: "references"
+            })
+        );
+        assert_eq!(snowball_request("papers that build on transformers"), None);
+        assert_eq!(snowball_request("summarise arXiv 1706.03762"), None);
     }
 
     #[test]
