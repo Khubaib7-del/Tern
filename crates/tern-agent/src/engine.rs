@@ -1036,6 +1036,13 @@ impl<'a> TurnLoop<'a> {
             cfg: self,
         };
         let result = run.drive(history, message).await;
+        // Dev chaos (#90): a `kill` still waiting fires before the turn's
+        // end is written, however few model calls the turn made.
+        if result.is_ok()
+            && let Some(chaos) = run.cfg.hooks.chaos.or(crate::chaos::global())
+        {
+            chaos.kill_point().await;
+        }
         let offered: Vec<&str> = run.cfg.tools.names().collect();
         let line = format!(
             "turn: provider={} model={} tools_offered=[{}] native_tools={} tool_calls=[{}] model_calls={}",

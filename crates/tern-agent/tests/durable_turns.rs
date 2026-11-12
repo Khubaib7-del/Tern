@@ -1234,6 +1234,72 @@ async fn a_turn_killed_mid_step_leaves_a_receipt_and_resumes_from_its_journal() 
     assert_eq!(reads.0.load(Ordering::SeqCst), 1, "no tool ran again");
 }
 
+/// #90: `TERN_CHAOS=ok,kill` ends a turn mid-way however few calls it
+/// makes: after a tool step (the kill on the next model call), and on a
+/// turn that answers in one call (the kill before its end is written).
+/// The next launch finds the turn with "Tern closed while this turn was
+/// running", and Continue finishes it without running a tool again.
+#[tokio::test(start_paused = true)]
+async fn chaos_kill_fires_after_ok_and_the_turn_resumes_on_the_next_launch() {
+    use tern_agent::checkpoint::CheckpointDir;
+    for (steps, tools_before) in [
+        (
+            vec![
+                read("https://a.org/flare"),
+                Step::Reply("not reached".into()),
+            ],
+            1,
+        ),
+        (vec![Step::Reply("Answered in one call.".into())], 0),
+    ] {
+        let (tools, reads) = reader();
+        let dir = tempfile::tempdir().unwrap();
+        let saved = CheckpointDir::new(dir.path());
+        let sink = MemorySink::default();
+        let chaos = tern_agent::chaos::Chaos::new("ok,kill").hang_on_kill();
+        let mut ctx = Ctx::new(&tools, &sink);
+        ctx.hooks.checkpoints = Some(&saved);
+        ctx.hooks.chaos = Some(&chaos);
+        let model = Script::new(steps);
+        let killed =
+            tokio::time::timeout(Duration::from_secs(30), ctx.run(&model, "Explain FLARE")).await;
+        assert!(killed.is_err(), "the kill fired mid-turn");
+        assert_eq!(chaos.remaining(), 0, "both faults fired");
+        assert!(
+            !sink.events().iter().any(|e| e.kind == "turn.finished"),
+            "no end written"
+        );
+        assert_eq!(reads.0.load(Ordering::SeqCst), tools_before);
+
+        let relaunch = CheckpointDir::new(dir.path());
+        let ck = relaunch
+            .load(&ctx.session.to_string())
+            .unwrap()
+            .expect("the turn was saved");
+        let r = ck.closed_receipt();
+        assert_eq!(r.paused_by, Some(tern_core::PausedBy::Closed));
+        assert_eq!(r.line, "Tern closed while this turn was running");
+        assert!(r.resumable);
+
+        let resumed = Script::new(vec![
+            read("https://a.org/flare"),
+            Step::Reply("FLARE retrieves when it is unsure.".into()),
+        ]);
+        let sink2 = MemorySink::default();
+        let mut ctx2 = Ctx::new(&tools, &sink2);
+        ctx2.session = ctx.session;
+        ctx2.hooks.checkpoints = Some(&relaunch);
+        ctx2.hooks.resume = Some(&ck);
+        let done = ctx2.run(&resumed, "Explain FLARE").await;
+        assert_eq!(done.state, TurnState::Completed, "{:?}", done.reason);
+        assert_eq!(
+            reads.0.load(Ordering::SeqCst),
+            1,
+            "a read the killed turn ran is replayed, not run again"
+        );
+    }
+}
+
 /// A web search that counts how often it really ran.
 #[derive(Debug)]
 struct CountWeb(std::sync::Arc<AtomicUsize>);
