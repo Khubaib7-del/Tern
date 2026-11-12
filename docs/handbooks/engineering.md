@@ -1,6 +1,6 @@
 # Engineering handbook (draft)
 
-> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #115, the handbook bundle. It covers how Tern is built, tested and merged. How the engine works inside is in [internals.md](internals.md).
+> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #116, the handbook bundle. It covers how Tern is built, tested and merged. How the engine works inside is in [internals.md](internals.md).
 
 ## 1. How work lands
 
@@ -21,6 +21,7 @@ The `CI` workflow runs on every pull request and on `main`, with four jobs:
 
 - `RUSTFLAGS=-D warnings`: every warning fails the build, including `missing_debug_implementations` (every public type needs `Debug`, by derive or by hand) and clippy's default lints.
 - A new push to a pull request cancels its running CI. Batch commits when a run is close to finishing.
+- Uploaded artifacts (the evaluation report and the Windows desktop build) are kept 3 days (#90), so the account's artifact storage does not fill; download a build to test soon after its run.
 - Read a failing job's log from `https://api.github.com/repos/Khubaib7-del/Tern/actions/jobs/<id>/logs`.
 
 ## 3. Tests

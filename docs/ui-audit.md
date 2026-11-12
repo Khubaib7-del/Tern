@@ -1,6 +1,6 @@
 # UI audit and agentic UI plan
 
-Status: planned. This is a docs-only audit. It folds the fixes into existing roadmap items (#91, #97, #98, #99, #102, #112), so no planned PR number changes.
+Status: planned. This is a docs-only audit. It folds the fixes into existing roadmap items (#92, #98, #99, #100, #103, #113; numbers as renumbered by #90).
 
 ## Why
 
@@ -22,20 +22,20 @@ The answers Tern produces are well structured. The interface around them is not 
 
 | # | Issue | Principle | Fix in |
 |---|---|---|---|
-| U1 | Blocks and the text inside them are not responsive; long lines and bloated text | 6 | #91 (layout tokens, max line length, reflow tests at 3 widths), #112 |
-| U2 | Explain in 3D in Study has no Back, Reset or Close once generated | 7 | #98 (now), #117 (v2 tour with Back / Next / Play) |
-| U3 | When you switch from Research to Study, the sidebar still shows the Research folders. In Study they are empty: opening one shows no chats | state | #91 (the sidebar is scoped to the current mode and built from that mode's real chats; a folder appears only where it holds chats in that mode; switching modes swaps the list cleanly, with no stale entries) |
-| U4 | Not only the tool-call ledger: every option list in the side panel is plain (a bare `#`, plain text rows) and unstructured | 3, 4 | #91 (structured rows across the whole side panel: icon, label, short meta and state; the ledger row adds target, duration and result), #97 |
-| U5 | Retry shows only `2/4`, with no micro-animation | 4 | #91 (attempt dots with backoff countdown; one row updated in place) |
-| U6 | Options and buttons are not uniform or clean (right panel, Study chat, everywhere). The view that opens when you click one is not clean either | 1, 6 | #97 (one OptionRow component everywhere: clean, consistent buttons; the panel or screen it opens is calm and distinctive, easy to read, and lets the user focus on the content without effort) |
-| U7 | Chat text appears too fast and in jerks (a block at a time) | 5 | #91 (a smoothed token pacer: steady characters per frame, catches up without jumps, off with reduced motion) |
-| U8 | Web crawler, searching, creating, loading, retrying and queued states look alike | 4 | #91 (state glyph set plus shimmer, sweep and pulse motions) |
-| U9 | Citations are hard to find (`1 2 3`, underlined only) | 3 | #91 (citation chips: favicon or logo, `Author Year`, quote on hover), #97 (SourceCard rich container) |
-| U10 | Icons are not the real logos | 8 | #91 (audit every icon against the logo rule) |
-| U11 | Chats and text need cleaner organisation | 6 | #91 (sidebar grouping by date and folder, pinned, search), #112 |
-| U12 | Flashcards, quiz and the side panel need a redesign | 1, 6 | #98 (Flashcard and Quiz components), #102 (tutor surfaces) |
-| U13 | Verification and authenticity scores are not yet engaging | 9 | #99 (ClaimBoard verdict meters, per-claim evidence strip), #95 (scores from code) |
-| U14 | Reply has no quoted context | 2 | #97 (quote-to-composer chip on any block or option) |
+| U1 | Blocks and the text inside them are not responsive; long lines and bloated text | 6 | #92 (layout tokens, max line length, reflow tests at 3 widths), #113 |
+| U2 | Explain in 3D in Study has no Back, Reset or Close once generated | 7 | #99 (now), #118 (v2 tour with Back / Next / Play) |
+| U3 | When you switch from Research to Study, the sidebar still shows the Research folders. In Study they are empty: opening one shows no chats | state | #92 (the sidebar is scoped to the current mode and built from that mode's real chats; a folder appears only where it holds chats in that mode; switching modes swaps the list cleanly, with no stale entries) |
+| U4 | Not only the tool-call ledger: every option list in the side panel is plain (a bare `#`, plain text rows) and unstructured | 3, 4 | #92 (structured rows across the whole side panel: icon, label, short meta and state; the ledger row adds target, duration and result), #98 |
+| U5 | Retry shows only `2/4`, with no micro-animation | 4 | #92 (attempt dots with backoff countdown; one row updated in place) |
+| U6 | Options and buttons are not uniform or clean (right panel, Study chat, everywhere). The view that opens when you click one is not clean either | 1, 6 | #98 (one OptionRow component everywhere: clean, consistent buttons; the panel or screen it opens is calm and distinctive, easy to read, and lets the user focus on the content without effort) |
+| U7 | Chat text appears too fast and in jerks (a block at a time) | 5 | #92 (a smoothed token pacer: steady characters per frame, catches up without jumps, off with reduced motion) |
+| U8 | Web crawler, searching, creating, loading, retrying and queued states look alike | 4 | #92 (state glyph set plus shimmer, sweep and pulse motions) |
+| U9 | Citations are hard to find (`1 2 3`, underlined only) | 3 | #92 (citation chips: favicon or logo, `Author Year`, quote on hover), #98 (SourceCard rich container) |
+| U10 | Icons are not the real logos | 8 | #92 (audit every icon against the logo rule) |
+| U11 | Chats and text need cleaner organisation | 6 | #92 (sidebar grouping by date and folder, pinned, search), #113 |
+| U12 | Flashcards, quiz and the side panel need a redesign | 1, 6 | #99 (Flashcard and Quiz components), #103 (tutor surfaces) |
+| U13 | Verification and authenticity scores are not yet engaging | 9 | #100 (ClaimBoard verdict meters, per-claim evidence strip), #96 (scores from code) |
+| U14 | Reply has no quoted context | 2 | #98 (quote-to-composer chip on any block or option) |
 
 ## Reference libraries (patterns only)
 
@@ -49,5 +49,5 @@ Tern's desktop UI is GPUI (Rust). These are React and Tailwind libraries, so Ter
 
 ## Later
 
-- **Proof UI:** when the evidence engine matures (#95, #99), a clean "proof" view: each claim, its quote, its source, its verification score, and an overall authenticity summary.
+- **Proof UI:** when the evidence engine matures (#96, #100), a clean "proof" view: each claim, its quote, its source, its verification score, and an overall authenticity summary.
 - **A third Tern mode (idea, unscoped):** after Research and Study, a harness where people bring any project, software or their own field, and discuss it with modes (technical, and other domain modes). Name and scope are open. It is not on the numbered roadmap yet.
