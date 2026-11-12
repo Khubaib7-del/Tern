@@ -2033,6 +2033,10 @@ impl ChatSession {
         let n = turns.len();
         let last = turns.last()?;
         let raw_answer = last.answer.as_deref().filter(|_| last.stop.is_none())?;
+        // Papers named only in prose get their markers (#90), so the
+        // answer's claims are checked.
+        let linked = verify::link_author_year(raw_answer, &events, &last.pages);
+        let raw_answer = linked.as_str();
         // Quote tokens become `[n]` (or are stripped when Tern never minted
         // them) before anything reads the claims.
         let minted = verify::minted_quotes(&events, &last.pages);
