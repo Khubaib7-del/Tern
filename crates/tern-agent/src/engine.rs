@@ -661,6 +661,25 @@ pub fn prefetch_calls(
     out
 }
 
+/// What the model reads after a greeting or small talk (#90: "hi" after
+/// a long research turn got "Let me summarise what research says …").
+pub const SMALL_TALK_NOTE: &str = "(Tern note: this message is a greeting or small talk. Reply to it briefly and warmly; do not restart, continue, repeat or summarise an earlier task unless the user asks.)";
+
+/// `message` as the model sees it: a greeting or small talk carries
+/// [`SMALL_TALK_NOTE`]; every other message is unchanged.
+pub fn small_talk_note(mut message: ChatMessage) -> ChatMessage {
+    let (own, chips) = crate::attach::split(&message.content);
+    let (_, own) = crate::reply::split(own);
+    if chips.is_empty()
+        && message.images.is_empty()
+        && crate::intent::classify(own) == crate::intent::Intent::Casual
+        && !own.trim().is_empty()
+    {
+        message.content = format!("{}\n\n{SMALL_TALK_NOTE}", message.content);
+    }
+    message
+}
+
 /// The topic a snowball request names besides its seed ("papers that
 /// build on arXiv 1706.03762 about efficient attention" gives "efficient
 /// attention"), empty when it names none: the seed's own title and
@@ -1431,7 +1450,7 @@ impl Run<'_, '_> {
                 self.ck = Some(ck);
             }
             None => {
-                messages.push(user_message);
+                messages.push(small_talk_note(user_message));
                 if self.cfg.hooks.checkpoints.is_some() {
                     self.ck = Some(RunCheckpoint {
                         version: CHECKPOINT_VERSION,
@@ -4406,6 +4425,17 @@ mod pr90_tests {
         let p = resume_prompt(kept);
         assert!(p.contains("\"FLARE reads when unsure. Since this paper is not in the cu\""));
         assert!(p.contains("inside a word"));
+    }
+
+    #[test]
+    fn small_talk_is_answered_as_small_talk() {
+        let hi = small_talk_note(ChatMessage::user("hi"));
+        assert!(
+            hi.content
+                .starts_with("hi\n\n(Tern note: this message is a greeting")
+        );
+        let q = small_talk_note(ChatMessage::user("What does FLARE do?"));
+        assert_eq!(q.content, "What does FLARE do?");
     }
 
     #[test]

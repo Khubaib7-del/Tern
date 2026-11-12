@@ -381,6 +381,8 @@ impl TurnDigest {
             out.push(' ');
             out.push_str(&tools);
         }
+        // #90: a later "hi" is not a request to pick this turn up again.
+        out.push_str(" Continue it only if the user asks to.");
         out.push(')');
         out
     }
@@ -471,7 +473,7 @@ mod tests {
         };
         assert_eq!(
             d.history_text(),
-            "FLARE retrieves when\n\n(Tern note: this turn stopped before it finished: Connection lost. Sources read: Jiang 2023. Tools run: paper_search, paper_read ×2.)"
+            "FLARE retrieves when\n\n(Tern note: this turn stopped before it finished: Connection lost. Sources read: Jiang 2023. Tools run: paper_search, paper_read ×2. Continue it only if the user asks to.)"
         );
     }
 }
