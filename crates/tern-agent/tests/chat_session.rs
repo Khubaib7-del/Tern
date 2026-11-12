@@ -155,8 +155,7 @@ async fn reopened_chat_brings_back_turns_and_history() {
     assert_eq!(turns.len(), 1);
     let ctx = again.context();
     assert!(ctx.estimated, "no call yet in the reopened window");
-    // 32 characters of history and the system prompt (the 97-character
-    // opening line, then `file_read` for full paths, which every chat has
+    // 32 characters of history and the system prompt (the opening line, then `file_read` for full paths, which every chat has
     // since #64, and how to call a tool, one or several at once since
     // #66, and `read_result` for long tool results since #72, and the
     // workbench tools every chat has since #75: `run_python` and
@@ -169,9 +168,10 @@ async fn reopened_chat_brings_back_turns_and_history() {
     // `run_python` descriptions (696 characters), and since #80 code
     // mode's longer line (tools already defined, ToolError, pathlib
     // through the file tools, return shapes) and the line on mermaid
-    // diagrams, at four characters a token.
-    assert_eq!(tern_agent::protocol::BASE.len(), 97);
-    assert_eq!((ctx.prompt, ctx.calls), (1259, 0));
+    // diagrams, and since #90 the opening line's rule on small talk (267
+    // characters), at four characters a token.
+    assert_eq!(tern_agent::protocol::BASE.len(), 267);
+    assert_eq!((ctx.prompt, ctx.calls), (1301, 0));
     assert_eq!(
         turns[0].exchange(),
         Some(("What is RAG?".to_owned(), "Hello from the mock.".to_owned()))
