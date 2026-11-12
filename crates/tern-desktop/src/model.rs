@@ -2120,6 +2120,11 @@ impl Model {
                 path: e.payload["path"].as_str().map(str::to_owned),
             });
         }
+        // A daily limit moved this turn to a smaller model (#90): one row
+        // in the chat says so; the chat's own model is back next turn.
+        if e.kind == tern_core::run_state::MODEL_SWITCHED {
+            self.entries.push(Entry::Notice(switched_line(&e.payload)));
+        }
         if e.kind == tern_agent::compact::EVENT {
             self.compacted = tern_agent::compact::last(std::slice::from_ref(e));
             self.compact_pending = true;
@@ -2644,13 +2649,17 @@ impl Model {
             out.answer.as_deref().unwrap_or_default(),
             &self.last_run,
         );
+        // A paused turn (#90: a daily limit, a dropped connection) says
+        // why once, in its receipt with Continue; no toast and no
+        // "Interrupted" line repeat it.
+        let paused = out.state == TurnState::Paused;
         if out.state != TurnState::Completed
             && let Some(r) = &out.reason
         {
             if crate::chatflow::is_search_failure(r) {
                 self.search_down = Some(r.clone());
             }
-            if out.state != TurnState::Cancelled {
+            if out.state != TurnState::Cancelled && !paused {
                 // A failure is also a toast that stays, with Retry.
                 self.toast_error(
                     tern_agent::media::plain_error(r),
@@ -2658,7 +2667,7 @@ impl Model {
                 );
             }
         }
-        if let Some(n) = note.filter(|_| half || !failed) {
+        if let Some(n) = note.filter(|_| (half || !failed) && !paused) {
             self.entries.push(Entry::Notice(n));
         }
         if self.continue_offer {
@@ -3327,6 +3336,18 @@ pub fn interrupt_note(
     }
 }
 
+/// The chat's row for a `model.switched` event: "Another model for this
+/// turn: mistral-small-latest. The daily limit for …".
+pub fn switched_line(payload: &serde_json::Value) -> String {
+    let to = payload["to_model"].as_str().unwrap_or("a smaller model");
+    let line = payload["line"].as_str().unwrap_or_default().trim();
+    if line.is_empty() {
+        format!("Another model for this turn: {to}.")
+    } else {
+        format!("Another model for this turn: {to}. {line}")
+    }
+}
+
 /// One short line: the first sentence, at most 160 characters, ending in
 /// a full stop.
 fn trim_note(s: &str) -> String {
@@ -3955,6 +3976,41 @@ mod tests {
             Some(Entry::Notice(n)) => assert!(n.starts_with("Interrupted: "), "{n}"),
             other => panic!("expected a note, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_paused_turn_says_why_once_and_a_switch_is_one_row() {
+        // #90: a daily limit paused the turn: the receipt says it, no
+        // toast and no "Interrupted" line repeat it.
+        let mut m = ready();
+        m.start_turn("q");
+        m.on_text(1, "Part of it");
+        let toasts = m.toasts.shown().len();
+        m.finish_turn(
+            &outcome(
+                TurnState::Paused,
+                None,
+                Some("The daily limit for mistral-large-latest is used up, so Tern did not retry."),
+            ),
+            ctx(0, 0),
+        );
+        assert_eq!(m.toasts.shown().len(), toasts, "no toast");
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(n) if n.starts_with("Interrupted"))),
+            "no Interrupted line"
+        );
+        // A turn moved to a smaller model shows one row saying so.
+        m.start_turn("again");
+        m.on_event(&ev(
+            "model.switched",
+            "switched",
+            json!({"from_model": "mistral-large-latest", "to_model": "mistral-small-latest",
+                   "line": "The daily limit for mistral-large-latest is used up; this turn continues on mistral-small-latest."}),
+        ));
+        assert!(m.entries.iter().any(|e| matches!(e, Entry::Notice(n)
+            if n.starts_with("Another model for this turn: mistral-small-latest."))));
     }
 
     #[test]

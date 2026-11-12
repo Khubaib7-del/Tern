@@ -1089,6 +1089,11 @@ impl Workspace {
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         let off = !*checked;
                         this.save_ui_prefs(move |p| p.fallback_off = off);
+                        // The open chat takes it at once (#90): its next
+                        // daily limit, or Resume of one, switches.
+                        if let Some(s) = this.session.as_mut() {
+                            s.set_fallback_within_provider(!off);
+                        }
                         cx.notify();
                     }))
                     .into_any_element(),

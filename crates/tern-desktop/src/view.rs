@@ -1325,9 +1325,21 @@ impl Workspace {
                         .resolve(&crate::toast::Retry::Models(id), Instant::now()),
                     // Only the picker's own tab gets a toast; it also shows
                     // the reason with Retry in the list.
+                    // A background refresh that fails while a list is
+                    // already known, or while a turn runs or waits to be
+                    // resumed, stays quiet (#90: "Could not list Mistral
+                    // models" popped up over a paused turn's receipt).
                     Err(e)
                         if self.model.composer.menu.is_none()
-                            && self.model.providers.default_id(Kind::Model) == Some(id) =>
+                            && self.model.providers.default_id(Kind::Model) == Some(id)
+                            && !self.model.is_busy()
+                            && self.model.resume_offer.is_none()
+                            && !self
+                                .model
+                                .catalog
+                                .providers
+                                .iter()
+                                .any(|(p, r)| *p == id && r.is_ok()) =>
                     {
                         self.model.toast_error(
                             format!("Could not list {} models: {e}", self.provider_name(id)),
