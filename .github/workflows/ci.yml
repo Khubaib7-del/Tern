@@ -68,7 +68,7 @@ jobs:
         with:
           name: tern-eval-report
           path: ${{ runner.temp }}/tern-eval-home/evals/runs/
-          retention-days: 14
+          retention-days: 3
 
   desktop:
     name: Windows desktop build (download to test)
@@ -181,7 +181,7 @@ jobs:
             target/release/tern-browser.exe
             target/release/vlm/
             target/release/NOTICE.txt
-          retention-days: 14
+          retention-days: 3
       # The same smoke test as Linux, here with no Vulkan driver: tern-vlm
       # must load ggml's CPU backend and describe the picture on the CPU.
       - name: Local models for the runtimes smoke test (cached)
@@ -344,14 +344,14 @@ jobs:
         with:
           name: tern-linux-x64
           path: tern-linux-x64.tar.gz
-          retention-days: 14
+          retention-days: 3
       - name: Upload the evaluation report
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: tern-eval-report-linux
           path: ${{ runner.temp }}/tern-eval-home/evals/runs/
-          retention-days: 14
+          retention-days: 3
 
   macos:
     name: macOS arm64 (clippy, test, desktop build)
@@ -425,4 +425,4 @@ jobs:
         with:
           name: tern-macos-arm64
           path: tern-macos-arm64.zip
-          retention-days: 14
+          retention-days: 3

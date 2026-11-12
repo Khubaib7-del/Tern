@@ -14,7 +14,7 @@
 
 Tern turns a rough question into a verified, cited report, and turns what you read into something you can learn from. It runs on your machine, with your own API keys or local models, and shows you what it is doing and what leaves your computer. It is built for Windows first, then Linux and macOS.
 
-**Status (4 November 2026):** #82 scholarly search, #83 evidence chain, #84 roadmap v3, #85 engine reliability (a turn is never lost, a rate limit is a wait rather than a failure, budgets are honest in tokens and money), the #86 and #87 plans for desktop sources and a browser for agents, and #88 ownership and the Explain in 3D v2 plan are shipped. #89 (this pull request) is docs only: a UI audit and agentic UI plan, and a roadmap renumber. Next is #90, the context cascade. See the [roadmap](#roadmap).
+**Status (12 November 2026):** #82 scholarly search, #83 evidence chain, #84 roadmap v3, #85 engine reliability (a turn is never lost, a rate limit is a wait rather than a failure, budgets are honest in tokens and money), the #86 and #87 plans for desktop sources and a browser for agents, #88 ownership and the Explain in 3D v2 plan, and #89 the UI audit are shipped. #90 (this pull request) fixes what the #85 Windows testing found: scholarly search and citation following, Continue without seams, the daily-limit switch, short replies to small talk, checked author-year references, and chat scrolling and per-chat side panels. Next is #91, the context cascade. See the [roadmap](#roadmap).
 
 <table>
   <tr>
@@ -95,6 +95,7 @@ From source: `cargo run -p tern-desktop` for the app, or `cargo run -p tern-tui`
 | Model catalogue | Every model a key can use, every page of the provider's list (Anthropic, Gemini, OpenRouter with every output modality), nothing filtered out; failed calls show the provider's own message. Each model's capabilities (chat, vision, tools, reasoning, speech to text, text to speech, OCR, image, embeddings, safety, rerank) come from the provider's metadata first (Mistral capability flags, Anthropic capabilities, OpenRouter and xAI modalities, Gemini generation methods, Ollama capabilities, LM Studio types) and Tern's pattern table second. The model picker groups them (Chat, Vision, Speech, OCR, Image, Embeddings, Safety, Other) with badges and provider names ("Mistral Small 4" for `mistral-small-2603`), folds `-latest` aliases into the dated model, and hides deprecated models behind **Show retired**. A model that cannot chat never becomes the chat model: picking a speech-to-text model makes it the mic's model (marked with a mic in the list), an OCR model the reader for documents, and a toast says so. Picking a model from another provider connects it and swaps it in place; a pick made while an answer runs takes over when it finishes. Each provider's listing is kept for 10 minutes, so switching tabs in the picker is instant, and a listing that fails or takes over 10 s shows why with **Retry** (Ollama or LM Studio not running says "Not running — start Ollama, then Retry." within about 2 s). `tern provider models <id> [--all]`. See [docs/models.md](docs/models.md); the composer's chat model popover lists chat models only (a listing that marks a guard, safeguard, voice or embedding model as chat is overruled by its name, #80) |
 | Voice and pictures routing | The mic records (cpal) and transcribes **while you speak**: speech is cut into phrases at pauses (or every 12 s), each phrase is sent to the speech-to-text model as it grows, the phrase being spoken shows under the composer text in grey with a trailing "…", and each finished phrase joins the composer text; stopping sends the last bit and commits it. While the mic listens, the model chip names the voice model (for example whisper-large-v3 · Groq); with no provider that lists one, a toast says "No voice model available — add Groq, OpenAI or Mistral" and the mic stays off. Attached audio files (the **+** menu's **Audio**, the file picker, or drag and drop: M4A, MP3, WAV, Ogg, FLAC) show a chip with the file's length while they are transcribed, by a local Whisper model when one is installed, else the provider's speech-to-text model, and the transcript rides with the next message; `.opus` says it is not supported yet, and with no transcription model a toast opens **Settings › Local models**. A picture attached for a chat model that cannot see is described by a vision model, or read by Mistral OCR, and its text passed on as untrusted data with a notice; when nothing can read it, the notice says what is missing. Per-role defaults `default_stt_model`, `default_vision_model`, `default_ocr_model` in `preferences.json` (set from the picker; automatic otherwise) **Dictation language** (Settings › Speech: Auto or one of 18 languages): English goes to Moonshine, every other language to Whisper in 2–5 s windows, and Auto shows live text at once and checks the language without transcribing (Whisper's language detection, or the optional Whisper tiny add-on), Urdu moving the phrase to Whisper (Arabic, Persian or Hindi heard by the check are written as Urdu, in Urdu letters; Whisper loads as the mic starts, the phrase is kept across the switch and the composer says "Switching to Urdu…"); text a model invents on silence or repeats in a loop, and sound tags like `[inaudible]`, are dropped, and Last transcription names the model, device and time. Text read from an attachment never shows in your bubble, and a question about an attachment never triggers a web search. |
 | Turn loop | Bounded by model calls, tool calls, and tokens; loop detection; cancel; **native tool calling** (OpenAI-compatible such as Mistral, Anthropic, Gemini) beside the text protocol, every call in a reply (parallel calls) run in one round with the results sent back together, with a fallback for models that refuse tools; a full path typed in the message is read, and "use the web" (also "browse about that", "google it", "look it up", typos included) searches, before the first model call, so models that never call tools still answer from them; an empty reply is asked for once more and never kept in the chat's history (providers refuse every later request that carries an empty assistant message); policy gate with Allow, Ask, Deny and inline approvals. The gate tracks where web addresses came from: after a page or an MCP result enters the chat, a read of a domain that neither you nor search introduced asks first, and an address carrying a key- or session-shaped value asks, or is refused when it goes to such a domain |
+| Quick and deep from the terminal | `tern ask "..."` for a quick cited answer (numbered, checked citations); `tern research --deep "..."` for deep research (a plan, parallel workers, a report) |
 | Web answers | `tern ask` and chat search through Tavily, Brave, SearXNG (your own server, with its address and a Test button), or **Wikipedia**, the keyless default that needs no key and no server, read pages behind a network guard, and cite them with a citation check. A search that finds nothing for a whole sentence retries with its keywords, then fewer of them; a model that still says it cannot browse, or repeats its last reply, gets one search run for it and is asked again. Results that share none of the question's main terms (names, quoted terms, model and version tokens like "Snap 1.1") are dropped, never kept for a lone generic word; when Wikipedia has nothing on-topic, the model is told so and a notice offers **Add a Tavily key** (Settings › Search & Crawlers and the first-run tour recommend Tavily while only Wikipedia is set up); the status line and the answer's rollup name the service that answered. A search that fails says why (connection refused, SearXNG's JSON output off, a rejected key, a rate limit) instead of "found nothing". SearXNG chosen without a server address counts as not set up ("Not set up" on its row) and searches fall back to Wikipedia; when the chosen service is down, a notice offers **Switch to Wikipedia** or **Set address**. When no other service is set, queries go to the Wikimedia Foundation's API; `"search": "off"` in `preferences.json` stops that. Setup: [docs/search.md](docs/search.md) A compound or versioned name (`SubQ Snap 1.1`) must appear in a result, or all its distinctive words must, and the keyword fallback never searches a single word alone. Tern's own search never runs for a file or folder task, or once the model has used a file tool in the turn (#83). |
 | Scholarly search | With web search on, academic questions get `scholar_search` (Semantic Scholar, OpenAlex, arXiv and Crossref at once, CORE with a key: one paper per DOI or arXiv id across services, ranked by relevance blended 80/20 with citations, recency and an open-access copy, retracted papers kept out, and an honest **not enough evidence** when nothing found supports the question), `paper_read` (a paper's open-access PDF read page by page, passages quoted with page and section locators such as "(p. 4, §3 Method)") and `paper_snowball` (references and citations followed until new relevant papers level off, each round ranked by relevance to the topic, the question and the seed, then by influential citations, never by date). Academic questions (papers, studies, research methods, a named technique) run `scholar_search` before the model answers, chosen by a deterministic classifier, and the model is told to answer from the papers and never to expand an acronym from memory (#83). A paper with no open-access PDF, or one whose site forbids reading it, gives its abstract instead, marked "Abstract only" in the answer and the Ledger; until a paper is read the model may describe it only by its title and abstract; a paper's own reference markers ([17], [3–5]) are taken out of quotes and abstracts. Papers show in the run panel's **Ledger** with authors, year, venue, citations and PDF link, and as the answer's sources with each service's logo. Optional keys and emails in **Settings › Search & Crawlers › Scholarly sources** (Add, Test, Remove; kept in the OS keychain); each service's rate limit is kept, rate limits and server errors are retried with backoff, answers are cached for a day. Offline `scholarly` evaluation suite over recorded answers. See [docs/search.md](docs/search.md#scholarly-search-82) |
 | Crawler | **Tern Crawl**, Tern's own crawler and reader, with its own colour logo on every "Read N pages" row: network guard, robots.txt, per-site pacing, a day-long page cache, Readability-style main text, and PDFs read page by page with `[page N]` markers. Settings › Search & Crawlers can make **Firecrawl** (hosted, renders JavaScript, needs a key), **Jina Reader** (hosted, works without a key at a low rate), or a **plain fetch** the default reader instead, each with its logo, a key that is tested before it is saved, a Test button, and an on/off switch; a hosted reader that fails falls back to Tern Crawl and the run says so |
@@ -170,12 +171,12 @@ Both share the same projects, library, vault, memory, providers, and permissions
 | --- | --- |
 | Models | More OpenAI-compatible endpoints and capability probing (13 providers, local Ollama and LM Studio, and keychain storage are built) |
 | Decision model | A small local cross-encoder for claim checks, and measured numbers for the chat model and the remote decision models on real runs (the local scorer, the Jev, SubQ Snap, and Voyage adapters, `tern decide bench`, and a held-out evaluation split are built) |
-| Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#109) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
-| Memory | Context cascade v2 and a versioned bootstrap prompt (#90), memory v1 with an explicit profile (#92), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
-| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app, and a browser for agents that lets research drive the built-in browser on pages that need clicks or your signed-in session (#108, built on agent-desktop and agent-browser) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
+| Control | Durable turns with a step journal, a rate governor and budgets in money (#85), drift detection, and a scheduler that runs watches while Tern is closed (#110) (loop detection, steering, run checkpoints, the safe pause at a token limit, and the in-app watcher are built) |
+| Memory | Context cascade v2 and a versioned bootstrap prompt (#91), memory v1 with an explicit profile (#93), stable IDs for files and sources, and a goal and decision ledger that survives compaction (message IDs, sub-IDs, handoff packets, and context compaction are built) |
+| Extensibility | Watching single MCP resources, MCP sampling, roots, and elicitation, and an optional desktop-sources connector that reads papers from apps such as Zotero, PDF readers, and signed-in library portals through the OS accessibility tree, off by default and asked per app, and a browser for agents that lets research drive the built-in browser on pages that need clicks or your signed-in session (#109, built on agent-desktop and agent-browser) (MCP tools, prompts, and resources, the ACP server, skills, `TERN.md` rules, and project folders are built) |
 | Workspace | The Study playground built on Explain in 3D (Explain in 3D and the built-in browser are built) |
-| Vault | Obsidian vaults and chat import (#105) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
-| Study | FSRS-6 from the first review and cards gated on quotes (#98), a learner model and deadline plans (#101), a guarded tutor and a viva over your own report (#102) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
+| Vault | Obsidian vaults and chat import (#106) (plain Markdown notes, `[[links]]`, backlinks, agent edits shown as diffs, and Git for the vault are built) |
+| Study | FSRS-6 from the first review and cards gated on quotes (#99), a learner model and deadline plans (#102), a guarded tutor and a viva over your own report (#103) (flashcards with SM-2 and Anki export, and Explain in 3D, are built) |
 | Library | A model-written handoff summary (chat ranges, sub-sessions, handoffs, the Library with bulk delete, highlights, the side chat, and project folders are built) |
 | Evaluation | Live, pinned, and public scores run with a key and published, and more held-out cases (the ladder, the suites, the metrics, reports, comparison, the CI baseline, and a held-out claims suite are built) |
 | Platforms | Windows' reduced-motion setting, hand testing on Linux desktops and Macs, arm64 Linux and Intel Mac builds in CI (Windows, Linux, and macOS builds are done) |
@@ -228,7 +229,7 @@ Every OS difference sits behind `tern-platform`, so ports stay small.
 
 ## Roadmap
 
-Roadmap v3. #82 to #88 are shipped (#85 is the engine; #86 and #87 plan desktop sources, a browser for agents and computer use; #88 records ownership and plans Explain in 3D v2), and #89 (docs only) adds a UI audit and agentic UI plan and moves later pull requests up by one; **#90, the context cascade, is next**. Pull requests land one at a time, in this order; dates are not committed.
+Roadmap v3. #82 to #89 are shipped (#85 is the engine; #86 and #87 plan desktop sources, a browser for agents and computer use; #88 records ownership and plans Explain in 3D v2; #89 adds a UI audit and agentic UI plan), and #90 fixes what the #85 Windows testing found and moves later pull requests up by one; **#91, the context cascade, is next**. Pull requests land one at a time, in this order; dates are not committed.
 
 Shipped since the earlier phases:
 
@@ -257,35 +258,35 @@ Next, by phase:
 
 | Phase | PR | Focus |
 | --- | --- | --- |
-| **2 · Trustworthy core and private beta** | **#90** | **Context cascade v2 and a versioned bootstrap prompt: "continue" keeps the thread, fresh chats start the same way** |
-| | #91 | Run-state UI: every state of a run visible and distinct, a stable right panel |
-| | #92 | Memory v1 and how Tern adapts to you (only to what you state) |
-| | #93 | Private beta through the Microsoft Store (MSIX) |
-| **3 · Research engine v2** | #94 | Evaluations, a consistency gate and observability |
-| | #95 | Research pipelines v2: a router, an evidence store, Quick and Scholarly |
-| | #96 | Deep v2 and Long-run mode |
-| **4 · Study and show** | #97 | Generative UI core and a Depth toggle |
-| | #98 | Study a: grounded study core (FSRS-6, cards gated on quotes, Anki) |
-| | #99 | Conflicting-sources resolver and actions |
-| | #100 | Local RAG and knowledge bases |
-| | #101 | Study b: learner model and deadline plans |
-| | #102 | Study c: guarded tutor and viva over your own report |
-| | #103 | Charts and an analysis sandbox |
-| **5 · Your files and reach** | #104 | Lecture video intake |
-| | #105 | Obsidian and chat import, and an editable Markdown view of memory |
-| | #106 | Export and reference formats |
-| | #107 | Security and reliability |
-| | #108 | Universal connector, your own corpus, desktop sources and a browser for agents |
-| **6 · Learning, hardening, launch and handbooks** | #109 | Learning core, gated by evaluations |
-| | #110 | Adapts to you v2 and memory v2 |
-| | #111–#113 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
-| | #114 | v1.0 release |
-| | #115 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
-| **After v1.0** | #116–#119 | Computer use (on agent-desktop and agent-browser); figures and Explain in 3D v2; git panel; shared rooms |
+| **2 · Trustworthy core and private beta** | **#91** | **Context cascade v2 and a versioned bootstrap prompt: "continue" keeps the thread, fresh chats start the same way** |
+| | #92 | Run-state UI: every state of a run visible and distinct, a stable right panel |
+| | #93 | Memory v1 and how Tern adapts to you (only to what you state) |
+| | #94 | Private beta through the Microsoft Store (MSIX) |
+| **3 · Research engine v2** | #95 | Evaluations, a consistency gate and observability |
+| | #96 | Research pipelines v2: a router, an evidence store, Quick and Scholarly |
+| | #97 | Deep v2 and Long-run mode |
+| **4 · Study and show** | #98 | Generative UI core and a Depth toggle |
+| | #99 | Study a: grounded study core (FSRS-6, cards gated on quotes, Anki) |
+| | #100 | Conflicting-sources resolver and actions |
+| | #101 | Local RAG and knowledge bases |
+| | #102 | Study b: learner model and deadline plans |
+| | #103 | Study c: guarded tutor and viva over your own report |
+| | #104 | Charts and an analysis sandbox |
+| **5 · Your files and reach** | #105 | Lecture video intake |
+| | #106 | Obsidian and chat import, and an editable Markdown view of memory |
+| | #107 | Export and reference formats |
+| | #108 | Security and reliability |
+| | #109 | Universal connector, your own corpus, desktop sources and a browser for agents |
+| **6 · Learning, hardening, launch and handbooks** | #110 | Learning core, gated by evaluations |
+| | #111 | Adapts to you v2 and memory v2 |
+| | #112–#114 | Buffers: performance; polish and the Windows test list; accessibility, Urdu and edge cases |
+| | #115 | v1.0 release |
+| | #116 | Handbook bundle: 14 handbooks (user guide, research paper reading, research paper writing, study, features, technical architecture, internals, engineering, design, evaluation, security and privacy, prompts, decision log, research and sources), drafted PR by PR under `docs/handbooks/` from #85 on |
+| **After v1.0** | #117–#120 | Computer use (on agent-desktop and agent-browser); figures and Explain in 3D v2; git panel; shared rooms |
 
-**Planned after v1.0: Explain in 3D v2 (#117).** Explain in 3D moves from labelled blocks joined by lines to detailed isometric figures of the real mechanism, in the style of [Anatomy](https://github.com/wheresryan22/anatomy) and [Hairline](https://github.com/lucasmarkes/hairline) (both MIT): dozens to hundreds of small parts that explode apart, move and highlight. Each figure plays as a motion tour, with Back and Next for guided steps, a Play button for the full-motion explanation, a progress strip, and a caption per step tied to cited source claims. True 3D and WebGL effects may follow.
+**Planned after v1.0: Explain in 3D v2 (#118).** Explain in 3D moves from labelled blocks joined by lines to detailed isometric figures of the real mechanism, in the style of [Anatomy](https://github.com/wheresryan22/anatomy) and [Hairline](https://github.com/lucasmarkes/hairline) (both MIT): dozens to hundreds of small parts that explode apart, move and highlight. Each figure plays as a motion tour, with Back and Next for guided steps, a Play button for the full-motion explanation, a progress strip, and a caption per step tied to cited source claims. True 3D and WebGL effects may follow.
 
-**Demo path:** #83 → #85 → #90 → #95 → #98 → #99 → #102 (with #94 measuring the numbers). The core build ends at #103.
+**Demo path:** #83 → #85 → #91 → #96 → #99 → #100 → #103 (with #95 measuring the numbers). The core build ends at #104.
 
 <details>
 <summary>Earlier phases</summary>
@@ -296,7 +297,7 @@ Next, by phase:
 | 4 | Crawler and claim verification | Done (scholarly sources in #82, evidence chain in #83) |
 | 5 | Deep research: plans, workers, checkpoints, steering | Mostly done (an OS scheduler for watches remains) |
 | 6 | Desktop app | Done |
-| 7 | Study harness | Mostly done (FSRS in #98, study plans in #101) |
+| 7 | Study harness | Mostly done (FSRS in #99, study plans in #102) |
 | 8 | Decision model | Mostly done |
 | 9 | Continuity and library | Mostly done |
 | 10 | Extensibility: MCP, ACP, skills | Done |

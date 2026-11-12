@@ -1,29 +1,29 @@
 # 04 · Roadmap
 
-> Status: 1 November 2026, roadmap v3. #82 to #87 are merged (#85 is the engine; #84, #86 and #87 are docs); #88 is a docs-only pull request (ownership, the Explain in 3D v2 plan and this renumber); **#90, the context cascade, is next**. Work lands one pull request at a time, and each starts only when the owner approves it. Order is committed; dates are not. The phase tables at the end record how Tern got here.
+> Status: 12 November 2026, roadmap v3. #82 to #89 are merged (#85 is the engine; #84, #86, #87, #88 and #89 are docs); #90 is a fix pull request from the #85 Windows testing; **#91, the context cascade, is next**. Work lands one pull request at a time, and each starts only when the owner approves it. Order is committed; dates are not. The phase tables at the end record how Tern got here.
 
 Roadmap v3 replaces the list of #84–#106 that shipped with #83. The old plan put context, memory, cost and the run UI into one pull request (old #84), deep research and evaluation into another (old #85), and left study and packaging near the end. v3 splits those into pull requests that can each be tested in one sitting, puts reliability and evaluation before the research pipelines that depend on them, moves study up to follow the research engine, and adds a private beta early. The full old → new mapping is at the end of this page.
 
-The roadmap follows GitHub's numbers: #84, #86, #87 and #88 are docs pull requests, and each moved the planned pull requests after it up by one (#88 moved the context cascade to #90 and v1.0 to #114). If a closed PR or an issue takes a number again (as #81 did), this page and the README are renumbered.
+The roadmap follows GitHub's numbers: #84, #86, #87, #88 and #89 are docs pull requests and #90 is a fix pull request, and each moved the planned pull requests after it up by one (#90 moved the context cascade to #91 and v1.0 to #115). If a closed PR or an issue takes a number again (as #81 did), this page and the README are renumbered.
 
 ## Phases at a glance
 
 | Phase | PRs | Scope | Ends with | Status |
 | --- | --- | --- | --- | --- |
 | 1 · Foundations and work surface | #72–#80 | Rich answers, folder projects, work surface and sandbox, planner and code mode, Act-mode safety | — | Shipped |
-| 2 · Trustworthy core and private beta | #81–#93 | Scholarly search, evidence chain, never losing a turn, context cascade and bootstrap prompt, run-state UI, memory and an explicit profile, a Store beta | A private beta on signed builds | #82–#87 shipped · #88 docs · **#90 next** |
-| 3 · Research engine v2 and published proof | #94–#96 | Evaluation harness and consistency gate, router with Quick and Scholarly pipelines, Deep v2 and Long-run mode | Published citation-fidelity numbers | Planned |
-| 4 · Study and show | #97–#103 | Generative UI, grounded study, conflicting-sources resolver, local RAG, learner model, guarded tutor and viva, charts | The core demo | Planned |
-| 5 · Your files and reach | #104–#108 | Lecture video, Obsidian and chat import, export, security, connectors | — | Planned |
-| 6 · Learning, hardening, launch and handbooks | #109–#115 | Learning core, adaptive user model v2, three buffers, the v1.0 release, the handbook bundle | v1.0 and the handbooks | Planned |
-| After v1.0 | #116–#119 | Computer use, figures and Explain in 3D v2, git panel, shared rooms | — | Backlog |
+| 2 · Trustworthy core and private beta | #81–#94 | Scholarly search, evidence chain, never losing a turn, context cascade and bootstrap prompt, run-state UI, memory and an explicit profile, a Store beta | A private beta on signed builds | #82–#89 shipped · #90 fixes · **#91 next** |
+| 3 · Research engine v2 and published proof | #95–#97 | Evaluation harness and consistency gate, router with Quick and Scholarly pipelines, Deep v2 and Long-run mode | Published citation-fidelity numbers | Planned |
+| 4 · Study and show | #98–#104 | Generative UI, grounded study, conflicting-sources resolver, local RAG, learner model, guarded tutor and viva, charts | The core demo | Planned |
+| 5 · Your files and reach | #105–#109 | Lecture video, Obsidian and chat import, export, security, connectors | — | Planned |
+| 6 · Learning, hardening, launch and handbooks | #110–#116 | Learning core, adaptive user model v2, three buffers, the v1.0 release, the handbook bundle | v1.0 and the handbooks | Planned |
+| After v1.0 | #117–#120 | Computer use, figures and Explain in 3D v2, git panel, shared rooms | — | Backlog |
 
-**Demo path:** #83 (every citation resolves to a quote Tern read) → **#85** (a run survives rate limits, crashes and network loss) → **#90** (fresh chats behave the same; "continue" keeps the thread) → **#95** (the Scholarly pipeline with evidence ids owned by code; its numbers measured by **#94**) → **#98** (research becomes quote-anchored cards and a quiz on FSRS, pushed to Anki) → **#99** (the conflicting-sources resolver) → **#102** (a viva that defends the claims of your own report).
+**Demo path:** #83 (every citation resolves to a quote Tern read) → **#85** (a run survives rate limits, crashes and network loss) → **#91** (fresh chats behave the same; "continue" keeps the thread) → **#96** (the Scholarly pipeline with evidence ids owned by code; its numbers measured by **#95**) → **#99** (research becomes quote-anchored cards and a quiz on FSRS, pushed to Anki) → **#100** (the conflicting-sources resolver) → **#103** (a viva that defends the claims of your own report).
 
-- Minimum demo: through #95, plus #98.
-- Full demo: add #99 and #102.
+- Minimum demo: through #96, plus #99.
+- Full demo: add #100 and #103.
 
-**Cut line: after #103.** #85 to #103 is the core build. If time runs short, drop in this order: #103 charts → #101 learner model (keep the FSRS queue) → #99 shrinks to the resolver without the actions router. #94 (it produces the measured numbers) and #102's viva are never dropped. #104 to #114 is the work for v1.0, and #115 completes the handbooks.
+**Cut line: after #104.** #85 to #104 is the core build. If time runs short, drop in this order: #104 charts → #102 learner model (keep the FSRS queue) → #100 shrinks to the resolver without the actions router. #95 (it produces the measured numbers) and #103's viva are never dropped. #105 to #115 is the work for v1.0, and #116 completes the handbooks.
 
 ## Phase 1 · Foundations and work surface (#72–#80) — shipped
 
@@ -40,7 +40,7 @@ The roadmap follows GitHub's numbers: #84, #86, #87 and #88 are docs pull reques
 | #79 | Act mode hardening |
 | #80 | Act mode guards: folder chats start in the folder's mode, "This needs Act mode", Chat mode never plans file work |
 
-## Phase 2 · Trustworthy core and private beta (#81–#93)
+## Phase 2 · Trustworthy core and private beta (#81–#94)
 
 | PR | What merged | Status |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ The roadmap follows GitHub's numbers: #84, #86, #87 and #88 are docs pull reques
 
 **Goal:** no turn is ever lost; a rate limit is a wait, not a failure; budgets are honest.
 
-- An event contract first (run state, error class, kept summary, turn receipt, context trimmed, model switched), so #90–#92 build against fixtures.
+- An event contract first (run state, error class, kept summary, turn receipt, context trimmed, model switched), so #91–#93 build against fixtures.
 - Interrupted turns stay in history with their partial text, sources and a tool digest; streamed text is checkpointed every second or 200 characters.
 - A SQLite step journal keyed by turn: retries, fallbacks and Continue append to the same turn, and Continue replays recorded results instead of running tools again.
 - A rate governor: requests-per-minute, tokens-per-minute and requests-per-day buckets seeded from a dated limits file and corrected from the provider's rate-limit headers and 429 bodies; a daily quota is never retried (its reset time is shown); a request bigger than the window is split before it is sent, within one call envelope per model.
@@ -84,7 +84,24 @@ A docs-only pull request. It states that Tern is private and proprietary, owned 
 
 A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the UI issue list U1–U14 and the pull request that fixes each, and BoardUI and Arc UI as pattern references only), folds the fixes into #91, #97, #98, #99 and #112, records an unscoped third-mode idea in the backlog, and moves every planned pull request from #89 on up by one: the context cascade is now #90, v1.0 #114, the handbook bundle #115, and the backlog #116–#119.
 
-### #90 · Context cascade v2 and bootstrap prompt v1
+### #90 · Fixes from the #85 Windows testing
+
+A fix pull request from testing #85 on Windows. It moves every planned pull request from #90 on up by one: the context cascade is now #91, v1.0 #115, the handbook bundle #116, and the backlog #117–#120.
+
+- Scholarly search sends keyword queries (never the model's instructions), runs them in parallel, and retries once with broader wordings before it says there is not enough evidence.
+- A request to follow a paper's citations goes straight to `paper_snowball`; papers that cite a seed come most cited first (OpenAlex), not newest first.
+- Continue resumes after the exact characters kept; the stitch drops repeated text and restarted sentences, so a dropped stream leaves no seam.
+- The `kill` chaos switch fires before the turn's end is written, so `ok,kill` closes Tern mid-turn and the reopened chat offers Continue.
+- On a daily limit the turn may go on with a smaller model of the same provider, from a known list for every provider; the setting reaches the open chat; the switch is one "Another model for this turn" row and the paused turn's reason is shown once.
+- Small talk ("hi") gets a short reply, and a stopped turn's digest is continued only when asked.
+- Papers named in prose by author and year get the `[n]` markers of the papers the turn listed or read, so their claims are checked in Report.
+- The chat follows its end only while you are there: scroll up freely while an answer streams, and **Jump to latest** brings you back; the chat draws further past the window so a fast scroll does not flicker.
+- Each chat keeps its own right panel (open or closed, and its tab); a new chat starts with a plain panel.
+- CI keeps uploaded artifacts for 3 days instead of 14.
+
+**Depends on:** #85.
+
+### #91 · Context cascade v2 and bootstrap prompt v1
 
 **Goal:** "continue" keeps the thread; quality stays high in long chats; fresh chats in the same folder start the same way.
 
@@ -99,13 +116,13 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - A versioned, layered bootstrap prompt ordered from stable to volatile (tools, Tern's core prompt, workflow and model-family deltas, user prompts, the user's stated profile, `TERN.md` and the project brief, then messages and a per-turn context block), with cache breakpoints between the layers.
 - Tern core v1: about 1,000 tokens of instructions (authority order, evidence, working, adapting, format, honesty) and a lite core for small context windows. Short workflow deltas (Quick, Scholarly, Deep, Study, Act, Plan) replace scattered harness strings; model-family deltas for native and text tool protocols, reasoning models and small local models.
 - Prompts as versioned fragment files with CI lints: a cap on instructions per fragment and per prompt, a token budget per window class, no clock, path or username in the stable layers, sorted tool JSON.
-- Interim formatting rules (answer first; a table when several items share attributes) until #97.
+- Interim formatting rules (answer first; a table when several items share attributes) until #98.
 - Settings edits apply to new chats, with a note and **Apply to this chat** in open chats.
 
 **Exit check:** no orphaned tool call and no stub naming a deleted file; replay after a restart gives identical request bytes; ten unchanged turns give an identical prompt prefix; fresh chats in one folder start identically.
 **Depends on:** #85 (journal, estimator, envelope).
 
-### #91 · Run-state UI, presentation v1, panel stability
+### #92 · Run-state UI, presentation v1, panel stability
 
 **Goal:** every state of a run is visible and distinct; nothing on screen is replaced or emptied; the right panel stops moving.
 
@@ -121,9 +138,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - UI audit fixes U1, U3–U5, U7–U11 (see `docs/ui-audit.md`): responsive blocks and inner text (max line length, reflow at three widths); the sidebar is scoped to the current mode (switching from Research to Study no longer shows Research's empty folders) and built from real chats; every side-panel option list becomes structured rows, and the tool-call ledger gains icons, targets and durations instead of a plain `#`; retry as attempt dots with a backoff countdown; a smoothed streaming pacer (steady typing, no paragraph jumps); a distinct glyph and micro-animation for queued, searching, crawling, reading, writing, retrying and waiting; citation chips that are easy to find; real logos only; cleaner chat grouping.
 
 **Exit check:** every state passes a greyscale test; the tab strip does not move between states; link contrast is at least 4.5:1 in both themes; the UI tour records every new state.
-**Depends on:** #85 (events); #90 (context events).
+**Depends on:** #85 (events); #91 (context events).
 
-### #92 · Memory v1 and how Tern adapts to you (explicit only)
+### #93 · Memory v1 and how Tern adapts to you (explicit only)
 
 **Goal:** Tern remembers what you tell it, in the right scope, and can show why; it adapts to what you state, never to who you seem to be.
 
@@ -132,12 +149,12 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - A short profile block in the stable prompt and a per-domain cue on every turn.
 - A skippable first-chat setup card (pitch, citation style, main field), and an "Adapted: …" chip under answers with More technical, Simpler and Don't adapt this chat; answers never announce the level.
 - Settings › Memory (Global, This project, Inbox, History, How Tern adapts to you), with **Why?** opening the turn a memory came from.
-- Reference lists formatted by a citation renderer with CSL styles, not by the model (may move to #95).
+- Reference lists formatted by a citation renderer with CSL styles, not by the model (may move to #96).
 
 **Exit check:** a stated instruction persists over long chats; memories never leak between projects; deleting a chat removes what was learned from it; answers keep the same verdicts and numbers at every stated level.
-**Depends on:** #85, #90. #93 can ship without it; only #101 and #110 need it.
+**Depends on:** #85, #91. #94 can ship without it; only #102 and #111 need it.
 
-### #93 · Private beta release (Microsoft Store MSIX)
+### #94 · Private beta release (Microsoft Store MSIX)
 
 **Goal:** real users on signed builds, without SmartScreen warnings.
 
@@ -147,42 +164,42 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Opt-in anonymous counters only (a verified report done, a crash), off until the user says yes; local crash reports; in-app feedback and the existing usability (SUS) runner.
 
 **Exit check:** the Store build installs on a clean Windows 11 machine with no SmartScreen prompt; an upgrade keeps data; testers reach a verified report in ten minutes or less; nothing is sent before opt-in.
-**Depends on:** #85–#91 (#92 optional).
+**Depends on:** #85–#92 (#93 optional).
 
-## Phase 3 · Research engine v2 and published proof (#94–#96)
+## Phase 3 · Research engine v2 and published proof (#95–#97)
 
-### #94 · Evaluations, consistency gate, observability
+### #95 · Evaluations, consistency gate, observability
 
 **Goal:** every claim about quality is a number, and every prompt or pipeline change is checked before it merges.
 
 - A cassette format in `tern-eval` that records and replays tool and model responses; a paired before and after runner with pinned sampling; pass^k, three trials and 95% intervals.
-- Evaluation layers: unit on every commit, recorded replay on every PR (each PR adds cases), chaos weekly from #85's switches; live benchmarks wired in and run from #95.
+- Evaluation layers: unit on every commit, recorded replay on every PR (each PR adds cases), chaos weekly from #85's switches; live benchmarks wired in and run from #96.
 - A consistency suite for "the same model behaves differently in different chats": several chats per arm compared by fingerprint and by behaviour (tool counts, cited-source overlap, structure, verdict), never by identical text.
 - A contradiction lint and a prompt change gate: a PR that changes a prompt attaches its consistency and replay results.
 - Judge calibration, and the gate as a library the learning core reuses.
 - A three-axis citation evaluation: the link works, it is relevant, and the claim checks against the cited text.
 - Traces in SQLite, a **Cost** panel in Run details, `tern usage`, headless JSONL output; "Report this turn as a test case" in developer mode.
 
-**Exit check:** the consistency cases fail on the #83 behaviour and pass after #85–#92; a planted prompt contradiction fails CI; the Cost panel is within 2% of the provider's reported usage.
-**Depends on:** #85–#92.
+**Exit check:** the consistency cases fail on the #83 behaviour and pass after #85–#93; a planted prompt contradiction fails CI; the Cost panel is within 2% of the provider's reported usage.
+**Depends on:** #85–#93.
 
-### #95 · Research pipelines v2: router, evidence store, Quick and Scholarly
+### #96 · Research pipelines v2: router, evidence store, Quick and Scholarly
 
 **Goal:** research answers whose citations are owned by code, at a known request cost, that stay accurate on small models.
 
-- A router in code with a reason chip and a depth override: **Quick** (up to 3 requests), **Scholarly** (7 frugal, 12–16 standard), **Deep** (25–40), **Long-run** (in #96); a preflight "you have N requests left today".
+- A router in code with a reason chip and a depth override: **Quick** (up to 3 requests), **Scholarly** (7 frugal, 12–16 standard), **Deep** (25–40), **Long-run** (in #97); a preflight "you have N requests left today".
 - An evidence-card store with offset-checked quotes and evidence ids owned by code: the model never writes a URL or a reference, and unknown ids are stripped.
 - Retrieval funnel v2: recall from several services, dedupe, BM25 plus dense retrieval, a local cross-encoder, an optional model screen; Semantic Scholar snippet search.
 - The Scholarly pipeline: a criteria card, a query plan, a gap loop, a batched reader or an extractive mode for small models, an outline, one section-by-section writer, then verify and repair.
 - The Quick pipeline with stated confidence.
-- Verifier v2: deterministic checks, then a batched claim judge; quoted and attributed spans are not split into claims; conflict detection (contradicting quote pairs with an independence check) that feeds #99.
+- Verifier v2: deterministic checks, then a batched claim judge; quoted and attributed spans are not split into claims; conflict detection (contradicting quote pairs with an independence check) that feeds #100.
 - Neutral sub-questions, gatherers that do not see the thesis, a verifier that does; a clarify card with numbered questions and a recommended answer for each.
 - Report sections "What didn't work", "Where sources disagree", "Checks" and "Activity"; a source-scope chip (all, prioritise mine, only these); funnel statistics and exclusion reasons; a plan card you can edit while it runs; a second-opinion verifier on another provider when two keys exist.
 
 **Exit check:** citation validity 100%; quote verification at least 98%; citation precision at least 0.90 on strong models and 0.80 on small ones; Scholarly within 7 requests frugal and 16 standard; no lost work under injected faults; the router right on at least 95% of a labelled set. These are the numbers published with the public beta.
-**Depends on:** #85 (governor), #90 (workflow deltas), #94 (harness).
+**Depends on:** #85 (governor), #91 (workflow deltas), #95 (harness).
 
-### #96 · Deep v2 and Long-run mode
+### #97 · Deep v2 and Long-run mode
 
 **Goal:** sourced reports that hold up, and research that runs unattended for hours on free quotas.
 
@@ -191,11 +208,11 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - A steering queue (edit, delete, apply now, reorder), pause, interrupt, stop and discard, a Discarded list, sub-agent rows and a run dashboard.
 
 **Exit check:** Deep stays within 40 requests; a budget hit at 70% still yields a report with its gaps named; a daily quota running out mid-run waits and resumes after the reset.
-**Depends on:** #95.
+**Depends on:** #96.
 
-## Phase 4 · Study and show (#97–#103)
+## Phase 4 · Study and show (#98–#104)
 
-### #97 · Generative UI core and Depth
+### #98 · Generative UI core and Depth
 
 **Goal:** the agent chooses prose, a list, a table, a card or a surface by rule, and every surface is bound to evidence.
 
@@ -206,9 +223,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Agentic UI patterns (U6, U9, U14): one OptionRow component, so offered choices are clean, uniform, actionable buttons everywhere (right panel, Study chat), and the panel each one opens is calm, distinctive and easy to read; a quote-to-composer chip, so a reply carries its context; a SourceCard rich container for any URL or source (logo, title, site, year or pages).
 
 **Exit check:** form choice precision at least 0.85; valid output at least 95% on strong models and 85% on small ones; evidence integrity 100%; no layout shift.
-**Depends on:** #91, #95.
+**Depends on:** #92, #96.
 
-### #98 · Study a: grounded study core
+### #99 · Study a: grounded study core
 
 **Goal:** research becomes quote-anchored cards and quizzes on FSRS, pushed to Anki, with every item traceable to a quote.
 
@@ -221,9 +238,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Study UI redesign (U2, U12): Explain in 3D gets Back, Reset and Close; Flashcard and Quiz are redesigned as responsive components with clear states and gentle motion.
 
 **Exit check:** at least 97% of items grounded and no forged ids; at least 85% of cards usable and at most 2% duplicates; no question with two correct options; a re-push to Anki creates no duplicates.
-**Depends on:** #83, #85, #94, #97.
+**Depends on:** #83, #85, #95, #98.
 
-### #99 · Generative UI b: conflicting-sources resolver and actions
+### #100 · Generative UI b: conflicting-sources resolver and actions
 
 **Goal:** when sources disagree, Tern shows the disagreement piece by piece and lets you resolve it, like a merge conflict.
 
@@ -234,33 +251,33 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - One approval inbox, shared by memory, the resolver and later the learning core (diffs, badges, history and revert); an editable compaction summary card; an outline approval card for long runs.
 
 **Exit check:** Undo restores the report byte for byte; a double Apply writes once; a stale preview is checked again before it applies.
-**Depends on:** #95 (conflict detection), #97.
+**Depends on:** #96 (conflict detection), #98.
 
-### #100 · Local RAG and knowledge bases
+### #101 · Local RAG and knowledge bases
 
 **Goal:** answers and study items cite passages of your own files, with page locators.
 
-- Knowledge bases per project, on #95's retrieval funnel: hybrid BM25, vectors and reranking on by default.
+- Knowledge bases per project, on #96's retrieval funnel: hybrid BM25, vectors and reranking on by default.
 - Quote minting and page locators for files, so files can feed study.
 - Memory vectors only if they beat full-text recall.
 
 **Exit check:** retrieval recall beats dense-only retrieval on a literature-search slice; every chunk citation opens its page.
-**Depends on:** #95.
+**Depends on:** #96.
 
-### #101 · Study b: learner model and deadline plans
+### #102 · Study b: learner model and deadline plans
 
 **Goal:** Tern knows what you have mastered and plans study around your deadline.
 
 - Concept mastery with a simple knowledge-tracing model (replacing the Leitner box), Elo kept for matching difficulty.
 - A misconception pipeline and a "Misconceptions to clear" rail; confidence ratings.
-- Adapting to your stated level per domain, from #92, plus a short diagnostic.
+- Adapting to your stated level per domain, from #93, plus a short diagnostic.
 - Rubric grading v2 that abstains when unsure, with appeals.
 - A deadline planner: spaced sessions, FSRS raising retention in the last week, honest warnings when the load does not fit, and `.ics` export; a concept map in Explain in 3D.
 
 **Exit check:** grading agrees with human marks on the answers it does not abstain on, and wrongly marks a right answer incorrect at most 2% of the time; every plan is feasible or says why not.
-**Depends on:** #92, #98, #100.
+**Depends on:** #93, #99, #101.
 
-### #102 · Study c: guarded tutor and viva over your own report
+### #103 · Study c: guarded tutor and viva over your own report
 
 **Goal:** a tutor that teaches without giving the answer away, and a viva that makes you defend your own report.
 
@@ -269,9 +286,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Local voice (speech in and out on your machine; audio not kept unless you opt in); mistakes become cards.
 
 **Exit check:** the tutor leaks an answer at most 2% of the time; every citation is bound; viva grading agrees within one point with recorded human grading on at least 80% of transcripts.
-**Depends on:** #98, #101.
+**Depends on:** #99, #102.
 
-### #103 · Charts and analysis sandbox
+### #104 · Charts and analysis sandbox
 
 **Goal:** charts drawn from real data, bound to the run.
 
@@ -279,22 +296,22 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - The Graph built from the ledger; deterministic analysis helpers in the sandbox.
 
 **Exit check:** a chart is drawn from a data file inside the sandbox with no network, and every value traces to its source.
-**Depends on:** #96, #97.
+**Depends on:** #97, #98.
 
 — **Cut line** —
 
-## Phase 5 · Your files and reach (#104–#108)
+## Phase 5 · Your files and reach (#105–#109)
 
-### #104 · Lecture video intake
+### #105 · Lecture video intake
 
 **Goal:** a lecture becomes study material whose citations are timestamps.
 
 - Transcript segments with start and end times; quote ids per segment, so a citation opens the player at that moment; slide text read as passages at their time.
 - Short segments with a few questions before watching; a watched segment enters the deadline plan.
 
-**Depends on:** #98, #101.
+**Depends on:** #99, #102.
 
-### #105 · Obsidian and chat import
+### #106 · Obsidian and chat import
 
 **Goal:** Tern works with the notes and chats you already have.
 
@@ -302,18 +319,18 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - ChatGPT, Claude and Gemini import with provenance; imported memories go to the inbox.
 - An editable Markdown view of memory: what Tern remembers, shown as Markdown you can read and edit.
 
-**Depends on:** #92.
+**Depends on:** #93.
 
-### #106 · Export and reference formats
+### #107 · Export and reference formats
 
 **Goal:** every result leaves Tern in the format you need, citations kept.
 
 - DOCX, PPTX, XLSX, PDF, LaTeX, BibTeX, RIS and CSV; a self-contained HTML evidence report; a PRISMA flow diagram.
-- Reference lists through #92's citation renderer.
+- Reference lists through #93's citation renderer.
 
-**Depends on:** #92, #95.
+**Depends on:** #93, #96.
 
-### #107 · Security and reliability
+### #108 · Security and reliability
 
 **Goal:** untrusted content cannot steer Tern, and nothing is lost when something fails.
 
@@ -321,9 +338,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Idempotency keys and a hardened journal; the chaos suite in CI; a quarantined tool profile for the learning researcher; an overseer watchdog.
 
 **Exit check:** prompt-injection, poisoning and SSRF suites stay green; a crash resumes from its step journal.
-**Depends on:** #85, #94. It comes before connectors and the learning core on purpose.
+**Depends on:** #85, #95. It comes before connectors and the learning core on purpose.
 
-### #108 · Universal connector and your own corpus
+### #109 · Universal connector and your own corpus
 
 **Goal:** any service can be a tool, behind the trust preview.
 
@@ -332,11 +349,11 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Desktop sources (optional, off by default): read papers from desktop apps such as Zotero, PDF readers, and a library portal the user is already signed in to, through the OS accessibility tree rather than screenshots. Built on [agent-desktop](https://github.com/vercel-labs/agent-desktop) (Apache-2.0, Rust, Windows, macOS and Linux), whose snapshot, ref, act and verify loop also shapes the built-in browser tool and the UI tours. Consent is asked per app, actions are read-only by default, and snapshots are never logged or sent to a model unfiltered.
 - Browser for agents (optional, off by default): the research agent drives Tern's built-in browser itself, for pages that need JavaScript, clicks or the user's signed-in session (publisher pages, library portals, paywalled papers the user has access to). Built on [agent-browser](https://github.com/vercel-labs/agent-browser) (Apache-2.0, Rust) and the same snapshot, ref, act and verify loop: the page is read as an accessibility snapshot with stable refs, each click or form fill is a journaled step, actions are read-only by default, and page text stays isolated from instructions.
 
-**Depends on:** #107.
+**Depends on:** #108.
 
-## Phase 6 · Learning, hardening, launch and handbooks (#109–#115)
+## Phase 6 · Learning, hardening, launch and handbooks (#110–#116)
 
-### #109 · Learning core (eval-gated)
+### #110 · Learning core (eval-gated)
 
 **Goal:** Tern learns from its own failures, and no lesson is kept unless it passes an evaluation.
 
@@ -344,9 +361,9 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Calibrated confidence on resolved claims; a budget-aware router that learns; watches run by an OS scheduler; a daily learning spend cap in Settings, never on free-tier keys, local model first.
 
 **Exit check (thesis metrics):** incidents per 100 turns by class; recurrence after a fix; falling false-positive proposals; learned tokens per turn; learning cost as a share of task spend; success before and after on a held-out suite.
-**Depends on:** #85, #94, #99, #107.
+**Depends on:** #85, #95, #100, #108.
 
-### #110 · Adapts to you v2 and memory v2
+### #111 · Adapts to you v2 and memory v2
 
 **Goal:** Tern can infer how you work, but only where it is shown to help and to be fair.
 
@@ -354,25 +371,25 @@ A docs-only pull request. It adds `docs/ui-audit.md` (agentic UI principles, the
 - Memory v2: a background extractor and consolidator, contradiction detection, decay weighted by use, source and claim memory; "What Tern assumes about you" with Fix and Forget.
 
 **Exit check:** the same level and the same claims when only name, dialect (Roman Urdu or English), grammar or country change, in at least 95% of pairs; if blind raters do not prefer adapted answers, inferred adaptation ships off by default.
-**Depends on:** #92, #107, #109.
+**Depends on:** #93, #108, #110.
 
-### #111 · Buffer 1: performance
+### #112 · Buffer 1: performance
 
 Startup, memory and token budgets measured and met; retrieval and curation off the main thread.
 
-### #112 · Buffer 2: polish and the Windows test list
+### #113 · Buffer 2: polish and the Windows test list
 
 The owner's end-of-cycle Windows test list passes; fixes from beta feedback. A full design pass against `docs/ui-audit.md`: every surface checked at three panel widths, in both themes and with reduced motion.
 
-### #113 · Buffer 3: accessibility, Urdu, edge cases
+### #114 · Buffer 3: accessibility, Urdu, edge cases
 
 Screen-reader labels on every control; the interface in Urdu; a quality check of study items generated in Urdu; Windows' reduced-motion setting.
 
-### #114 · v1.0 release
+### #115 · v1.0 release
 
 Updates through Velopack, GitHub Releases and the Store listing; macOS notarisation at low priority. **Exit check:** a signed build installs and updates itself.
 
-### #115 · Handbook bundle
+### #116 · Handbook bundle
 
 **Goal:** fourteen handbooks that explain Tern to the people who use, examine and build it, shipped in the repository under `docs/handbooks/`, as a PDF set and as one ZIP. Each handbook stands alone and links to the others, and all are written from the real code, ADRs and pull request history.
 
@@ -393,22 +410,22 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | 13. Raw (decision log) | Future maintainers | Every ADR, a research digest with sources, the pull request history, what failed and why |
 | 14. Research and sources | Readers, reviewers and the team | Everything researched for Tern, topic by topic (context, memory, evidence, deep research, generative UI, study, adaptation, sandbox) with its findings, and every source: papers (with arXiv ids), repositories (with their licence, and whether ideas or code were used), posts and the people behind them, documentation and benchmarks; where each finding landed (the PR number), and which claims were verified against the source and which rest on an excerpt only |
 
-**Built PR by PR, starting with #85:** every pull request adds or updates its section under `docs/handbooks/` (a checklist item in the PR template), so #115 edits and assembles rather than writing from scratch. #115 adds screenshots from the UI tours, diagrams, a shared glossary, a PDF build and a ZIP in the release.
+**Built PR by PR, starting with #85:** every pull request adds or updates its section under `docs/handbooks/` (a checklist item in the PR template), so #116 edits and assembles rather than writing from scratch. #116 adds screenshots from the UI tours, diagrams, a shared glossary, a PDF build and a ZIP in the release.
 
 **Exit check:** every handbook builds to PDF in CI; links and code references are checked; every feature in the README's What works today appears in the Features handbook; someone new can install Tern and reach a first verified report from the User guide alone.
-**Depends on:** #114; sections grow from #85 on.
+**Depends on:** #115; sections grow from #85 on.
 
-## After v1.0 (#116–#119) — backlog
+## After v1.0 (#117–#120) — backlog
 
 | PR | Scope | Why it waits |
 | --- | --- | --- |
-| #116 | Computer use, off by default, built on agent-desktop (desktop apps) and agent-browser (the web): Tern acts for you, asking first, on research chores only (sign in to a library portal, download the PDF, file it in Zotero), each action a journaled step | Risky, and not needed for research and study |
-| #117 | Figures and Explain in 3D v2: detailed isometric machine and system figures that play as a motion tour (see below); image-occlusion cards from PDF figures | Polish; needs figure extraction and the evidence store |
-| #118 | Git panel: status, diff, history | A coding feature, outside research and study |
-| #119 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
+| #117 | Computer use, off by default, built on agent-desktop (desktop apps) and agent-browser (the web): Tern acts for you, asking first, on research chores only (sign in to a library portal, download the PDF, file it in Zotero), each action a journaled step | Risky, and not needed for research and study |
+| #118 | Figures and Explain in 3D v2: detailed isometric machine and system figures that play as a motion tour (see below); image-occlusion cards from PDF figures | Polish; needs figure extraction and the evidence store |
+| #119 | Git panel: status, diff, history | A coding feature, outside research and study |
+| #120 | Shared rooms: read-only spectators over run events, shared libraries | Builds on the rest |
 | idea | A third Tern mode after Research and Study: a harness to discuss any project (software or your own field) with modes such as technical; name and scope open (see `docs/ui-audit.md`, Later) | Unscoped idea |
 
-### #117 · Figures and Explain in 3D v2 (backlog, after v1.0)
+### #118 · Figures and Explain in 3D v2 (backlog, after v1.0)
 
 **Goal:** an explanation you can watch. Today's Explain in 3D draws a concept as labelled blocks joined by lines; v2 draws the real mechanism.
 
@@ -419,7 +436,7 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 - Optional true 3D and WebGL effects (fire, flow, depth) later; the isometric tour comes first.
 - Both projects are MIT licensed. Anything adapted from them is credited in `NOTICE` with its licence.
 
-**Depends on:** #114 (v1.0); figure extraction and cited claims from #95.
+**Depends on:** #115 (v1.0); figure extraction and cited claims from #96.
 
 ## Dependencies
 
@@ -427,80 +444,83 @@ Updates through Velopack, GitHub Releases and the Store listing; macOS notarisat
 | --- | --- |
 | #85 | #83 |
 | #90 | #85 |
-| #91 | #85, #90 |
-| #92 | #85, #90 |
-| #93 | #85–#91 |
+| #91 | #85 |
+| #92 | #85, #91 |
+| #93 | #85, #91 |
 | #94 | #85–#92 |
-| #95 | #85, #90, #94 |
-| #96 | #95 |
-| #97 | #91, #95 |
-| #98 | #83, #85, #94, #97 |
-| #99 | #95, #97 |
-| #100 | #95 |
-| #101 | #92, #98, #100 |
-| #102 | #98, #101 |
-| #103 | #96, #97 |
-| #104 | #98, #101 |
-| #105 | #92 |
-| #106 | #92, #95 |
-| #107 | #85, #94 |
-| #108 | #107 |
-| #109 | #85, #94, #99, #107 |
-| #110 | #92, #107, #109 |
-| #115 | #114 (sections from #85 on) |
+| #95 | #85–#93 |
+| #96 | #85, #91, #95 |
+| #97 | #96 |
+| #98 | #92, #96 |
+| #99 | #83, #85, #95, #98 |
+| #100 | #96, #98 |
+| #101 | #96 |
+| #102 | #93, #99, #101 |
+| #103 | #99, #102 |
+| #104 | #97, #98 |
+| #105 | #99, #102 |
+| #106 | #93 |
+| #107 | #93, #96 |
+| #108 | #85, #95 |
+| #109 | #108 |
+| #110 | #85, #95, #100, #108 |
+| #111 | #93, #108, #110 |
+| #116 | #115 (sections from #85 on) |
 
 ## Old → new numbering
 
-The plan published with #83 listed #84–#104 (the Old column). Where each item went:
+The plan published with #83 listed #84–#105 (the Old column). Where each item went:
 
 | Old | Old focus | New | New focus |
 | --- | --- | --- | --- |
 | #84 (part) | Context, memory and cost | #85 | Engine: durable turns, rate governor, honest budgets |
-| #84 (part) | Context, memory and cost | #90 | Context cascade v2 and bootstrap prompt v1 |
-| #84 (part) | Context, memory and cost | #91 | Run-state UI, presentation v1, panel stability |
-| #84 (part) | Context, memory and cost | #92 | Memory v1 and how Tern adapts to you (explicit) |
-| #104 (part) | Packaging | #93 | Private beta release (Microsoft Store MSIX) |
-| #85 (part) | Deep research v2, evaluations and observability | #94 | Evaluations, consistency gate, observability |
-| #85 (part) | Deep research v2 | #95 | Research pipelines v2: router, evidence store, Quick and Scholarly |
-| #85 (part) | Deep research v2 | #96 | Deep v2 and Long-run mode |
-| #87 (part) | Generative UI and a Depth toggle | #97 | Generative UI core and Depth |
-| #93 (part) | Study suite | #98 | Study a: grounded study core |
-| #87 (part) | Generative UI | #99 | Conflicting-sources resolver and actions |
-| #91 | Local RAG and a knowledge graph | #100 | Local RAG and knowledge bases |
-| #93 (part) | Study suite | #101 | Study b: learner model and deadline plans |
-| #93 (part) | Study suite | #102 | Study c: guarded tutor and viva |
-| #86 | Charts and an analysis sandbox | #103 | Charts and analysis sandbox |
-| #92 | Lecture video intake | #104 | Lecture video intake |
-| #88 | Markdown folders, Obsidian, chat import | #105 | Obsidian and chat import |
-| #90 | Export | #106 | Export and reference formats |
-| #96 | Security and reliability | #107 | Security and reliability |
-| #94 | Universal connector | #108 | Universal connector and your own corpus |
-| #100 (part) | Learning loops | #109 | Learning core |
-| #100 (part) | Learning loops | #110 | Adapts to you v2 and memory v2 |
-| #101 | Buffer 1: performance | #111 | Buffer 1: performance |
-| #102 | Buffer 2: polish and fixes from testing | #112 | Buffer 2: polish and the Windows test list |
-| #103 | Buffer 3: accessibility, Urdu, edge cases | #113 | Buffer 3: accessibility, Urdu, edge cases |
-| #104 (rest) | Packaging | #114 | v1.0 release |
-| — | (new) | #115 | Handbook bundle |
+| #84 (part) | Context, memory and cost | #91 | Context cascade v2 and bootstrap prompt v1 |
+| #84 (part) | Context, memory and cost | #92 | Run-state UI, presentation v1, panel stability |
+| #84 (part) | Context, memory and cost | #93 | Memory v1 and how Tern adapts to you (explicit) |
+| #104 (part) | Packaging | #94 | Private beta release (Microsoft Store MSIX) |
+| #85 (part) | Deep research v2, evaluations and observability | #95 | Evaluations, consistency gate, observability |
+| #85 (part) | Deep research v2 | #96 | Research pipelines v2: router, evidence store, Quick and Scholarly |
+| #85 (part) | Deep research v2 | #97 | Deep v2 and Long-run mode |
+| #87 (part) | Generative UI and a Depth toggle | #98 | Generative UI core and Depth |
+| #93 (part) | Study suite | #99 | Study a: grounded study core |
+| #87 (part) | Generative UI | #100 | Conflicting-sources resolver and actions |
+| #91 | Local RAG and a knowledge graph | #101 | Local RAG and knowledge bases |
+| #93 (part) | Study suite | #102 | Study b: learner model and deadline plans |
+| #93 (part) | Study suite | #103 | Study c: guarded tutor and viva |
+| #86 | Charts and an analysis sandbox | #104 | Charts and analysis sandbox |
+| #92 | Lecture video intake | #105 | Lecture video intake |
+| #88 | Markdown folders, Obsidian, chat import | #106 | Obsidian and chat import |
+| #90 | Export | #107 | Export and reference formats |
+| #96 | Security and reliability | #108 | Security and reliability |
+| #94 | Universal connector | #109 | Universal connector and your own corpus |
+| #100 (part) | Learning loops | #110 | Learning core |
+| #100 (part) | Learning loops | #111 | Adapts to you v2 and memory v2 |
+| #101 | Buffer 1: performance | #112 | Buffer 1: performance |
+| #102 | Buffer 2: polish and fixes from testing | #113 | Buffer 2: polish and the Windows test list |
+| #103 | Buffer 3: accessibility, Urdu, edge cases | #114 | Buffer 3: accessibility, Urdu, edge cases |
+| #104 (rest) | Packaging | #115 | v1.0 release |
+| — | (new) | #116 | Handbook bundle |
 | — | (new) | #86 | Docs: desktop sources and renumbering |
 | — | (new) | #87 | Docs: browser for agents and computer use |
 | — | (new) | #88 | Docs: ownership, Explain in 3D v2 plan, and roadmap renumber |
-| #95 | Computer use | #116 | Computer use (after v1.0) |
-| #97 | Interactive figures and Explain in 3D v2 | #117 | Figures and Explain in 3D v2 (after v1.0) |
-| #98 | Git panel | #118 | Git panel (after v1.0) |
-| #99 | Shared rooms | #119 | Shared rooms (after v1.0) |
+| — | (new) | #89 | Docs: UI audit and agentic UI plan |
+| — | (new) | #90 | Fixes from the #85 Windows testing |
+| #95 | Computer use | #117 | Computer use (after v1.0) |
+| #97 | Interactive figures and Explain in 3D v2 | #118 | Figures and Explain in 3D v2 (after v1.0) |
+| #98 | Git panel | #119 | Git panel (after v1.0) |
+| #99 | Shared rooms | #120 | Shared rooms (after v1.0) |
 
 Why the shape changed:
 
 - **Old #84 became four PRs.** Context, memory and the run UI grew too large to test in one Windows session; smaller PRs keep work moving without adding testing.
 - **Reliability first.** The failed turns in the #83 test came from rate limits, lost partial work and retries, so the engine (#85) comes before anything else.
-- **Evaluation before pipelines.** The research pipelines, study and the learning core all need recorded-replay cases that fail on the old behaviour, so #94 sits before #95.
-- **Study moved up and split in three.** Research into study is Tern's most distinctive half; it follows the research engine (#98, #101, #102). FSRS-6 is used from the first review instead of SM-2 until a deck has enough reviews.
-- **Generative UI split.** Quiz and Flashcard components come first (#97); the resolver needs #95's conflict detection (#99).
-- **A private beta early (#93)**, so real users test signed builds long before v1.0 (#114).
-- **Security before connectors and the learning core (#107)**, because connectors bring untrusted content and the learning core must not run before taint and poisoning suites exist.
-- **Handbooks added (#115)**, drafted PR by PR under `docs/handbooks/` from #85 on, so the last PR of the plan assembles them.
-- **Computer use, figures v2, the git panel and shared rooms wait until after v1.0 (#116–#119).**
+- **Evaluation before pipelines.** The research pipelines, study and the learning core all need recorded-replay cases that fail on the old behaviour, so #95 sits before #96.
+- **Study moved up and split in three.** Research into study is Tern's most distinctive half; it follows the research engine (#99, #102, #103). FSRS-6 is used from the first review instead of SM-2 until a deck has enough reviews.
+- **Generative UI split.** Quiz and Flashcard components come first (#98); the resolver needs #96's conflict detection (#100).
+- **A private beta early (#94)**, so real users test signed builds long before v1.0 (#115).
+- **Security before connectors and the learning core (#108)**, because connectors bring untrusted content and the learning core must not run before taint and poisoning suites exist.
+- **Handbooks added (#116)**, drafted PR by PR under `docs/handbooks/` from #85 on, so the last PR of the plan assembles them.
+- **Computer use, figures v2, the git panel and shared rooms wait until after v1.0 (#117–#120).**
 
 ## Earlier phases
 
@@ -513,14 +533,14 @@ Why the shape changed:
 | 4 | Crawler and verification | `tern-crawl` with the network guard; claim verdicts; run report | Done (PRs #31 to #33; scholarly sources in #82, evidence chain in #83) |
 | 5 | Deep research | Plan-first runs, workers, checkpoints, budget pause, steering, watcher | Mostly built (PR #34: plans and parallel workers; PR #35: checkpoints, steering, the in-app watcher, ledgers); budget pause and an OS scheduler remain |
 | 6 | Desktop app | GPUI shell, transcript, right rail, vault editor | Done (shell brought forward, ADR 0006) |
-| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Mostly built (PR #36: materials, topics, mastery, tutor, quizzes, viva; flashcards and Explain in 3D since); FSRS in #98 and study plans in #101 |
+| 7 | Study harness | Tutor, flashcards, quizzes, viva practice | Mostly built (PR #36: materials, topics, mastery, tutor, quizzes, viva; flashcards and Explain in 3D since); FSRS in #99 and study plans in #102 |
 | 8 | Decision model | Decision-model slot wired into source ranking, tool choice, and claim checks | Mostly built (PR #38: local scorer, Jev, SubQ Snap, and Voyage adapters, wiring, `tern decide bench`); the reasoning-model and remote benchmark rows need keys |
 | 9 | Continuity and library | Chat range clean and move, sub-sessions, handoff, library, bulk delete | Mostly built (PR #39); a model-written handoff summary remains |
 | 10 | Extensibility | MCP client, ACP server, skills, project rules | Mostly built (PR #40: MCP client, ACP server, skills, `TERN.md` and effective instructions, project folders, the Customize page); MCP prompts and resources remain |
 | 11 | Evaluation | Benchmarks for citation accuracy, cost, and reliability | Mostly built (PR #42: the five-rung ladder, versioned suites, metrics with intervals over three trials, published failures, run comparison, the CI baseline, the Evaluation page); live, pinned, and public scores need a key and have not been run |
 | 12 | Linux and macOS | Ports through `tern-platform` | Built (PR #43: Secret Service and Keychain, XDG and Application Support folders, OS reduced motion, the macOS menu and Cmd keys, CI jobs and test builds per OS); not yet tried by hand on a Linux desktop or a Mac |
 
-Distribution is now planned as #93 (a private beta through the Microsoft Store) and #114 (the v1.0 release with updates).
+Distribution is now planned as #94 (a private beta through the Microsoft Store) and #115 (the v1.0 release with updates).
 
 ## Earlier phase detail
 

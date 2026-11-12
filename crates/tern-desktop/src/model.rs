@@ -611,6 +611,12 @@ pub struct Model {
     /// chat question never opens it.
     pub run_panel_auto: bool,
     pub run_panel: RunPanel,
+    /// Each chat's own run panel (#90): open or closed, and which tab, so
+    /// opening or switching chats never shows another chat's panel.
+    pub chat_panels: std::collections::HashMap<tern_core::SessionId, (bool, RunPanel)>,
+    /// The chat the run panel's state belongs to, `None` before the first
+    /// frame, `Some(None)` for a new chat without an id yet.
+    pub panel_chat: Option<Option<tern_core::SessionId>>,
     /// The latest turn's run, kept even when it ended without an answer.
     pub last_run: Run,
     pub dark: bool,
@@ -932,6 +938,8 @@ impl Model {
             run_panel_open: false,
             run_panel_auto: true,
             run_panel: RunPanel::default(),
+            chat_panels: Default::default(),
+            panel_chat: None,
             last_run: Run::new(),
             dark: true,
             stopping: false,
@@ -2120,6 +2128,11 @@ impl Model {
                 path: e.payload["path"].as_str().map(str::to_owned),
             });
         }
+        // A daily limit moved this turn to a smaller model (#90): one row
+        // in the chat says so; the chat's own model is back next turn.
+        if e.kind == tern_core::run_state::MODEL_SWITCHED {
+            self.entries.push(Entry::Notice(switched_line(&e.payload)));
+        }
         if e.kind == tern_agent::compact::EVENT {
             self.compacted = tern_agent::compact::last(std::slice::from_ref(e));
             self.compact_pending = true;
@@ -2644,13 +2657,17 @@ impl Model {
             out.answer.as_deref().unwrap_or_default(),
             &self.last_run,
         );
+        // A paused turn (#90: a daily limit, a dropped connection) says
+        // why once, in its receipt with Continue; no toast and no
+        // "Interrupted" line repeat it.
+        let paused = out.state == TurnState::Paused;
         if out.state != TurnState::Completed
             && let Some(r) = &out.reason
         {
             if crate::chatflow::is_search_failure(r) {
                 self.search_down = Some(r.clone());
             }
-            if out.state != TurnState::Cancelled {
+            if out.state != TurnState::Cancelled && !paused {
                 // A failure is also a toast that stays, with Retry.
                 self.toast_error(
                     tern_agent::media::plain_error(r),
@@ -2658,7 +2675,7 @@ impl Model {
                 );
             }
         }
-        if let Some(n) = note.filter(|_| half || !failed) {
+        if let Some(n) = note.filter(|_| (half || !failed) && !paused) {
             self.entries.push(Entry::Notice(n));
         }
         if self.continue_offer {
@@ -2854,12 +2871,52 @@ impl Model {
         self.icons.insert(site, state);
     }
 
+    /// The open chat is `to` (#90), called each frame: when it changed, the
+    /// panel's state is kept for the chat left, and the chat opened gets its
+    /// own: what it had, or closed and empty for a chat never shown. A new
+    /// chat that just got its id keeps the panel it has. Only model state
+    /// changes here, so it is safe to call from render.
+    pub fn panel_follows_chat(&mut self, to: Option<tern_core::SessionId>) {
+        if self.panel_chat == Some(to) {
+            return;
+        }
+        let from = self.panel_chat.replace(to);
+        if let Some(Some(old)) = from {
+            self.chat_panels
+                .insert(old, (self.run_panel_open, self.run_panel.clone()));
+        }
+        let saved = to.and_then(|id| self.chat_panels.get(&id).cloned());
+        match saved {
+            Some((open, panel)) => {
+                self.run_panel_open = open;
+                self.run_panel = panel;
+            }
+            // A new chat got its id while it ran, or the first frame.
+            None if matches!(from, Some(None) | None) && to.is_some() => {}
+            None => {
+                self.run_panel_open = false;
+                self.run_panel = RunPanel::default();
+            }
+        }
+    }
+
     /// Clears the transcript for a new chat. The caller opens a new session.
     pub fn new_chat(&mut self) {
         if self.is_busy() {
             return;
         }
         self.entries.clear();
+        // A new chat's panel is its own (#90): nothing from the last chat,
+        // whose panel is kept for when it is opened again.
+        if let Some(Some(old)) = self.panel_chat {
+            self.chat_panels
+                .insert(old, (self.run_panel_open, self.run_panel.clone()));
+        }
+        self.panel_chat = Some(None);
+        self.last_run = Run::new();
+        self.run_panel = RunPanel::default();
+        self.run_panel_open = false;
+        self.turn_pages.clear();
         self.outputs.clear();
         self.outputs_open = false;
         self.folder_menu_open = false;
@@ -3324,6 +3381,18 @@ pub fn interrupt_note(
                 .unwrap_or_else(|| "the reply failed before it finished".into());
             Some(format!("Interrupted: {}", trim_note(&why)))
         }
+    }
+}
+
+/// The chat's row for a `model.switched` event: "Another model for this
+/// turn: mistral-small-latest. The daily limit for …".
+pub fn switched_line(payload: &serde_json::Value) -> String {
+    let to = payload["to_model"].as_str().unwrap_or("a smaller model");
+    let line = payload["line"].as_str().unwrap_or_default().trim();
+    if line.is_empty() {
+        format!("Another model for this turn: {to}.")
+    } else {
+        format!("Another model for this turn: {to}. {line}")
     }
 }
 
@@ -3955,6 +4024,72 @@ mod tests {
             Some(Entry::Notice(n)) => assert!(n.starts_with("Interrupted: "), "{n}"),
             other => panic!("expected a note, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn each_chat_keeps_its_own_run_panel() {
+        let a = tern_core::SessionId::new();
+        let b = tern_core::SessionId::new();
+        let mut m = ready();
+        m.panel_follows_chat(Some(a));
+        m.run_panel_open = true;
+        m.run_panel.view = RunView::Report;
+        // To chat b, never shown: closed and on its first tab.
+        m.panel_follows_chat(Some(b));
+        assert!(!m.run_panel_open);
+        assert_eq!(m.run_panel, RunPanel::default());
+        // Back to a: as it was left.
+        m.panel_follows_chat(Some(a));
+        assert!(m.run_panel_open);
+        assert_eq!(m.run_panel.view, RunView::Report);
+        // A new chat starts closed and empty, and a keeps its panel.
+        m.new_chat();
+        m.panel_follows_chat(None);
+        assert!(!m.run_panel_open);
+        assert!(m.panel_run().steps.is_empty());
+        // ... and keeps its panel when it gets its id.
+        m.run_panel_open = true;
+        m.panel_follows_chat(Some(tern_core::SessionId::new()));
+        assert!(m.run_panel_open);
+        // Back to a: still open on its Report.
+        m.panel_follows_chat(Some(a));
+        assert!(m.run_panel_open);
+        assert_eq!(m.run_panel.view, RunView::Report);
+    }
+
+    #[test]
+    fn a_paused_turn_says_why_once_and_a_switch_is_one_row() {
+        // #90: a daily limit paused the turn: the receipt says it, no
+        // toast and no "Interrupted" line repeat it.
+        let mut m = ready();
+        m.start_turn("q");
+        m.on_text(1, "Part of it");
+        let toasts = m.toasts.shown().len();
+        m.finish_turn(
+            &outcome(
+                TurnState::Paused,
+                None,
+                Some("The daily limit for mistral-large-latest is used up, so Tern did not retry."),
+            ),
+            ctx(0, 0),
+        );
+        assert_eq!(m.toasts.shown().len(), toasts, "no toast");
+        assert!(
+            !m.entries
+                .iter()
+                .any(|e| matches!(e, Entry::Notice(n) if n.starts_with("Interrupted"))),
+            "no Interrupted line"
+        );
+        // A turn moved to a smaller model shows one row saying so.
+        m.start_turn("again");
+        m.on_event(&ev(
+            "model.switched",
+            "switched",
+            json!({"from_model": "mistral-large-latest", "to_model": "mistral-small-latest",
+                   "line": "The daily limit for mistral-large-latest is used up; this turn continues on mistral-small-latest."}),
+        ));
+        assert!(m.entries.iter().any(|e| matches!(e, Entry::Notice(n)
+            if n.starts_with("Another model for this turn: mistral-small-latest."))));
     }
 
     #[test]

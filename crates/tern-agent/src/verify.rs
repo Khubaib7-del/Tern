@@ -531,6 +531,141 @@ pub fn claim_link(entry: usize, claim: usize) -> String {
     format!("{CLAIM_SCHEME}{entry}/{claim}")
 }
 
+/// "MacAvaney et al. (2019)", "Jiang et al., 2023", "Lewis and Oguz
+/// (2020)": an author and a year written as prose.
+static AUTHOR_YEAR: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"\b(\p{Lu}[\p{L}'’\-]+)(?:\s+et\s+al\.?|\s+(?:and|&)\s+\p{Lu}[\p{L}'’\-]+)?,?\s*\(?((?:19|20)\d{2})[a-z]?\)?",
+    )
+    .expect("valid pattern")
+});
+
+/// A paper the turn listed or read: its first author's surname, year,
+/// title and link.
+struct Known {
+    surname: String,
+    year: i64,
+    title: String,
+    link: String,
+}
+
+fn known_papers(events: &[tern_core::EventEnvelope]) -> Vec<Known> {
+    let mut out: Vec<Known> = Vec::new();
+    let mut take = |v: &serde_json::Value| {
+        let Some(first) = v["authors"].as_array().and_then(|a| a.first()) else {
+            return;
+        };
+        let name = first.as_str().unwrap_or_default();
+        let Some(surname) = name.split_whitespace().last() else {
+            return;
+        };
+        let (Some(year), Some(link)) = (v["year"].as_i64(), v["link"].as_str()) else {
+            return;
+        };
+        if out.iter().any(|k| k.link == link) {
+            return;
+        }
+        out.push(Known {
+            surname: surname.to_lowercase(),
+            year,
+            title: v["title"].as_str().unwrap_or_default().to_owned(),
+            link: link.to_owned(),
+        });
+    };
+    for e in events {
+        let meta = &e.payload["meta"];
+        for p in meta["papers"].as_array().into_iter().flatten() {
+            take(p);
+        }
+        for k in ["paper", "seed"] {
+            if meta[k].is_object() {
+                take(&meta[k]);
+            }
+        }
+    }
+    out
+}
+
+/// An answer that names its papers only in prose ("MacAvaney et al.
+/// (2019)") gets the `[n]` markers of the papers the turn listed or read
+/// (#90: the Report said "the answer makes no cited claims"), so its
+/// claims are checked like any other. A paper the turn read is cited by
+/// its place among the pages read; one it only listed joins a closing
+/// link list. An answer with its own markers, or a mention that matches
+/// no paper, is left as it is.
+pub fn link_author_year(
+    answer: &str,
+    events: &[tern_core::EventEnvelope],
+    pages: &[PageRef],
+) -> String {
+    if has_claims(answer) {
+        return answer.to_owned();
+    }
+    let known = known_papers(events);
+    if known.is_empty() {
+        return answer.to_owned();
+    }
+    // The prose only: not a closing references list.
+    let end = answer
+        .match_indices('\n')
+        .map(|(i, _)| i)
+        .find(|&i| {
+            let rest = answer[i + 1..].lines().next().unwrap_or_default();
+            let h = rest
+                .trim()
+                .trim_matches(['#', '*', ':', ' '])
+                .to_lowercase();
+            matches!(
+                h.as_str(),
+                "references" | "sources" | "bibliography" | "works cited" | "citations"
+            )
+        })
+        .unwrap_or(answer.len());
+    let mut extra: Vec<String> = Vec::new();
+    let mut out = String::with_capacity(answer.len() + 64);
+    let mut at = 0;
+    for m in AUTHOR_YEAR.captures_iter(&answer[..end]) {
+        let whole = m.get(0).expect("the match");
+        let surname = m[1].to_lowercase();
+        let Ok(year) = m[2].parse::<i64>() else {
+            continue;
+        };
+        let Some(k) = known
+            .iter()
+            .find(|k| k.surname == surname && k.year == year)
+        else {
+            continue;
+        };
+        if answer[whole.end()..].trim_start().starts_with('[') {
+            continue;
+        }
+        let n = match pages.iter().position(|p| {
+            loose(&p.url) == loose(&k.link)
+                || (!k.title.is_empty() && p.title.eq_ignore_ascii_case(&k.title))
+        }) {
+            Some(i) => i + 1,
+            None => match extra.iter().position(|l| *l == k.link) {
+                Some(j) => pages.len() + j + 1,
+                None => {
+                    extra.push(k.link.clone());
+                    pages.len() + extra.len()
+                }
+            },
+        };
+        out.push_str(&answer[at..whole.end()]);
+        out.push_str(&format!(" [{n}]"));
+        at = whole.end();
+    }
+    out.push_str(&answer[at..]);
+    if !extra.is_empty() {
+        out.push_str("\n\nSources:\n");
+        for (j, link) in extra.iter().enumerate() {
+            out.push_str(&format!("[{}] {link}\n", pages.len() + j + 1));
+        }
+    }
+    out
+}
+
 /// Whether the answer cites anything at all (a cheap pre-check).
 pub fn has_claims(answer: &str) -> bool {
     !tern_research::claims::citations(answer).is_empty()
@@ -549,6 +684,31 @@ mod tests {
             builtin: None,
             favicon: None,
         }
+    }
+
+    #[test]
+    fn papers_named_in_prose_get_their_markers() {
+        let ev = tern_core::EventEnvelope::new(
+            tern_core::SessionId::new(),
+            "tool.executed",
+            tern_core::EffectClass::Network,
+            "searched",
+            serde_json::json!({"meta": {"papers": [
+                {"title": "CEDR: Contextualized Embeddings for Document Ranking", "authors": ["Sean MacAvaney", "Andrew Yates"], "year": 2019, "link": "https://arxiv.org/abs/1904.07094"},
+                {"title": "Active Retrieval Augmented Generation", "authors": ["Zhengbao Jiang"], "year": 2023, "link": "https://arxiv.org/abs/2305.06983"}
+            ]}}),
+        );
+        let pages = [page("https://arxiv.org/abs/2305.06983")];
+        let answer = "FLARE retrieves when unsure (Jiang et al., 2023). MacAvaney et al. (2019) rank with BERT. Smith (2020) says nothing here.";
+        let out = link_author_year(answer, std::slice::from_ref(&ev), &pages);
+        assert!(out.contains("(Jiang et al., 2023) [1]."), "{out}");
+        assert!(out.contains("MacAvaney et al. (2019) [2] rank"), "{out}");
+        assert!(out.contains("Smith (2020) says"), "{out}");
+        assert!(
+            out.ends_with("Sources:\n[2] https://arxiv.org/abs/1904.07094\n"),
+            "{out}"
+        );
+        assert_eq!(link_author_year("Cited [1].", &[ev], &pages), "Cited [1].");
     }
 
     #[test]

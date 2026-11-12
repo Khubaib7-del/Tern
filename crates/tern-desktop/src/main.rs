@@ -39,6 +39,7 @@ mod files;
 mod filetype;
 mod flow;
 mod focus;
+mod follow;
 mod gauge;
 mod git;
 mod harness;

@@ -210,7 +210,7 @@ impl Workspace {
         self.model.steering = Some(session.steering());
         self.model.run_panel_open = true;
         self.bridge.resume_run(session, self.deep_control.clone());
-        self.scroll.scroll_to_bottom();
+        self.jump_to_end();
         self.start_ticker(cx);
         cx.notify();
     }

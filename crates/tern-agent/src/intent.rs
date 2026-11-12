@@ -407,15 +407,93 @@ const SCHOLAR_FILLER: &[&str] = &[
     "any",
 ];
 
+/// Whether `lower` (a lower-case word) is filler a scholarly search
+/// cannot use.
+pub fn is_scholar_filler(lower: &str) -> bool {
+    SCHOLAR_FILLER.contains(&lower)
+}
+
 /// The keyword query Tern sends `scholar_search` for an academic
-/// question: its key terms without filler, at most eight.
+/// question: its key terms without filler or instructions ("cite
+/// sources", "in 5 lines"), at most eight (#90, see [`crate::query`]).
 pub fn scholar_query(text: &str) -> Option<String> {
-    let kept: Vec<String> = crate::webintent::keywords(text)
-        .into_iter()
-        .filter(|w| !SCHOLAR_FILLER.contains(&w.to_lowercase().as_str()))
-        .take(8)
-        .collect();
-    (!kept.is_empty()).then(|| kept.join(" "))
+    let q = crate::query::scholar_keywords(text);
+    (!q.is_empty()).then_some(q)
+}
+
+/// A request to follow a named paper's citations or references (#90): the
+/// seed (an arXiv id or a DOI in the message) and the direction. Such a
+/// request goes straight to `paper_snowball`; a keyword search for "follow
+/// the citations of arXiv 1706.03762" finds nothing on topic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnowballAsk {
+    /// `arXiv:<id>` or the DOI.
+    pub paper: String,
+    /// `citations` (papers that cite it) or `references` (papers it cites).
+    pub direction: &'static str,
+}
+
+/// Phrases that ask for the papers citing a paper.
+const FORWARD: &[&str] = &[
+    "follow the citations",
+    "follow its citations",
+    "follow citations",
+    "forward citations",
+    "papers citing",
+    "papers that cite",
+    "papers which cite",
+    "works citing",
+    "that cite it",
+    "which cite it",
+    "who cite",
+    "who cites",
+    "cited by",
+    "citing papers",
+    "citing it",
+    "build on",
+    "builds on",
+    "building on",
+    "built on",
+    "built upon",
+    "follow-up work",
+    "follow up work",
+    "follow-up papers",
+    "papers that extend",
+    "extend it",
+    "extends it",
+];
+
+/// Phrases that ask for the papers a paper cites.
+const BACKWARD: &[&str] = &[
+    "its references",
+    "the references of",
+    "references of",
+    "reference list",
+    "papers it cites",
+    "what it cites",
+    "backward citations",
+];
+
+/// The snowball a message asks for, if any: a seed it names and a phrase
+/// that asks for its citers or its references.
+pub fn snowball_request(text: &str) -> Option<SnowballAsk> {
+    let lower = text.to_lowercase();
+    let direction = if FORWARD.iter().any(|p| lower.contains(p)) {
+        "citations"
+    } else if BACKWARD.iter().any(|p| lower.contains(p)) {
+        "references"
+    } else {
+        return None;
+    };
+    let paper = text
+        .split(|c: char| c.is_whitespace() || ",;()[]{}<>\"'`".contains(c))
+        .map(|w| w.trim_end_matches(['.', '?', '!', ':']))
+        .filter(|w| !w.is_empty())
+        .find_map(|w| {
+            tern_research::scholar::normalize_doi(w)
+                .or_else(|| tern_research::scholar::arxiv_id(w).map(|a| format!("arXiv:{a}")))
+        })?;
+    Some(SnowballAsk { paper, direction })
 }
 
 #[cfg(test)]
@@ -492,6 +570,28 @@ mod tests {
     }
 
     #[test]
+    fn citation_requests_name_their_seed_and_direction() {
+        assert_eq!(
+            snowball_request(
+                "Follow the citations of arXiv 1706.03762 and list 8 papers that build on it"
+            ),
+            Some(SnowballAsk {
+                paper: "arXiv:1706.03762".into(),
+                direction: "citations"
+            })
+        );
+        assert_eq!(
+            snowball_request("what are the references of doi:10.18653/v1/N19-1423?"),
+            Some(SnowballAsk {
+                paper: "10.18653/v1/n19-1423".into(),
+                direction: "references"
+            })
+        );
+        assert_eq!(snowball_request("papers that build on transformers"), None);
+        assert_eq!(snowball_request("summarise arXiv 1706.03762"), None);
+    }
+
+    #[test]
     fn scholar_queries_keep_the_topic() {
         assert_eq!(
             scholar_query("How does FLARE compare with retrieving before every sentence?")
@@ -501,6 +601,11 @@ mod tests {
         assert_eq!(
             scholar_query("Do octopuses dream in binary code?").as_deref(),
             Some("octopuses dream binary code")
+        );
+        // #90: the instructions in the message never reach the search.
+        assert_eq!(
+            scholar_query("What are the main critiques of RLHF? Cite sources.").as_deref(),
+            Some("critiques RLHF")
         );
     }
 }

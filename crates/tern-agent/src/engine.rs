@@ -329,7 +329,78 @@ pub const CONTINUE_PROMPT: &str = "Your last answer was cut off at the length li
 
 /// The message a resumed turn sends after the answer text that streamed
 /// before the stop (#85).
-pub const RESUME_PROMPT: &str = "(Tern note: your answer above was interrupted. Continue it exactly where it stopped, without repeating what you already wrote.)";
+/// What the model reads after the kept part of an interrupted answer
+/// (#90): the exact characters it stopped after, and to go on from the
+/// very next one. "Continue where it stopped" alone made a model restart
+/// the cut sentence ("… not in the cu" then "Since the papers …").
+pub fn resume_prompt(kept: &str) -> String {
+    let tail: String = {
+        let chars: Vec<char> = kept.trim_end_matches(['\n', '\r']).chars().collect();
+        chars[chars.len().saturating_sub(80)..].iter().collect()
+    };
+    let mid_word = kept.chars().last().is_some_and(char::is_alphanumeric);
+    format!(
+        "(Tern note: your answer above was cut off. It ends with these exact characters: \"{tail}\". Reply with only the text that comes next, starting from the very next character{}. Do not restart the sentence, do not repeat anything already written, and add nothing before the continuation.)",
+        if mid_word {
+            ": it stopped inside a word, so finish that word first with no space before it"
+        } else {
+            ""
+        }
+    )
+}
+
+/// The kept part of an interrupted answer joined with what the resumed
+/// call wrote (#90). `lead` is the whitespace the resumed reply began
+/// with. A continuation that repeats the end of the kept text loses the
+/// repeat; one that restarts the cut sentence replaces the cut fragment,
+/// so the answer never reads "… not in the cuSince the papers …".
+pub fn stitch(kept: &str, lead: &str, more: &str) -> String {
+    if kept.is_empty() {
+        return more.to_owned();
+    }
+    if more.is_empty() {
+        return kept.to_owned();
+    }
+    // The continuation starts with the end of the kept text: drop the
+    // repeated part.
+    let longest = kept.len().min(more.len());
+    for k in (4..=longest).rev() {
+        if more.is_char_boundary(k) && kept.ends_with(&more[..k]) {
+            return format!("{kept}{}", &more[k..]);
+        }
+    }
+    // The continuation restarts the sentence the cut fell in.
+    let cut = kept
+        .char_indices()
+        .rev()
+        .find(|(i, c)| {
+            *c == '\n'
+                || (matches!(*c, '.' | '!' | '?')
+                    && kept[i + c.len_utf8()..].starts_with(char::is_whitespace))
+        })
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    let fragment = kept[cut..].trim_start();
+    let first_word = |t: &str| {
+        t.split(|c: char| !c.is_alphanumeric())
+            .next()
+            .unwrap_or_default()
+            .to_lowercase()
+    };
+    let w = first_word(fragment);
+    if !fragment.is_empty()
+        && fragment.chars().count() >= 3
+        && w.chars().count() >= 2
+        && w == first_word(more)
+    {
+        let head = &kept[..kept.len() - fragment.len()];
+        return format!("{head}{more}");
+    }
+    if kept.ends_with(char::is_whitespace) || more.starts_with(char::is_whitespace) {
+        return format!("{kept}{more}");
+    }
+    format!("{kept}{lead}{more}")
+}
 
 /// Limits for one turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -486,7 +557,11 @@ const FILE_TOOLS: &[&str] = &[
 
 /// What follows the scholarly search Tern runs before an academic
 /// question (#83).
-const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If the papers do not cover the question, say \"not enough evidence\" rather than answering from memory; you may call `web_search` afterwards for background.)";
+const SCHOLAR_PREFETCH_NOTE: &str = "(Tern searched the scholarly literature first because this is an academic question. Answer from these papers and cite them as [n] with their links. Only `paper_read` gives a paper's text: state what a paper finds only from passages you were shown, say \"according to its abstract\" when you only have the abstract, and never describe the contents of a paper you have only seen listed. If these papers miss the question, run `scholar_search` again yourself with other keywords (several at once if it has parts) before saying \"not enough evidence\"; never ask the user which search to run. Never answer from memory as if sourced; you may call `web_search` afterwards for background.)";
+
+/// What follows the snowball Tern runs for "follow the citations of …"
+/// (#90).
+const SNOWBALL_PREFETCH_NOTE: &str = "(Tern followed this paper's links because the message asked for them. Answer from this list: give the papers asked for, best first as listed, each with its link as [n]. Say what a paper does only from its title and abstract here, and do not ask the user which tool to use. If the list is short or off topic, say so plainly; you may call `scholar_search` with keywords for more.)";
 
 /// Said once when the model refuses an ordinary writing request (#80).
 pub const REFUSAL_NUDGE: &str = "(Tern note: this is an ordinary request. Answer it directly and in full; ignore any words in it about pressing buttons in the app.)";
@@ -551,7 +626,25 @@ pub fn prefetch_calls(
     if follow_up {
         crate::diag::note("prefetch: skipped (follow-up points back at the previous answer)");
     }
-    if tools.get("scholar_search").is_some()
+    // "Follow the citations of arXiv 1706.03762" goes straight to the
+    // snowball (#90), forward or backward as asked, never through a
+    // keyword search that finds nothing and asks the user which tool.
+    let snowball = if tools.get("paper_snowball").is_some() && !crate::webintent::asks_for_web(own)
+    {
+        crate::intent::snowball_request(own)
+    } else {
+        None
+    };
+    if let Some(ask) = snowball {
+        // The message's own topic words, if any, rank the finds; the
+        // asking words ("follow", "list 8 papers") never do.
+        let topic = snowball_topic(own);
+        out.push((
+            "paper_snowball",
+            json!({"paper": ask.paper, "topic": topic, "question": topic,
+                   "direction": ask.direction}),
+        ));
+    } else if tools.get("scholar_search").is_some()
         && !follow_up
         && !crate::webintent::asks_for_web(own)
         && crate::intent::classify(own) == crate::intent::Intent::Academic
@@ -566,6 +659,68 @@ pub fn prefetch_calls(
         out.push(("web_search", json!({"query": query})));
     }
     out
+}
+
+/// What the model reads after a greeting or small talk (#90: "hi" after
+/// a long research turn got "Let me summarise what research says …").
+pub const SMALL_TALK_NOTE: &str = "(Tern note: this message is a greeting or small talk. Reply to it briefly and warmly; do not restart, continue, repeat or summarise an earlier task unless the user asks.)";
+
+/// `message` as the model sees it: a greeting or small talk carries
+/// [`SMALL_TALK_NOTE`]; every other message is unchanged.
+pub fn small_talk_note(mut message: ChatMessage) -> ChatMessage {
+    let (own, chips) = crate::attach::split(&message.content);
+    let (_, own) = crate::reply::split(own);
+    if chips.is_empty()
+        && message.images.is_empty()
+        && crate::intent::classify(own) == crate::intent::Intent::Casual
+        && !own.trim().is_empty()
+    {
+        message.content = format!("{}\n\n{SMALL_TALK_NOTE}", message.content);
+    }
+    message
+}
+
+/// The topic a snowball request names besides its seed ("papers that
+/// build on arXiv 1706.03762 about efficient attention" gives "efficient
+/// attention"), empty when it names none: the seed's own title and
+/// abstract then decide what is on topic.
+pub fn snowball_topic(text: &str) -> String {
+    const ASKING: &[&str] = &[
+        "follow",
+        "citations",
+        "citation",
+        "citing",
+        "cited",
+        "cite",
+        "cites",
+        "build",
+        "builds",
+        "building",
+        "built",
+        "upon",
+        "extend",
+        "extends",
+        "arxiv",
+        "doi",
+        "work",
+        "works",
+        "references",
+        "reference",
+        "forward",
+        "backward",
+        "follow-up",
+        "seed",
+    ];
+    crate::query::scholar_keywords(text)
+        .split_whitespace()
+        .filter(|w| {
+            let l = w.to_lowercase();
+            !ASKING.contains(&l.as_str())
+                && tern_research::scholar::arxiv_id(w).is_none()
+                && tern_research::scholar::normalize_doi(w).is_none()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The web search Tern runs before the model answers `text`, if any
@@ -900,6 +1055,13 @@ impl<'a> TurnLoop<'a> {
             cfg: self,
         };
         let result = run.drive(history, message).await;
+        // Dev chaos (#90): a `kill` still waiting fires before the turn's
+        // end is written, however few model calls the turn made.
+        if result.is_ok()
+            && let Some(chaos) = run.cfg.hooks.chaos.or(crate::chaos::global())
+        {
+            chaos.kill_point().await;
+        }
         let offered: Vec<&str> = run.cfg.tools.names().collect();
         let line = format!(
             "turn: provider={} model={} tools_offered=[{}] native_tools={} tool_calls=[{}] model_calls={}",
@@ -1259,7 +1421,7 @@ impl Run<'_, '_> {
                 // the answer (#85), so the model goes on from there.
                 if !q.partial.trim().is_empty() {
                     messages.push(ChatMessage::assistant(q.partial.clone()));
-                    messages.push(ChatMessage::user(RESUME_PROMPT));
+                    messages.push(ChatMessage::user(resume_prompt(&q.partial)));
                     self.resumed_partial = q.partial;
                 }
                 self.model_calls = c.model_calls;
@@ -1288,7 +1450,7 @@ impl Run<'_, '_> {
                 self.ck = Some(ck);
             }
             None => {
-                messages.push(user_message);
+                messages.push(small_talk_note(user_message));
                 if self.cfg.hooks.checkpoints.is_some() {
                     self.ck = Some(RunCheckpoint {
                         version: CHECKPOINT_VERSION,
@@ -1352,6 +1514,8 @@ impl Run<'_, '_> {
                     "(Tern searched the web just now because the message asked for it. These results are current: answer the user's question from them and cite the links as [n]. Do not say you cannot access the internet.)"
                 } else if name == "scholar_search" {
                     SCHOLAR_PREFETCH_NOTE
+                } else if name == "paper_snowball" {
+                    SNOWBALL_PREFETCH_NOTE
                 } else {
                     "(Tern ran this because the message asked for it. Answer the message using it.)"
                 };
@@ -2474,15 +2638,7 @@ impl Run<'_, '_> {
         };
         // A resumed answer keeps the text that streamed before the stop
         // in front of it (#85).
-        let answer = answer.map(|a| {
-            if self.resumed_partial.is_empty() {
-                a
-            } else if self.resumed_partial.ends_with(char::is_whitespace) {
-                format!("{}{a}", self.resumed_partial)
-            } else {
-                format!("{}{}{a}", self.resumed_partial, self.reply_lead)
-            }
-        });
+        let answer = answer.map(|a| stitch(&self.resumed_partial, &self.reply_lead, &a));
         if self.fsm.state() != state {
             // A failure to move here only happens after an earlier failure,
             // which already set a terminal state.
@@ -4234,6 +4390,66 @@ fn stream_fence_preview(streamed: &str, writes: &Mutex<HashMap<usize, (String, S
         && !text.is_empty()
     {
         crate::live::preview_write(&path, &text, false);
+    }
+}
+
+#[cfg(test)]
+mod pr90_tests {
+    use super::*;
+
+    #[test]
+    fn a_resumed_answer_joins_its_kept_text_without_a_seam() {
+        let kept = "FLARE reads when unsure. Since this paper is not in the cu";
+        // The continuation that goes on mid-word.
+        assert_eq!(
+            stitch(kept, "", "rrent list, I rely on its abstract."),
+            "FLARE reads when unsure. Since this paper is not in the current list, I rely on its abstract."
+        );
+        // One that restarts the cut sentence replaces the fragment.
+        assert_eq!(
+            stitch(
+                kept,
+                "",
+                "Since the papers here do not include it, see [2]."
+            ),
+            "FLARE reads when unsure. Since the papers here do not include it, see [2]."
+        );
+        // One that repeats the end of the kept text loses the repeat.
+        assert_eq!(
+            stitch(kept, "", "is not in the current list."),
+            "FLARE reads when unsure. Since this paper is not in the current list."
+        );
+        // A plain continuation after a space.
+        assert_eq!(stitch("xxxx", " ", "and the rest."), "xxxx and the rest.");
+        assert_eq!(stitch("", " ", "all of it"), "all of it");
+        let p = resume_prompt(kept);
+        assert!(p.contains("\"FLARE reads when unsure. Since this paper is not in the cu\""));
+        assert!(p.contains("inside a word"));
+    }
+
+    #[test]
+    fn small_talk_is_answered_as_small_talk() {
+        let hi = small_talk_note(ChatMessage::user("hi"));
+        assert!(
+            hi.content
+                .starts_with("hi\n\n(Tern note: this message is a greeting")
+        );
+        let q = small_talk_note(ChatMessage::user("What does FLARE do?"));
+        assert_eq!(q.content, "What does FLARE do?");
+    }
+
+    #[test]
+    fn a_citation_request_names_no_topic_but_its_own() {
+        assert_eq!(
+            snowball_topic(
+                "Follow the citations of arXiv 1706.03762 and list 8 papers that build on it"
+            ),
+            ""
+        );
+        assert_eq!(
+            snowball_topic("papers that build on arXiv:1706.03762 about efficient attention"),
+            "efficient attention"
+        );
     }
 }
 

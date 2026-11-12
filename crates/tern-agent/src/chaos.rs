@@ -14,6 +14,11 @@
 //! | `bad-args` | Runs, and its tool calls come back with their arguments as a JSON string |
 //! | `kill` | Ends the process before the call is sent (a crash mid-step) |
 //!
+//! A `kill` still waiting when the turn is about to finish fires there
+//! instead (#90): `ok,kill` on a turn that answers in one call still ends
+//! the process mid-turn, with the answer unsaved, so the next launch shows
+//! "Tern closed while this turn was running".
+//!
 //! Example: `TERN_DEV=1 TERN_CHAOS=ok,429-daily` lets the first call through
 //! and fails the second with a daily limit.
 
@@ -72,6 +77,9 @@ pub struct Chaos {
     queue: Mutex<VecDeque<Fault>>,
     /// Faults that could not be read, for the startup log.
     pub unknown: Vec<String>,
+    /// Tests only: `kill` stops the turn where it is forever instead of
+    /// ending the process, as a crash looks from the next launch.
+    hang_on_kill: bool,
 }
 
 impl Chaos {
@@ -88,7 +96,40 @@ impl Chaos {
         Self {
             queue: Mutex::new(queue),
             unknown,
+            hang_on_kill: false,
         }
+    }
+
+    /// Tests only: `kill` hangs the turn instead of ending the process.
+    pub fn hang_on_kill(mut self) -> Self {
+        self.hang_on_kill = true;
+        self
+    }
+
+    /// Whether the next fault is `kill`.
+    fn kill_next(&self) -> bool {
+        self.queue
+            .lock()
+            .is_ok_and(|q| q.front() == Some(&Fault::Kill))
+    }
+
+    /// Where a turn is about to finish (#90): a `kill` still waiting fires
+    /// here, before the answer is saved. Nothing happens otherwise.
+    pub async fn kill_point(&self) {
+        if !self.kill_next() {
+            return;
+        }
+        let _ = self.next();
+        crate::diag::note("chaos: injecting kill (before the turn finished)");
+        self.die().await;
+    }
+
+    /// Ends the process, or, in tests, never returns.
+    async fn die(&self) {
+        if self.hang_on_kill {
+            std::future::pending::<()>().await;
+        }
+        std::process::exit(86);
     }
 
     /// The next fault, consumed. `None` once all have fired.
@@ -188,7 +229,7 @@ impl ChaosModel<'_> {
     fn take(&self) -> Option<Fault> {
         let f = self.chaos.next()?;
         crate::diag::note(&format!("chaos: injecting {}", f.id()));
-        if f == Fault::Kill {
+        if f == Fault::Kill && !self.chaos.hang_on_kill {
             std::process::exit(86);
         }
         Some(f)
@@ -204,6 +245,10 @@ impl Model for ChaosModel<'_> {
         let fault = self.take();
         Box::pin(async move {
             match fault {
+                Some(Fault::Kill) => {
+                    self.chaos.die().await;
+                    Err(rate_limited(false))
+                }
                 Some(Fault::RateLimitShort) => Err(rate_limited(false)),
                 Some(Fault::RateLimitDaily) => Err(rate_limited(true)),
                 Some(Fault::DropAfter(_)) => Err(ProviderError::Network {
@@ -228,6 +273,10 @@ impl Model for ChaosModel<'_> {
         let fault = self.take();
         Box::pin(async move {
             match fault {
+                Some(Fault::Kill) => {
+                    self.chaos.die().await;
+                    Err(rate_limited(false))
+                }
                 Some(Fault::RateLimitShort) => Err(rate_limited(false)),
                 Some(Fault::RateLimitDaily) => Err(rate_limited(true)),
                 Some(Fault::DropAfter(n)) => {

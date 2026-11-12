@@ -21,6 +21,11 @@ use std::collections::HashMap;
 /// notch or two, so a row is drawn before it scrolls into view.
 pub const MARGIN: f32 = 320.;
 
+/// The chat's margin (#90): wider, so a fast fling to the bottom of a long
+/// chat lands on rows already drawn, instead of boxes that become rows of
+/// another height under the pointer (the page jumped and flickered).
+pub const CHAT_MARGIN: f32 = 1600.;
+
 /// Where a row sat when last drawn: its top in the page's content (0 at
 /// the top of the content, not of the window) and its height.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,12 +48,18 @@ impl Spot {
     /// Whether the row is far enough outside the viewport (its top and
     /// height in window px) to draw as an empty box, at scroll offset
     /// `offset_y`.
+    #[cfg(test)]
     pub fn hidden(&self, offset_y: f32, view_top: f32, view_h: f32) -> bool {
+        self.hidden_within(offset_y, view_top, view_h, MARGIN)
+    }
+
+    /// Whether the row draws as an empty box, with its own margin.
+    pub fn hidden_within(&self, offset_y: f32, view_top: f32, view_h: f32, margin: f32) -> bool {
         if view_h <= 0. || self.h <= 0. {
             return false;
         }
         let top = self.top + offset_y;
-        top + self.h < view_top - MARGIN || top > view_top + view_h + MARGIN
+        top + self.h < view_top - margin || top > view_top + view_h + margin
     }
 }
 
@@ -73,9 +84,22 @@ impl Rows {
     }
 
     /// Whether the row `key` draws as an empty box (see [`Spot::hidden`]).
+    #[cfg(test)]
     pub fn hidden(&self, key: &str, offset_y: f32, view_top: f32, view_h: f32) -> Option<f32> {
+        self.hidden_within(key, offset_y, view_top, view_h, MARGIN)
+    }
+
+    /// Whether the row `key` draws as an empty box, with its own margin.
+    pub fn hidden_within(
+        &self,
+        key: &str,
+        offset_y: f32,
+        view_top: f32,
+        view_h: f32,
+        margin: f32,
+    ) -> Option<f32> {
         self.get(key)
-            .filter(|s| s.hidden(offset_y, view_top, view_h))
+            .filter(|s| s.hidden_within(offset_y, view_top, view_h, margin))
             .map(|s| s.h)
     }
 }
@@ -114,6 +138,14 @@ mod tests {
         // Unknown rows and an unmeasured page draw whole.
         assert_eq!(rows.hidden("new", 0., view_top, view_h), None);
         assert_eq!(rows.hidden("r39", 0., 0., 0.), None);
+    }
+
+    #[test]
+    fn the_chat_draws_further_past_the_window() {
+        let s = Spot::at(100. + 30. * 60., 60., 0.);
+        // 1100 px below a 600 px window: a box in Settings, drawn in the chat.
+        assert!(s.hidden(0., 100., 600.));
+        assert!(!s.hidden_within(0., 100., 600., CHAT_MARGIN));
     }
 
     #[test]

@@ -546,15 +546,30 @@ pub const PINNED_TEMPERATURE: f32 = 0.3;
 /// stays with the provider they chose. `None` when Tern knows no smaller
 /// sibling, or the model is already the small one.
 pub fn within_provider_fallback(provider: &str, model: &str) -> Option<&'static str> {
+    // A known list, never a live model listing (#90: Resume waited on
+    // "Could not list Mistral models: no answer in 10 s" and never
+    // switched).
     let m = model.to_ascii_lowercase();
     let pick = match provider {
-        "mistral" if m.starts_with("mistral-large") || m.starts_with("mistral-medium") => {
-            "mistral-small-latest"
+        "mistral" if m.contains("ministral-3b") => return None,
+        "mistral" if m.starts_with("ministral") => "ministral-3b-latest",
+        "mistral" if m.starts_with("magistral") && !m.contains("small") => "magistral-small-latest",
+        "mistral" if m.contains("small") || m.contains("nemo") || m.contains("tiny") => {
+            "ministral-8b-latest"
         }
+        "mistral" => "mistral-small-latest",
         "groq" if m.contains("70b") || m.contains("120b") || m.contains("maverick") => {
             "llama-3.1-8b-instant"
         }
+        "google" if m.contains("flash-lite") => return None,
+        "google" if m.contains("flash") => "gemini-2.5-flash-lite",
         "google" if m.contains("pro") => "gemini-2.5-flash",
+        "openai" if m.contains("mini") || m.contains("nano") => return None,
+        "openai" if m.starts_with("gpt-5") => "gpt-5-mini",
+        "openai" if m.starts_with("gpt-4.1") => "gpt-4.1-mini",
+        "openai" if m.starts_with("gpt-4o") => "gpt-4o-mini",
+        "anthropic" if m.contains("haiku") => return None,
+        "anthropic" if m.contains("opus") || m.contains("sonnet") => "claude-haiku-4-5",
         _ => return None,
     };
     (pick != m).then_some(pick)
@@ -2018,6 +2033,10 @@ impl ChatSession {
         let n = turns.len();
         let last = turns.last()?;
         let raw_answer = last.answer.as_deref().filter(|_| last.stop.is_none())?;
+        // Papers named only in prose get their markers (#90), so the
+        // answer's claims are checked.
+        let linked = verify::link_author_year(raw_answer, &events, &last.pages);
+        let raw_answer = linked.as_str();
         // Quote tokens become `[n]` (or are stripped when Tern never minted
         // them) before anything reads the claims.
         let minted = verify::minted_quotes(&events, &last.pages);
@@ -2399,6 +2418,35 @@ mod context_tests {
 #[cfg(test)]
 mod title_tests {
     use super::title_from;
+
+    #[test]
+    fn a_daily_limit_has_a_smaller_model_of_the_same_provider() {
+        let f = super::within_provider_fallback;
+        assert_eq!(
+            f("mistral", "mistral-large-latest"),
+            Some("mistral-small-latest")
+        );
+        assert_eq!(
+            f("mistral", "mistral-medium-2508"),
+            Some("mistral-small-latest")
+        );
+        assert_eq!(
+            f("mistral", "mistral-small-latest"),
+            Some("ministral-8b-latest")
+        );
+        assert_eq!(
+            f("mistral", "magistral-medium-latest"),
+            Some("magistral-small-latest")
+        );
+        assert_eq!(f("mistral", "ministral-3b-latest"), None);
+        assert_eq!(
+            f("groq", "llama-3.3-70b-versatile"),
+            Some("llama-3.1-8b-instant")
+        );
+        assert_eq!(f("google", "gemini-2.5-pro"), Some("gemini-2.5-flash"));
+        assert_eq!(f("openai", "gpt-4o-mini"), None);
+        assert_eq!(f("ollama", "llama3"), None);
+    }
 
     #[test]
     fn titles_are_one_short_line() {

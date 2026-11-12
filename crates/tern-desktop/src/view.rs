@@ -192,6 +192,8 @@ pub struct Workspace {
     /// Stops one deep research worker, or the whole run.
     deep_control: tern_agent::DeepControl,
     scroll: ScrollHandle,
+    /// Whether the chat follows its end while an answer streams (#90).
+    follow: crate::follow::Follow,
     /// The run panel's scroll, and whether the Report should scroll its
     /// focused claim to the top when it is next drawn (a verdict badge
     /// clicked, #83).
@@ -822,6 +824,7 @@ impl Workspace {
             plan_dropped: HashSet::new(),
             deep_control: tern_agent::DeepControl::default(),
             scroll: ScrollHandle::new(),
+            follow: Default::default(),
             run_scroll,
             claim_scroll_pending: Default::default(),
             ticker: None,
@@ -1021,7 +1024,7 @@ impl Workspace {
                     self.focus = None;
                     self.apply_block_edits();
                     self.request_icons();
-                    self.scroll.scroll_to_bottom();
+                    self.jump_to_end();
                     self.apply_restore(window, cx);
                 }
             }
@@ -1081,7 +1084,7 @@ impl Workspace {
                 self.model.harness_of_chat(s.harness());
                 self.chat_shown(&s);
                 self.session = Some(s);
-                self.scroll.scroll_to_bottom();
+                self.jump_to_end();
                 self.composer.update(cx, |c, cx| c.focus(window, cx));
                 self.apply_restore(window, cx);
             }
@@ -1145,7 +1148,7 @@ impl Workspace {
                         .toast_error(format!("Compacting failed: {e}"), None),
                 }
                 self.session = Some(s);
-                self.scroll.scroll_to_bottom();
+                self.follow_end();
             }
             Msg::Event(e) => {
                 self.model.on_event(&e);
@@ -1217,11 +1220,11 @@ impl Workspace {
             }
             Msg::Text(call, text) => {
                 self.model.on_text(call, &text);
-                self.scroll.scroll_to_bottom();
+                self.follow_end();
             }
             Msg::Reasoning(call, text) => {
                 self.model.on_reasoning(call, &text);
-                self.scroll.scroll_to_bottom();
+                self.follow_end();
             }
             Msg::Archive(archived, deleted, note) => {
                 self.model.archive.loaded(archived, deleted);
@@ -1235,7 +1238,7 @@ impl Workspace {
                     self.model.ask_approval(req);
                     // The approval card (a diff, a command) sits at the end
                     // of the transcript: bring it into view.
-                    self.scroll.scroll_to_bottom();
+                    self.jump_to_end();
                 }
             }
             Msg::Plan(plan, reply) => self.show_plan(plan, reply, window, cx),
@@ -1264,7 +1267,7 @@ impl Workspace {
                 if self.model.reveal.is_none() {
                     self.ticker = None;
                 }
-                self.scroll.scroll_to_bottom();
+                self.follow_end();
                 self.apply_pending_pick();
                 // A message queued with Tab goes now.
                 if let Some(q) = self.queued.take() {
@@ -1325,9 +1328,21 @@ impl Workspace {
                         .resolve(&crate::toast::Retry::Models(id), Instant::now()),
                     // Only the picker's own tab gets a toast; it also shows
                     // the reason with Retry in the list.
+                    // A background refresh that fails while a list is
+                    // already known, or while a turn runs or waits to be
+                    // resumed, stays quiet (#90: "Could not list Mistral
+                    // models" popped up over a paused turn's receipt).
                     Err(e)
                         if self.model.composer.menu.is_none()
-                            && self.model.providers.default_id(Kind::Model) == Some(id) =>
+                            && self.model.providers.default_id(Kind::Model) == Some(id)
+                            && !self.model.is_busy()
+                            && self.model.resume_offer.is_none()
+                            && !self
+                                .model
+                                .catalog
+                                .providers
+                                .iter()
+                                .any(|(p, r)| *p == id && r.is_ok()) =>
                     {
                         self.model.toast_error(
                             format!("Could not list {} models: {e}", self.provider_name(id)),
@@ -1408,7 +1423,7 @@ impl Workspace {
             if self.model.steer(&text) {
                 self.composer
                     .update(cx, |c, cx| c.set_value("", window, cx));
-                self.scroll.scroll_to_bottom();
+                self.jump_to_end();
             }
             cx.notify();
             return;
@@ -1565,7 +1580,7 @@ impl Workspace {
         }
         self.composer
             .update(cx, |c, cx| c.set_value("", window, cx));
-        self.scroll.scroll_to_bottom();
+        self.jump_to_end();
         self.start_ticker(cx);
         cx.notify();
     }
@@ -1948,7 +1963,7 @@ impl Workspace {
                         cx.notify();
                     }
                     if pacing {
-                        this.scroll.scroll_to_bottom();
+                        this.follow_end();
                     }
                     this.model.is_busy() || pacing
                 });
@@ -2045,7 +2060,7 @@ impl Workspace {
         if self.model.is_busy() || self.model.reveal.is_some() {
             self.start_ticker(cx);
         }
-        self.scroll.scroll_to_bottom();
+        self.jump_to_end();
         cx.notify();
         true
     }
@@ -4521,6 +4536,58 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Brings the chat's end into view only when the chat follows it
+    /// (#90): text arriving never moves a chat the user scrolled up in.
+    fn follow_end(&mut self) {
+        if self.follow.on() {
+            self.scroll.scroll_to_bottom();
+        }
+    }
+
+    /// Brings the chat's end into view and follows it again: the user
+    /// sent, opened or resumed something.
+    fn jump_to_end(&mut self) {
+        self.follow.engage();
+        self.scroll.scroll_to_bottom();
+    }
+
+    /// "Jump to latest" over the chat while it does not follow its end.
+    fn jump_to_latest(&self, p: Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let off = f32::from(self.scroll.offset().y);
+        let max = f32::from(self.scroll.max_offset().y);
+        if !self.follow.shows_jump(off, max) {
+            return None;
+        }
+        Some(
+            div()
+                .absolute()
+                .bottom(px(12.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .id("jump-to-latest")
+                        .px_3()
+                        .py(px(4.))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(p.border)
+                        .bg(p.raised)
+                        .text_xs()
+                        .text_color(p.text)
+                        .cursor_pointer()
+                        .child("Jump to latest ↓")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.jump_to_end();
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The chat. Each message is its own child of the scrolling area, so
     /// the timeline rail can find where a message is and scroll to it.
     fn transcript(&self, p: Palette, cx: &mut Context<Self>) -> impl IntoElement {
@@ -4547,11 +4614,19 @@ impl Workspace {
             .current
             .map(|id| id.to_string())
             .unwrap_or_else(|| "new".to_owned());
+        // The last few entries are always drawn (#90): the end the chat
+        // follows never turns into boxes and back while text arrives.
+        let always = self.model.entries.len().saturating_sub(3);
         for (i, e) in self.model.entries.iter().enumerate() {
             let key = format!("chat-{chat}-{i}");
-            items.push(wrap(
-                self.culled(key, &self.scroll, || self.entry(i, e, p, cx)),
-            ));
+            let el = if i >= always {
+                self.entry(i, e, p, cx)
+            } else {
+                self.culled_within(key, &self.scroll, crate::cull::CHAT_MARGIN, || {
+                    self.entry(i, e, p, cx)
+                })
+            };
+            items.push(wrap(el));
         }
         // Thinking, the working rollup, and the answer so far, revealed at
         // reading pace.
@@ -4591,6 +4666,7 @@ impl Workspace {
             .child(scroller)
             .children(self.timeline_rail(p, cx))
             .children(self.checkpoint_strip(p, cx))
+            .children(self.jump_to_latest(p, cx))
             .vertical_scrollbar(&self.scroll)
     }
 
@@ -5456,13 +5532,25 @@ impl Workspace {
         handle: &ScrollHandle,
         build: impl FnOnce() -> AnyElement,
     ) -> AnyElement {
+        self.culled_within(key, handle, crate::cull::MARGIN, build)
+    }
+
+    /// [`Self::culled`] drawing rows within `margin` px of the window.
+    pub(super) fn culled_within(
+        &self,
+        key: String,
+        handle: &ScrollHandle,
+        margin: f32,
+        build: impl FnOnce() -> AnyElement,
+    ) -> AnyElement {
         let view = handle.bounds();
         let off = f32::from(handle.offset().y);
-        let boxed = self.cull_rows.borrow().hidden(
+        let boxed = self.cull_rows.borrow().hidden_within(
             &key,
             off,
             f32::from(view.origin.y),
             f32::from(view.size.height),
+            margin,
         );
         let inner = match boxed {
             Some(h) => div().w_full().h(px(h)).into_any_element(),
@@ -6688,6 +6776,13 @@ impl Render for Workspace {
                 .update(cx, |c, cx| crate::view::set_end(c, text, window, cx));
         }
         self.save_session_soon(cx);
+        // Where the chat is now: a move up lets go of its end (#90).
+        self.follow.observe(
+            f32::from(self.scroll.offset().y),
+            f32::from(self.scroll.max_offset().y),
+        );
+        // The run panel shows the open chat's own state (#90).
+        self.model.panel_follows_chat(self.current);
         self.tick_scout(window, cx);
         self.tick_explain(window, cx);
         self.sync_web(window, cx);

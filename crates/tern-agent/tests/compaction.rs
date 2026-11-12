@@ -121,7 +121,11 @@ async fn compacts_past_the_threshold_keeps_turns_logs_and_resumes() {
         .await;
     let msgs = last_chat_messages(&s).await;
     assert!(tern_agent::compact::is_pinned(&msgs[0]), "{msgs:?}");
-    assert_eq!(&msgs[2..], ["And reranking?", "An answer.", "Thanks"]);
+    assert_eq!(&msgs[2..4], ["And reranking?", "An answer."]);
+    // "Thanks" is small talk: it goes with the note asking for a short
+    // reply (#90).
+    assert_eq!(msgs.len(), 5, "{msgs:?}");
+    assert!(msgs[4].starts_with("Thanks\n\n(Tern note:"), "{msgs:?}");
 
     // Nothing was deleted: the log still has every turn.
     let events = chat.with_store(|st| st.replay(id, 0).unwrap()).unwrap();

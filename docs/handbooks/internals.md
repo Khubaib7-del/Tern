@@ -1,6 +1,6 @@
 # Internals handbook (draft)
 
-> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #115, the handbook bundle. It explains how a turn runs inside Tern, for someone changing the engine. The architecture overview is [03-architecture.md](../03-architecture.md).
+> Status: draft, started in PR #85 (31 October 2026). It grows pull request by pull request and is finished in #116, the handbook bundle. It explains how a turn runs inside Tern, for someone changing the engine. The architecture overview is [03-architecture.md](../03-architecture.md).
 
 ## 1. A turn, end to end
 
@@ -42,3 +42,15 @@ A chat message becomes one **turn** with a stable turn id. `ChatSession::send` (
 ## 6. Developer switches
 
 `TERN_DEV=1` with `TERN_CHAOS` (`chaos.rs`) wraps the model: `429-short`, `429-daily`, `drop:N` (stream cut after N characters), `bad-args`, `kill`, comma-separated per call. `TERN_NO_TOOL_CACHE=1` turns the tool cache off.
+
+## 7. Fixes from the #85 Windows testing (#90)
+
+- **Scholarly queries** (`tern-agent/src/query.rs`, `scholar.rs`): `scholar_keywords` turns a message into at most eight keywords and drops instruction words; one `scholar_search` call runs up to three queries at once; when the ranked evidence is not enough, `broader` gives one or two wider wordings (acronym expansions, fewer terms) and the search runs again before "not enough evidence". The result line logs `queries`, `widened`, `found` and `kept`.
+- **Citation requests** (`intent::snowball_request`): "papers citing X" and "follow the citations of arXiv …" name a seed and a direction, and the prefetch runs `paper_snowball` instead of a keyword search. Citers come from OpenAlex (`openalex_citers`) sorted by citation count.
+- **Resume** (`engine.rs`): `resume_prompt` hands the model the exact kept tail; `stitch(kept, lead, more)` joins the continuation, dropping text the model repeated and a sentence it restarted.
+- **Chaos kill** (`chaos.rs`): `kill_point` is awaited before `turn.finished` is written, so a `kill` queued for a call fires mid-turn, never after the end is saved.
+- **Fallback** (`chat.rs`): a known smaller same-provider model for every provider; the desktop passes the setting to the open chat; one `model.switched` row per turn; a paused turn's reason appears in its receipt only.
+- **Small talk**: `small_talk_note` adds `SMALL_TALK_NOTE` to a greeting, and the base prompt says a greeting never restarts an earlier task.
+- **Author-year markers** (`verify.rs`): an author and year in prose that matches a paper the turn listed or read gets that paper's `[n]`, so the claim checker sees it.
+- **Desktop** (`tern-desktop/src/follow.rs`, `cull.rs`, `model.rs`): `Follow` reads the scroll offset each frame; a move up lets go of the end, coming back within 48 px or **Jump to latest** takes it again, and text arriving calls `follow_end` (scrolls only while following). The chat culls with `CHAT_MARGIN` (1600 px) and always draws its last three entries. `Model::panel_follows_chat` runs from render and only changes model state: it saves the panel (open, tab) of the chat left in `chat_panels` and restores the opened chat's, or a plain panel; `new_chat` saves the outgoing chat's panel first and resets `last_run`.
+
